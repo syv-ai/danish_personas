@@ -12,5 +12,5 @@
 - Provider-qualified Hugging Face routing and optional model thinking control.
 - Strict generated-attribute and six-description schemas, Danish and safety checks,
   provenance manifests, token accounting, mocked HTTP tests, and a five-row hard limit.
-- Source, privacy, acceptance, Phase-2 validation, Phase-3 smoke, and Hugging Face Gemma
-  cost-experiment documentation.
+- Source, privacy, acceptance, Phase-2 validation, Phase-3 smoke, Hugging Face Gemma
+  cost-experiment, and blinded four-model comparison documentation.

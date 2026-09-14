@@ -95,6 +95,10 @@ def test_english_skills_cannot_hide_behind_danish_hobbies() -> None:
         ("Personen deler nyt på t.co/tekst og deltager i fællesskaber.", "URL"),
         ("Personen deler nyt på eksempel.xn--p1ai og deltager i fællesskaber.", "URL"),
         ("Personen har diabetes og deltager også i lokale fællesskaber.", "sensitive"),
+        (
+            "Personen genopladеr batterierne og deltager i fællesskaber.",
+            "foreign-script",
+        ),
     ],
 )
 def test_prohibited_attribute_content_fails(text: str, error: str) -> None:

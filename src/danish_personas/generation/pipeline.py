@@ -337,7 +337,9 @@ def models_match(configured: str, returned: str) -> bool:
     Returns:
         Whether both identifiers refer to the same underlying model.
     """
-    return configured.partition(":")[0] == returned.partition(":")[0]
+    return (
+        configured.partition(":")[0].casefold() == returned.partition(":")[0].casefold()
+    )
 
 
 def _sum_estimated_cost(responses: list[LLMResponse]) -> float | None:

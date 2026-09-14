@@ -18,6 +18,7 @@ DOMAIN_CANDIDATE = re.compile(
 )
 TLD_EXTRACTOR = TLDExtract(suffix_list_urls=())
 CPR = re.compile(r"\b\d{6}[- ]?\d{4}\b")
+FOREIGN_SCRIPT = re.compile(r"[\u0400-\u04ff\u4e00-\u9fff]")
 PHONE = re.compile(r"(?<!\d)(?:\+45[ -]?)?(?:\d[ -]?){8}(?!\d)")
 _STREET = r"[\wæøå.-]+(?:gade|vej|allé|alle|boulevard|stræde|vænget|torv)"
 ADDRESS = re.compile(
@@ -89,6 +90,7 @@ def _validate_text(text: str, require_danish: bool) -> None:
     patterns = {
         "email": EMAIL,
         "CPR-like number": CPR,
+        "foreign-script text": FOREIGN_SCRIPT,
         "phone-like number": PHONE,
         "exact-address pattern": ADDRESS,
     }

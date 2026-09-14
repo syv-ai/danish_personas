@@ -13,7 +13,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
-from danish_personas.generation.pipeline import generate_personas
+from danish_personas.generation.pipeline import generate_personas, models_match
 from danish_personas.generation.report import validate_persona_run
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import RunManifest, ValidationReport
@@ -263,6 +263,18 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "sample_manifest": sample_manifest_path,
         "config": config_path,
     }
+
+
+def test_provider_qualified_model_alias_matches_case_insensitively() -> None:
+    """HF provider suffixes and casing do not create false provenance failures."""
+    assert models_match(
+        configured="meta-llama/Llama-4-Maverick:novita",
+        returned="meta-llama/llama-4-maverick",
+    )
+    assert not models_match(
+        configured="meta-llama/Llama-4-Maverick:novita",
+        returned="meta-llama/llama-4-scout",
+    )
 
 
 def test_rejected_completion_text_is_not_checkpointed(
