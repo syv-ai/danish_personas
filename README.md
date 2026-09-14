@@ -1,118 +1,124 @@
 # Danish Personas
 
-Generation of a dataset consisting of Danish personas.
+A reproducible pipeline for creating statistically grounded Danish synthetic persona
+seeds from public aggregate data. The implemented scope contains no LLM calls and no
+personal microdata.
 
----
+The research and delivery design is documented in
+[`docs/danish-personas-plan.md`](docs/danish-personas-plan.md).
 
-[![Code Coverage](https://img.shields.io/badge/Coverage-56%25-orange.svg)](https://github.com/syv-ai/danish_personas/tree/main/tests)
-[![License](https://img.shields.io/github/license/syv-ai/danish_personas)](https://github.com/syv-ai/danish_personas/blob/main/LICENSE)
-[![LastCommit](https://img.shields.io/github/last-commit/syv-ai/danish_personas)](https://github.com/syv-ai/danish_personas/commits/main)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](https://github.com/syv-ai/danish_personas/blob/main/CODE_OF_CONDUCT.md)
- Developer:
+## Current status
 
-- Dan Saattrup Smart (<dan@syv.ai>)
+Phases 0-2 are implemented and validated:
+
+1. typed codebase, configuration, commands, tests, and an LLM execution guard;
+2. immutable acquisition and preparation of five Statistics Denmark tables;
+3. deterministic generation and validation of demographic and OCEAN records.
+
+The validated local statistical run contains 100,000 records. LLM-generated attributes
+and persona descriptions are deliberately deferred.
 
 ## Setup
 
-### Installation
+```bash
+uv sync
+make check
+uv run pytest
+```
 
-1. Run `make install`, which sets up a virtual environment and all Python dependencies
-   therein.
-2. Run `source .venv/bin/activate` to activate the virtual environment.
+Python 3.14 or later is required.
 
-### Adding and Removing Packages
+## Reproduce the non-LLM pipeline
 
-To install new PyPI packages, run:
+Resolve source selectors into an explicit, idempotent lock:
 
 ```bash
-uv add <package-name>
+uv run src/scripts/download_sources.py resolve \
+  --config config/sources.yaml \
+  --lock config/sources.lock.yaml
 ```
 
-To remove them again, run:
+Fetch immutable raw snapshots:
 
 ```bash
-uv remove <package-name>
+uv run src/scripts/download_sources.py fetch \
+  --lock config/sources.lock.yaml \
+  --raw-dir data/raw
 ```
 
-To show all installed packages, run:
+Prepare and validate the offline source bundle:
 
 ```bash
-uv pip list
+uv run src/scripts/build_distributions.py \
+  --lock config/sources.lock.yaml \
+  --categories config/categories.yaml \
+  --raw-dir data/raw \
+  --output-dir data/processed
+
+BUNDLE=$(ls -td data/processed/* | head -1)
+uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 ```
 
-## All Built-in Commands
+Generate and validate the smoke run before the statistical run:
 
-The project includes the following convenience commands:
+```bash
+uv run src/scripts/generate_demographics.py \
+  --bundle "$BUNDLE" \
+  --rows 1000 \
+  --seed 20260914 \
+  --output-dir data/runs/smoke
 
-- `make install`: Install the project and its dependencies in a virtual environment.
-- `make install-pre-commit`: Install pre-commit hooks for linting, formatting and type
-  checking.
-- `make check`: Lint and format the code using `ruff`, and type check using `ty`.
-- `make test`: Run tests using `pytest` and update the coverage badge in the readme.
-- `make docker`: Build a Docker image and run the Docker container.
-- `make tree`: Show the project structure as a tree.
+SMOKE=$(ls -td data/runs/smoke/* | head -1)
+uv run src/scripts/validate_dataset.py demographics \
+  --run "$SMOKE" \
+  --bundle "$BUNDLE"
 
-## A Word on Modules and Scripts
+uv run src/scripts/generate_demographics.py \
+  --bundle "$BUNDLE" \
+  --rows 100000 \
+  --seed 20260914 \
+  --output-dir data/runs/statistical
 
-In the `src` directory there are two subdirectories, `danish_personas`
-and `scripts`. This is a brief explanation of the differences between the two.
-
-### Modules
-
-All Python files in the `danish_personas` directory are _modules_
-internal to the project package. Examples here could be a general data loading script, a
-definition of a model, or a training function. Think of modules as all the building
-blocks of a project.
-
-When a module is importing functions/classes from other modules we use the _relative
-import_ notation - here's an example:
-
-```python
-from .other_module import some_function
+RUN=$(ls -td data/runs/statistical/* | head -1)
+uv run src/scripts/validate_dataset.py demographics \
+  --run "$RUN" \
+  --bundle "$BUNDLE"
 ```
 
-### Scripts
+Freeze the deterministic Phase-3 development input without calling an LLM:
 
-Python files in the `scripts` folder are scripts, which are short code snippets that are
-_external_ to the project package, and which is meant to actually run the code. As such,
-_only_ scripts will be called from the terminal. An analogy here is that the internal
-`numpy` code are all modules, but the Python code you write where you import some
-`numpy` functions and actually run them, that a script.
-
-When importing module functions/classes when you're in a script, you do it like you
-would normally import from any other package:
-
-```python
-from danish_personas import some_function
+```bash
+uv run src/scripts/freeze_demographic_sample.py \
+  --run "$RUN" \
+  --rows 1000 \
+  --output "$RUN/text-development-seeds.parquet"
 ```
 
-Note that this is also how we import functions/classes in tests, since each test Python
-file is also a Python script, rather than a module.
+## Outputs
 
-## Features
+The ignored `data/` directory contains:
 
-### Docker Setup
+- raw StatBank CSV and metadata snapshots with SHA-256 manifests;
+- normalized and pooled Parquet sampling tables;
+- source and demographic validation reports in JSON and Markdown;
+- deterministic Parquet records and run manifests;
+- a 1,000-row stratified seed set for the future LLM phase.
 
-A Dockerfile is included in the new repositories, which by default runs
-`src/scripts/main.py`. You can build the Docker image and run the Docker container by
-running `make docker`.
+The source lock, category mappings, sampling parameters, validation thresholds, and code
+are version controlled. Large generated artefacts remain local and reproducible.
 
-### Automatic Test Coverage Calculation
+## Safety boundary
 
-Run `make test` to test your code, which also updates the "coverage badge" in the
-README, showing you how much of your code base that is currently being tested.
+`config/generation.yaml` keeps LLM generation disabled. Running
+`src/scripts/generate_personas.py` fails before contacting any provider. Exact addresses,
+CPR numbers, names, occupation, ancestry, citizenship, income, household information,
+and sensitive traits are not generated in the implemented scope.
 
-### Continuous Integration
+## Validation
 
-Github CI pipelines are included in the repo, running all the tests in the `tests`
-directory, as well as building online documentation, if Github Pages has been enabled
-for the repository (can be enabled on Github in the repository settings).
+See:
 
-### Code Spaces
-
-Code Spaces is a new feature on Github, that allows you to develop on a project
-completely in the cloud, without having to do any local setup at all. This repo comes
-included with a configuration file for running code spaces on Github. When hosted on
-`syv-ai/danish_personas` then simply press the
-`<> Code` button and add a code space to get started, which will open a VSCode window
-directly in your browser.
+- [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md);
+- [`docs/source-register.md`](docs/source-register.md);
+- [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md);
+- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md).
