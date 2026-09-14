@@ -1,0 +1,156 @@
+"""Contracts for LLM-generated persona attributes and text."""
+
+import typing as t
+from pathlib import Path
+
+from pydantic import Field, field_validator
+
+from ..models import StrictModel
+
+
+class FrozenSampleManifest(StrictModel):
+    """Manifest proving the origin of a frozen Phase-3 sample."""
+
+    source_run_id: str
+    rows: int = Field(gt=0)
+    strata: list[str]
+    method: str
+    data_file: Path
+    sha256: str
+    llm_calls: int = Field(ge=0)
+
+
+class GeneratedAttributes(StrictModel):
+    """First-stage generated persona attributes."""
+
+    cultural_context: str = Field(min_length=20, max_length=600)
+    skills_and_expertise: list[str] = Field(min_length=3, max_length=6)
+    hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
+    career_goals_and_ambitions: str | None = Field(max_length=500)
+
+    @field_validator("skills_and_expertise", "hobbies_and_interests")
+    @classmethod
+    def require_unique_items(_cls, values: list[str]) -> list[str]:
+        """Require non-empty, case-insensitively unique list entries.
+
+        Args:
+            values:
+                Generated list entries.
+
+        Returns:
+            Stripped list entries.
+
+        Raises:
+            ValueError:
+                If an entry is empty or duplicated.
+        """
+        stripped = [value.strip() for value in values]
+        if any(not value for value in stripped):
+            message = "Generated list entries cannot be empty"
+            raise ValueError(message)
+        if len({value.casefold() for value in stripped}) != len(stripped):
+            message = "Generated list entries must be unique"
+            raise ValueError(message)
+        return stripped
+
+
+class GenerationConfig(StrictModel):
+    """Guarded OpenAI-compatible generation configuration."""
+
+    version: int
+    llm_generation_enabled: bool
+    base_url: str | None
+    model: str | None
+    api_key_env: str | None
+    timeout_seconds: float = Field(gt=0.0)
+    maximum_http_attempts: int = Field(ge=1, le=5)
+    maximum_validation_attempts: int = Field(ge=1, le=3)
+    maximum_total_requests: int = Field(ge=1, le=15)
+    retry_backoff_seconds: float = Field(ge=0.0)
+    maximum_smoke_rows: int = Field(ge=1, le=5)
+    max_tokens: int | None = Field(default=None, ge=32, le=4_096)
+    response_format: t.Literal["json_schema", "json_object"]
+    attributes_prompt: Path
+    personas_prompt: Path
+
+
+class GenerationManifest(StrictModel):
+    """Manifest for a completed persona smoke run."""
+
+    run_id: str
+    upstream_run_id: str
+    input_file: Path
+    sample_manifest_file: Path
+    input_sha256: str
+    ordered_persona_ids_sha256: str
+    generation_config_sha256: str
+    generation_context_sha256: str
+    validator_version: str
+    attributes_prompt_sha256: str
+    personas_prompt_sha256: str
+    model: str
+    base_url: str
+    rows: int = Field(ge=1, le=5)
+    requests: int = Field(ge=0)
+    retries: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    inference_providers: list[str]
+    output_file: Path
+    output_sha256: str
+    llm_generation: bool
+
+
+class LLMResponse(StrictModel):
+    """Parsed completion plus auditable response metadata."""
+
+    response_id: str
+    model: str
+    content: str
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    request_attempts: int = Field(default=1, ge=1)
+    latency_seconds: float = Field(ge=0.0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    inference_provider: str | None = None
+    raw_response_sha256: str
+
+
+class AttributeCheckpoint(StrictModel):
+    """Durable first-stage progress for one persona."""
+
+    persona_id: str
+    input_sha256: str
+    generation_context_sha256: str
+    validator_version: str
+    attributes: GeneratedAttributes
+    responses: list[LLMResponse]
+    http_requests: int = Field(ge=1)
+
+
+class PersonaDescriptions(StrictModel):
+    """Second-stage generated Danish persona descriptions."""
+
+    professional_persona: str = Field(min_length=40, max_length=1_200)
+    sports_persona: str = Field(min_length=40, max_length=1_200)
+    arts_persona: str = Field(min_length=40, max_length=1_200)
+    travel_persona: str = Field(min_length=40, max_length=1_200)
+    culinary_persona: str = Field(min_length=40, max_length=1_200)
+    persona: str = Field(min_length=60, max_length=1_500)
+
+
+class PersonaCheckpoint(StrictModel):
+    """Completed two-stage generation checkpoint for one persona."""
+
+    persona_id: str
+    input_sha256: str
+    generation_context_sha256: str
+    validator_version: str
+    attributes: GeneratedAttributes
+    descriptions: PersonaDescriptions
+    responses: list[LLMResponse]
+    attempts: int = Field(ge=2)
+    http_requests: int = Field(default=0, ge=0)

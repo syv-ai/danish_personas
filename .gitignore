@@ -54,9 +54,10 @@ coverage.xml
 # PyBuilder
 target/
 
-# DotEnv configuration
+# DotEnv configuration and local generation settings
 .env
 !.env.example
+config/*.local.yaml
 
 # Database
 *.db

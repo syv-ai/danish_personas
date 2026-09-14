@@ -8,5 +8,8 @@
 - Prepared demographic distributions with age and education pooling for sparse cells.
 - Deterministic demographic and independent OCEAN generation without LLM calls.
 - Source, structural, statistical, held-out, and personality validation gates.
-- A guarded placeholder that prevents LLM generation before Phase 3.
-- Source, privacy, acceptance, and Phase-2 validation documentation.
+- Guarded, resumable two-stage persona generation through an OpenAI-compatible API.
+- Strict generated-attribute and six-description schemas, Danish and safety checks,
+  provenance manifests, token accounting, mocked HTTP tests, and a five-row hard limit.
+- Source, privacy, acceptance, Phase-2 validation, Phase-3 smoke, and Hugging Face Gemma
+  cost-experiment documentation.

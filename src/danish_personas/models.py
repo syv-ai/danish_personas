@@ -250,7 +250,7 @@ class ValidationConfig(StrictModel):
 class ValidationReport(StrictModel):
     """Machine-readable validation report."""
 
-    kind: t.Literal["sources", "demographics"]
+    kind: t.Literal["sources", "demographics", "personas"]
     passed: bool
     created_at: str
     subject_id: str

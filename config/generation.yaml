@@ -1,5 +1,15 @@
 version: 1
 llm_generation_enabled: false
-provider: null
+base_url: null
 model: null
-reason: Phase 3 is blocked until the demographic validation gate passes.
+api_key_env: null
+timeout_seconds: 300.0
+maximum_http_attempts: 3
+maximum_validation_attempts: 2
+maximum_total_requests: 15
+retry_backoff_seconds: 1.0
+maximum_smoke_rows: 5
+max_tokens: null
+response_format: json_schema
+attributes_prompt: config/prompts/attributes-da.md
+personas_prompt: config/prompts/personas-da.md

@@ -32,5 +32,24 @@ These gates apply before any LLM integration may be enabled.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
 - The run manifest records exactly zero LLM calls.
 
+## Persona smoke runs
+
+- The committed configuration remains disabled and every live invocation requires
+  `--live` explicitly.
+- The input checksum and successful Phase-2 validation report match the upstream run.
+- No invocation can request more than five rows.
+- Generated attributes and all six persona descriptions satisfy strict schemas.
+- Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
+  values and order.
+- Generated text is Danish, contains no detected contact details or identifying-number
+  patterns, and does not contain the configured sensitive terms.
+- Exact duplicate persona descriptions are rejected.
+- Per-record checkpoints support resume without repeating completed model calls.
+- The manifest records model, selected inference provider, endpoint, prompt and input
+  hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
+  output checksum.
+- Automated validation is necessary but not sufficient: a blinded human review remains
+  mandatory before any development-sample or release-scale generation.
+
 A failed mandatory gate returns a non-zero command exit code. Thresholds may not be
 changed retrospectively to make a completed statistical run pass.

@@ -1,33 +1,47 @@
-"""Guarded placeholder for the deferred LLM generation phase."""
+"""Run guarded two-stage persona generation against an OpenAI-compatible API."""
 
+import logging
 from pathlib import Path
 
 import click
 
-from danish_personas.io import load_yaml
+from danish_personas.generation.pipeline import generate_personas
 
 
 @click.command()
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(path_type=Path),
-    default=Path("config/generation.yaml"),
-    show_default=True,
-)
-def main(config_path: Path) -> None:
-    """Refuse LLM generation until Phase 3 is explicitly enabled.
+@click.option("--input", "input_path", type=click.Path(path_type=Path), required=True)
+@click.option("--sample-manifest", type=click.Path(path_type=Path), required=True)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), required=True)
+@click.option("--output-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--rows", type=click.IntRange(min=1), required=True)
+@click.option("--live", is_flag=True, help="Explicitly authorise model requests.")
+def main(
+    input_path: Path,
+    sample_manifest: Path,
+    config_path: Path,
+    output_dir: Path,
+    rows: int,
+    live: bool,
+) -> None:
+    """Plan or execute a smoke persona-generation run.
 
     Raises:
         click.ClickException:
-            Always, because LLM generation is outside the implemented scope.
+            If an upstream, guard, API, schema, or safety check fails.
     """
-    config = load_yaml(path=config_path)
-    if config.get("llm_generation_enabled") is not True:
-        raise click.ClickException(
-            "LLM generation is disabled until the Phase 2 validation gate passes"
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    try:
+        run_dir = generate_personas(
+            input_path=input_path,
+            sample_manifest_path=sample_manifest,
+            config_path=config_path,
+            output_dir=output_dir,
+            rows=rows,
+            live=live,
         )
-    raise click.ClickException("No LLM provider is implemented in the non-LLM scope")
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    logging.info("Persona generation run: %s", run_dir)
 
 
 if __name__ == "__main__":

@@ -597,7 +597,9 @@ thresholds, and the demographic sampler configuration is frozen.
 
 ### Phase 3: Develop LLM generation
 
-This is the first phase that may call an LLM.
+This is the first phase that may call an LLM. The guarded provider adapter, two-stage
+schemas, checkpointing, deterministic validators, and a three-record smoke test are
+complete. Full development-sample generation and evaluation remain pending.
 
 #### Work
 

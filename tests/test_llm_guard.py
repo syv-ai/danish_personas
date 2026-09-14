@@ -8,8 +8,22 @@ from scripts.generate_personas import main
 
 
 def test_llm_generation_is_disabled() -> None:
-    """The current configuration blocks every LLM call."""
-    config = Path("config/generation.yaml")
-    result = CliRunner().invoke(main, ["--config", str(config)])
+    """The committed configuration blocks every live LLM call."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--input",
+            "missing.parquet",
+            "--sample-manifest",
+            "missing.json",
+            "--config",
+            str(Path("config/generation.yaml")),
+            "--output-dir",
+            "data/test-output",
+            "--rows",
+            "1",
+            "--live",
+        ],
+    )
     assert result.exit_code != 0
     assert "LLM generation is disabled" in result.output

@@ -355,11 +355,13 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "httpx" },
+    { name = "lingua-language-detector" },
     { name = "numpy" },
     { name = "polars" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "scipy" },
+    { name = "tldextract" },
 ]
 
 [package.dev-dependencies]
@@ -381,11 +383,13 @@ dev = [
 requires-dist = [
     { name = "click", specifier = ">=8.2.1" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "lingua-language-detector", specifier = ">=2.2.0" },
     { name = "numpy", specifier = ">=2.3.0" },
     { name = "polars", specifier = ">=1.33.0" },
     { name = "pydantic", specifier = ">=2.11.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "scipy", specifier = ">=1.16.0" },
+    { name = "tldextract", specifier = ">=5.3.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -750,6 +754,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/02/49/9d1284d0dc65e2c757b74c6687b6d319b02f822ad039e5c512df9194d9dd/jupyter_core-5.9.1.tar.gz", hash = "sha256:4d09aaff303b9566c3ce657f580bd089ff5c91f5f89cf7d8846c3cdf465b5508", size = 89814, upload-time = "2025-10-16T19:19:18.444Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/e7/80988e32bf6f73919a113473a604f5a8f09094de312b9d52b79c2df7612b/jupyter_core-5.9.1-py3-none-any.whl", hash = "sha256:ebf87fdc6073d142e114c72c9e29a9d7ca03fad818c5d300ce2adc1fb0743407", size = 29032, upload-time = "2025-10-16T19:19:16.783Z" },
+]
+
+[[package]]
+name = "lingua-language-detector"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/53/a7f52e45e7a71c3a749cc77fbc414c8948108ff406c9059197fdc77779e8/lingua_language_detector-2.2.0-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:4cac0e0721425342e1b10cbddfb009a7fdc75e0a79cfd0451bffc29bee0574c1", size = 170208820, upload-time = "2026-03-09T14:27:15.253Z" },
+    { url = "https://files.pythonhosted.org/packages/28/0b/3dd8a1eba4ac0da9987542849bae25344bb107e5b4a153ebe09e0c8feba3/lingua_language_detector-2.2.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:066b56ca4e3bd324b4c76a861ab2b747d2d8d4e6eda0a4cf06291c6c039b90f4", size = 172494828, upload-time = "2026-03-09T14:27:27.087Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/89/7367d0f7d3b5bcc89f47e223580ec57032dfc642f27cd2a0d06f40bda147/lingua_language_detector-2.2.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b883aa34f03cd5cde7ee606bd2c18496f15b6cbd775be0dfd38311d47d6cf551", size = 170323577, upload-time = "2026-03-09T14:27:38.702Z" },
+    { url = "https://files.pythonhosted.org/packages/58/0f/6dcd9de6f5257ea736693ea92b354dac0073466a1ed32ef1f9873cc4cafe/lingua_language_detector-2.2.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:83badc377b0d07f349753ec3d35cf1ad74afb3ad0dce3ee672240d437705872b", size = 170331791, upload-time = "2026-03-09T14:27:49.366Z" },
+    { url = "https://files.pythonhosted.org/packages/28/42/efb8119a778f0b8df175f5f79a04a21b019c7b38058042866519953c5be1/lingua_language_detector-2.2.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:b7ef23811c8ceacbc10a08dd2f56d71590e7ca6c50e19dfd11a1e142d101199d", size = 170499780, upload-time = "2026-03-09T14:28:04.197Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/89/69ea8b9de230b322ce8b60e9b95463cc4cbeed73476abd9214ab699ade73/lingua_language_detector-2.2.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:145a11d7b7f0c8bf666de411585f53011d530c541a2cd55c2f86b3cff499f77e", size = 170584476, upload-time = "2026-03-09T14:28:18.833Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/c1/2e55c62abc6653383917f9d008090820182d32b8e1f19213af1c06e16411/lingua_language_detector-2.2.0-cp314-cp314-win_amd64.whl", hash = "sha256:3423749db1861937443141e1871a726b8d70dc6e7fe4f6584c477eef5b87fc38", size = 170064682, upload-time = "2026-03-09T14:28:31.876Z" },
+    { url = "https://files.pythonhosted.org/packages/44/5e/f73a74fb19c189c4070d66e9b15f1e4a032bf5e5203fb6bb6c622e16f9c0/lingua_language_detector-2.2.0-cp314-cp314-win_arm64.whl", hash = "sha256:0ec27bc67813372baba2e0a3df2b13cd559c64bc45c5af92f6137fe5b153a525", size = 169980726, upload-time = "2026-03-09T14:28:46.047Z" },
 ]
 
 [[package]]
@@ -1449,6 +1468,18 @@ wheels = [
 ]
 
 [[package]]
+name = "requests-file"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/f8/5dc70102e4d337063452c82e1f0d95e39abfe67aa222ed8a5ddeb9df8de8/requests_file-3.0.1.tar.gz", hash = "sha256:f14243d7796c588f3521bd423c5dea2ee4cc730e54a3cac9574d78aca1272576", size = 6967, upload-time = "2025-10-20T18:56:42.279Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/d5/de8f089119205a09da657ed4784c584ede8381a0ce6821212a6d4ca47054/requests_file-3.0.1-py2.py3-none-any.whl", hash = "sha256:d0f5eb94353986d998f80ac63c7f146a307728be051d4d1cd390dbdb59c10fa2", size = 4514, upload-time = "2025-10-20T18:56:41.184Z" },
+]
+
+[[package]]
 name = "rich"
 version = "15.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1708,6 +1739,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/f6/80760e98a08e6649d2d68afb6035af713121dfb615acce8c4f73810ec438/tiktoken-0.14.0-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:86f66c85e796f5d05d5c4a60ec1d40cbfebc47a32464053528c797163fa9ab89", size = 1251479, upload-time = "2026-08-17T19:49:36.419Z" },
     { url = "https://files.pythonhosted.org/packages/c5/84/50966fb6918a0fb9b32721277e5342bf729a2d74350074d662fbedf9772e/tiktoken-0.14.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:149d97453c4c98c04b081d64a85e635921269b532710d6faf81e9e82b790e7d3", size = 1316673, upload-time = "2026-08-17T19:49:37.756Z" },
     { url = "https://files.pythonhosted.org/packages/35/5e/9b01afd037bfa22a0033963fa091e0f75b6fb15cd85bffb42ff86e697323/tiktoken-0.14.0-cp315-cp315t-win_amd64.whl", hash = "sha256:561e7580f84a79859af1ef6f676968e9030fcc3fe195700b15235bca64f009c9", size = 987929, upload-time = "2026-08-17T19:49:38.947Z" },
+]
+
+[[package]]
+name = "tldextract"
+version = "5.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filelock" },
+    { name = "idna" },
+    { name = "requests" },
+    { name = "requests-file" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/01/a9/ed5d3be29bfaf90c00b7159d3884b311f3880b55833d1c7be764164dc288/tldextract-5.3.2.tar.gz", hash = "sha256:c017431bc0800f2d3d1b57cce36e06668f0930f60a6d8c4615d4e2b8da298fa9", size = 191971, upload-time = "2026-08-08T20:53:13.732Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/3b/930310b274dfe3b9a4fe64ef8b24e5faf376c9a6f94bba6fc6e438058598/tldextract-5.3.2-py3-none-any.whl", hash = "sha256:6c90d2a259f5c89f4fcf01f97af15708416a59ffedddff006d67222ab30d0fb0", size = 106415, upload-time = "2026-08-08T20:53:12.675Z" },
 ]
 
 [[package]]

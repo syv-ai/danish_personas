@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.generation.report import validate_persona_run
 from danish_personas.validation.checks import validate_demographics, validate_sources
 
 
@@ -48,6 +49,20 @@ def demographics(
     )
     if not report.passed:
         raise click.ClickException("Demographic validation failed")
+
+
+@main.command()
+@click.option("--run", "run_dir", type=click.Path(path_type=Path), required=True)
+def personas(run_dir: Path) -> None:
+    """Validate a generated persona smoke run.
+
+    Raises:
+        click.ClickException:
+            If any mandatory persona validation gate fails.
+    """
+    report = validate_persona_run(run_dir=run_dir)
+    if not report.passed:
+        raise click.ClickException("Persona validation failed")
 
 
 @main.command()

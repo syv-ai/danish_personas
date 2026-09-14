@@ -15,8 +15,12 @@ Phases 0-2 are implemented and validated:
 2. immutable acquisition and preparation of five Statistics Denmark tables;
 3. deterministic generation and validation of demographic and OCEAN records.
 
-The validated local statistical run contains 100,000 records. LLM-generated attributes
-and persona descriptions are deliberately deferred.
+The validated local statistical run contains 100,000 records. Phase-3 infrastructure now
+supports guarded, resumable two-stage generation of structured attributes and six Danish
+persona descriptions. A three-record smoke test passed; development-sample generation,
+human evaluation, model selection, and any release-scale generation remain deferred. A
+separate two-record Hugging Face Gemma experiment measured a low token-cost floor but
+failed manual language and grounding review.
 
 ## Setup
 
@@ -94,6 +98,36 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
+## Run a guarded LLM smoke test
+
+Copy `config/generation.yaml` to the Git-ignored
+`config/generation.local.yaml`. Set `llm_generation_enabled: true`, `base_url`, and
+`model` in the local copy. If the endpoint needs a bearer token, set `api_key_env` to
+the environment variable containing it.
+
+Always run without `--live` first. This verifies the upstream validation report,
+sample checksum, configuration, prompt files, and hard five-row limit without making
+network requests:
+
+```bash
+uv run src/scripts/generate_personas.py \
+  --input "$RUN/text-development-seeds.parquet" \
+  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
+  --config config/generation.local.yaml \
+  --output-dir data/persona-smoke \
+  --rows 3
+```
+
+Add `--live` to authorise the planned requests explicitly. Validate the resulting run:
+
+```bash
+PERSONA_RUN=$(ls -td data/persona-smoke/* | head -1)
+uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
+```
+
+A repeated command resumes from per-record checkpoints and does not call the model for
+completed records.
+
 ## Outputs
 
 The ignored `data/` directory contains:
@@ -102,17 +136,22 @@ The ignored `data/` directory contains:
 - normalized and pooled Parquet sampling tables;
 - source and demographic validation reports in JSON and Markdown;
 - deterministic Parquet records and run manifests;
-- a 1,000-row stratified seed set for the future LLM phase.
+- a 1,000-row stratified seed set for LLM development;
+- local persona smoke outputs, checkpoints, provenance manifests, and validation reports.
 
 The source lock, category mappings, sampling parameters, validation thresholds, and code
 are version controlled. Large generated artefacts remain local and reproducible.
 
 ## Safety boundary
 
-`config/generation.yaml` keeps LLM generation disabled. Running
-`src/scripts/generate_personas.py` fails before contacting any provider. Exact addresses,
-CPR numbers, names, occupation, ancestry, citizenship, income, household information,
-and sensitive traits are not generated in the implemented scope.
+`config/generation.yaml` keeps live LLM generation disabled. Enabling it requires both a
+local configuration and the explicit `--live` flag. The pipeline checks the frozen-input
+checksum and successful Phase-2 report before contacting a provider, and never permits
+more than five rows per invocation. Exact addresses, CPR numbers, names, occupation,
+ancestry, citizenship, income, household information, and sensitive traits are not
+generated in the implemented scope. Deterministic validators reject contact details,
+sensitive terms, non-Danish output, duplicate descriptions, schema violations, checksum
+changes, and modifications to upstream fields.
 
 ## Validation
 
@@ -121,4 +160,6 @@ See:
 - [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md);
 - [`docs/source-register.md`](docs/source-register.md);
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md);
-- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md).
+- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md);
+- [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md);
+- [`docs/reports/hf-gemma-cost-smoke.md`](docs/reports/hf-gemma-cost-smoke.md).
