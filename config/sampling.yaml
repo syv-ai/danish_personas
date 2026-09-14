@@ -6,7 +6,6 @@ country: Danmark
 minimum_age: 18
 maximum_age: 125
 publication_geography: region
-municipality_internal_only: true
 smoothing: 0.0
 ocean:
   mean: 50.0

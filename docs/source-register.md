@@ -2,7 +2,8 @@
 
 Retrieved through the official Statistics Denmark StatBank API on 14 September 2026.
 The exact dimension selections are frozen in `config/sources.lock.yaml`. Raw snapshots
-are immutable and locally stored under `data/raw-3c94b72fc161/`.
+are immutable and locally stored under `data/raw-hardened-20260914/` in
+content-addressed query subdirectories.
 
 | Table | Period | Pipeline role | Raw bytes | CSV SHA-256 |
 | --- | --- | --- | ---: | --- |

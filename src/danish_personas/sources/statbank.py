@@ -57,11 +57,13 @@ def fetch_sources(lock: SourceLock, raw_dir: Path) -> list[SnapshotManifest]:
 def _fetch_source(
     client: httpx.Client, source: LockedSource, raw_dir: Path
 ) -> SnapshotManifest:
-    snapshot_dir = raw_dir / source.table_id.lower()
+    query = _source_query(source=source)
+    query_content = json.dumps(query, ensure_ascii=False, indent=2) + "\n"
+    snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
     manifest_path = snapshot_dir / "snapshot-manifest.json"
     if manifest_path.exists():
         manifest = SnapshotManifest.model_validate_json(manifest_path.read_text())
-        _verify_snapshot(snapshot_dir=snapshot_dir, manifest=manifest)
+        _verify_snapshot(snapshot_dir=snapshot_dir, manifest=manifest, source=source)
         LOGGER.info("Reusing immutable %s snapshot", source.table_id)
         return manifest
 
@@ -72,18 +74,6 @@ def _fetch_source(
     _, metadata_da_bytes = _get_metadata(
         client=client, table_id=source.table_id, language="da"
     )
-    query: dict[str, object] = {
-        "table": source.table_id,
-        "format": "CSV",
-        "lang": "en",
-        "valuePresentation": "CodeAndValue",
-        "timeOrder": "Ascending",
-        "variables": [
-            {"code": code, "values": values}
-            for code, values in source.dimensions.items()
-        ],
-    }
-    query_content = json.dumps(query, ensure_ascii=False, indent=2) + "\n"
     response = _request_with_retries(
         client=client, method="POST", url=source.data_url, json_payload=query
     )
@@ -104,8 +94,10 @@ def _fetch_source(
         role=source.role,
         period=source.period,
         metadata_sha256=sha256_file(snapshot_dir / "metadata-en.json"),
+        metadata_da_sha256=sha256_file(snapshot_dir / "metadata-da.json"),
         query_sha256=sha256_text(query_content),
         data_sha256=sha256_file(snapshot_dir / "data.csv"),
+        response_headers_sha256=sha256_file(snapshot_dir / "response-headers.json"),
         retrieved_at=retrieved_at,
         data_bytes=len(response.content),
     )
@@ -155,17 +147,48 @@ def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
-def _verify_snapshot(snapshot_dir: Path, manifest: SnapshotManifest) -> None:
+def _source_query(source: LockedSource) -> dict[str, object]:
+    return {
+        "table": source.table_id,
+        "format": "CSV",
+        "lang": "en",
+        "valuePresentation": "CodeAndValue",
+        "timeOrder": "Ascending",
+        "variables": [
+            {"code": code, "values": values}
+            for code, values in source.dimensions.items()
+        ],
+    }
+
+
+def _verify_snapshot(
+    snapshot_dir: Path, manifest: SnapshotManifest, source: LockedSource
+) -> None:
+    if (
+        manifest.table_id != source.table_id
+        or manifest.role != source.role
+        or manifest.period != source.period
+    ):
+        message = f"Snapshot provenance does not match lock: {snapshot_dir}"
+        raise ValueError(message)
     expected = {
         "metadata-en.json": manifest.metadata_sha256,
+        "metadata-da.json": manifest.metadata_da_sha256,
         "query.json": manifest.query_sha256,
         "data.csv": manifest.data_sha256,
+        "response-headers.json": manifest.response_headers_sha256,
     }
     for name, checksum in expected.items():
         path = snapshot_dir / name
         if not path.exists() or sha256_file(path) != checksum:
             message = f"Immutable snapshot verification failed: {path}"
             raise ValueError(message)
+    expected_query = (
+        json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
+    )
+    if (snapshot_dir / "query.json").read_text() != expected_query:
+        message = f"Snapshot query does not match lock: {snapshot_dir}"
+        raise ValueError(message)
 
 
 def _write_new_bytes(path: Path, content: bytes) -> None:
@@ -173,6 +196,24 @@ def _write_new_bytes(path: Path, content: bytes) -> None:
         message = f"Refusing to overwrite immutable source file: {path}"
         raise FileExistsError(message)
     path.write_bytes(content)
+
+
+def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
+    """Return the content-addressed directory for a locked source query.
+
+    Args:
+        source:
+            Explicit locked source.
+        raw_dir:
+            Raw snapshot root.
+
+    Returns:
+        Query-specific snapshot directory.
+    """
+    query_content = (
+        json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
+    )
+    return raw_dir / source.table_id.lower() / sha256_text(query_content)[:16]
 
 
 def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:

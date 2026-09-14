@@ -6,11 +6,11 @@ Run completed on 14 September 2026 without any LLM calls.
 
 - Source bundle: `e7757f736ef5652f`
 - Smoke run: `78f2ec8279025a5f` (1,000 rows)
-- Statistical run: `dd191c5db9e27630` (100,000 rows)
+- Statistical run: `f5f37949670df476` (100,000 rows)
 - Statistical Parquet SHA-256:
-  `447f62c6f5ec95e1496b51909529586e62f151b3b60ccd130acddc4b5410ed81`
+  `5d182c8fa4d35090ff284e095ed7da38ddf04fe996cfda6b6aa249b00c8dd38c`
 - Logical-content SHA-256:
-  `172fa742917b06ded4d9532345bacc6c4626b6e95bf74d8936eb64af12a5fcc7`
+  `fa2c6e5d3541298c4723200cbd51bda3647960da087cc86bbf4fb4f99d74b1c5`
 - Frozen text-development input: 1,000 stratified rows
 
 Generated datasets and raw snapshots are ignored by Git but remain reproducible from the
@@ -33,9 +33,10 @@ committed source lock, mappings, configurations, and code.
 | Schema errors | 0 | 0 |
 | Status mapping errors | 0 | 0 |
 | Education proxy errors | 0 | 0 |
-| Maximum fitted marginal TV | 0.2352% | 2% |
-| Held-out population joint TV | 0.8868% | 5% |
-| Held-out status-by-sex TV | 0.0835% | 5% |
+| Maximum fitted marginal TV | 0.1739% | 2% |
+| Full 531-cell fitted joint TV | 0.0676% | 2% |
+| Held-out population joint TV | 0.1094% | 5% |
+| Held-out status-by-sex TV | 0.0309% | 5% |
 | OCEAN score-bound errors | 0 | 0 |
 | Maximum pairwise OCEAN correlation | 0.004863 | 0.02 |
 | LLM calls | 0 | 0 |

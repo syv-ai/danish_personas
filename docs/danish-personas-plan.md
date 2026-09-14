@@ -307,7 +307,7 @@ generation independently testable and restartable.
 
 Phases 0-2 were implemented and validated on 14 September 2026. The local source bundle
 is `e7757f736ef5652f`; the passing 100,000-row non-LLM run is
-`dd191c5db9e27630`. See the [Phase 2 validation report][phase-2-report]. LLM generation
+`f5f37949670df476`. See the [Phase 2 validation report][phase-2-report]. LLM generation
 remains disabled in configuration and guarded by an executable failure.
 
 ## Generation architecture

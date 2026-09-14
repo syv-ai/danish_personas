@@ -7,7 +7,7 @@ individual-level Statistics Denmark records.
 | --- | --- | --- |
 | Synthetic record mistaken for a real person | Dataset card and manifests identify every row as synthetic | Users may ignore documentation |
 | Rare-cell reconstruction | Minimum source count, release-size pooling, and 99% coverage gate | Aggregate combinations may still appear distinctive |
-| Geographic identification | Exact addresses and CPR numbers are prohibited; municipality is internal-only by default | Small municipalities remain more distinctive than regions |
+| Geographic identification | Phase-2 records contain region only; exact addresses, CPR numbers, and municipality are excluded | Regional combinations can still be distinctive |
 | Sensitive-attribute inference | No ancestry, citizenship, ethnicity, religion, health, sexuality, political belief, or criminal-history field | Future LLM prose could imply these traits and requires a separate gate |
 | Personality stereotyping | OCEAN is sampled independently of demographics | Downstream text generation could reintroduce associations |
 | Source-response leakage | Only aggregate counts enter sampling; raw model responses do not exist in Phases 0-2 | Future LLM operations require restricted response handling |
@@ -23,6 +23,6 @@ individual-level Statistics Denmark records.
 - ancestry, citizenship, and all special-category personal data;
 - generated free text.
 
-Municipality fields are retained only in local structured seeds for calibration and
-review. The intended public projection is region-level unless a later privacy review
-explicitly approves more detailed geography.
+Municipality aggregates are used only to construct official regional source counts.
+Municipality fields are absent from generated Phase-2 records. A later release must pass
+a separate privacy review before adding more detailed geography.

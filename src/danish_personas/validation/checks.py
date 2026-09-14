@@ -1,5 +1,7 @@
 """Mandatory validation gates and reports."""
 
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,7 +10,7 @@ import numpy as np
 import polars as pl
 from pydantic import ValidationError
 
-from ..io import load_yaml_model, sha256_file, write_json
+from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..models import (
     BundleManifest,
     CategoryConfig,
@@ -53,7 +55,12 @@ def validate_demographics(
     manifest = RunManifest.model_validate_json(manifest_path.read_text())
     data_path = run_dir / manifest.data_file
     frame = pl.read_parquet(data_path)
-    metrics = _structural_metrics(frame=frame, manifest=manifest, categories=categories)
+    metrics = _provenance_metrics(
+        frame=frame, manifest=manifest, data_path=data_path, bundle_dir=bundle_dir
+    )
+    metrics.extend(
+        _structural_metrics(frame=frame, manifest=manifest, categories=categories)
+    )
     metrics.extend(
         _distribution_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
     )
@@ -83,7 +90,7 @@ def _distribution_metrics(
     frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
 ) -> list[MetricResult]:
     source_dir = bundle_dir / "normalized"
-    folk = pl.read_parquet(source_dir / "folk1a_base.parquet").with_columns(
+    folk = pl.read_parquet(source_dir / "folk1a_base_unpooled.parquet").with_columns(
         _age_band_expression().alias("age_band")
     )
     ras209 = pl.read_parquet(source_dir / "ras209_sampling.parquet")
@@ -109,6 +116,23 @@ def _distribution_metrics(
                 smoke_maximum_tv=config.smoke_maximum_total_variation,
             )
         )
+    metrics.extend(
+        _compare_distribution(
+            name="ras209_fitted_joint",
+            generated=frame,
+            target=ras209,
+            columns=[
+                "region_code",
+                "age_band",
+                "sex",
+                "education_level",
+                "labour_market_status",
+            ],
+            config=config,
+            maximum_tv=config.maximum_total_variation["fitted_marginal"],
+            smoke_maximum_tv=config.smoke_maximum_total_variation,
+        )
+    )
     return metrics
 
 
@@ -250,6 +274,41 @@ def _ocean_metrics(frame: pl.DataFrame, config: ValidationConfig) -> list[Metric
     ]
 
 
+def _provenance_metrics(
+    frame: pl.DataFrame, manifest: RunManifest, data_path: Path, bundle_dir: Path
+) -> list[MetricResult]:
+    bundle_manifest_path = bundle_dir / "bundle-manifest.json"
+    bundle = BundleManifest.model_validate_json(bundle_manifest_path.read_text())
+    checks = {
+        "parquet_checksum": sha256_file(data_path) == manifest.data_sha256,
+        "logical_content_checksum": (
+            _logical_checksum(frame=frame) == manifest.logical_content_sha256
+        ),
+        "bundle_identity": bundle.bundle_id == manifest.bundle_id,
+        "bundle_manifest_checksum": (
+            sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
+        ),
+    }
+    return [
+        MetricResult(
+            name=name,
+            passed=passed,
+            value="pass" if passed else "fail",
+            threshold="pass",
+            details="Run provenance and content must match the frozen manifests.",
+        )
+        for name, passed in checks.items()
+    ]
+
+
+def _logical_checksum(frame: pl.DataFrame) -> str:
+    digest = hashlib.sha256()
+    for row in frame.iter_rows(named=True):
+        digest.update(canonical_json(row).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _structural_metrics(
     frame: pl.DataFrame, manifest: RunManifest, categories: CategoryConfig
 ) -> list[MetricResult]:
@@ -365,8 +424,8 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         or sha256_file(bundle_dir / relative_path) != checksum
     ]
     source_report_path = bundle_dir / "source-preparation-report.json"
-    source_payload = source_report_path.read_text()
-    source_passed = '"passed": true' in source_payload
+    source_payload = json.loads(source_report_path.read_text())
+    source_passed = source_payload.get("passed") is True
     metrics = [
         MetricResult(
             name="prepared_file_checksums",

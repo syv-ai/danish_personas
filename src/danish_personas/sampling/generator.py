@@ -20,6 +20,7 @@ TRAITS = (
     "agreeableness",
     "neuroticism",
 )
+Distribution = tuple[list[dict[str, object]], np.ndarray]
 
 
 def generate_records(
@@ -64,20 +65,32 @@ def generate_records(
         return run_dir
 
     source_dir = bundle_dir / "normalized"
-    folk = pl.read_parquet(source_dir / "folk1a_base.parquet")
-    ras209 = pl.read_parquet(source_dir / "ras209_sampling.parquet")
-    ras202 = pl.read_parquet(source_dir / "ras202_detail.parquet")
-    seed_sequence = np.random.SeedSequence(seed)
-    demographic_seed, ocean_seed = seed_sequence.spawn(2)
+    age_frame = pl.read_parquet(source_dir / "folk_age_sampling.parquet")
+    marital_frame = pl.read_parquet(source_dir / "folk_marital_sampling.parquet")
+    joint_frame = pl.read_parquet(source_dir / "ras209_sampling.parquet")
+    detail_frame = pl.read_parquet(source_dir / "ras202_sampling.parquet")
+    demographic_seed, ocean_seed = np.random.SeedSequence(seed).spawn(2)
     demographic_rng = np.random.default_rng(demographic_seed)
     ocean_rng = np.random.default_rng(ocean_seed)
 
-    base = _sample_base(frame=folk, rows=rows, rng=demographic_rng)
-    joint_distributions = _joint_distributions(frame=ras209)
-    detail_distributions = _detail_distributions(frame=ras202)
-    records = _enrich_demographics(
-        base=base,
-        joint_distributions=joint_distributions,
+    sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
+    age_distributions = _distribution_index(
+        frame=age_frame, key_columns=["age_band", "sex"], payload_columns=["age"]
+    )
+    marital_distributions = _distribution_index(
+        frame=marital_frame,
+        key_columns=["region_code", "age_band", "sex"],
+        payload_columns=["marital_status"],
+    )
+    detail_distributions = _distribution_index(
+        frame=detail_frame,
+        key_columns=["age_band", "sex", "labour_market_status"],
+        payload_columns=["detailed_status_code", "detailed_status"],
+    )
+    records = _build_records(
+        sampled_joint=sampled_joint,
+        age_distributions=age_distributions,
+        marital_distributions=marital_distributions,
         detail_distributions=detail_distributions,
         rng=demographic_rng,
         country=config.country,
@@ -89,7 +102,6 @@ def generate_records(
     data_path = run_dir / "structured-records.parquet"
     frame = pl.DataFrame(records)
     frame.write_parquet(data_path, compression="zstd")
-    logical_checksum = _logical_checksum(frame=frame)
     manifest = RunManifest(
         run_id=run_id,
         created_at=_now(),
@@ -100,7 +112,7 @@ def generate_records(
         seed=seed,
         data_file=Path(data_path.name),
         data_sha256=sha256_file(data_path),
-        logical_content_sha256=logical_checksum,
+        logical_content_sha256=_logical_checksum(frame=frame),
         llm_calls=0,
     )
     write_json(path=manifest_path, payload=manifest)
@@ -125,101 +137,75 @@ def _add_ocean(
             record[f"{trait}_label"] = ocean.labels[label_index]
 
 
-def _detail_distributions(
-    frame: pl.DataFrame,
-) -> dict[tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]]:
-    distributions: dict[
-        tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]
-    ] = {}
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
-    keys = ["age_key", "sex", "labour_market_status"]
-    for key, group in eligible.group_by(keys):
-        payloads = [
-            {"detailed_status_code": str(row[0]), "detailed_status": str(row[1])}
-            for row in group.select(
-                "detailed_status_code", "detailed_status"
-            ).iter_rows()
-        ]
-        distribution_key = (str(key[0]), str(key[1]), str(key[2]))
-        distributions[distribution_key] = (
-            payloads,
-            _probabilities(group.get_column("count")),
-        )
-    return distributions
-
-
-def _probabilities(counts: pl.Series) -> np.ndarray:
-    values = counts.to_numpy().astype(np.float64)
-    return values / values.sum()
-
-
-def _enrich_demographics(
-    base: pl.DataFrame,
-    joint_distributions: dict[
-        tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]
-    ],
-    detail_distributions: dict[
-        tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]
-    ],
+def _build_records(
+    sampled_joint: pl.DataFrame,
+    age_distributions: dict[tuple[str, ...], Distribution],
+    marital_distributions: dict[tuple[str, ...], Distribution],
+    detail_distributions: dict[tuple[str, ...], Distribution],
     rng: np.random.Generator,
     country: str,
     seed: int,
 ) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    for index, row in enumerate(base.iter_rows(named=True)):
-        age = int(row["age"])
-        age_band = _age_band(age=age)
-        joint_key = (str(row["region_code"]), age_band, str(row["sex"]))
-        joint_payload = _draw(distributions=joint_distributions, key=joint_key, rng=rng)
-        labour_status = joint_payload["labour_market_status"]
-        age_key = str(age) if age <= 70 else "71-"
-        detail_key = (age_key, str(row["sex"]), labour_status)
-        detail_payload = _draw(
-            distributions=detail_distributions, key=detail_key, rng=rng
+    for index, joint in enumerate(sampled_joint.iter_rows(named=True)):
+        region_code = str(joint["region_code"])
+        age_band = str(joint["age_band"])
+        sex = str(joint["sex"])
+        labour_status = str(joint["labour_market_status"])
+        age = _as_int(
+            value=_draw(distributions=age_distributions, key=(age_band, sex), rng=rng)[
+                "age"
+            ]
         )
-        record: dict[str, object] = {
-            "persona_id": str(
-                uuid.uuid5(uuid.NAMESPACE_URL, f"danish-personas:{seed}:{index}")
-            ),
-            "country": country,
-            "age": age,
-            "age_band": age_band,
-            "sex": row["sex"],
-            "marital_status": row["marital_status"],
-            "municipality_code": row["municipality_code"],
-            "municipality": row["municipality"],
-            "region_code": row["region_code"],
-            "region": row["region"],
-            "education_level": joint_payload["education_level"],
-            "education_source_code": joint_payload["education_source_code"],
-            "education_resolution": (
-                "ras209_67_plus_proxy" if age >= 70 else "ras209_age_band"
-            ),
-            "labour_market_status": labour_status,
-            "detailed_status_code": detail_payload["detailed_status_code"],
-            "detailed_status": detail_payload["detailed_status"],
-            "demographic_backoff_level": 0,
-            "status_backoff_level": 0,
-        }
-        records.append(record)
+        marital_status = str(
+            _draw(
+                distributions=marital_distributions,
+                key=(region_code, age_band, sex),
+                rng=rng,
+            )["marital_status"]
+        )
+        detail = _draw(
+            distributions=detail_distributions,
+            key=(age_band, sex, labour_status),
+            rng=rng,
+        )
+        records.append(
+            {
+                "persona_id": str(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"danish-personas:{seed}:{index}")
+                ),
+                "country": country,
+                "age": age,
+                "age_band": age_band,
+                "sex": sex,
+                "marital_status": marital_status,
+                "region_code": region_code,
+                "region": joint["region"],
+                "education_level": joint["education_level"],
+                "education_source_code": joint["education_source_code"],
+                "education_resolution": (
+                    "ras209_67_plus_proxy" if age >= 70 else "ras209_age_band"
+                ),
+                "labour_market_status": labour_status,
+                "detailed_status_code": detail["detailed_status_code"],
+                "detailed_status": detail["detailed_status"],
+            }
+        )
     return records
 
 
-def _age_band(age: int) -> str:
-    if age <= 29:
-        return "18-29"
-    if age <= 49:
-        return "30-49"
-    if age <= 66:
-        return "50-66"
-    return "67+"
+def _as_int(value: object) -> int:
+    if isinstance(value, int | str):
+        return int(value)
+    message = f"Expected an integer-compatible value, got {type(value).__name__}"
+    raise TypeError(message)
 
 
 def _draw(
-    distributions: dict[tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]],
-    key: tuple[str, str, str],
+    distributions: dict[tuple[str, ...], Distribution],
+    key: tuple[str, ...],
     rng: np.random.Generator,
-) -> dict[str, str]:
+) -> dict[str, object]:
     if key not in distributions:
         message = f"No prepared distribution for {key}"
         raise ValueError(message)
@@ -228,29 +214,21 @@ def _draw(
     return payloads[index]
 
 
-def _joint_distributions(
-    frame: pl.DataFrame,
-) -> dict[tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]]:
-    distributions: dict[
-        tuple[str, str, str], tuple[list[dict[str, str]], np.ndarray]
-    ] = {}
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
-    for key, group in eligible.group_by(["region_code", "age_band", "sex"]):
+def _distribution_index(
+    frame: pl.DataFrame, key_columns: list[str], payload_columns: list[str]
+) -> dict[tuple[str, ...], Distribution]:
+    distributions: dict[tuple[str, ...], Distribution] = {}
+    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
+        [*key_columns, *payload_columns]
+    )
+    for raw_key, group in eligible.group_by(key_columns, maintain_order=True):
+        key = tuple(str(value) for value in raw_key)
         payloads = [
-            {
-                "education_source_code": str(row[0]),
-                "education_level": str(row[1]),
-                "labour_market_status": str(row[2]),
-            }
-            for row in group.select(
-                "education_source_code", "education_level", "labour_market_status"
-            ).iter_rows()
+            dict(zip(payload_columns, row, strict=True))
+            for row in group.select(payload_columns).iter_rows()
         ]
-        distribution_key = (str(key[0]), str(key[1]), str(key[2]))
-        distributions[distribution_key] = (
-            payloads,
-            _probabilities(group.get_column("count")),
-        )
+        counts = group.get_column("count").to_numpy().astype(np.float64)
+        distributions[key] = (payloads, counts / counts.sum())
     return distributions
 
 
@@ -266,11 +244,19 @@ def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
-def _sample_base(
+def _quota_sample(
     frame: pl.DataFrame, rows: int, rng: np.random.Generator
 ) -> pl.DataFrame:
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
+    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
+        sorted(frame.columns)
+    )
     weights = eligible.get_column("count").to_numpy().astype(np.float64)
-    probabilities = weights / weights.sum()
-    indices = rng.choice(eligible.height, size=rows, replace=True, p=probabilities)
+    expected = weights / weights.sum() * rows
+    allocations = np.floor(expected).astype(np.int64)
+    remainder = rows - int(allocations.sum())
+    fractions = expected - allocations
+    stable_order = np.argsort(-fractions, kind="stable")
+    allocations[stable_order[:remainder]] += 1
+    indices = np.repeat(np.arange(eligible.height), allocations)
+    rng.shuffle(indices)
     return eligible[indices]

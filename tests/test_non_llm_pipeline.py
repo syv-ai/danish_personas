@@ -49,6 +49,16 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
         categories_path=categories_path,
     )
     assert report.passed
+    frame.with_columns((pl.col("age") + 1).alias("age")).write_parquet(
+        first / first_manifest.data_file
+    )
+    tampered_report = validate_demographics(
+        run_dir=first,
+        bundle_dir=bundle_dir,
+        validation_config_path=validation_path,
+        categories_path=categories_path,
+    )
+    assert not tampered_report.passed
 
 
 def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
@@ -86,7 +96,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "detailed_status_code": ["30", "30"],
             "detailed_status": ["Employees - basic level", "Employees - basic level"],
             "labour_market_status": ["employed", "employed"],
-            "age_key": ["30", "30"],
+            "age_band": ["30-49", "30-49"],
             "sex": ["male", "female"],
             "count": [100, 100],
             "suppressed": [False, False],
@@ -106,10 +116,18 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "region": ["Region Hovedstaden"],
         }
     )
+    age_sampling = folk.select("sex", "age", "count", "suppressed").with_columns(
+        pl.lit("30-49").alias("age_band")
+    )
+    marital_sampling = folk.select(
+        "region_code", "region", "sex", "marital_status", "count", "suppressed"
+    ).with_columns(pl.lit("30-49").alias("age_band"))
     frames = {
-        "folk1a_base": folk,
+        "folk1a_base_unpooled": folk,
+        "folk_age_sampling": age_sampling,
+        "folk_marital_sampling": marital_sampling,
         "ras209_sampling": ras209,
-        "ras202_detail": ras202,
+        "ras202_sampling": ras202,
         "befolk3_holdout": befolk,
         "ras210_holdout": ras210,
     }
@@ -143,7 +161,6 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "minimum_age": 18,
             "maximum_age": 125,
             "publication_geography": "region",
-            "municipality_internal_only": True,
             "smoothing": 0.0,
             "ocean": {
                 "mean": 50.0,

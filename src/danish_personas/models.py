@@ -109,8 +109,6 @@ class DemographicRecord(OceanTraits):
     age_band: str
     sex: t.Literal["male", "female"]
     marital_status: str
-    municipality_code: str
-    municipality: str
     region_code: str
     region: str
     education_level: str
@@ -119,8 +117,6 @@ class DemographicRecord(OceanTraits):
     labour_market_status: str
     detailed_status_code: str
     detailed_status: str
-    demographic_backoff_level: int = Field(ge=0)
-    status_backoff_level: int = Field(ge=0)
 
 
 class RunManifest(StrictModel):
@@ -150,7 +146,6 @@ class SamplingConfig(StrictModel):
     minimum_age: int = Field(ge=18)
     maximum_age: int = Field(le=125)
     publication_geography: t.Literal["region"]
-    municipality_internal_only: bool
     smoothing: float = Field(ge=0.0)
     ocean: OceanConfig
 
@@ -162,8 +157,10 @@ class SnapshotManifest(StrictModel):
     role: str
     period: str
     metadata_sha256: str
+    metadata_da_sha256: str
     query_sha256: str
     data_sha256: str
+    response_headers_sha256: str
     retrieved_at: str
     data_bytes: int = Field(gt=0)
 

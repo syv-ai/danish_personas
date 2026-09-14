@@ -16,6 +16,7 @@ from ..models import (
     SourceLock,
     StatBankMetadata,
 )
+from .statbank import source_snapshot_dir
 
 LOGGER = logging.getLogger(__name__)
 REGION_PREFIX = "Region "
@@ -57,9 +58,16 @@ def prepare_bundle(
     source_frames: dict[str, pl.DataFrame] = {}
     metadata_by_table: dict[str, StatBankMetadata] = {}
     for source in lock.sources:
-        snapshot_dir = raw_dir / source.table_id.lower()
+        snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
         snapshot = SnapshotManifest.model_validate_json(
             (snapshot_dir / "snapshot-manifest.json").read_text()
+        )
+        _verify_raw_snapshot(
+            snapshot_dir=snapshot_dir,
+            snapshot=snapshot,
+            table_id=source.table_id,
+            role=source.role,
+            period=source.period,
         )
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
@@ -83,6 +91,7 @@ def prepare_bundle(
     files: dict[str, str] = {}
     for name, frame in frames.items():
         path = normalized_dir / f"{name}.parquet"
+        frame = frame.sort(sorted(frame.columns))
         frame.write_parquet(path)
         files[str(path.relative_to(bundle_dir))] = sha256_file(path)
 
@@ -170,7 +179,25 @@ def _normalise_frames(
         region_map=region_map,
         municipality_labels=labels["FOLK1A"]["OMRÅDE"],
     )
-    folk = folk_calibration.filter(pl.col("age") >= 18)
+    folk = folk_calibration.filter(pl.col("age") >= 18).with_columns(
+        _age_band_expression().alias("age_band")
+    )
+    folk_threshold = _release_threshold(
+        total=float(folk.get_column("count").sum()),
+        release_rows=release_rows,
+        minimum_source_count=minimum_source_count,
+        minimum_expected_release_count=minimum_expected_release_count,
+    )
+    folk_age_sampling = (
+        folk.group_by(["age_band", "sex", "age"])
+        .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .filter(pl.col("count") >= folk_threshold)
+    )
+    folk_marital_sampling = (
+        folk.group_by(["region_code", "region", "age_band", "sex", "marital_status"])
+        .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .filter(pl.col("count") >= folk_threshold)
+    )
 
     ras209 = raw_frames["RAS209"].select(
         pl.col("OMRÅDE").alias("region_code"),
@@ -211,16 +238,39 @@ def _normalise_frames(
         minimum_expected_release_count=minimum_expected_release_count,
     )
 
-    ras202 = raw_frames["RAS202"].select(
-        pl.col("SOCIO").alias("detailed_status_code"),
-        pl.col("SOCIO")
-        .replace_strict(labels["RAS202"]["SOCIO"])
-        .alias("detailed_status"),
-        pl.col("SOCIO").replace_strict(status_map).alias("labour_market_status"),
-        pl.col("ALDER").alias("age_key"),
-        pl.col("KOEN").replace_strict(categories.sex).alias("sex"),
-        pl.col("count"),
-        pl.col("suppressed"),
+    ras202 = (
+        raw_frames["RAS202"]
+        .select(
+            pl.col("SOCIO").alias("detailed_status_code"),
+            pl.col("SOCIO")
+            .replace_strict(labels["RAS202"]["SOCIO"])
+            .alias("detailed_status"),
+            pl.col("SOCIO").replace_strict(status_map).alias("labour_market_status"),
+            pl.col("ALDER").alias("age_key"),
+            pl.col("KOEN").replace_strict(categories.sex).alias("sex"),
+            pl.col("count"),
+            pl.col("suppressed"),
+        )
+        .with_columns(_ras_age_band_expression().alias("age_band"))
+    )
+    ras202_threshold = _release_threshold(
+        total=float(ras202.get_column("count").sum()),
+        release_rows=release_rows,
+        minimum_source_count=minimum_source_count,
+        minimum_expected_release_count=minimum_expected_release_count,
+    )
+    ras202_sampling = (
+        ras202.group_by(
+            [
+                "age_band",
+                "sex",
+                "labour_market_status",
+                "detailed_status_code",
+                "detailed_status",
+            ]
+        )
+        .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .filter(pl.col("count") >= ras202_threshold)
     )
 
     befolk = raw_frames["BEFOLK3"].select(
@@ -250,10 +300,13 @@ def _normalise_frames(
         municipality_labels=labels["RAS210"]["BOPKOM"],
     )
     return {
-        "folk1a_base": folk,
+        "folk1a_base_unpooled": folk,
+        "folk_age_sampling": folk_age_sampling,
+        "folk_marital_sampling": folk_marital_sampling,
         "ras209_joint_unpooled": ras209_joint,
         "ras209_sampling": ras209_sampling,
-        "ras202_detail": ras202,
+        "ras202_detail_unpooled": ras202,
+        "ras202_sampling": ras202_sampling,
         "befolk3_holdout": befolk,
         "ras210_holdout": ras210,
     }
@@ -306,6 +359,18 @@ def _adjust_young_adult_counts(
     )
 
 
+def _age_band_expression() -> pl.Expr:
+    return (
+        pl.when(pl.col("age") <= 29)
+        .then(pl.lit("18-29"))
+        .when(pl.col("age") <= 49)
+        .then(pl.lit("30-49"))
+        .when(pl.col("age") <= 66)
+        .then(pl.lit("50-66"))
+        .otherwise(pl.lit("67+"))
+    )
+
+
 def _invert_status_mapping(categories: CategoryConfig) -> dict[str, str]:
     result = {
         code: status
@@ -354,10 +419,12 @@ def _pool_ras209(
         "not_stated": "H90",
     }
     total = float(frame.get_column("count").sum())
-    expected_threshold = math.ceil(
-        minimum_expected_release_count * total / release_rows
+    threshold = _release_threshold(
+        total=total,
+        release_rows=release_rows,
+        minimum_source_count=minimum_source_count,
+        minimum_expected_release_count=minimum_expected_release_count,
     )
-    threshold = max(minimum_source_count, expected_threshold)
     pooled = (
         frame.with_columns(
             pl.col("education_level")
@@ -382,6 +449,7 @@ def _pool_ras209(
             ]
         )
         .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .with_columns(pl.col("count").round(6))
         .filter(pl.col("count") >= threshold)
     )
     coverage = float(pooled.get_column("count").sum()) / total
@@ -389,6 +457,31 @@ def _pool_ras209(
         message = f"Sparse-cell pooling retains only {coverage:.2%} of RAS209"
         raise ValueError(message)
     return pooled
+
+
+def _release_threshold(
+    total: float,
+    release_rows: int,
+    minimum_source_count: int,
+    minimum_expected_release_count: int,
+) -> int:
+    expected_threshold = math.ceil(
+        minimum_expected_release_count * total / release_rows
+    )
+    return max(minimum_source_count, expected_threshold)
+
+
+def _ras_age_band_expression() -> pl.Expr:
+    numeric_age = pl.col("age_key").cast(pl.Int16, strict=False)
+    return (
+        pl.when(numeric_age <= 29)
+        .then(pl.lit("18-29"))
+        .when(numeric_age <= 49)
+        .then(pl.lit("30-49"))
+        .when(numeric_age <= 66)
+        .then(pl.lit("50-66"))
+        .otherwise(pl.lit("67+"))
+    )
 
 
 def _region_labels(metadata: StatBankMetadata) -> dict[str, str]:
@@ -474,4 +567,28 @@ def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
         path = bundle_dir / relative_path
         if not path.exists() or sha256_file(path) != expected_checksum:
             message = f"Prepared bundle verification failed: {path}"
+            raise ValueError(message)
+
+
+def _verify_raw_snapshot(
+    snapshot_dir: Path,
+    snapshot: SnapshotManifest,
+    table_id: str,
+    role: str,
+    period: str,
+) -> None:
+    if (snapshot.table_id, snapshot.role, snapshot.period) != (table_id, role, period):
+        message = f"Raw snapshot provenance mismatch: {snapshot_dir}"
+        raise ValueError(message)
+    expected = {
+        "metadata-en.json": snapshot.metadata_sha256,
+        "metadata-da.json": snapshot.metadata_da_sha256,
+        "query.json": snapshot.query_sha256,
+        "data.csv": snapshot.data_sha256,
+        "response-headers.json": snapshot.response_headers_sha256,
+    }
+    for name, checksum in expected.items():
+        path = snapshot_dir / name
+        if not path.exists() or sha256_file(path) != checksum:
+            message = f"Raw snapshot checksum mismatch: {path}"
             raise ValueError(message)
