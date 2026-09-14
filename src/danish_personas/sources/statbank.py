@@ -58,7 +58,7 @@ def _fetch_source(
     client: httpx.Client, source: LockedSource, raw_dir: Path
 ) -> SnapshotManifest:
     query = _source_query(source=source)
-    query_content = json.dumps(query, ensure_ascii=False, indent=2) + "\n"
+    query_content = source_query_content(source=source)
     snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
     manifest_path = snapshot_dir / "snapshot-manifest.json"
     if manifest_path.exists():
@@ -183,12 +183,23 @@ def _verify_snapshot(
         if not path.exists() or sha256_file(path) != checksum:
             message = f"Immutable snapshot verification failed: {path}"
             raise ValueError(message)
-    expected_query = (
-        json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
-    )
+    expected_query = source_query_content(source=source)
     if (snapshot_dir / "query.json").read_text() != expected_query:
         message = f"Snapshot query does not match lock: {snapshot_dir}"
         raise ValueError(message)
+
+
+def source_query_content(source: LockedSource) -> str:
+    """Serialise the canonical query for a locked source.
+
+    Args:
+        source:
+            Explicit locked source.
+
+    Returns:
+        Formatted canonical query JSON.
+    """
+    return json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
 
 
 def _write_new_bytes(path: Path, content: bytes) -> None:
@@ -210,10 +221,8 @@ def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
     Returns:
         Query-specific snapshot directory.
     """
-    query_content = (
-        json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
-    )
-    return raw_dir / source.table_id.lower() / sha256_text(query_content)[:16]
+    query_checksum = sha256_text(source_query_content(source=source))
+    return raw_dir / source.table_id.lower() / query_checksum[:16]
 
 
 def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:

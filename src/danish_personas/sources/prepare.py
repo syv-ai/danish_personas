@@ -16,7 +16,7 @@ from ..models import (
     SourceLock,
     StatBankMetadata,
 )
-from .statbank import source_snapshot_dir
+from .statbank import source_query_content, source_snapshot_dir
 
 LOGGER = logging.getLogger(__name__)
 REGION_PREFIX = "Region "
@@ -62,12 +62,13 @@ def prepare_bundle(
         snapshot = SnapshotManifest.model_validate_json(
             (snapshot_dir / "snapshot-manifest.json").read_text()
         )
-        _verify_raw_snapshot(
+        verify_raw_snapshot(
             snapshot_dir=snapshot_dir,
             snapshot=snapshot,
             table_id=source.table_id,
             role=source.role,
             period=source.period,
+            expected_query=source_query_content(source=source),
         )
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
@@ -570,13 +571,34 @@ def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
             raise ValueError(message)
 
 
-def _verify_raw_snapshot(
+def verify_raw_snapshot(
     snapshot_dir: Path,
     snapshot: SnapshotManifest,
     table_id: str,
     role: str,
     period: str,
+    expected_query: str,
 ) -> None:
+    """Verify raw files against both their manifest and locked query.
+
+    Args:
+        snapshot_dir:
+            Content-addressed raw snapshot directory.
+        snapshot:
+            Parsed raw snapshot manifest.
+        table_id:
+            Locked table identifier.
+        role:
+            Locked pipeline role.
+        period:
+            Locked reference period.
+        expected_query:
+            Canonical query derived from the source lock.
+
+    Raises:
+        ValueError:
+            If provenance, a checksum, or query content differs from the lock.
+    """
     if (snapshot.table_id, snapshot.role, snapshot.period) != (table_id, role, period):
         message = f"Raw snapshot provenance mismatch: {snapshot_dir}"
         raise ValueError(message)
@@ -592,3 +614,10 @@ def _verify_raw_snapshot(
         if not path.exists() or sha256_file(path) != checksum:
             message = f"Raw snapshot checksum mismatch: {path}"
             raise ValueError(message)
+    query_path = snapshot_dir / "query.json"
+    if snapshot.query_sha256 != sha256_text(expected_query):
+        message = f"Raw snapshot query does not match source lock: {query_path}"
+        raise ValueError(message)
+    if query_path.read_text() != expected_query:
+        message = f"Raw snapshot query content is not canonical: {query_path}"
+        raise ValueError(message)
