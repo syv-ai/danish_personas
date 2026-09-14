@@ -4,7 +4,7 @@ Generation of a dataset consisting of Danish personas.
 
 ---
 
-[![Code Coverage](https://img.shields.io/badge/Coverage-0%25-red.svg)](https://github.com/syv-ai/danish_personas/tree/main/tests)
+[![Code Coverage](https://img.shields.io/badge/Coverage-56%25-orange.svg)](https://github.com/syv-ai/danish_personas/tree/main/tests)
 [![License](https://img.shields.io/github/license/syv-ai/danish_personas)](https://github.com/syv-ai/danish_personas/blob/main/LICENSE)
 [![LastCommit](https://img.shields.io/github/last-commit/syv-ai/danish_personas)](https://github.com/syv-ai/danish_personas/commits/main)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](https://github.com/syv-ai/danish_personas/blob/main/CODE_OF_CONDUCT.md)
