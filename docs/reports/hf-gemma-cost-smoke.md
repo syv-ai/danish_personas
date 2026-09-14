@@ -77,8 +77,42 @@ but manual review failed the model/prompt combination. Problems included:
 - repeated interest patterns across both records;
 - Danish errors and awkward Anglicisms such as `medtætte` and `cykel touring`.
 
-The prompts were tightened after the experiment to prohibit those patterns. No further
-HF generation was run, keeping the cost experiment small. Before seeking a dataset-scale
-budget, run a new five-record evaluation across deliberately diverse demographics,
-compare at least one alternative model, measure accepted-record rather than raw-response
-cost, and conduct blinded Danish-language review.
+The prompts were tightened after the experiment to prohibit those patterns.
+
+## Revised five-record experiment
+
+A follow-up selected five frozen records covering all regions and labour statuses, ages
+23-73, both sexes, all four education categories, and varied OCEAN labels. Batches were
+limited to 2, 2, and 1 records with five HTTP attempts each.
+
+HF's fastest routing initially selected Together. With its default behaviour, many short
+JSON responses consumed the 1,400-token ceiling and were truncated; other calls returned
+504. An explicit `chat_template_kwargs.enable_thinking: false` probe reduced a trivial
+schema response to six completion tokens. All five records then completed in exactly ten
+requests with no retries or transport failures and passed automated validation.
+
+The accepted runs used 8,920 input tokens and 2,313 output tokens. Together did not return
+cost metadata, so cost was calculated from the router's listed rates of `$0.39` per
+million input tokens and `$0.97` per million output tokens:
+
+| Persona rows | No-thinking Together estimate |
+| ---: | ---: |
+| 5 observed | $0.005722 |
+| 1,000 | $1.1445 |
+| 10,000 | $11.4448 |
+| 100,000 | $114.4482 |
+| 1,000,000 | $1,144.4820 |
+
+Manual review still failed the model/prompt combination. The five records showed strong
+demographic stereotypes, including knitting, cooking, and gardening for older women and
+cars, fishing, and repairs for a middle-aged man. Interests repeated across records;
+sports and travel fields leaked unrelated hobbies; a combined married-or-separated
+category became definitely married; and phrases such as `digitalt indholdskabende`,
+`Kryds- og Sudoku`, and `podcasting om livsstil` were unnatural or semantically wrong.
+Some average OCEAN values were also overstated as definite traits.
+
+The experiment therefore resolves the operational question but not the quality gate:
+Gemma 4 requires no-thinking mode for this structured workload, and Together is reliable
+but roughly three times the observed DeepInfra token cost. Do not fund a larger Gemma run
+with these prompts. Compare another model and add cross-record stereotype, repetition,
+and semantic-domain review before seeking a dataset-scale budget.

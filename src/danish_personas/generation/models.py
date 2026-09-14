@@ -69,6 +69,7 @@ class GenerationConfig(StrictModel):
     retry_backoff_seconds: float = Field(ge=0.0)
     maximum_smoke_rows: int = Field(ge=1, le=5)
     max_tokens: int | None = Field(default=None, ge=32, le=4_096)
+    enable_thinking: bool | None = None
     response_format: t.Literal["json_schema", "json_object"]
     attributes_prompt: Path
     personas_prompt: Path

@@ -9,6 +9,7 @@
 - Deterministic demographic and independent OCEAN generation without LLM calls.
 - Source, structural, statistical, held-out, and personality validation gates.
 - Guarded, resumable two-stage persona generation through an OpenAI-compatible API.
+- Provider-qualified Hugging Face routing and optional model thinking control.
 - Strict generated-attribute and six-description schemas, Danish and safety checks,
   provenance manifests, token accounting, mocked HTTP tests, and a five-row hard limit.
 - Source, privacy, acceptance, Phase-2 validation, Phase-3 smoke, and Hugging Face Gemma

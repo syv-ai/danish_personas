@@ -85,21 +85,12 @@ class OpenAIClient:
             RuntimeError:
                 If retry handling ends without a captured HTTP error.
         """
-        body: dict[str, object] = {
-            "model": self._config.model or "",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(user_payload, ensure_ascii=False),
-                },
-            ],
-            "response_format": self._response_format(
-                schema_name=schema_name, json_schema=json_schema
-            ),
-        }
-        if self._config.max_tokens is not None:
-            body["max_tokens"] = self._config.max_tokens
+        body = self._request_body(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            schema_name=schema_name,
+            json_schema=json_schema,
+        )
         last_error: httpx.HTTPStatusError | httpx.TransportError | None = None
         for attempt in range(self._config.maximum_http_attempts):
             if self._requests_made >= self._config.maximum_total_requests:
@@ -141,6 +132,34 @@ class OpenAIClient:
             message = "Completion failed without a captured HTTP error"
             raise RuntimeError(message)
         raise last_error
+
+    def _request_body(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, object],
+        schema_name: str,
+        json_schema: dict[str, object],
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "model": self._config.model or "",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False),
+                },
+            ],
+            "response_format": self._response_format(
+                schema_name=schema_name, json_schema=json_schema
+            ),
+        }
+        if self._config.max_tokens is not None:
+            body["max_tokens"] = self._config.max_tokens
+        if self._config.enable_thinking is not None:
+            body["chat_template_kwargs"] = {
+                "enable_thinking": self._config.enable_thinking
+            }
+        return body
 
     def _response_format(
         self, schema_name: str, json_schema: dict[str, object]

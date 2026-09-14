@@ -19,8 +19,8 @@ The validated local statistical run contains 100,000 records. Phase-3 infrastruc
 supports guarded, resumable two-stage generation of structured attributes and six Danish
 persona descriptions. A three-record smoke test passed; development-sample generation,
 human evaluation, model selection, and any release-scale generation remain deferred. A
-separate two-record Hugging Face Gemma experiment measured a low token-cost floor but
-failed manual language and grounding review.
+separate five-record Hugging Face Gemma experiment established that no-thinking mode is
+operationally reliable, but failed manual stereotyping, language, and grounding review.
 
 ## Setup
 

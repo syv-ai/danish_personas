@@ -252,6 +252,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "retry_backoff_seconds": 0.0,
         "maximum_smoke_rows": 2,
         "max_tokens": None,
+        "enable_thinking": None,
         "response_format": "json_schema",
         "attributes_prompt": str(attributes_prompt),
         "personas_prompt": str(personas_prompt),

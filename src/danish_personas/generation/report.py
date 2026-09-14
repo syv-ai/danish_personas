@@ -14,7 +14,7 @@ from .models import (
     PersonaCheckpoint,
     PersonaDescriptions,
 )
-from .pipeline import validate_upstream_sample
+from .pipeline import models_match, validate_upstream_sample
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 
@@ -90,7 +90,7 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
                 or checkpoint.validator_version != VALIDATOR_VERSION
                 or checkpoint.validator_version != manifest.validator_version
                 or any(
-                    response.model != manifest.model
+                    not models_match(configured=manifest.model, returned=response.model)
                     for response in checkpoint.responses
                 )
             ):

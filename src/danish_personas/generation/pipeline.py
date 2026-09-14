@@ -317,9 +317,27 @@ def _validate_checkpoint(
         message = f"Stale validator context for {checkpoint.persona_id}"
         raise ValueError(message)
     parse_attributes(checkpoint.attributes.model_dump_json())
-    if any(response.model != model for response in checkpoint.responses):
+    if any(
+        not models_match(configured=model, returned=response.model)
+        for response in checkpoint.responses
+    ):
         message = f"Checkpoint model mismatch for {checkpoint.persona_id}"
         raise ValueError(message)
+
+
+def models_match(configured: str, returned: str) -> bool:
+    """Match a returned model to an optional HF provider-qualified model ID.
+
+    Args:
+        configured:
+            Requested model, optionally suffixed with an HF provider.
+        returned:
+            Model identifier returned by the provider.
+
+    Returns:
+        Whether both identifiers refer to the same underlying model.
+    """
+    return configured.partition(":")[0] == returned.partition(":")[0]
 
 
 def _sum_estimated_cost(responses: list[LLMResponse]) -> float | None:

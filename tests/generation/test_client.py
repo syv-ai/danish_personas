@@ -48,6 +48,7 @@ def _config() -> GenerationConfig:
         retry_backoff_seconds=0.0,
         maximum_smoke_rows=5,
         max_tokens=None,
+        enable_thinking=None,
         response_format="json_schema",
         attributes_prompt=Path("attributes.md"),
         personas_prompt=Path("personas.md"),
