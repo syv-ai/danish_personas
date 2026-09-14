@@ -1,6 +1,6 @@
 # Plan for a Danish synthetic persona dataset
 
-**Status:** Proposed  
+**Status:** Proposed
 **Research date:** 2026-09-14
 
 ## Executive summary
@@ -302,6 +302,13 @@ No production demographic or persona rows should be generated during steps 1 or 
 LLM should be called until the demographic-only generation and validation stage passes.
 This keeps setup, source acquisition, deterministic generation, and probabilistic text
 generation independently testable and restartable.
+
+### Implementation status
+
+Phases 0-2 were implemented and validated on 14 September 2026. The local source bundle
+is `e7757f736ef5652f`; the passing 100,000-row non-LLM run is
+`dd191c5db9e27630`. See the [Phase 2 validation report][phase-2-report]. LLM generation
+remains disabled in configuration and guarded by an executable failure.
 
 ## Generation architecture
 
@@ -760,6 +767,7 @@ All sources were accessed on 2026-09-14.
 [sdg-pgms]: https://github.com/NVIDIA-NeMo/SDG-PGMs
 [sdg-us-example]: https://github.com/NVIDIA-NeMo/SDG-PGMs/tree/main/examples/us_person
 [nemotron-blog]: https://huggingface.co/blog/nvidia/nemotron-personas
+[phase-2-report]: reports/phase-2-validation.md
 [statbank-api]: https://www.dst.dk/en/Statistik/hjaelp-til-statistikbanken/api
 [folk1a]: https://www.statbank.dk/FOLK1A
 [fam55n]: https://www.statbank.dk/FAM55N

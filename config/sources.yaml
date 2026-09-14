@@ -1,0 +1,86 @@
+version: 1
+language: en
+release_rows: 100000
+minimum_source_count: 50
+minimum_expected_release_count: 5
+sources:
+  - table_id: FOLK1A
+    role: demographic_base
+    period: 2025K1
+    dimensions:
+      OMRÅDE:
+        selector: municipalities
+      KØN:
+        values: ["1", "2"]
+      ALDER:
+        selector: age_16_plus
+      CIVILSTAND:
+        values: [U, G, E, F]
+      Tid:
+        values: [2025K1]
+  - table_id: RAS209
+    role: education_status_joint
+    period: "2024"
+    dimensions:
+      OMRÅDE:
+        selector: regions
+      UDDANNELSE:
+        selector: non_total
+      SOCIO:
+        selector: non_total
+      ALDER:
+        values:
+          - 16-19
+          - 20-24
+          - 25-29
+          - 30-34
+          - 35-39
+          - 40-44
+          - 45-49
+          - 50-54
+          - 55-59
+          - 60-64
+          - 65-66
+          - 67-
+      KØN:
+        values: [M, K]
+      Tid:
+        values: ["2024"]
+  - table_id: RAS202
+    role: detailed_status_refinement
+    period: "2024"
+    dimensions:
+      SOCIO:
+        selector: non_total
+      ALDER:
+        selector: adult_ras_ages
+      KOEN:
+        values: [M, K]
+      Tid:
+        values: ["2024"]
+  - table_id: BEFOLK3
+    role: population_holdout
+    period: "2025"
+    dimensions:
+      OMRÅDE:
+        selector: municipalities
+      KØN:
+        values: ["1", "2"]
+      ALDER:
+        selector: adult_exact_ages
+      Tid:
+        values: ["2025"]
+  - table_id: RAS210
+    role: municipality_status_holdout
+    period: "2024"
+    dimensions:
+      BOPKOM:
+        selector: municipalities
+      SOCIO:
+        selector: all
+      ALERAMS:
+        selector: adult_ras_ages
+      KON:
+        values: [M, K]
+      Tid:
+        values: ["2024"]

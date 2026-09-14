@@ -1,0 +1,17 @@
+version: 1
+seed: 20260914
+smoke_rows: 1000
+statistical_rows: 100000
+country: Danmark
+minimum_age: 18
+maximum_age: 125
+publication_geography: region
+municipality_internal_only: true
+smoothing: 0.0
+ocean:
+  mean: 50.0
+  standard_deviation: 10.0
+  minimum: 20.0
+  maximum: 80.0
+  label_boundaries: [35.0, 45.0, 55.0, 65.0]
+  labels: [very_low, low, average, high, very_high]

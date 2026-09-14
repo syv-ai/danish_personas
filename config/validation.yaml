@@ -1,0 +1,17 @@
+version: 1
+absolute_proportion_tolerance: 0.005
+standard_error_multiplier: 3.0
+minimum_expected_count: 5.0
+maximum_ocean_pairwise_correlation: 0.02
+maximum_total_variation:
+  fitted_marginal: 0.02
+  heldout_marginal: 0.05
+smoke_maximum_total_variation: 0.05
+smoke_holdout_maximum_total_variation: 0.10
+mandatory_marginals:
+  - sex
+  - region_code
+  - marital_status
+  - age_band
+  - education_level
+  - labour_market_status

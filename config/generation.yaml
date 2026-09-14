@@ -1,0 +1,5 @@
+version: 1
+llm_generation_enabled: false
+provider: null
+model: null
+reason: Phase 3 is blocked until the demographic validation gate passes.

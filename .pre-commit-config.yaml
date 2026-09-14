@@ -16,9 +16,13 @@ repos:
   rev: v2.16
   hooks:
     - id: vulture
-      # Analyse the whole tree (paths from pyproject.toml, incl. the whitelist)
-      # rather than only changed files, since vulture is a whole-program analyser.
+      # Analyse the whole tree rather than only changed files, since vulture is a
+      # whole-program analyser.
       pass_filenames: false
+      args:
+        - --min-confidence=80
+        - src
+        - tests
 
 - repo: https://github.com/saattrupdan/funcsort
   rev: v0.1.3

@@ -1,0 +1,39 @@
+version: 1
+sex:
+  "1": male
+  "2": female
+  M: male
+  K: female
+marital_status:
+  U: never_married
+  G: married_or_separated
+  E: widowed
+  F: divorced
+education:
+  H10: primary
+  H20: upper_secondary
+  H30: vocational
+  H35: qualifying_programme
+  H40: short_cycle_higher
+  H50: professional_bachelor
+  H60: bachelor
+  H70: masters
+  H80: phd
+  H90: not_stated
+education_pooling:
+  primary: primary
+  upper_secondary: secondary_or_vocational
+  vocational: secondary_or_vocational
+  qualifying_programme: secondary_or_vocational
+  short_cycle_higher: higher_education
+  professional_bachelor: higher_education
+  bachelor: higher_education
+  masters: higher_education
+  phd: higher_education
+  not_stated: not_stated
+labour_market_status:
+  employed: ["05", "10", "15", "20", "25", "30", "35", "40"]
+  unemployed: ["50", "85", "90", "95"]
+  student: ["130", "154", "156", "158", "160"]
+  retired: ["135", "138", "139", "140", "145", "150", "155"]
+  other: ["80", "100", "105", "110", "115", "120", "125", "128", "170", "175"]
