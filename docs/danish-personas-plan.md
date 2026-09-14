@@ -285,6 +285,24 @@ Important source limitations to carry into the dataset card include:
 - RAS register employment status is not interchangeable with survey employment;
 - FOLK1B measures citizenship, FOLK1E measures ancestry, and BEFOLK3 contains neither.
 
+## Required execution order
+
+The work must proceed through three strict boundaries:
+
+1. **Set up the complete codebase and contracts.** Create the package structure,
+   configuration formats, typed schemas, command-line entry points, tests, logging, and
+   fixture-based pipeline before downloading production data.
+2. **Fetch and prepare every non-LLM input.** Download and freeze all official aggregate
+   tables, metadata, codebooks, classifications, and geographic mappings. Build the
+   normalized distributions and validate the source bundle without generating records.
+3. **Start generation.** Generate and validate demographic records first. Only after the
+   demographic gate passes may an LLM generate attributes and persona text.
+
+No production demographic or persona rows should be generated during steps 1 or 2. No
+LLM should be called until the demographic-only generation and validation stage passes.
+This keeps setup, source acquisition, deterministic generation, and probabilistic text
+generation independently testable and restartable.
+
 ## Generation architecture
 
 ### 1. Source registry and immutable snapshots
@@ -489,70 +507,121 @@ assessment. It is outside the scope of this plan.
 
 ## Delivery phases and gates
 
-### Phase 0: Scope and governance
+### Phase 0: Complete codebase setup
+
+This phase prepares the entire pipeline shape before production data is fetched.
 
 #### Work
 
-- Confirm intended downstream tasks and prohibited uses.
-- Fix the adult age range, reference year, public geography level, and v1 schema.
-- Create the source/licence register and privacy risk register.
-- Define human-review rubrics and pre-register acceptance criteria.
+- Confirm intended downstream tasks, prohibited uses, age range, reference-year policy,
+  geography level, and v1 schema.
+- Create the proposed package, script, configuration, data, documentation, and test
+  directories.
+- Add dependencies through `uv` and establish the locked development environment.
+- Define typed schemas for source manifests, normalized counts, demographic records,
+  OCEAN traits, generated attributes, persona text, and run manifests.
+- Define configuration formats for sources, category mappings, sampling, generation,
+  validation, and release settings.
+- Implement command-line entry points for downloading, preparing, generating,
+  validating, and exporting, initially backed by small local fixtures.
+- Establish structured logging, checkpoints, resumability, deterministic seeds, and
+  restricted handling of raw model responses.
+- Add unit tests, integration tests over fixture data, linting, type checks, and CI.
+- Create the source/licence register, privacy risk register, human-review rubric, and
+  initial acceptance criteria.
 
-**Exit gate:** approved schema, source policy, privacy boundaries, and validation
-criteria.
+**Restrictions:** do not download production source tables, generate production records,
+or call an LLM in this phase.
 
-### Phase 1: Source ingestion
+**Exit gate:** every planned pipeline command exists and passes checks end to end on
+fixture data; schemas, configuration contracts, privacy boundaries, and validation
+interfaces are approved.
 
-#### Work
+### Phase 1: Fetch and prepare all non-LLM inputs
 
-- Inspect candidate StatBank metadata and choose compatible tables.
-- Implement reproducible API downloads and immutable snapshots.
-- Add codebooks and versioned category mappings.
-- Produce exploratory reports for source coverage, sparsity, and conflicts.
-
-**Exit gate:** every modeled field has a licensed source, definition, reference period,
-and transformation test.
-
-### Phase 2: Structured population generator
-
-#### Work
-
-- Implement conditional sampling, structural zeros, smoothing, and back-off.
-- Implement OCEAN compatibility sampling.
-- Generate 100,000 demographic-only records for inexpensive validation.
-- Tune the model against held-out aggregate tables, not only training marginals.
-
-**Exit gate:** statistical and structural thresholds pass before any large
-language-model run.
-
-### Phase 3: Text-generation development
+This phase creates the complete immutable input bundle needed by deterministic
+generation.
 
 #### Work
 
-- Create Danish Pydantic schemas, prompts, validators, and safety rules.
-- Generate a stratified 1,000-row development sample with candidate models.
+- Inspect candidate StatBank metadata and select compatible tables and reference
+  periods.
+- Download every selected aggregate table, metadata response, codebook, classification,
+  and geographic mapping through the implemented source adapters.
+- Record canonical URLs, queries, retrieval times, licences, attribution, and SHA-256
+  checksums in the source manifest.
+- Normalize categories and create versioned mappings while retaining original codes and
+  labels.
+- Derive the calibrated count tables, structural-zero rules, sparse-cell pooling,
+  reconciliation parameters, and sampling distributions.
+- Prepare the curated Danish OCEAN label descriptions used later by the generator.
+- Run source-integrity, coverage, sparsity, mapping, licence, and reference-period
+  checks.
+- Produce a source-preparation report describing unresolved conflicts and all modelling
+  assumptions.
+
+**Restrictions:** do not generate demographic or persona rows and do not call an LLM in
+this phase.
+
+**Exit gate:** the pipeline can run offline from a complete, checksummed source bundle;
+every modeled field has a licensed source, definition, reference period, transformation
+test, and prepared sampling distribution.
+
+### Phase 2: Generate and validate structured demographics
+
+Generation begins here, but this phase remains entirely non-LLM.
+
+#### Work
+
+- Instantiate the prepared conditional sampler, structural zeros, smoothing, and
+  back-off rules.
+- Generate demographic-only records and independently sample OCEAN traits.
+- Start with a 1,000-row smoke run, then generate 100,000 structured records for
+  inexpensive statistical validation.
+- Compare records with held-out aggregate tables rather than only fitted marginals.
+- Run structural, statistical, sparse-cell, geographic, and proxy-resolution checks.
+- Freeze a stratified set of validated demographic records for text-generation
+  development.
+
+**Restrictions:** do not call an LLM until this phase's exit gate passes.
+
+**Exit gate:** demographic records pass the pre-registered statistical and structural
+thresholds, and the demographic sampler configuration is frozen.
+
+### Phase 3: Develop LLM generation
+
+This is the first phase that may call an LLM.
+
+#### Work
+
+- Finalize Danish prompts, validators, and safety rules against the already defined
+  typed schemas.
+- Generate attributes and persona text for the frozen, stratified 1,000-row development
+  sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
 
-**Exit gate:** selected model passes language, coherence, safety, and cost criteria.
+**Exit gate:** the selected model passes language, coherence, safety, consistency, and
+cost criteria without changing the frozen demographic distribution.
 
-### Phase 4: 10,000-row pilot
+### Phase 4: Generate the 10,000-row pilot
 
 #### Work
 
 - Freeze source, sampler, prompt, model, and validator versions.
-- Generate the pilot with complete run manifests.
+- Sample 10,000 validated demographic records from the frozen sampler.
+- Generate structured attributes, followed by the six persona text fields.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
-- Publish an internal report including all drop and retry rates.
+- Publish an internal report including all token, retry, rejection, and drop rates.
 
 **Exit gate:** independent review approves scaling. Failed slices must be fixed and the
 pilot rerun rather than waived without explanation.
 
-### Phase 5: 100,000-row v1
+### Phase 5: Generate the 100,000-row v1
 
 #### Work
 
-- Generate deterministic demographic records and versioned persona text.
+- Generate deterministic demographic records and versioned persona attributes and text.
 - Re-run all validations and the 500-row stratified human review.
 - Produce Parquet shards, checksums, dataset card, validation report, and licences.
 - Publish generation code and prompts unless a model licence or security issue prevents
