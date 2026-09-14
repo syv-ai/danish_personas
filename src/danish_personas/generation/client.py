@@ -159,6 +159,8 @@ class OpenAIClient:
             body["chat_template_kwargs"] = {
                 "enable_thinking": self._config.enable_thinking
             }
+        if self._config.reasoning_effort is not None:
+            body["reasoning_effort"] = self._config.reasoning_effort
         return body
 
     def _response_format(

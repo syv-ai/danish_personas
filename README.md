@@ -21,8 +21,9 @@ persona descriptions. A three-record smoke test passed; development-sample gener
 human evaluation, model selection, and any release-scale generation remain deferred. A
 separate five-record Hugging Face Gemma experiment established that no-thinking mode is
 operationally reliable, but failed manual review. A blinded four-model comparison selected
-Qwen 397B as the quality leader and Qwen 235B as the lower-cost challenger; neither is yet
-approved for pilot-scale generation.
+Qwen 397B as the initial quality leader. A follow-up blinded comparison promoted
+DeepSeek V4.1 Flash as the leading candidate; it is not yet approved for pilot-scale
+generation.
 
 ## Setup
 
@@ -165,4 +166,5 @@ See:
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md);
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md);
 - [`docs/reports/hf-gemma-cost-smoke.md`](docs/reports/hf-gemma-cost-smoke.md);
-- [`docs/reports/hf-model-comparison.md`](docs/reports/hf-model-comparison.md).
+- [`docs/reports/hf-model-comparison.md`](docs/reports/hf-model-comparison.md);
+- [`docs/reports/hf-deepseek-comparison.md`](docs/reports/hf-deepseek-comparison.md).

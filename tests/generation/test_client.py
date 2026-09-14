@@ -49,6 +49,7 @@ def _config() -> GenerationConfig:
         maximum_smoke_rows=5,
         max_tokens=None,
         enable_thinking=None,
+        reasoning_effort=None,
         response_format="json_schema",
         attributes_prompt=Path("attributes.md"),
         personas_prompt=Path("personas.md"),
@@ -78,7 +79,8 @@ def test_client_sends_supported_schema_request() -> None:
         )
 
     client = OpenAIClient(
-        config=_config(), transport=httpx.MockTransport(handler=handler)
+        config=_config().model_copy(update={"reasoning_effort": "none"}),
+        transport=httpx.MockTransport(handler=handler),
     )
     response = client.complete(
         system_prompt="Svar på dansk.",
@@ -93,6 +95,7 @@ def test_client_sends_supported_schema_request() -> None:
     assert captured["model"] == "gpt-test"
     assert "temperature" not in captured
     assert "seed" not in captured
+    assert captured["reasoning_effort"] == "none"
     assert captured["response_format"] == {
         "type": "json_schema",
         "json_schema": {"name": "probe", "strict": True, "schema": {"type": "object"}},

@@ -70,6 +70,7 @@ class GenerationConfig(StrictModel):
     maximum_smoke_rows: int = Field(ge=1, le=5)
     max_tokens: int | None = Field(default=None, ge=32, le=4_096)
     enable_thinking: bool | None = None
+    reasoning_effort: t.Literal["none", "low", "medium", "high"] | None = None
     response_format: t.Literal["json_schema", "json_object"]
     attributes_prompt: Path
     personas_prompt: Path
