@@ -46,7 +46,7 @@ prompts are interpreted relative to that working directory.
 
 | Script | Responsibility and invocation |
 | --- | --- |
-| `restore_raw_sources.py` | Verifies and restores the committed snapshot archive. |
+| `restore_raw_sources.py` | Safely restores the archive after validating its members. |
 | `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
 | `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
 | `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |
@@ -149,7 +149,8 @@ Make target notes:
 
 Do not skip a boundary or call an LLM before the demographic gate passes:
 
-1. Restore and verify the committed raw-source archive for exact offline reproduction.
+1. Restore the committed raw-source archive with safe member validation for offline
+   reproduction.
 2. Build and validate the offline bundle in `data/processed`.
 3. Generate deterministic demographic/OCEAN records.
 4. Validate the smoke run, then generate and validate the statistical run.
@@ -183,10 +184,11 @@ source register before accepting refreshed snapshots.
 ## Outputs and provenance
 
 `data/raw-hardened-20260914.tar.zst` and `data/README.md` are tracked. The restore
-script verifies the archive checksum and extracts ignored, immutable snapshots into
-`data/raw-hardened-20260914/`. Snapshots are content-addressed by table and query
-checksum and contain `data.csv`, English/Danish metadata, `query.json`, response
-headers, and `snapshot-manifest.json`.
+script rejects empty archives and unsafe members, permits only regular files under the
+expected root, and stages extraction before installing the ignored, immutable snapshots
+into `data/raw-hardened-20260914/`. It does not compare the archive's top-level SHA-256
+or validate snapshot manifests and checksums; bundle preparation validates each locked
+snapshot's manifest, provenance, query, and file checksums.
 
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
 preparation reports. Deterministic runs contain `structured-records.parquet`,
