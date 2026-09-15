@@ -175,13 +175,16 @@ class _SensitiveForFirstClient(_MockClient):
         return response.model_copy(update={"content": json.dumps(descriptions)})
 
 
-def test_pilot_merges_validated_shards(
+def test_pilot_merges_shards_that_skipped_a_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The pilot runner merges each bounded invocation exactly once."""
+    """A skipped record is absent from the merge, and the pilot still validates."""
     paths = _write_inputs(root=tmp_path)
-    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
-    _MockClient.requests = 0
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", _SensitiveForFirstClient
+    )
+    _SensitiveForFirstClient.requests = 0
+    _SensitiveForFirstClient.description_calls = 0
     result = CliRunner().invoke(
         pilot_main,
         [
@@ -196,7 +199,7 @@ def test_pilot_merges_validated_shards(
             "--rows",
             "2",
             "--batch-size",
-            "1",
+            "2",
             "--concurrency",
             "1",
             "--maximum-total-requests",
@@ -211,41 +214,14 @@ def test_pilot_merges_validated_shards(
     assert result.exit_code == 0, result.output
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
-    assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
-    assert _MockClient.requests == 4
-
-    pilot_dir = output_path.parent
-    manifest_path = pilot_dir / "pilot-manifest.json"
-    original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-    tampered_manifest = {**original_manifest, "requests": 0}
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    alternate_config = tmp_path / "same-generation.yaml"
-    alternate_config.write_bytes(paths["config"].read_bytes())
-    tampered_manifest = {
-        **original_manifest,
-        "generation_config_file": str(alternate_config),
-    }
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    batch_reference = original_manifest["batch_runs"][1]
-    batch_manifest_path = pilot_dir / batch_reference["manifest_file"]
-    original_batch_manifest = batch_manifest_path.read_bytes()
-    tampered_batch_manifest = json.loads(original_batch_manifest)
-    tampered_batch_manifest["upstream_run_id"] = "different-upstream"
-    write_json(path=batch_manifest_path, payload=tampered_batch_manifest)
-    tampered_manifest = json.loads(json.dumps(original_manifest))
-    tampered_manifest["batch_runs"][1]["manifest_sha256"] = sha256_file(
-        batch_manifest_path
+    assert output.get_column("persona_id").to_list() == ["persona-2"]
+    manifest = PilotManifest.model_validate_json(
+        (output_path.parent / "pilot-manifest.json").read_text(encoding="utf-8")
     )
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    batch_manifest_path.write_bytes(original_batch_manifest)
-    write_json(path=manifest_path, payload=original_manifest)
+    assert manifest.rows == 2
+    assert manifest.generated_rows == 1
+    assert manifest.skipped_persona_ids == ["persona-1"]
+    assert validate_persona_pilot(pilot_dir=output_path.parent).passed
 
 
 def _write_inputs(root: Path) -> dict[str, Path]:
@@ -321,6 +297,79 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "sample_manifest": sample_manifest_path,
         "config": config_path,
     }
+
+
+def test_pilot_merges_validated_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pilot runner merges each bounded invocation exactly once."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    result = CliRunner().invoke(
+        pilot_main,
+        [
+            "--input",
+            str(paths["sample"]),
+            "--sample-manifest",
+            str(paths["sample_manifest"]),
+            "--config",
+            str(paths["config"]),
+            "--output-dir",
+            str(tmp_path / "pilot"),
+            "--rows",
+            "2",
+            "--batch-size",
+            "1",
+            "--concurrency",
+            "1",
+            "--maximum-total-requests",
+            "10",
+            "--input-price-per-million",
+            "0.3",
+            "--output-price-per-million",
+            "1.2",
+            "--live",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
+    output = pl.read_parquet(output_path)
+    assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
+    assert _MockClient.requests == 4
+
+    pilot_dir = output_path.parent
+    manifest_path = pilot_dir / "pilot-manifest.json"
+    original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    tampered_manifest = {**original_manifest, "requests": 0}
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    alternate_config = tmp_path / "same-generation.yaml"
+    alternate_config.write_bytes(paths["config"].read_bytes())
+    tampered_manifest = {
+        **original_manifest,
+        "generation_config_file": str(alternate_config),
+    }
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    batch_reference = original_manifest["batch_runs"][1]
+    batch_manifest_path = pilot_dir / batch_reference["manifest_file"]
+    original_batch_manifest = batch_manifest_path.read_bytes()
+    tampered_batch_manifest = json.loads(original_batch_manifest)
+    tampered_batch_manifest["upstream_run_id"] = "different-upstream"
+    write_json(path=batch_manifest_path, payload=tampered_batch_manifest)
+    tampered_manifest = json.loads(json.dumps(original_manifest))
+    tampered_manifest["batch_runs"][1]["manifest_sha256"] = sha256_file(
+        batch_manifest_path
+    )
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    batch_manifest_path.write_bytes(original_batch_manifest)
+    write_json(path=manifest_path, payload=original_manifest)
 
 
 def test_pipeline_rejects_tampering_and_resumes(
@@ -510,52 +559,3 @@ def test_unsafe_persona_is_skipped_without_failing_the_run(
     output = pl.read_parquet(run_dir / manifest.output_file)
     assert output.get_column("persona_id").to_list() == ["persona-2"]
     assert validate_persona_run(run_dir=run_dir).passed
-
-
-def test_pilot_merges_shards_that_skipped_a_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A skipped record is absent from the merge, and the pilot still validates."""
-    paths = _write_inputs(root=tmp_path)
-    monkeypatch.setattr(
-        "danish_personas.generation.pipeline.OpenAIClient", _SensitiveForFirstClient
-    )
-    _SensitiveForFirstClient.requests = 0
-    _SensitiveForFirstClient.description_calls = 0
-    result = CliRunner().invoke(
-        pilot_main,
-        [
-            "--input",
-            str(paths["sample"]),
-            "--sample-manifest",
-            str(paths["sample_manifest"]),
-            "--config",
-            str(paths["config"]),
-            "--output-dir",
-            str(tmp_path / "pilot"),
-            "--rows",
-            "2",
-            "--batch-size",
-            "2",
-            "--concurrency",
-            "1",
-            "--maximum-total-requests",
-            "10",
-            "--input-price-per-million",
-            "0.3",
-            "--output-price-per-million",
-            "1.2",
-            "--live",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
-    output = pl.read_parquet(output_path)
-    assert output.get_column("persona_id").to_list() == ["persona-2"]
-    manifest = PilotManifest.model_validate_json(
-        (output_path.parent / "pilot-manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest.rows == 2
-    assert manifest.generated_rows == 1
-    assert manifest.skipped_persona_ids == ["persona-1"]
-    assert validate_persona_pilot(pilot_dir=output_path.parent).passed

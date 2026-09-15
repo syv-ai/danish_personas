@@ -65,8 +65,10 @@ dropped identifiers in `skipped_persona_ids` next to `generated_rows`, so a data
 never silently short. Provenance failures, such as a tampered checkpoint, still abort
 the run, as does a shard in which every record fails, since that signals a broken prompt
 or configuration rather than one awkward record. Keep `--batch-size` above one in a
-pilot, so a single rejected record does not empty its shard. Dropping records is not neutral: the gates correlate with topics, so a dataset
-with many skips is no longer a clean sample of its inputs.
+pilot, so a single rejected record does not empty its shard.
+
+Dropping records is not neutral: the gates correlate with topics, so a dataset with
+many skips is no longer a clean sample of its inputs.
 
 Six of those descriptions are prose about one facet of the person. The seventh,
 `visual_persona`, is written to seed a portrait image instead: it opens with sex and
