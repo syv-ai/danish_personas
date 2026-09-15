@@ -59,15 +59,10 @@ def main(archive_path: Path, output_dir: Path, force: bool) -> None:
             temporary_dir = Path(temporary_name)
             with tarfile.open(name=archive_path, mode="r:zst") as archive:
                 members = _validated_members(archive=archive)
-                archive.extractall(
-                    path=temporary_dir, members=members, filter="data"
-                )
+                archive.extractall(path=temporary_dir, members=members, filter="data")
             staged = temporary_dir / RAW_DIRECTORY
             _install_staged_directory(
-                staged=staged,
-                target=target,
-                temporary_dir=temporary_dir,
-                force=force,
+                staged=staged, target=target, temporary_dir=temporary_dir, force=force
             )
     except (OSError, tarfile.TarError, ValueError) as error:
         raise click.ClickException(str(error)) from error

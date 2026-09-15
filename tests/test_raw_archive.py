@@ -32,9 +32,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
-def _restore(
-    archive_path: Path, output_dir: Path, force: bool = False
-) -> Result:
+def _restore(archive_path: Path, output_dir: Path, force: bool = False) -> Result:
     arguments = ["--archive", str(archive_path), "--output-dir", str(output_dir)]
     if force:
         arguments.append("--force")
@@ -60,9 +58,7 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
     assert refused.exit_code != 0
     assert target.is_symlink()
 
-    restored = _restore(
-        archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True
-    )
+    restored = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert restored.exit_code == 0, restored.output
     assert target.is_dir() and not target.is_symlink()
     assert marker.read_text() == "untouched"
@@ -80,9 +76,7 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert stale.read_text() == "preserve on refusal"
 
-    result = _restore(
-        archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True
-    )
+    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert result.exit_code == 0, result.output
     assert not stale.exists()
     assert len(_restored_files(output_dir=output_dir)) == 30
