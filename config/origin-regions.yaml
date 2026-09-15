@@ -1,0 +1,263 @@
+# Country-of-origin groupings for generated persona records.
+#
+# Statistics Denmark publishes no continent aggregate for FOLK1C's IELAND dimension, so
+# this file is the project's own grouping. It follows the continent blocks in the table
+# metadata, which already separate the Middle East from the rest of Asia, with two
+# documented departures:
+#
+#   - Tyrkiet is grouped with the Middle East rather than with Europe.
+#   - Algeriet, Egypten, Libyen, Marokko and Tunesien are grouped with the Middle East
+#     rather than with sub-Saharan Africa.
+#
+# `western` marks the groups that make up Statistics Denmark's own western population;
+# summing them reproduces FOLK1E's western total to within 0.2 percent, which is the
+# check that keeps this grouping honest. Keys are StatBank IELAND codes, with the Danish
+# name in a comment. Generated records carry the group, never the country.
+version: 1
+
+western:
+  - vesteuropa_og_eu
+  - nordamerika_og_oceanien
+
+regions:
+  "5100": danmark  # Danmark
+  "5103": ovrige  # Statsløs
+  "5104": vesteuropa_og_eu  # Finland
+  "5105": vesteuropa_og_eu  # Island
+  "5107": vesteuropa_og_eu  # Liechtenstein
+  "5108": vesteuropa_og_eu  # Luxembourg
+  "5109": vesteuropa_og_eu  # Monaco
+  "5110": vesteuropa_og_eu  # Norge
+  "5111": vesteuropa_og_eu  # Nordirland
+  "5114": europa_uden_for_eu  # Europa uoplyst
+  "5120": vesteuropa_og_eu  # Sverige
+  "5122": europa_uden_for_eu  # Albanien
+  "5124": vesteuropa_og_eu  # Andorra
+  "5126": vesteuropa_og_eu  # Belgien
+  "5128": vesteuropa_og_eu  # Bulgarien
+  "5129": europa_uden_for_eu  # Tjekkoslovakiet
+  "5130": vesteuropa_og_eu  # Frankrig
+  "5134": vesteuropa_og_eu  # Grækenland
+  "5140": vesteuropa_og_eu  # Nederlandene
+  "5142": vesteuropa_og_eu  # Irland
+  "5150": vesteuropa_og_eu  # Italien
+  "5151": europa_uden_for_eu  # Serbien og Montenegro
+  "5152": europa_uden_for_eu  # Jugoslavien
+  "5153": vesteuropa_og_eu  # Malta
+  "5154": vesteuropa_og_eu  # Polen
+  "5156": vesteuropa_og_eu  # Portugal
+  "5157": asien  # Palæstina
+  "5158": vesteuropa_og_eu  # Rumænien
+  "5159": vesteuropa_og_eu  # San Marino
+  "5160": vesteuropa_og_eu  # Schweiz
+  "5162": europa_uden_for_eu  # Sovjetunionen
+  "5164": vesteuropa_og_eu  # Spanien
+  "5170": vesteuropa_og_eu  # Storbritannien
+  "5172": mellemosten_og_nordafrika  # Tyrkiet
+  "5174": vesteuropa_og_eu  # Ungarn
+  "5176": vesteuropa_og_eu  # Vatikanstaten
+  "5180": vesteuropa_og_eu  # Tyskland
+  "5182": vesteuropa_og_eu  # Østrig
+  "5184": europa_uden_for_eu  # DDR
+  "5202": mellemosten_og_nordafrika  # Algeriet
+  "5204": afrika_syd_for_sahara  # Angola
+  "5207": afrika_syd_for_sahara  # Botswana
+  "5213": afrika_syd_for_sahara  # Burundi
+  "5214": afrika_syd_for_sahara  # Etiopien
+  "5215": afrika_syd_for_sahara  # Comorerne
+  "5216": afrika_syd_for_sahara  # Eritrea
+  "5222": afrika_syd_for_sahara  # Gambia
+  "5223": mellemosten_og_nordafrika  # Gaza
+  "5228": afrika_syd_for_sahara  # Ghana
+  "5230": afrika_syd_for_sahara  # Ækvatorialguinea
+  "5231": afrika_syd_for_sahara  # Guinea-Bissau
+  "5232": afrika_syd_for_sahara  # Guinea
+  "5233": afrika_syd_for_sahara  # Kap Verde
+  "5234": afrika_syd_for_sahara  # Kenya
+  "5235": afrika_syd_for_sahara  # Lesotho
+  "5236": afrika_syd_for_sahara  # Liberia
+  "5238": mellemosten_og_nordafrika  # Libyen
+  "5240": afrika_syd_for_sahara  # Mozambique
+  "5242": afrika_syd_for_sahara  # Madagaskar
+  "5243": afrika_syd_for_sahara  # Mali
+  "5244": mellemosten_og_nordafrika  # Marokko
+  "5245": afrika_syd_for_sahara  # Mauritius
+  "5246": afrika_syd_for_sahara  # Nigeria
+  "5247": afrika_syd_for_sahara  # Namibia
+  "5248": ovrige  # Marshalløerne
+  "5253": afrika_syd_for_sahara  # Skt. Helena
+  "5255": afrika_syd_for_sahara  # Sierra Leone
+  "5256": afrika_syd_for_sahara  # Spanske besiddelser i Afrika
+  "5258": afrika_syd_for_sahara  # Sudan
+  "5259": afrika_syd_for_sahara  # Eswatini
+  "5260": afrika_syd_for_sahara  # Sydsudan
+  "5262": afrika_syd_for_sahara  # Sydafrika
+  "5264": afrika_syd_for_sahara  # Sydvestafrika
+  "5266": afrika_syd_for_sahara  # Tanzania
+  "5268": mellemosten_og_nordafrika  # Tunesien
+  "5269": afrika_syd_for_sahara  # Uganda
+  "5272": mellemosten_og_nordafrika  # Egypten
+  "5273": ovrige  # Tuvalu
+  "5274": ovrige  # Kiribati
+  "5275": ovrige  # Vanuatu
+  "5276": afrika_syd_for_sahara  # Centralafrikanske Republik
+  "5277": afrika_syd_for_sahara  # Cameroun
+  "5278": afrika_syd_for_sahara  # Congo, Demokratiske Republik
+  "5279": afrika_syd_for_sahara  # Congo, Republikken
+  "5281": afrika_syd_for_sahara  # Benin
+  "5282": afrika_syd_for_sahara  # Elfenbenskysten
+  "5283": afrika_syd_for_sahara  # Gabon
+  "5284": afrika_syd_for_sahara  # Mauretanien
+  "5285": afrika_syd_for_sahara  # Niger
+  "5286": afrika_syd_for_sahara  # Reunion
+  "5287": afrika_syd_for_sahara  # Rwanda
+  "5288": afrika_syd_for_sahara  # Senegal
+  "5289": afrika_syd_for_sahara  # Somalia
+  "5292": afrika_syd_for_sahara  # Tchad
+  "5293": afrika_syd_for_sahara  # Togo
+  "5294": afrika_syd_for_sahara  # Burkina Faso
+  "5295": afrika_syd_for_sahara  # Zimbabwe
+  "5296": afrika_syd_for_sahara  # Zambia
+  "5297": afrika_syd_for_sahara  # Malawi
+  "5298": afrika_syd_for_sahara  # Seychellerne
+  "5299": afrika_syd_for_sahara  # Afrika uoplyst
+  "5301": latinamerika_og_caribien  # Aruba
+  "5302": latinamerika_og_caribien  # Argentina
+  "5303": latinamerika_og_caribien  # Bahamas
+  "5304": latinamerika_og_caribien  # Bolivia
+  "5305": latinamerika_og_caribien  # Barbados
+  "5306": latinamerika_og_caribien  # Brasilien
+  "5307": latinamerika_og_caribien  # Bermuda
+  "5308": latinamerika_og_caribien  # Guyana
+  "5309": latinamerika_og_caribien  # Antigua og Barbuda
+  "5310": latinamerika_og_caribien  # Nauru
+  "5311": latinamerika_og_caribien  # Skt. Vincent og Grenadinerne
+  "5314": nordamerika_og_oceanien  # Canada
+  "5316": latinamerika_og_caribien  # Chile
+  "5318": latinamerika_og_caribien  # Colombia
+  "5319": latinamerika_og_caribien  # Syd- og Mellemamerika uoplyst
+  "5322": latinamerika_og_caribien  # Costa Rica
+  "5324": latinamerika_og_caribien  # Cuba
+  "5325": latinamerika_og_caribien  # Curacao
+  "5326": latinamerika_og_caribien  # Dominikanske Republik
+  "5328": latinamerika_og_caribien  # Ecuador
+  "5336": latinamerika_og_caribien  # Fransk Vestindien
+  "5338": latinamerika_og_caribien  # Guatemala
+  "5339": latinamerika_og_caribien  # Grenada
+  "5342": latinamerika_og_caribien  # Haiti
+  "5344": latinamerika_og_caribien  # Surinam
+  "5345": latinamerika_og_caribien  # Dominica
+  "5346": latinamerika_og_caribien  # Nederlandske Antiller
+  "5347": latinamerika_og_caribien  # Skt. Lucia
+  "5348": latinamerika_og_caribien  # Honduras
+  "5352": latinamerika_og_caribien  # Jamaica
+  "5353": latinamerika_og_caribien  # Martinique
+  "5354": latinamerika_og_caribien  # Mexico
+  "5356": latinamerika_og_caribien  # Nicaragua
+  "5358": latinamerika_og_caribien  # Panama
+  "5364": latinamerika_og_caribien  # Paraguay
+  "5366": latinamerika_og_caribien  # Peru
+  "5372": latinamerika_og_caribien  # El Salvador
+  "5374": latinamerika_og_caribien  # Trinidad og Tobago
+  "5376": latinamerika_og_caribien  # Uruguay
+  "5390": nordamerika_og_oceanien  # USA
+  "5392": latinamerika_og_caribien  # Venezuela
+  "5393": asien  # Vestbredden
+  "5394": latinamerika_og_caribien  # Britisk Vestindien
+  "5395": latinamerika_og_caribien  # Vestindiske Øer
+  "5397": ovrige  # Nordamerika uoplyst
+  "5402": asien  # Yemen
+  "5403": mellemosten_og_nordafrika  # Forenede Arabiske Emirater
+  "5404": mellemosten_og_nordafrika  # Afghanistan
+  "5406": mellemosten_og_nordafrika  # Bahrain
+  "5408": mellemosten_og_nordafrika  # Bhutan
+  "5410": mellemosten_og_nordafrika  # Bangladesh
+  "5412": mellemosten_og_nordafrika  # Brunei
+  "5414": asien  # Myanmar
+  "5416": mellemosten_og_nordafrika  # Cambodja
+  "5418": asien  # Sri Lanka
+  "5422": vesteuropa_og_eu  # Cypern
+  "5424": asien  # Taiwan
+  "5428": mellemosten_og_nordafrika  # Hongkong
+  "5432": mellemosten_og_nordafrika  # Indien
+  "5434": mellemosten_og_nordafrika  # Indonesien
+  "5436": mellemosten_og_nordafrika  # Irak
+  "5437": asien  # Østjerusalem
+  "5438": mellemosten_og_nordafrika  # Iran
+  "5442": mellemosten_og_nordafrika  # Israel
+  "5444": mellemosten_og_nordafrika  # Japan
+  "5446": mellemosten_og_nordafrika  # Jordan
+  "5448": mellemosten_og_nordafrika  # Kina
+  "5452": mellemosten_og_nordafrika  # Kuwait
+  "5454": mellemosten_og_nordafrika  # Laos
+  "5456": mellemosten_og_nordafrika  # Libanon
+  "5457": mellemosten_og_nordafrika  # Maldiverne
+  "5458": mellemosten_og_nordafrika  # Malaysia
+  "5459": asien  # Mongoliet
+  "5462": asien  # Oman
+  "5464": asien  # Nepal
+  "5466": asien  # Nordkorea
+  "5468": asien  # Vietnam
+  "5471": asien  # Asien uoplyst
+  "5472": asien  # Pakistan
+  "5473": asien  # Vestbredden og Gaza
+  "5474": mellemosten_og_nordafrika  # Filippinerne
+  "5478": asien  # Saudi-Arabien
+  "5480": asien  # Sikkim
+  "5482": asien  # Singapore
+  "5484": asien  # Sydkorea
+  "5486": asien  # Syrien
+  "5487": mellemosten_og_nordafrika  # Mellemøsten uoplyst
+  "5492": asien  # Thailand
+  "5493": asien  # Trucial Oman
+  "5494": asien  # Nordyemen
+  "5496": asien  # Qatar
+  "5498": mellemosten_og_nordafrika  # Indokina
+  "5502": nordamerika_og_oceanien  # Australien
+  "5505": ovrige  # Tonga
+  "5506": ovrige  # Franske besiddelser i Stillehavet
+  "5508": ovrige  # Fiji
+  "5514": nordamerika_og_oceanien  # New Zealand
+  "5516": ovrige  # Cookøerne
+  "5522": ovrige  # Samoa
+  "5525": afrika_syd_for_sahara  # Djibouti
+  "5526": latinamerika_og_caribien  # Belize
+  "5527": latinamerika_og_caribien  # Puerto Rico
+  "5528": latinamerika_og_caribien  # Guadeloupe
+  "5529": latinamerika_og_caribien  # Fransk Guyana
+  "5530": latinamerika_og_caribien  # Falklandsøerne
+  "5531": mellemosten_og_nordafrika  # Dubai
+  "5532": ovrige  # Østtimor
+  "5533": mellemosten_og_nordafrika  # Macao
+  "5534": ovrige  # Papua Ny Guinea
+  "5535": mellemosten_og_nordafrika  # Abu Dhabi
+  "5599": ovrige  # Øer i Stillehavet
+  "5607": vesteuropa_og_eu  # Estland
+  "5609": vesteuropa_og_eu  # Letland
+  "5611": vesteuropa_og_eu  # Litauen
+  "5621": afrika_syd_for_sahara  # Sao Tome og Principe
+  "5623": ovrige  # Salomonøerne
+  "5625": latinamerika_og_caribien  # Skt. Kitts og Nevis
+  "5700": europa_uden_for_eu  # Rusland
+  "5704": europa_uden_for_eu  # Ukraine
+  "5706": europa_uden_for_eu  # Belarus
+  "5708": mellemosten_og_nordafrika  # Armenien
+  "5710": mellemosten_og_nordafrika  # Aserbajdsjan
+  "5712": europa_uden_for_eu  # Moldova
+  "5714": asien  # Usbekistan
+  "5716": mellemosten_og_nordafrika  # Kasakhstan
+  "5718": asien  # Turkmenistan
+  "5720": mellemosten_og_nordafrika  # Kirgisistan
+  "5722": asien  # Tadsjikistan
+  "5724": mellemosten_og_nordafrika  # Georgien
+  "5750": vesteuropa_og_eu  # Kroatien
+  "5752": vesteuropa_og_eu  # Slovenien
+  "5754": europa_uden_for_eu  # Bosnien-Hercegovina
+  "5756": europa_uden_for_eu  # Nordmakedonien
+  "5757": europa_uden_for_eu  # Serbien
+  "5758": europa_uden_for_eu  # Jugoslavien, Forbundsrepublikken
+  "5759": europa_uden_for_eu  # Montenegro
+  "5761": europa_uden_for_eu  # Kosovo
+  "5776": vesteuropa_og_eu  # Tjekkiet
+  "5778": vesteuropa_og_eu  # Slovakiet
+  "5999": ovrige  # Uoplyst

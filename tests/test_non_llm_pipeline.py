@@ -102,6 +102,22 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "suppressed": [False, False],
         }
     )
+    folk1e = pl.DataFrame(
+        {
+            "municipality_code": ["101", "101"],
+            "sex": ["male", "female"],
+            "age": [30, 30],
+            "origin_source_code": ["1", "25"],
+            "origin": ["danish_origin", "immigrant_non_western"],
+            "origin_region": ["danmark", "asien"],
+            "count": [100, 100],
+            "suppressed": [False, False],
+            "municipality": ["Copenhagen", "Copenhagen"],
+            "region_code": ["084", "084"],
+            "region": ["Region Hovedstaden", "Region Hovedstaden"],
+            "age_band": ["30-49", "30-49"],
+        }
+    )
     befolk = folk.drop("marital_status")
     ras210 = pl.DataFrame(
         {
@@ -122,8 +138,35 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     marital_sampling = folk.select(
         "region_code", "region", "sex", "marital_status", "count", "suppressed"
     ).with_columns(pl.lit("30-49").alias("age_band"))
+    region_mix = pl.DataFrame(
+        {
+            "sex": ["male", "female", "male", "female"],
+            "origin": [
+                "immigrant_non_western",
+                "immigrant_non_western",
+                "danish_origin",
+                "danish_origin",
+            ],
+            "origin_region": ["asien", "asien", "danmark", "danmark"],
+            "count": [100, 100, 1, 1],
+            "suppressed": [False, False, False, False],
+        }
+    )
+    origin_sampling = folk1e.select(
+        "region_code",
+        "region",
+        "age_band",
+        "sex",
+        "origin",
+        "origin_source_code",
+        "count",
+        "suppressed",
+    )
     frames = {
         "folk1a_base_unpooled": folk,
+        "folk1e_origin_unpooled": folk1e,
+        "folk_origin_sampling": origin_sampling,
+        "folk1c_region_sampling": region_mix,
         "folk_age_sampling": age_sampling,
         "folk_marital_sampling": marital_sampling,
         "ras209_sampling": ras209,
@@ -141,6 +184,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         created_at="2026-09-14T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
+        origin_regions_sha256="2" * 64,
         source_snapshots=[],
         files=files,
         reference_periods={},
@@ -190,6 +234,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "sex",
                 "region_code",
                 "marital_status",
+                "origin",
                 "age_band",
                 "education_level",
                 "labour_market_status",
@@ -206,6 +251,13 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "G": "married_or_separated",
                 "E": "widowed",
                 "F": "divorced",
+            },
+            "origin": {
+                "1": "danish_origin",
+                "24": "immigrant_western",
+                "25": "immigrant_non_western",
+                "34": "descendant_western",
+                "35": "descendant_non_western",
             },
             "education": {"H70": "masters"},
             "education_pooling": {"masters": "higher_education"},

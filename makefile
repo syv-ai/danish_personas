@@ -1,6 +1,6 @@
 # This ensures that we can call `make <target>` even if `<target>` exists as a file or
 # directory.
-.PHONY: help
+.PHONY: help install test docker tree check demographics brief personas
 
 # Exports all variables defined in the makefile available to scripts
 .EXPORT_ALL_VARIABLES:
@@ -23,8 +23,18 @@ export PATH := ${HOME}/.local/bin:${HOME}/.cargo/bin:$(PATH)
 # Set the shell to bash, enabling the use of `source` statements
 SHELL := /bin/bash
 
-help:
-	@grep -E '^[0-9a-zA-Z_-]+:.*?## .*$$' makefile | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+##@ General
+
+help:  ## Show the available targets and their arguments
+	@awk 'BEGIN {FS = ":.*?## "} \
+		/^##@ / {printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next} \
+		/^[0-9a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' makefile
+	@printf "\n\033[1mPersona commands take flags, so run them directly\033[0m\n"
+	@printf "  \033[36m%-34s\033[0m %s\n" \
+		"uv run personas demographics --rows 1000" "Build a dataset of that size" \
+		"uv run personas brief --rows 5" "Print five plain records" \
+		"uv run personas generate --rows 2 --live" "Write LLM personas for two records" \
+		"uv run personas --help" "Every command and flag"
 
 install: ## Install dependencies
 	@echo "Installing the 'danish_personas' project..."
@@ -85,6 +95,8 @@ add-repo-to-git:
 		git remote add origin git@github.com:syv-ai/danish_personas.git; \
 	fi
 
+##@ Development
+
 test:  ## Run tests
 	@uv run pytest && \
 		uv run readme-cov && \
@@ -101,3 +113,16 @@ tree:  ## Print directory tree
 
 check:  ## Lint, format, and type-check the code
 	@git add . && uv run pre-commit run --all-files; status=$$?; git reset >/dev/null; exit $$status
+
+##@ Personas
+
+# These are shortcuts for the defaults only. Anything with arguments goes to the CLI
+# directly, which takes ordinary flags: uv run personas <command> --help
+demographics:  ## Build the statistical dataset
+	@uv run personas demographics
+
+brief:  ## Print plain persona records from the dataset
+	@uv run personas brief
+
+personas:  ## Plan LLM personas for the dataset
+	@uv run personas generate

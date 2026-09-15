@@ -4,6 +4,9 @@
 to build the Danish persona demographic distributions. The archive contains only public
 aggregate data; it contains no personal microdata.
 
+Rebuild it after adding or refreshing a locked source with
+`uv run src/scripts/build_raw_archive.py`, which packs the snapshots byte-stably.
+
 Restore the snapshots with Python 3.14:
 
 ```bash
@@ -17,7 +20,7 @@ records, and LLM outputs remain ignored by Git and can be rebuilt using the main
 Archive SHA-256:
 
 ```text
-0d00761c284c616d66a5871d3418cc565b1bfe9879f24665119fdf7dcc4c014f
+047e33646e94a476fc4e17d55114526efb0135de4ce814947113ce79e852aadd
 ```
 
 Source: Statistics Denmark. The included StatBank data may be reused under

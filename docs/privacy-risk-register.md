@@ -20,8 +20,20 @@ individual-level Statistics Denmark records.
 - exact addresses and coordinates;
 - CPR or other administrative identifiers;
 - occupation, employer, income, household, and housing details;
-- ancestry, citizenship, and all special-category personal data;
+- citizenship, country of origin, and all special-category personal data;
 - generated free text.
+
+Phase-2 records also carry an origin region, grouped from FOLK1C's country mix by
+`config/origin-regions.yaml`. The country itself is sampled internally and never
+emitted, which keeps the published cells far larger than any single country would be.
+
+Phase-2 records carry FOLK1E's five official ancestry categories (Danish origin, and
+immigrants and descendants from western and non-western countries). They are
+administrative categories published by Statistics Denmark, not ethnicity, religion,
+or nationality, and no country of origin is emitted. The category is sampled jointly
+with region, age band, and sex under the same release-count floor as the other
+marginals, so rare origin-by-geography cells are dropped before sampling. Prompts
+forbid naming a country, a country group, or a language beyond the given category.
 
 Municipality aggregates are used only to construct official regional source counts.
 Municipality fields are absent from generated Phase-2 records. A later release must pass

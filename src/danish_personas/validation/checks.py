@@ -90,14 +90,19 @@ def _distribution_metrics(
     frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
 ) -> list[MetricResult]:
     source_dir = bundle_dir / "normalized"
-    folk = pl.read_parquet(source_dir / "folk1a_base_unpooled.parquet").with_columns(
-        _age_band_expression().alias("age_band")
-    )
+    folk = pl.read_parquet(
+        source_dir / "folk1a_base_unpooled.parquet",
+        columns=["sex", "region_code", "marital_status", "age", "count"],
+    ).with_columns(_age_band_expression().alias("age_band"))
     ras209 = pl.read_parquet(source_dir / "ras209_sampling.parquet")
+    folk1e = pl.read_parquet(
+        source_dir / "folk1e_origin_unpooled.parquet", columns=["origin", "count"]
+    )
     targets = {
         "sex": (folk, ["sex"]),
         "region_code": (folk, ["region_code"]),
         "marital_status": (folk, ["marital_status"]),
+        "origin": (folk1e, ["origin"]),
         "age_band": (folk, ["age_band"]),
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),

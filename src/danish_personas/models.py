@@ -44,6 +44,7 @@ class CategoryConfig(StrictModel):
     version: int
     sex: dict[str, str]
     marital_status: dict[str, str]
+    origin: dict[str, str]
     education: dict[str, str]
     education_pooling: dict[str, str]
     labour_market_status: dict[str, list[str]]
@@ -111,12 +112,23 @@ class DemographicRecord(OceanTraits):
     marital_status: str
     region_code: str
     region: str
+    origin: str
+    origin_source_code: str
+    origin_region: str
     education_level: str
     education_source_code: str
     education_resolution: t.Literal["ras209_age_band", "ras209_67_plus_proxy"]
     labour_market_status: str
     detailed_status_code: str
     detailed_status: str
+
+
+class OriginRegionConfig(StrictModel):
+    """Versioned country-of-origin groupings."""
+
+    version: int
+    western: list[str]
+    regions: dict[str, str]
 
 
 class RunManifest(StrictModel):
@@ -172,6 +184,7 @@ class BundleManifest(StrictModel):
     created_at: str
     source_lock_sha256: str
     categories_sha256: str
+    origin_regions_sha256: str
     source_snapshots: list[SnapshotManifest]
     files: dict[str, str]
     reference_periods: dict[str, str]

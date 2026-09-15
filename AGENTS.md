@@ -14,7 +14,8 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 - `src/danish_personas/` contains importable package code. `src/scripts/` contains
   executable Click entry points. `tests/` contains unit and fixture-based integration
   tests. `config/` contains versioned inputs and prompts. `data/` is local output only.
-- `docs/` contains the plan, source register, privacy register, acceptance criteria, and
+- `docs/` contains the plan, source register, sampling shares, privacy register,
+  acceptance criteria, and
   experiment/validation reports. `.github/workflows/ci.yaml` runs pre-commit and pytest
   on Python 3.14 across Ubuntu, macOS, and Windows.
 
@@ -23,7 +24,7 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | Path | Responsibility |
 | --- | --- |
 | `danish_personas/__init__.py` | Package metadata and module docstring. |
-| `danish_personas/io.py` | YAML, canonical JSON, atomic writes, SHA-256. |
+| `danish_personas/io.py` | YAML, canonical JSON, atomic writes, SHA-256, `.env`. |
 | `danish_personas/models.py` | Strict Pydantic source, sampling, record contracts. |
 | `danish_personas/generation/__init__.py` | LLM-generation package marker. |
 | `danish_personas/generation/client.py` | Retrying OpenAI client and accounting. |
@@ -38,6 +39,8 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sources/prepare.py` | Aggregate normalisation and calibration. |
 | `danish_personas/validation/__init__.py` | Validation package marker. |
 | `danish_personas/validation/checks.py` | Source, structure, distribution, OCEAN. |
+| `danish_personas/cli.py` | The `personas` command: dataset, brief, generate. |
+| `danish_personas/workflow.py` | Stage chaining, run pointers, run inspection. |
 
 ## Scripts
 
@@ -47,6 +50,7 @@ prompts are interpreted relative to that working directory.
 | Script | Responsibility and invocation |
 | --- | --- |
 | `restore_raw_sources.py` | Safely restores the archive after validating its members. |
+| `build_raw_archive.py` | Repacks restored snapshots into the committed archive. |
 | `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
 | `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
 | `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |
@@ -69,6 +73,7 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 | `tests/test_non_llm_pipeline.py` | Deterministic fixture pipeline. |
 | `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
 | `tests/test_raw_archive.py` | Committed archive integrity and safe restoration. |
+| `tests/test_workflow.py` | Run pointers, record selection, summary, export. |
 | `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
 | `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
 | `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |
@@ -83,12 +88,13 @@ client when testing LLM paths.
 | `config/sources.yaml` | Dynamic StatBank selectors and source-count thresholds. |
 | `config/sources.lock.yaml` | Resolved codes, queries, URLs, periods, and timestamps. |
 | `config/categories.yaml` | Canonical demographic and labour-status mappings. |
+| `config/origin-regions.yaml` | Country-of-origin groupings; the project's own. |
 | `config/sampling.yaml` | Seed, rows, adult age range, region, OCEAN settings. |
 | `config/validation.yaml` | Distribution, expected-count, and OCEAN thresholds. |
 | `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
 | `config/generation.local.yaml` | Ignored local LLM override and provider settings. |
 | `config/prompts/attributes-da.md` | Danish attributes schema and safety rules. |
-| `config/prompts/personas-da.md` | Danish six-description schema and safety rules. |
+| `config/prompts/personas-da.md` | Danish seven-description schema and safety rules. |
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
 or validator changes provenance and can change content-addressed run IDs. Do not adjust
@@ -107,10 +113,12 @@ uv sync --locked --all-extras --dev
 ```
 
 For a local environment file, use `cp .env.example .env`. The non-LLM tests and pipeline
-need no secrets. Direct LLM commands do not load `.env`; use a short-lived shell export
-or command-scoped assignment for the configured provider token. The Makefile includes
-`.env` and exports all of its variables to subprocesses and hooks, so do not use it as
-credential loading for direct LLM commands. `make install` is a convenience bootstrap
+need no secrets. Generation resolves the provider token in
+`generation.pipeline._resolve_api_key`, which loads `.env` through `io.load_env_file`;
+variables already in the environment take precedence, so a command-scoped assignment
+still wins. The Makefile separately includes `.env` and
+exports all of its variables to subprocesses and hooks, including the third-party hooks
+that `make check` runs. `make install` is a convenience bootstrap
 that can install/update `uv`, initialise Git, configure identity, and add a remote; do
 not use it merely to install Python dependencies in an existing clone.
 
@@ -238,8 +246,11 @@ must fail loudly, not be repaired by overwriting files.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
   individual records. Municipality data is used for regional calibration and is absent
   from Phase 2 output. Do not add names, addresses, occupations, employers, income,
-  households, citizenship, ancestry, health, religion, sexuality, politics, criminal
-  history, or other sensitive fields without a separate privacy review.
+  households, citizenship, country of origin, health, religion, sexuality, politics,
+  criminal history, or other sensitive fields without a separate privacy review.
+- `origin` holds FOLK1E's official ancestry categories and `origin_region` groups
+  FOLK1C's country mix. Treat both as administrative categories, never as ethnicity,
+  and never let generated text name a country of origin.
 - Only lowercase `makefile` is tracked; case-insensitive systems may display it as
   `Makefile`. Make targets can mutate Git state; inspect `git status` before and after
   using them.

@@ -24,6 +24,87 @@ the reports before making statistical or quality claims:
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
 
+## How a persona is generated
+
+Two stages produce a persona, and they have different guarantees. The demographic stage
+is deterministic and grounded in Statistics Denmark aggregates; the text stage is a
+language model writing prose from that record.
+
+### Stage 1: the statistical record
+
+`personas demographics` restores the committed snapshots, prepares the source bundle,
+and samples each record in a fixed order:
+
+1. Quota-sample the RAS209 joint of region, age band, sex, broad education, and
+   labour-market status.
+2. Draw an exact age from FOLK1A, conditioned on age band and sex.
+3. Draw marital status from FOLK1A, conditioned on region, age band, and sex.
+4. Draw origin from FOLK1E, conditioned on region, age band, and sex.
+5. Draw an origin region from the FOLK1C country mix, conditioned on sex and the
+   origin category, so the western and non-western groups stay consistent.
+6. Draw detailed labour-market status from RAS202, conditioned on age band, sex, and
+   labour-market status.
+7. Draw five independent OCEAN scores from the normal distribution configured in
+   `config/sampling.yaml`.
+
+Rare cells are dropped before sampling: every source frame is filtered by a release
+count floor, so a combination too small to publish cannot be drawn. The run identifier
+is derived from the bundle, the sampling configuration, the row count, and the seed, so
+the same inputs always reproduce the same records.
+
+### Stage 2: the generated text
+
+`personas generate` freezes a stratified sample of the run, then makes two model calls
+per persona. The first sends the whole record as JSON and receives four attributes;
+the second sends the record plus those attributes and receives seven Danish
+descriptions. Both are validated against strict schemas before they are checkpointed.
+
+Six of those descriptions are prose about one facet of the person. The seventh,
+`visual_persona`, is written to seed a portrait image instead: it opens with sex and
+age, states the origin region in one fixed sentence, and then gives two or three
+invented appearance details such as hair, glasses, or clothing. It never guesses a
+country, skin colour, ethnicity, or religion, and it describes nothing below the
+shoulders. Those appearance details are invented in the same sense the hobbies are;
+they are not derived from the origin category, and only the fixed sentence carries the
+statistical fact.
+
+### What comes from where
+
+The released record has 38 columns, and only ten of them are sampled from official
+statistics. [`docs/sampling-shares.md`](docs/sampling-shares.md) lists every field
+with its actual share.
+
+| Source | Columns | Fields |
+| --- | ---: | --- |
+| Statistics Denmark | 10 | `sex`, `age_band`, `region`, `education_level`, `labour_market_status`, `age`, `marital_status`, `origin`, `origin_region`, `detailed_status` |
+| Derived or constant | 7 | `persona_id`, `country`, `region_code`, `education_resolution`, and the three StatBank source codes |
+| Configured distribution | 10 | The five OCEAN scores and their labels |
+| Language model | 11 | `cultural_context`, `skills_and_expertise`, `hobbies_and_interests`, `career_goals_and_ambitions`, and the seven persona descriptions |
+
+The OCEAN scores are not Danish statistics. They are five independent draws from a
+configured normal distribution, and nothing in the source tables constrains them. The
+attributes and descriptions are invented by the model from the record alone; no source
+table says anything about hobbies, skills, or ambitions.
+
+### Relationship to Nemotron Personas
+
+The schema and the two-stage structure follow NVIDIA's
+[Nemotron-Personas][nemotron-dataset], and the prompts adopt several of its documented
+instructions: definite present-tense writing, specific detail over generic phrasing,
+attributes that stay internally consistent with the profile, age used actively, and
+cultural context infused implicitly rather than named.
+
+This project diverges where Danish sources and the privacy boundary require it. It emits
+no names, addresses, employers, or occupations, so the implicit signal NVIDIA gets from
+census-sampled names is absent here. `cultural_context` is deliberately renamed from
+`cultural_background` to discourage invented identity claims, there are seven persona
+descriptions rather than nine, and `origin` carries Statistics Denmark's official
+ancestry categories without a country of origin.
+[`docs/danish-personas-plan.md`](docs/danish-personas-plan.md) records the full
+comparison and the decisions behind it.
+
+[nemotron-dataset]: https://huggingface.co/datasets/nvidia/Nemotron-Personas-USA
+
 ## Developer setup guide
 
 This guide takes a developer from a fresh clone to validated demographic data and the
@@ -76,15 +157,57 @@ cp .env.example .env
 
 Set `GIT_NAME` and `GIT_EMAIL` only if using the Makefile's Git setup. `OPENAI_API_KEY`
 and `HF_TOKEN` are examples of optional bearer-token variables; a generation config
-selects the variable through `api_key_env`. Direct LLM commands do not load `.env`; use
-a short-lived shell export or command-scoped assignment for the configured token. The
-Makefile includes `.env` and exports all of its variables to subprocesses and hooks, so
-do not use it as credential loading for direct LLM commands. Never commit `.env`,
-tokens, or generated data artefacts.
+selects the variable through `api_key_env`.
+
+Generation reads `.env` when it resolves the provider token, so the configured token
+does not have to be repeated on every command. Variables already in the
+environment win, so a command-scoped assignment still overrides the file. Note that the
+Makefile separately includes `.env` and exports all of its variables to subprocesses and
+hooks, including the third-party hooks that `make check` runs; keep that in mind when
+deciding what to store there. Never commit `.env`, tokens, or generated data
+artefacts.
+
+### The `personas` command
+
+`uv sync` installs a `personas` command that runs the whole pipeline. It has three main
+subcommands and takes ordinary flags:
+
+```bash
+uv run personas demographics --rows 100000 --seed 20260914
+uv run personas brief --rows 5
+uv run personas generate --rows 2 --live
+```
+
+`demographics` restores the raw snapshots if needed, prepares the source bundle, and
+generates and validates the dataset. `brief` prints plain records from it: age, region,
+education, labour-market status, and job type. `generate` adds the LLM-written
+attributes and descriptions, keeping every statistical field on the record. Add
+`--export` to `brief` or `generate` to write each record to `data/exports` as JSON and
+Markdown, with the statistical inputs and the generated text in separate sections.
+
+`uv run personas --help` lists every command, and `summary`, `runs`, `clean`, and
+`setup-llm` cover distributions, local state, cleanup, and provider configuration. The
+current dataset is recorded under `data/.state/`, so the reading commands need no
+arguments; pass `--run <path>` to read a different one.
+
+`--rows` defaults to `statistical_rows`, because the distribution thresholds in
+`config/validation.yaml` are calibrated for that size; a smaller dataset fails its
+validation gates. `--skip-validation` keeps such a dataset for a quick look, but it
+cannot seed persona generation and is not release data.
+
+`generate` plans a dry run and makes no network calls until `--live`. Configure a
+provider first with `uv run personas setup-llm --base-url <url> --model <id>
+[--api-key-env <name>]`, which enables the ignored `config/generation.local.yaml`. The
+token is read from the environment variable that `api_key_env` names, and `.env` fills
+it in when the variable is not already set. Remember that the Makefile separately
+exports every `.env` variable to its subprocesses and hooks.
+
+`make demographics`, `make brief`, and `make personas` are zero-argument shortcuts for
+the three commands; anything with arguments goes to the command directly.
 
 ### Regenerate development data
 
-The following commands restore the five exact Statistics Denmark aggregate snapshots,
+The following commands restore the six exact Statistics Denmark aggregate snapshots,
 prepare a local source bundle, generate 1,000 deterministic records, and validate every
 stage without network access. The archive and attribution are documented in
 [`data/README.md`](data/README.md).
@@ -176,8 +299,8 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
-The source preparation stage uses FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210. The first
-three ground the distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics.
+The source preparation stage uses FOLK1A, FOLK1E, RAS209, RAS202, BEFOLK3, and RAS210.
+The first four ground the distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics.
 Municipality aggregates are used to construct regional counts, but municipality fields
 are not emitted in generated records.
 
@@ -230,7 +353,8 @@ test -n "$PERSONA_RUN" || exit 1
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
-Each record uses two model stages: structured attributes, then six Danish descriptions.
+Each record uses two model stages: structured attributes, then seven Danish
+descriptions.
 A repeated live command resumes valid per-record checkpoints and does not repeat
 completed calls. Each `generate_personas.py` invocation is one shard capped at five
 rows, while a pilot can span multiple such shards. The default HTTP-attempt budget is 15
@@ -304,18 +428,24 @@ approve any proposed release.
 
 Statistics Denmark inputs are public aggregate tables, not individual-level records. The
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
-aged 18-125 with country, sex, age, marital status, region, broad education, labour
-status, detailed status, and independent OCEAN scores. It does not emit names, exact
+aged 18-125 with country, sex, age, marital status, region, official origin category,
+broad education, labour status, detailed status, and independent OCEAN scores. Origin
+uses FOLK1E's five administrative ancestry categories, which are not ethnicity, and no
+country of origin is emitted. It does not emit names, exact
 addresses, coordinates, CPR or other administrative identifiers, employers, occupations,
 income, household details, ancestry, citizenship, health, religion, sexuality, politics,
 criminal history, or free text.
 
-LLM prompts prohibit identifying and sensitive details, stereotypes, and deterministic
-claims about demographics or personality. Validators check strict schemas, Danish text,
-contact and identifying-number patterns, configured sensitive terms, duplicate
-descriptions, upstream preservation, checksums, and checkpoint provenance. These are
-finite automated checks, not a guarantee of anonymity or safe use. Treat regional
-combinations, accepted text, checkpoints, tokens, and provider telemetry as restricted.
+LLM prompts prohibit identifying and sensitive details, and traits that follow
+categorically from sex, age, region, education, or labour-market status. They ask for
+definite, present-tense descriptions of an invented individual rather than hedged ones,
+so the text asserts what that fictional person does; it never asserts that a demographic
+group behaves that way, and it never reproduces personality scores or labels. Validators
+check strict schemas, Danish text, contact and identifying-number patterns, configured
+sensitive terms, duplicate descriptions, upstream preservation, checksums, and
+checkpoint provenance. These are finite automated checks, not a guarantee of anonymity
+or safe use. Treat regional combinations, accepted text, checkpoints, tokens, and
+provider telemetry as restricted.
 Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting and
 [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing outputs.
 
@@ -347,6 +477,8 @@ required.
 
 - [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md): mandatory gates and
   non-zero failure behaviour;
+- [`docs/sampling-shares.md`](docs/sampling-shares.md): every sampled field, its
+  source, and its share of the dataset;
 - [`docs/source-register.md`](docs/source-register.md): source tables, periods, and
   harmonisation decisions;
 - [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md): design and deferred

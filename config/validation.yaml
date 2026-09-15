@@ -12,6 +12,7 @@ mandatory_marginals:
   - sex
   - region_code
   - marital_status
+  - origin
   - age_band
   - education_level
   - labour_market_status

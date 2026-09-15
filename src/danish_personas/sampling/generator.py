@@ -13,6 +13,7 @@ from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, writ
 from ..models import BundleManifest, RunManifest, SamplingConfig
 
 LOGGER = logging.getLogger(__name__)
+
 TRAITS = (
     "openness",
     "conscientiousness",
@@ -67,6 +68,8 @@ def generate_records(
     source_dir = bundle_dir / "normalized"
     age_frame = pl.read_parquet(source_dir / "folk_age_sampling.parquet")
     marital_frame = pl.read_parquet(source_dir / "folk_marital_sampling.parquet")
+    origin_frame = pl.read_parquet(source_dir / "folk_origin_sampling.parquet")
+    region_frame = pl.read_parquet(source_dir / "folk1c_region_sampling.parquet")
     joint_frame = pl.read_parquet(source_dir / "ras209_sampling.parquet")
     detail_frame = pl.read_parquet(source_dir / "ras202_sampling.parquet")
     demographic_seed, ocean_seed = np.random.SeedSequence(seed).spawn(2)
@@ -82,6 +85,16 @@ def generate_records(
         key_columns=["region_code", "age_band", "sex"],
         payload_columns=["marital_status"],
     )
+    origin_distributions = _distribution_index(
+        frame=origin_frame,
+        key_columns=["region_code", "age_band", "sex"],
+        payload_columns=["origin", "origin_source_code"],
+    )
+    region_distributions = _distribution_index(
+        frame=region_frame,
+        key_columns=["sex", "origin"],
+        payload_columns=["origin_region"],
+    )
     detail_distributions = _distribution_index(
         frame=detail_frame,
         key_columns=["age_band", "sex", "labour_market_status"],
@@ -91,6 +104,8 @@ def generate_records(
         sampled_joint=sampled_joint,
         age_distributions=age_distributions,
         marital_distributions=marital_distributions,
+        origin_distributions=origin_distributions,
+        region_distributions=region_distributions,
         detail_distributions=detail_distributions,
         rng=demographic_rng,
         country=config.country,
@@ -141,6 +156,8 @@ def _build_records(
     sampled_joint: pl.DataFrame,
     age_distributions: dict[tuple[str, ...], Distribution],
     marital_distributions: dict[tuple[str, ...], Distribution],
+    origin_distributions: dict[tuple[str, ...], Distribution],
+    region_distributions: dict[tuple[str, ...], Distribution],
     detail_distributions: dict[tuple[str, ...], Distribution],
     rng: np.random.Generator,
     country: str,
@@ -164,6 +181,15 @@ def _build_records(
                 rng=rng,
             )["marital_status"]
         )
+        origin = _draw(
+            distributions=origin_distributions,
+            key=(region_code, age_band, sex),
+            rng=rng,
+        )
+        origin_value = str(origin["origin"])
+        origin_region = _draw(
+            distributions=region_distributions, key=(sex, origin_value), rng=rng
+        )["origin_region"]
         detail = _draw(
             distributions=detail_distributions,
             key=(age_band, sex, labour_status),
@@ -181,6 +207,9 @@ def _build_records(
                 "marital_status": marital_status,
                 "region_code": region_code,
                 "region": joint["region"],
+                "origin": origin_value,
+                "origin_source_code": origin["origin_source_code"],
+                "origin_region": origin_region,
                 "education_level": joint["education_level"],
                 "education_source_code": joint["education_source_code"],
                 "education_resolution": (

@@ -143,6 +143,7 @@ class PersonaDescriptions(StrictModel):
     arts_persona: str = Field(min_length=40, max_length=1_200)
     travel_persona: str = Field(min_length=40, max_length=1_200)
     culinary_persona: str = Field(min_length=40, max_length=1_200)
+    visual_persona: str = Field(min_length=40, max_length=1_200)
     persona: str = Field(min_length=60, max_length=1_500)
 
 

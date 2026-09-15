@@ -25,7 +25,7 @@ The initial release should:
 - defer a statistically representative occupation field until a suitable Danish count
   source is available;
 - sample personality independently of demographic and protected attributes;
-- produce Danish structured attributes and six persona descriptions;
+- produce Danish structured attributes and seven persona descriptions;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
 - include reproducible source snapshots, prompts, model versions, validation reports,
@@ -211,7 +211,14 @@ identity claims.
 - `arts_persona`
 - `travel_persona`
 - `culinary_persona`
+- `visual_persona`
 - `persona`
+
+`visual_persona` has no NVIDIA counterpart. It exists because the released records
+carry no names and no country of origin, so a portrait generated from the prose alone
+inherits the image model's default appearance and under-represents the population that
+FOLK1E measures. The field states sex, age, and the origin category in fixed wording,
+and adds invented appearance details that are explicitly not derived from that category.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -240,7 +247,7 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Age, sex, geography | FOLK1A, BEFOLK3 | Select compatible reference dates |
 | Marital status | FOLK1A | Preserve official definitions |
 | Citizenship validation | FOLK1B | Uses broad age bands |
-| Ancestry validation | FOLK1E | Do not interpret as ethnicity |
+| Origin | FOLK1E | Official ancestry categories; do not interpret as ethnicity |
 | Broad education and status | RAS209 | Region, age band, sex, education, status |
 | Detailed status and retirement | RAS202 | Exact age through 70, then `71+`; no region |
 | Municipality status validation | RAS210 | Three status groups; title says ages 13-70 |
@@ -401,7 +408,7 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for the six persona fields. Separating attribute
+Use a second structured generation call for the persona fields. Separating attribute
 and prose generation makes failures easier to detect and permits regeneration of text
 without changing the demographic sample.
 
@@ -619,7 +626,7 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by the six persona text fields.
+- Generate structured attributes, followed by the seven persona text fields.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 
@@ -713,9 +720,10 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    privacy review passes; otherwise publish region.
 5. Broad RAS209 education for all ages, with its `67+` band disclosed as a proxy for
    personas aged 70 and over; no unsupported detailed attainment for those ages.
-6. No occupation, household, income, ancestry, citizenship, full name, or sensitive
-   fields in v1.
-7. Six persona text fields for comparability with NVIDIA.
+6. No occupation, household, income, country of origin, citizenship, full name, or
+   sensitive fields in v1. Origin uses FOLK1E's five official ancestry categories.
+7. Six persona text fields for comparability with NVIDIA, plus `visual_persona`
+   for portrait generation.
 8. Native list columns and explicit provenance fields, even where this differs from the
    NVIDIA schema.
 9. Open generation code, prompts, source manifests, and validation results.

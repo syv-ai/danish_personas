@@ -22,6 +22,7 @@ def test_nested_pass_cannot_override_failed_source_report(tmp_path: Path) -> Non
         created_at="2026-09-14T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
+        origin_regions_sha256="2" * 64,
         source_snapshots=[],
         files={source_report.name: sha256_file(source_report)},
         reference_periods={},

@@ -57,6 +57,10 @@ def _safe_descriptions() -> dict[str, str]:
             "I køkkenet prøver personen enkle retter og deler gerne et måltid "
             "med venner."
         ),
+        "visual_persona": (
+            "Mand, 41 år. Kortklippet hår, runde briller og en grå strikbluse, med et "
+            "roligt og neutralt ansigtsudtryk."
+        ),
         "persona": (
             "Personen trives med en rolig hverdag, men er også åben for at lære "
             "nyt sammen med andre."

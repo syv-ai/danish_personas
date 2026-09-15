@@ -10,6 +10,8 @@ Restoration creates content-addressed query subdirectories under
 | Table | Period | Pipeline role | Raw bytes | CSV SHA-256 |
 | --- | --- | --- | ---: | --- |
 | [FOLK1A][folk1a] | 2025Q1 | Exact age, sex, municipality, marital status | 5,637,970 | `fc70f900e628c169660c354f487723d4556e707e49ef95a96fad3d63b01c4741` |
+| [FOLK1E][folk1e] | 2025Q1 | Origin by exact age, sex, municipality | 9,502,851 | `5f8531e024e7784391368193d886a1ea74dfd708f20897940cd99023156e35d8` |
+| [FOLK1C][folk1c] | 2025Q1 | National country-of-origin mix by sex | 82,824 | `204e92da862cfa7b1499023d297762eabd88c01ea605f17e6d80587c68d4e293` |
 | [RAS209][ras209] | 2024 | Joint broad education and labour status | 4,995,164 | `f0422d7ae0d2c33bd19f62a4647db036530f38b9e4ba945f408fbc75aeb418ca` |
 | [RAS202][ras202] | 2024 | Detailed status by exact age and sex | 231,540 | `9d5293ed0979a245c990a4177b35f3c5877ac34011d7f978138ceded0226ca86` |
 | [BEFOLK3][befolk3] | 2025 | Held-out population validation | 1,008,139 | `b6e72015815cae98a484059c0261c00ffc0597a600ecc4ee5d74b9819cd7acd9` |
@@ -21,6 +23,12 @@ query, response headers, and a machine-readable checksum manifest.
 ## Harmonisation decisions
 
 - FOLK1A 2025Q1 is the closest demographic snapshot to the November 2024 RAS data.
+- FOLK1C 2025Q1 supplies the national country-of-origin mix. Records carry only the
+  grouped region from `config/origin-regions.yaml`, never the country, and the
+  country mix is applied nationally rather than per region.
+- FOLK1E 2025Q1 shares that reference date and supplies the official ancestry
+  categories. They are administrative categories, not ethnicity, and the released
+  records carry no country of origin.
 - FOLK1A ages 16-19 estimate the age-18-and-over share of RAS209's 16-19 band. Ages 16
   and 17 are excluded from generated records.
 - RAS209 education is pooled to primary, secondary or vocational, higher education, and
@@ -44,6 +52,8 @@ project further processes the data. See [Statistics Denmark's source-attribution
 guidance][terms].
 
 [folk1a]: https://www.statbank.dk/FOLK1A
+[folk1e]: https://www.statbank.dk/FOLK1E
+[folk1c]: https://www.statbank.dk/FOLK1C
 [ras209]: https://www.statbank.dk/RAS209
 [ras202]: https://www.statbank.dk/RAS202
 [befolk3]: https://www.statbank.dk/BEFOLK3

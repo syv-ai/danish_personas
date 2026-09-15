@@ -18,6 +18,36 @@ sources:
         values: [U, G, E, F]
       Tid:
         values: [2025K1]
+  - table_id: FOLK1E
+    role: origin_joint
+    period: 2025K1
+    dimensions:
+      OMRÅDE:
+        selector: municipalities
+      KØN:
+        values: ["1", "2"]
+      ALDER:
+        selector: age_16_plus
+      HERKOMST:
+        selector: non_total
+      Tid:
+        values: [2025K1]
+  - table_id: FOLK1C
+    role: origin_country_mix
+    period: 2025K1
+    dimensions:
+      OMRÅDE:
+        values: ["000"]
+      KØN:
+        values: ["1", "2"]
+      ALDER:
+        values: [IALT]
+      HERKOMST:
+        values: ["4", "3"]
+      IELAND:
+        selector: non_total
+      Tid:
+        values: [2025K1]
   - table_id: RAS209
     role: education_status_joint
     period: "2024"

@@ -9,7 +9,15 @@ from pathlib import Path
 import polars as pl
 from pydantic import BaseModel
 
-from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
+from ..io import (
+    ENV_FILE,
+    canonical_json,
+    load_env_file,
+    load_yaml_model,
+    sha256_file,
+    sha256_text,
+    write_json,
+)
 from ..models import RunManifest, ValidationReport
 from .client import OpenAIClient, RequestBudgetExceeded
 from .models import (
@@ -103,7 +111,7 @@ def generate_personas(
         )
         return run_dir
 
-    api_key = os.environ.get(config.api_key_env) if config.api_key_env else None
+    api_key = _resolve_api_key(api_key_env=config.api_key_env)
     ledger_path = run_dir / "request-ledger.json"
     ledger = _load_request_ledger(
         run_dir=run_dir,
@@ -405,6 +413,34 @@ def _load_request_ledger(
         message = "Persisted HTTP requests exceed the generation budget"
         raise RequestBudgetExceeded(message)
     return ledger
+
+
+def _resolve_api_key(api_key_env: str | None) -> str | None:
+    """Resolve the configured bearer token from the environment or `.env`.
+
+    Args:
+        api_key_env:
+            Name of the environment variable holding the token, if the endpoint
+            requires one.
+
+    Returns:
+        The token, or None when the configuration needs no token.
+
+    Raises:
+        ValueError:
+            If the configured variable holds no value.
+    """
+    if not api_key_env:
+        return None
+    load_env_file()
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        message = (
+            f"No token in {api_key_env}. Export it, pass it for this command only, "
+            f"or set it in {ENV_FILE}."
+        )
+        raise ValueError(message)
+    return api_key
 
 
 def _sum_estimated_cost(responses: list[LLMResponse]) -> float | None:

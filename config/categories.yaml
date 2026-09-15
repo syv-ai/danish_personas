@@ -4,6 +4,12 @@ sex:
   "2": female
   M: male
   K: female
+origin:
+  "1": danish_origin
+  "24": immigrant_western
+  "25": immigrant_non_western
+  "34": descendant_western
+  "35": descendant_non_western
 marital_status:
   U: never_married
   G: married_or_separated

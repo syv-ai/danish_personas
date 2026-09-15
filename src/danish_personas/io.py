@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+import os
 import typing as t
 from pathlib import Path
 
@@ -9,6 +11,10 @@ import yaml
 from pydantic import BaseModel
 
 from .models import StrictModel
+
+LOGGER = logging.getLogger(__name__)
+
+ENV_FILE = Path(".env")
 
 ModelType = t.TypeVar("ModelType", bound=StrictModel)
 
@@ -26,6 +32,49 @@ def canonical_json(payload: object) -> str:
     return json.dumps(
         payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
+
+
+def load_env_file(path: Path = ENV_FILE) -> list[str]:
+    """Load `KEY=value` lines from a local environment file into the process.
+
+    Variables already present in the environment win, so a command-scoped assignment
+    still overrides the file. Values are never logged.
+
+    Args:
+        path:
+            Environment file; a missing file is not an error.
+
+    Returns:
+        Names of the variables this call set, in file order.
+
+    Examples:
+        >>> import os, tempfile
+        >>> lines = ["# comment", 'export TOKEN="abc"', "EMPTY="]
+        >>> with tempfile.TemporaryDirectory() as directory:
+        ...     file = Path(directory) / ".env"
+        ...     _ = file.write_text(chr(10).join(lines))
+        ...     load_env_file(file)
+        ['TOKEN']
+        >>> os.environ.pop("TOKEN")
+        'abc'
+    """
+    if not path.is_file():
+        return []
+    loaded: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.strip().removeprefix("export ").strip()
+        if not entry or entry.startswith("#") or "=" not in entry:
+            continue
+        name, _, value = entry.partition("=")
+        name = name.strip()
+        value = value.strip().strip("\"'")
+        if not name or not value or name in os.environ:
+            continue
+        os.environ[name] = value
+        loaded.append(name)
+    if loaded:
+        LOGGER.info("Loaded %s from %s", ", ".join(loaded), path)
+    return loaded
 
 
 def load_yaml(path: Path) -> dict[str, object]:

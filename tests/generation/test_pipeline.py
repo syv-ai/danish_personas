@@ -122,6 +122,10 @@ def _descriptions_json() -> str:
                 "I køkkenet er der plads til enkle retter og hyggelige måltider "
                 "med andre."
             ),
+            "visual_persona": (
+                "Kvinde, 34 år. Kort mørkt hår og en enkel mørkeblå skjorte, med et "
+                "roligt og neutralt ansigtsudtryk."
+            ),
             "persona": (
                 "Personen har en rolig dansk hverdag med plads til læsning, musik "
                 "og venner. Nye opgaver mødes med nysgerrighed og samarbejde."

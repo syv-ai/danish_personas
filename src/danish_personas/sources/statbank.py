@@ -333,6 +333,11 @@ def _resolve_dimensions(
     return dimensions
 
 
+# StatBank spells the total differently per dimension: "TOT" and "IALT" for most, and
+# "0000" for IELAND.
+TOTAL_CODES = {"TOT", "IALT", "0000"}
+
+
 def _apply_selector(selector: str, values: list[StatBankValue]) -> list[str]:
     typed_values = values
     if selector == "municipalities":
@@ -350,7 +355,7 @@ def _apply_selector(selector: str, values: list[StatBankValue]) -> list[str]:
             if value.text.startswith(REGION_LABEL_PREFIX)
         ]
     if selector == "non_total":
-        return [value.id for value in typed_values if value.id not in {"TOT", "IALT"}]
+        return [value.id for value in typed_values if value.id not in TOTAL_CODES]
     if selector == "all":
         return [value.id for value in typed_values]
     if selector == "adult_exact_ages":

@@ -12,6 +12,7 @@ from ..io import load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import (
     BundleManifest,
     CategoryConfig,
+    OriginRegionConfig,
     SnapshotManifest,
     SourceLock,
     StatBankMetadata,
@@ -19,11 +20,19 @@ from ..models import (
 from .statbank import source_query_content, source_snapshot_dir
 
 LOGGER = logging.getLogger(__name__)
+
+DANISH_ORIGIN = "danish_origin"
+DANISH_ORIGIN_REGION = "danmark"
+ORIGIN_REGIONS_CONFIG = Path("config/origin-regions.yaml")
 REGION_PREFIX = "Region "
 
 
 def prepare_bundle(
-    lock_path: Path, categories_path: Path, raw_dir: Path, output_dir: Path
+    lock_path: Path,
+    categories_path: Path,
+    raw_dir: Path,
+    output_dir: Path,
+    origin_regions_path: Path = ORIGIN_REGIONS_CONFIG,
 ) -> Path:
     """Build a validated, immutable source bundle.
 
@@ -36,15 +45,24 @@ def prepare_bundle(
             Root directory containing raw snapshots.
         output_dir:
             Root destination for prepared bundles.
+        origin_regions_path:
+            Country-of-origin groupings.
 
     Returns:
         Prepared bundle directory.
     """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
-    bundle_id = sha256_text(f"{sha256_file(lock_path)}:{sha256_file(categories_path)}")[
-        :16
-    ]
+    origin_regions = load_yaml_model(path=origin_regions_path, model=OriginRegionConfig)
+    bundle_id = sha256_text(
+        ":".join(
+            [
+                sha256_file(lock_path),
+                sha256_file(categories_path),
+                sha256_file(origin_regions_path),
+            ]
+        )
+    )[:16]
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
     if manifest_path.exists():
@@ -84,6 +102,7 @@ def prepare_bundle(
         raw_frames=source_frames,
         metadata_by_table=metadata_by_table,
         categories=categories,
+        origin_regions=origin_regions,
         region_map=region_map,
         release_rows=lock.release_rows,
         minimum_source_count=lock.minimum_source_count,
@@ -114,11 +133,16 @@ def prepare_bundle(
         created_at=_now(),
         source_lock_sha256=sha256_file(lock_path),
         categories_sha256=sha256_file(categories_path),
+        origin_regions_sha256=sha256_file(origin_regions_path),
         source_snapshots=snapshots,
         files=files,
         reference_periods={source.role: source.period for source in lock.sources},
         assumptions=[
             "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
+            "FOLK1E 2025Q1 shares the FOLK1A reference date and supplies origin.",
+            "Origin uses the official ancestry categories and is not ethnicity.",
+            "FOLK1C supplies the national country mix; regions are grouped locally.",
+            "Records carry the origin region only, never the country of origin.",
             "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
             "RAS209 jointly supplies broad education and labour-market status.",
             "RAS202 refines detailed status only within the RAS209 broad status.",
@@ -154,6 +178,7 @@ def _normalise_frames(
     raw_frames: dict[str, pl.DataFrame],
     metadata_by_table: dict[str, StatBankMetadata],
     categories: CategoryConfig,
+    origin_regions: OriginRegionConfig,
     region_map: dict[str, tuple[str, str]],
     release_rows: int,
     minimum_source_count: int,
@@ -165,20 +190,17 @@ def _normalise_frames(
     }
     status_map = _invert_status_mapping(categories=categories)
 
-    folk_calibration = raw_frames["FOLK1A"].select(
-        pl.col("OMRÅDE").alias("municipality_code"),
-        pl.col("KØN").replace_strict(categories.sex).alias("sex"),
-        pl.col("ALDER").cast(pl.Int16).alias("age"),
-        pl.col("CIVILSTAND")
-        .replace_strict(categories.marital_status)
-        .alias("marital_status"),
-        pl.col("count"),
-        pl.col("suppressed"),
-    )
-    folk_calibration = _add_geography(
-        frame=folk_calibration,
+    folk_calibration = _folk_frame(
+        raw_frames=raw_frames,
+        labels=labels,
         region_map=region_map,
-        municipality_labels=labels["FOLK1A"]["OMRÅDE"],
+        table="FOLK1A",
+        categories=categories,
+        mapped=[
+            pl.col("CIVILSTAND")
+            .replace_strict(categories.marital_status)
+            .alias("marital_status")
+        ],
     )
     folk = folk_calibration.filter(pl.col("age") >= 18).with_columns(
         _age_band_expression().alias("age_band")
@@ -198,6 +220,76 @@ def _normalise_frames(
         folk.group_by(["region_code", "region", "age_band", "sex", "marital_status"])
         .agg(pl.col("count").sum(), pl.col("suppressed").any())
         .filter(pl.col("count") >= folk_threshold)
+    )
+
+    folk1e = _folk_frame(
+        raw_frames=raw_frames,
+        labels=labels,
+        region_map=region_map,
+        table="FOLK1E",
+        categories=categories,
+        mapped=[
+            pl.col("HERKOMST").alias("origin_source_code"),
+            pl.col("HERKOMST").replace_strict(categories.origin).alias("origin"),
+        ],
+    )
+    folk1e = folk1e.filter(pl.col("age") >= 18).with_columns(
+        _age_band_expression().alias("age_band")
+    )
+    folk1e_threshold = _release_threshold(
+        total=float(folk1e.get_column("count").sum()),
+        release_rows=release_rows,
+        minimum_source_count=minimum_source_count,
+        minimum_expected_release_count=minimum_expected_release_count,
+    )
+    folk_origin_sampling = (
+        folk1e.group_by(
+            ["region_code", "region", "age_band", "sex", "origin", "origin_source_code"]
+        )
+        .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .filter(pl.col("count") >= folk1e_threshold)
+    )
+
+    origin_mix = (
+        raw_frames["FOLK1C"]
+        .select(
+            pl.col("KØN").replace_strict(categories.sex).alias("sex"),
+            pl.col("HERKOMST")
+            .replace_strict({"4": "immigrant", "3": "descendant"})
+            .alias("origin_class"),
+            pl.col("IELAND")
+            .replace_strict(origin_regions.regions)
+            .alias("origin_region"),
+            pl.col("count"),
+            pl.col("suppressed"),
+        )
+        .with_columns(
+            pl.when(pl.col("origin_region").is_in(origin_regions.western))
+            .then(pl.lit("western"))
+            .otherwise(pl.lit("non_western"))
+            .alias("origin_world")
+        )
+    )
+    origin_threshold = _release_threshold(
+        total=float(origin_mix.get_column("count").sum()),
+        release_rows=release_rows,
+        minimum_source_count=minimum_source_count,
+        minimum_expected_release_count=minimum_expected_release_count,
+    )
+    folk1c_region_sampling = (
+        origin_mix.with_columns(
+            pl.concat_str(
+                [pl.col("origin_class"), pl.col("origin_world")], separator="_"
+            ).alias("origin")
+        )
+        .group_by(["sex", "origin", "origin_region"])
+        .agg(pl.col("count").sum(), pl.col("suppressed").any())
+        .filter(pl.col("count") >= origin_threshold)
+    )
+    _verify_origin_vocabulary(frame=folk1c_region_sampling, categories=categories)
+    folk1c_region_sampling = pl.concat(
+        [folk1c_region_sampling, _danish_origin_regions(frame=folk1c_region_sampling)],
+        how="vertical",
     )
 
     ras209 = raw_frames["RAS209"].select(
@@ -304,6 +396,9 @@ def _normalise_frames(
         "folk1a_base_unpooled": folk,
         "folk_age_sampling": folk_age_sampling,
         "folk_marital_sampling": folk_marital_sampling,
+        "folk1e_origin_unpooled": folk1e,
+        "folk_origin_sampling": folk_origin_sampling,
+        "folk1c_region_sampling": folk1c_region_sampling,
         "ras209_joint_unpooled": ras209_joint,
         "ras209_sampling": ras209_sampling,
         "ras202_detail_unpooled": ras202,
@@ -369,6 +464,72 @@ def _age_band_expression() -> pl.Expr:
         .when(pl.col("age") <= 66)
         .then(pl.lit("50-66"))
         .otherwise(pl.lit("67+"))
+    )
+
+
+def _danish_origin_regions(frame: pl.DataFrame) -> pl.DataFrame:
+    """Build the degenerate region distribution for Danish-origin records.
+
+    FOLK1C covers immigrants and descendants only, so Danish origin has no country mix.
+    Emitting it here keeps the sampler drawing every field the same way.
+
+    Args:
+        frame:
+            Prepared region mix, used for its schema and its sex values.
+
+    Returns:
+        One row per sex, mapping Danish origin to Denmark.
+    """
+    sexes = sorted(frame.get_column("sex").unique().to_list())
+    return pl.DataFrame(
+        {
+            "sex": sexes,
+            "origin": [DANISH_ORIGIN] * len(sexes),
+            "origin_region": [DANISH_ORIGIN_REGION] * len(sexes),
+            "count": [1] * len(sexes),
+            "suppressed": [False] * len(sexes),
+        },
+        schema=frame.schema,
+    )
+
+
+def _folk_frame(
+    raw_frames: dict[str, pl.DataFrame],
+    labels: dict[str, dict[str, dict[str, str]]],
+    region_map: dict[str, tuple[str, str]],
+    table: str,
+    categories: CategoryConfig,
+    mapped: list[pl.Expr],
+) -> pl.DataFrame:
+    """Select and geocode the shared municipality, sex, and age columns.
+
+    Args:
+        raw_frames:
+            Raw source frames by table.
+        labels:
+            Dimension labels by table.
+        region_map:
+            Municipality-to-region mapping.
+        table:
+            Population table to prepare.
+        categories:
+            Canonical category mappings.
+        mapped:
+            Table-specific columns, inserted before the counts.
+
+    Returns:
+        The geocoded frame, before any age filter.
+    """
+    frame = raw_frames[table].select(
+        pl.col("OMRÅDE").alias("municipality_code"),
+        pl.col("KØN").replace_strict(categories.sex).alias("sex"),
+        pl.col("ALDER").cast(pl.Int16).alias("age"),
+        *mapped,
+        pl.col("count"),
+        pl.col("suppressed"),
+    )
+    return _add_geography(
+        frame=frame, region_map=region_map, municipality_labels=labels[table]["OMRÅDE"]
     )
 
 
@@ -492,6 +653,27 @@ def _region_labels(metadata: StatBankMetadata) -> dict[str, str]:
         for value in area.values
         if value.text.startswith(REGION_PREFIX)
     }
+
+
+def _verify_origin_vocabulary(frame: pl.DataFrame, categories: CategoryConfig) -> None:
+    """Check that the FOLK1C origin labels match the canonical category names.
+
+    Args:
+        frame:
+            Prepared region mix.
+        categories:
+            Canonical category mappings.
+
+    Raises:
+        ValueError:
+            If a composed origin label is absent from the category configuration.
+    """
+    unknown = set(frame.get_column("origin").unique().to_list()) - set(
+        categories.origin.values()
+    )
+    if unknown:
+        message = f"FOLK1C origin labels absent from categories: {sorted(unknown)}"
+        raise ValueError(message)
 
 
 def _now() -> str:
