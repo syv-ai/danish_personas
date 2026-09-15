@@ -125,6 +125,7 @@ def prepare_bundle(
     markdown_path.write_text(
         _source_report_markdown(bundle_id=bundle_id, metrics=source_metrics),
         encoding="utf-8",
+        newline="\n",
     )
     files[str(markdown_path.relative_to(bundle_dir))] = sha256_file(markdown_path)
 

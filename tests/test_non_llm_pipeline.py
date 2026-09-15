@@ -274,4 +274,6 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
 
 
 def _write_yaml(path: Path, payload: dict[str, object]) -> None:
-    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8", newline="\n"
+    )

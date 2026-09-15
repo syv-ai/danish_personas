@@ -27,7 +27,9 @@ def test_env_file_fills_gaps_without_overriding_the_environment(
     monkeypatch.delenv("FROM_FILE", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        '# comment\nexport FROM_FILE="value"\nALREADY_SET=from-file\n', encoding="utf-8"
+        '# comment\nexport FROM_FILE="value"\nALREADY_SET=from-file\n',
+        encoding="utf-8",
+        newline="\n",
     )
     assert load_env_file(env_file) == ["FROM_FILE"]
     assert os.environ["FROM_FILE"] == "value"

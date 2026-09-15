@@ -404,7 +404,7 @@ def _write_reports(directory: Path, report: ValidationReport) -> None:
         for metric in report.metrics
     )
     (directory / "validation-report.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
+        "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
     )
     LOGGER.info(
         "%s validation %s for %s",

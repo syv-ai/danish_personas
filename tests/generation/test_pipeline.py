@@ -270,8 +270,8 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     write_json(path=sample_manifest_path, payload=sample_manifest)
     attributes_prompt = root / "attributes.md"
     personas_prompt = root / "personas.md"
-    attributes_prompt.write_text("Danske attributter", encoding="utf-8")
-    personas_prompt.write_text("Danske personaer", encoding="utf-8")
+    attributes_prompt.write_text("Danske attributter", encoding="utf-8", newline="\n")
+    personas_prompt.write_text("Danske personaer", encoding="utf-8", newline="\n")
     config_path = root / "generation.yaml"
     config = {
         "version": 1,
@@ -292,7 +292,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "attributes_prompt": str(attributes_prompt),
         "personas_prompt": str(personas_prompt),
     }
-    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8", newline="\n")
     return {
         "sample": sample_path,
         "sample_manifest": sample_manifest_path,
@@ -332,7 +332,7 @@ def test_pipeline_rejects_tampering_and_resumes(
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     checkpoint["generation_context_sha256"] = "f" * 64
-    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match="Stale generation context"):
         generate_personas(
             input_path=paths["sample"],
