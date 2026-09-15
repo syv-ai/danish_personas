@@ -28,7 +28,7 @@ def freeze_sample(run_dir: Path, rows: int, output: Path) -> Path:
         The frozen sample file.
     """
     manifest = RunManifest.model_validate_json(
-        (run_dir / "run-manifest.json").read_text()
+        (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
     frame = pl.read_parquet(run_dir / manifest.data_file)
     rows = min(rows, frame.height)

@@ -52,7 +52,7 @@ def load_env_file(path: Path = ENV_FILE) -> list[str]:
         >>> lines = ["# comment", 'export TOKEN="abc"', "EMPTY="]
         >>> with tempfile.TemporaryDirectory() as directory:
         ...     file = Path(directory) / ".env"
-        ...     _ = file.write_text(chr(10).join(lines))
+        ...     _ = file.write_text(chr(10).join(lines), encoding="utf-8")
         ...     load_env_file(file)
         ['TOKEN']
         >>> os.environ.pop("TOKEN")

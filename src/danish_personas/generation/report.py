@@ -31,7 +31,7 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
         Machine-readable validation report.
     """
     manifest = PilotManifest.model_validate_json(
-        (pilot_dir / "pilot-manifest.json").read_text()
+        (pilot_dir / "pilot-manifest.json").read_text(encoding="utf-8")
     )
     output_path = pilot_dir / manifest.output_file
     output = pl.read_parquet(output_path)
@@ -47,9 +47,11 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
         report_path = pilot_dir / reference.validation_report_file
         try:
             batch_manifest = GenerationManifest.model_validate_json(
-                manifest_path.read_text()
+                manifest_path.read_text(encoding="utf-8")
             )
-            batch_report = ValidationReport.model_validate_json(report_path.read_text())
+            batch_report = ValidationReport.model_validate_json(
+                report_path.read_text(encoding="utf-8")
+            )
             if (
                 sha256_file(manifest_path) != reference.manifest_sha256
                 or sha256_file(report_path) != reference.validation_report_sha256
@@ -240,7 +242,7 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
         Machine-readable validation report.
     """
     manifest = GenerationManifest.model_validate_json(
-        (run_dir / "generation-manifest.json").read_text()
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
     )
     output_path = run_dir / manifest.output_file
     output = pl.read_parquet(output_path)
@@ -293,7 +295,7 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
         checkpoint_path = run_dir / "checkpoints" / f"{row['persona_id']}.json"
         try:
             checkpoint = PersonaCheckpoint.model_validate_json(
-                checkpoint_path.read_text()
+                checkpoint_path.read_text(encoding="utf-8")
             )
             checkpoint_input = {name: row[name] for name in upstream_columns}
             if (

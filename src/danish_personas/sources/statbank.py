@@ -62,7 +62,9 @@ def _fetch_source(
     snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
     manifest_path = snapshot_dir / "snapshot-manifest.json"
     if manifest_path.exists():
-        manifest = SnapshotManifest.model_validate_json(manifest_path.read_text())
+        manifest = SnapshotManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
         _verify_snapshot(snapshot_dir=snapshot_dir, manifest=manifest, source=source)
         LOGGER.info("Reusing immutable %s snapshot", source.table_id)
         return manifest
@@ -184,7 +186,7 @@ def _verify_snapshot(
             message = f"Immutable snapshot verification failed: {path}"
             raise ValueError(message)
     expected_query = source_query_content(source=source)
-    if (snapshot_dir / "query.json").read_text() != expected_query:
+    if (snapshot_dir / "query.json").read_text(encoding="utf-8") != expected_query:
         message = f"Snapshot query does not match lock: {snapshot_dir}"
         raise ValueError(message)
 

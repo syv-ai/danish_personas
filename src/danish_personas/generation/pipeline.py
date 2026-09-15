@@ -207,7 +207,9 @@ def _generate_one(
     checkpoint_path = checkpoint_dir / f"{persona_id}.json"
     attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
     if checkpoint_path.exists():
-        checkpoint = PersonaCheckpoint.model_validate_json(checkpoint_path.read_text())
+        checkpoint = PersonaCheckpoint.model_validate_json(
+            checkpoint_path.read_text(encoding="utf-8")
+        )
         _validate_checkpoint(
             checkpoint=checkpoint,
             input_sha=input_sha,
@@ -219,7 +221,7 @@ def _generate_one(
 
     if attribute_path.exists():
         attribute_checkpoint = AttributeCheckpoint.model_validate_json(
-            attribute_path.read_text()
+            attribute_path.read_text(encoding="utf-8")
         )
         _validate_checkpoint(
             checkpoint=attribute_checkpoint,
@@ -381,7 +383,9 @@ def _load_request_ledger(
 ) -> RequestLedger:
     ledger_path = run_dir / "request-ledger.json"
     if ledger_path.exists():
-        ledger = RequestLedger.model_validate_json(ledger_path.read_text())
+        ledger = RequestLedger.model_validate_json(
+            ledger_path.read_text(encoding="utf-8")
+        )
         if (
             ledger.generation_context_sha256 != generation_context_sha
             or ledger.maximum_attempts != maximum_attempts
@@ -395,12 +399,12 @@ def _load_request_ledger(
             if checkpoint_path.name.endswith(".attributes.json"):
                 continue
             checkpoint = PersonaCheckpoint.model_validate_json(
-                checkpoint_path.read_text()
+                checkpoint_path.read_text(encoding="utf-8")
             )
             checkpoints[checkpoint.persona_id] = checkpoint
         for checkpoint_path in checkpoint_dir.glob("*.attributes.json"):
             checkpoint = AttributeCheckpoint.model_validate_json(
-                checkpoint_path.read_text()
+                checkpoint_path.read_text(encoding="utf-8")
             )
             checkpoints.setdefault(checkpoint.persona_id, checkpoint)
         ledger = RequestLedger(
@@ -504,7 +508,7 @@ def validate_upstream_sample(
             If any checksum, provenance, schema, order, or membership check fails.
     """
     sample_manifest = FrozenSampleManifest.model_validate_json(
-        sample_manifest_path.read_text()
+        sample_manifest_path.read_text(encoding="utf-8")
     )
     if sample_manifest.sha256 != sha256_file(input_path):
         message = "Frozen sample checksum does not match its manifest"
@@ -524,10 +528,10 @@ def validate_upstream_sample(
 
     run_dir = input_path.parent
     upstream = RunManifest.model_validate_json(
-        (run_dir / "run-manifest.json").read_text()
+        (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
     report = ValidationReport.model_validate_json(
-        (run_dir / "validation-report.json").read_text()
+        (run_dir / "validation-report.json").read_text(encoding="utf-8")
     )
     upstream_path = run_dir / upstream.data_file
     if sha256_file(upstream_path) != upstream.data_sha256:

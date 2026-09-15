@@ -52,7 +52,9 @@ def validate_demographics(
     config = load_yaml_model(path=validation_config_path, model=ValidationConfig)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
     manifest_path = run_dir / "run-manifest.json"
-    manifest = RunManifest.model_validate_json(manifest_path.read_text())
+    manifest = RunManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
     data_path = run_dir / manifest.data_file
     frame = pl.read_parquet(data_path)
     metrics = _provenance_metrics(
@@ -283,7 +285,9 @@ def _provenance_metrics(
     frame: pl.DataFrame, manifest: RunManifest, data_path: Path, bundle_dir: Path
 ) -> list[MetricResult]:
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
-    bundle = BundleManifest.model_validate_json(bundle_manifest_path.read_text())
+    bundle = BundleManifest.model_validate_json(
+        bundle_manifest_path.read_text(encoding="utf-8")
+    )
     checks = {
         "parquet_checksum": sha256_file(data_path) == manifest.data_sha256,
         "logical_content_checksum": (
@@ -421,7 +425,9 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         Validation report.
     """
     manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(manifest_path.read_text())
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
     checksum_failures = [
         relative_path
         for relative_path, checksum in manifest.files.items()
@@ -429,7 +435,7 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         or sha256_file(bundle_dir / relative_path) != checksum
     ]
     source_report_path = bundle_dir / "source-preparation-report.json"
-    source_payload = json.loads(source_report_path.read_text())
+    source_payload = json.loads(source_report_path.read_text(encoding="utf-8"))
     source_passed = source_payload.get("passed") is True
     metrics = [
         MetricResult(

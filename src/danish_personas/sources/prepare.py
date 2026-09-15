@@ -78,7 +78,7 @@ def prepare_bundle(
     for source in lock.sources:
         snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
         snapshot = SnapshotManifest.model_validate_json(
-            (snapshot_dir / "snapshot-manifest.json").read_text()
+            (snapshot_dir / "snapshot-manifest.json").read_text(encoding="utf-8")
         )
         verify_raw_snapshot(
             snapshot_dir=snapshot_dir,
@@ -90,7 +90,7 @@ def prepare_bundle(
         )
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
-            (snapshot_dir / "metadata-en.json").read_text()
+            (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
         )
         metadata_by_table[source.table_id] = metadata
         source_frames[source.table_id] = _read_source(
@@ -745,7 +745,9 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
-    manifest = BundleManifest.model_validate_json(manifest_path.read_text())
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
     for relative_path, expected_checksum in manifest.files.items():
         path = bundle_dir / relative_path
         if not path.exists() or sha256_file(path) != expected_checksum:
@@ -800,6 +802,6 @@ def verify_raw_snapshot(
     if snapshot.query_sha256 != sha256_text(expected_query):
         message = f"Raw snapshot query does not match source lock: {query_path}"
         raise ValueError(message)
-    if query_path.read_text() != expected_query:
+    if query_path.read_text(encoding="utf-8") != expected_query:
         message = f"Raw snapshot query content is not canonical: {query_path}"
         raise ValueError(message)

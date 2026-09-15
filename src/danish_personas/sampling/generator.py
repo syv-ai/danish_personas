@@ -50,14 +50,18 @@ def generate_records(
     """
     config = load_yaml_model(path=sampling_config_path, model=SamplingConfig)
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
-    bundle = BundleManifest.model_validate_json(bundle_manifest_path.read_text())
+    bundle = BundleManifest.model_validate_json(
+        bundle_manifest_path.read_text(encoding="utf-8")
+    )
     run_id = sha256_text(
         f"{bundle.bundle_id}:{sha256_file(sampling_config_path)}:{rows}:{seed}"
     )[:16]
     run_dir = output_dir / run_id
     manifest_path = run_dir / "run-manifest.json"
     if manifest_path.exists():
-        manifest = RunManifest.model_validate_json(manifest_path.read_text())
+        manifest = RunManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
         data_path = run_dir / manifest.data_file
         if sha256_file(data_path) != manifest.data_sha256:
             message = f"Generated run checksum mismatch: {data_path}"

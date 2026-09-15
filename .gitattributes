@@ -1,0 +1,6 @@
+# Bundle and run identifiers are derived from file checksums, so every checkout must
+# see the same bytes. Normalise line endings to LF and keep binary artefacts untouched.
+* text=auto eol=lf
+
+*.tar.zst binary
+*.parquet binary

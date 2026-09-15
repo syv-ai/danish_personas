@@ -389,14 +389,20 @@ def load_run_frame(run_dir: Path) -> pl.DataFrame:
 def _manifest_data_file(run_dir: Path) -> Path | None:
     manifest_path = run_dir / "run-manifest.json"
     if manifest_path.is_file():
-        return RunManifest.model_validate_json(manifest_path.read_text()).data_file
+        return RunManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        ).data_file
     manifest_path = run_dir / "generation-manifest.json"
     if manifest_path.is_file():
-        manifest = GenerationManifest.model_validate_json(manifest_path.read_text())
+        manifest = GenerationManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
         return Path(manifest.output_file.name)
     manifest_path = run_dir / "pilot-manifest.json"
     if manifest_path.is_file():
-        pilot = PilotManifest.model_validate_json(manifest_path.read_text())
+        pilot = PilotManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
         return Path(pilot.output_file.name)
     return None
 

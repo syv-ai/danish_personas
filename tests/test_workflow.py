@@ -26,7 +26,9 @@ def test_env_file_fills_gaps_without_overriding_the_environment(
     monkeypatch.setenv("ALREADY_SET", "from-shell")
     monkeypatch.delenv("FROM_FILE", raising=False)
     env_file = tmp_path / ".env"
-    env_file.write_text('# comment\nexport FROM_FILE="value"\nALREADY_SET=from-file\n')
+    env_file.write_text(
+        '# comment\nexport FROM_FILE="value"\nALREADY_SET=from-file\n', encoding="utf-8"
+    )
     assert load_env_file(env_file) == ["FROM_FILE"]
     assert os.environ["FROM_FILE"] == "value"
     assert os.environ["ALREADY_SET"] == "from-shell"
@@ -45,11 +47,11 @@ def test_export_separates_inputs_from_generated_text(tmp_path: Path) -> None:
     json_path, markdown_path = export_record(
         record=record, run_dir=tmp_path / "run", output_dir=tmp_path / "exports"
     )
-    payload = json.loads(json_path.read_text())
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["statistical_inputs"]["detailed_status"] == "Old-age pension"
     assert payload["generated"]["hobbies_and_interests"] == ["kor", "løb"]
     assert "persona" not in payload["statistical_inputs"]
-    assert "Dansk beskrivelse." in markdown_path.read_text()
+    assert "Dansk beskrivelse." in markdown_path.read_text(encoding="utf-8")
 
 
 def test_load_run_frame_reads_and_reports_missing_data(tmp_path: Path) -> None:
