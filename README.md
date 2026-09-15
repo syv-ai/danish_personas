@@ -1,61 +1,84 @@
 # Danish Personas
 
 A reproducible pipeline for creating statistically grounded Danish synthetic persona
-seeds from public aggregate data. The implemented scope contains no LLM calls and no
-personal microdata.
+records from public aggregate data. The default workflow is deterministic and does not
+call an LLM or use personal microdata. A separate, explicitly guarded workflow can add
+Danish attributes and persona text to a small frozen sample.
 
-The research and delivery design is documented in
+The design rationale and deferred work are documented in
 [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md).
 
-## Current status
+## Status and scope
 
-Phases 0-2 are implemented and validated:
+The source-acquisition, preparation, deterministic sampling, and validation stages are
+implemented. The committed configuration keeps LLM generation disabled. The LLM code is
+smoke-test infrastructure only: it supports at most five rows per invocation, and
+release-scale generation and human approval are not implemented release gates.
 
-1. typed codebase, configuration, commands, tests, and an LLM execution guard;
-2. immutable acquisition and preparation of five Statistics Denmark tables;
-3. deterministic generation and validation of demographic and OCEAN records.
+The validated local Phase 2 run has 100,000 records. The Phase 3 smoke report
+documents a passed three-record run, but that generated data is not committed. Read
+the reports before making statistical or quality claims:
 
-The validated local statistical run contains 100,000 records. Phase-3 infrastructure now
-supports guarded, resumable two-stage generation of structured attributes and six Danish
-persona descriptions. A three-record smoke test passed; development-sample generation,
-human evaluation, model selection, and any release-scale generation remain deferred. A
-separate five-record Hugging Face Gemma experiment established that no-thinking mode is
-operationally reliable, but failed manual review. A blinded four-model comparison selected
-Qwen 397B as the initial quality leader. A follow-up blinded comparison promoted
-DeepSeek V4.1 Flash as the leading candidate; it is not yet approved for pilot-scale
-generation.
+- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
+- [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
+- [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
 
-## Setup
+## Prerequisites
 
-```bash
-uv sync
-make check
-uv run pytest
-```
+- Python 3.14 or later (and below Python 4.0), as required by `pyproject.toml`.
+- [`uv`](https://docs.astral.sh/uv/) for Python and dependency management.
+- GNU Make and Bash for the convenience targets; `git` for manifests and checks.
+- Network access only when fetching Statistics Denmark data or using an LLM endpoint.
+- Enough local disk for raw CSV snapshots, Parquet files, and generated reports.
 
-Python 3.14 or later is required.
+The pipeline uses `polars`, `numpy`, `scipy`, Pydantic, Click, PyYAML, and HTTPX. The
+full dependency list and locked versions are in `pyproject.toml` and `uv.lock`.
 
-## Reproduce the non-LLM pipeline
+## Installation
 
-Resolve source selectors into an explicit, idempotent lock:
+From the repository root, install the locked development environment:
 
 ```bash
-uv run src/scripts/download_sources.py resolve \
-  --config config/sources.yaml \
-  --lock config/sources.lock.yaml
+uv sync --locked --all-extras --dev
 ```
 
-Fetch immutable raw snapshots:
+If `uv` is not installed, follow its installation instructions. The repository's
+`make install` can install or update `uv`, create `.env`, initialise Git settings, and
+add a GitHub remote; use it only when those side effects are wanted:
+
+```bash
+make install
+```
+
+## Environment setup
+
+The application does not require environment variables for the non-LLM pipeline. For
+local Git metadata or optional LLM credentials, create the ignored environment file:
+
+```bash
+cp .env.example .env
+```
+
+Set `GIT_NAME` and `GIT_EMAIL` only if using the Makefile's Git setup. `OPENAI_API_KEY`
+and `HF_TOKEN` are examples of optional bearer-token variables; a generation config
+selects the variable through `api_key_env`. A shell does not automatically export
+values from `.env`, so export an LLM token in the shell that runs the generation
+command, or use the Makefile's environment handling.
+Never commit `.env`, tokens, or generated `data/`.
+
+## Quickstart: non-LLM workflow
+
+The following commands fetch five public Statistics Denmark aggregate tables, prepare a
+local source bundle, generate 1,000 deterministic records, and validate every stage. The
+fetch step is the only part of this quickstart that needs external data. The committed
+`config/sources.lock.yaml` is used as-is, so this reproduces the locked queries rather
+than silently resolving current selectors.
 
 ```bash
 uv run src/scripts/download_sources.py fetch \
   --lock config/sources.lock.yaml \
   --raw-dir data/raw
-```
 
-Prepare and validate the offline source bundle:
-
-```bash
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml \
   --categories config/categories.yaml \
@@ -64,24 +87,50 @@ uv run src/scripts/build_distributions.py \
 
 BUNDLE=$(ls -td data/processed/* | head -1)
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
-```
 
-Generate and validate the smoke run before the statistical run:
-
-```bash
 uv run src/scripts/generate_demographics.py \
   --bundle "$BUNDLE" \
   --rows 1000 \
   --seed 20260914 \
   --output-dir data/runs/smoke
 
-SMOKE=$(ls -td data/runs/smoke/* | head -1)
+RUN=$(ls -td data/runs/smoke/* | head -1)
 uv run src/scripts/validate_dataset.py demographics \
-  --run "$SMOKE" \
+  --run "$RUN" \
   --bundle "$BUNDLE"
+```
+
+All generated run identifiers are derived from input checksums, row count, and seed.
+Repeating a valid command reuses the existing run; a checksum mismatch fails instead of
+overwriting data.
+
+## Reproduce the statistical pipeline
+
+Use the same ordering for a 100,000-row local run. Resolve selectors only when updating
+the source lock; that command contacts the StatBank metadata API and changes the tracked
+lock file.
+
+```bash
+uv run src/scripts/download_sources.py resolve \
+  --config config/sources.yaml \
+  --lock config/sources.lock.yaml
+
+uv run src/scripts/download_sources.py fetch \
+  --lock config/sources.lock.yaml \
+  --raw-dir data/raw
+
+uv run src/scripts/build_distributions.py \
+  --lock config/sources.lock.yaml \
+  --categories config/categories.yaml \
+  --raw-dir data/raw \
+  --output-dir data/processed
+
+BUNDLE=$(ls -td data/processed/* | head -1)
+uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 
 uv run src/scripts/generate_demographics.py \
   --bundle "$BUNDLE" \
+  --config config/sampling.yaml \
   --rows 100000 \
   --seed 20260914 \
   --output-dir data/runs/statistical
@@ -92,7 +141,8 @@ uv run src/scripts/validate_dataset.py demographics \
   --bundle "$BUNDLE"
 ```
 
-Freeze the deterministic Phase-3 development input without calling an LLM:
+Freeze a deterministic 1,000-row input for optional LLM development work only after the
+statistical validation passes:
 
 ```bash
 uv run src/scripts/freeze_demographic_sample.py \
@@ -101,16 +151,27 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
-## Run a guarded LLM smoke test
+The source preparation stage uses FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210. The first
+three ground the distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics.
+Municipality aggregates are used to construct regional counts, but municipality fields
+are not emitted in generated records.
 
-Copy `config/generation.yaml` to the Git-ignored
-`config/generation.local.yaml`. Set `llm_generation_enabled: true`, `base_url`, and
-`model` in the local copy. If the endpoint needs a bearer token, set `api_key_env` to
-the environment variable containing it.
+## Optional LLM workflow
 
-Always run without `--live` first. This verifies the upstream validation report,
-sample checksum, configuration, prompt files, and hard five-row limit without making
-network requests:
+This workflow is separate from the non-LLM pipeline and may incur provider charges. It
+sends frozen aggregate-derived records to the configured OpenAI-compatible endpoint.
+Automated checks are necessary but do not replace blinded human review.
+
+First create a local configuration. Keep the committed file disabled; for a dry run, the
+local copy can retain `false`, null endpoint/model values, and no token:
+
+```bash
+cp config/generation.yaml config/generation.local.yaml
+```
+
+Run the safe plan first. It validates the upstream report, sample checksum, prompts,
+schemas, and row/request limits without making network requests or creating output
+files:
 
 ```bash
 uv run src/scripts/generate_personas.py \
@@ -121,51 +182,123 @@ uv run src/scripts/generate_personas.py \
   --rows 3
 ```
 
-Add `--live` to authorise the planned requests explicitly. Validate the resulting run:
+For an approved smoke test, edit only the ignored local config: set
+`llm_generation_enabled: true`, `base_url`, and `model`. Set `api_key_env` to the name
+of an exported bearer-token variable if the endpoint requires authentication. Then add
+`--live` explicitly:
 
 ```bash
+export OPENAI_API_KEY='replace-with-a-token'
+uv run src/scripts/generate_personas.py \
+  --input "$RUN/text-development-seeds.parquet" \
+  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
+  --config config/generation.local.yaml \
+  --output-dir data/persona-smoke \
+  --rows 3 \
+  --live
+
 PERSONA_RUN=$(ls -td data/persona-smoke/* | head -1)
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
-A repeated command resumes from per-record checkpoints and does not call the model for
-completed records.
+Each record uses two model stages: structured attributes, then six Danish descriptions.
+A repeated live command resumes valid per-record checkpoints and does not repeat
+completed calls. The invocation cap is five rows and the default HTTP-attempt budget is
+15.
 
-## Outputs
+For a multi-shard pilot, use `generate_persona_pilot.py`. It requires `--live`, limits
+shards to five rows, validates each shard, merges them, records token/cost accounting,
+and validates the merged pilot. Its required prices are estimates supplied by the user:
 
-The ignored `data/` directory contains:
+```bash
+uv run src/scripts/generate_persona_pilot.py \
+  --input "$RUN/text-development-seeds.parquet" \
+  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
+  --config config/generation.local.yaml \
+  --output-dir data/persona-pilot \
+  --rows 10 \
+  --batch-size 5 \
+  --concurrency 1 \
+  --maximum-total-requests 30 \
+  --input-price-per-million 0 \
+  --output-price-per-million 0 \
+  --live
+```
 
-- raw StatBank CSV and metadata snapshots with SHA-256 manifests;
-- normalized and pooled Parquet sampling tables;
-- source and demographic validation reports in JSON and Markdown;
-- deterministic Parquet records and run manifests;
-- a 1,000-row stratified seed set for LLM development;
-- local persona smoke outputs, checkpoints, provenance manifests, and validation reports.
+Do not run the LLM commands merely to verify installation. They need a reachable
+provider and, with `--live`, can consume paid requests.
 
-The source lock, category mappings, sampling parameters, validation thresholds, and code
-are version controlled. Large generated artefacts remain local and reproducible.
+## Outputs and data handling
 
-## Safety boundary
+All generated artefacts belong under the ignored `data/` directory. Important outputs
+are:
 
-`config/generation.yaml` keeps live LLM generation disabled. Enabling it requires both a
-local configuration and the explicit `--live` flag. The pipeline checks the frozen-input
-checksum and successful Phase-2 report before contacting a provider, and never permits
-more than five rows per invocation. Exact addresses, CPR numbers, names, occupation,
-ancestry, citizenship, income, household information, and sensitive traits are not
-generated in the implemented scope. Deterministic validators reject contact details,
-sensitive terms, non-Danish output, duplicate descriptions, schema violations, checksum
-changes, and modifications to upstream fields.
+- `data/raw/<table>/<query-hash>/`: immutable `data.csv`, metadata, query, response
+  headers, and `snapshot-manifest.json` files;
+- `data/processed/<bundle-id>/`: normalised Parquet distributions,
+  `bundle-manifest.json`, and source preparation reports;
+- `data/runs/<name>/<run-id>/`: `structured-records.parquet`, `run-manifest.json`, and
+  JSON/Markdown validation reports;
+- the frozen sample Parquet file and adjacent `.manifest.json` file;
+- `data/persona-smoke/<run-id>/`: generated Parquet, `generation-manifest.json`, request
+  ledger, checkpoints, and validation report;
+- `data/persona-pilot/<pilot-id>/`: merged Parquet, pilot manifest, shard directories,
+  and pilot validation report.
 
-## Validation
+Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts, seeds,
+model metadata, request/retry/token accounting, and (when available) cost estimates.
+Accepted LLM response metadata and response hashes are checkpointed; rejected completion
+text is not stored. Generated outputs remain local until privacy and human review
+approve any proposed release.
 
-See:
+## Safety and privacy boundary
 
-- [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md);
-- [`docs/source-register.md`](docs/source-register.md);
-- [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md);
-- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md);
-- [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md);
-- [`docs/reports/hf-gemma-cost-smoke.md`](docs/reports/hf-gemma-cost-smoke.md);
-- [`docs/reports/hf-model-comparison.md`](docs/reports/hf-model-comparison.md);
-- [`docs/reports/hf-deepseek-comparison.md`](docs/reports/hf-deepseek-comparison.md);
-- [`docs/reports/deepseek-v41-pilot.md`](docs/reports/deepseek-v41-pilot.md).
+Statistics Denmark inputs are public aggregate tables, not individual-level records. The
+pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
+aged 18-125 with country, sex, age, marital status, region, broad education, labour
+status, detailed status, and independent OCEAN scores. It does not emit names, exact
+addresses, coordinates, CPR or other administrative identifiers, employers, occupations,
+income, household details, ancestry, citizenship, health, religion, sexuality, politics,
+criminal history, or free text.
+
+LLM prompts prohibit identifying and sensitive details, stereotypes, and deterministic
+claims about demographics or personality. Validators check strict schemas, Danish text,
+contact and identifying-number patterns, configured sensitive terms, duplicate
+descriptions, upstream preservation, checksums, and checkpoint provenance. These are
+finite automated checks, not a guarantee of anonymity or safe use. Treat regional
+combinations, accepted text, checkpoints, tokens, and provider telemetry as restricted.
+Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting and
+[`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing outputs.
+
+## Validation and development checks
+
+Run the test suite without network access or LLM calls:
+
+```bash
+uv run pytest
+```
+
+Pytest also runs doctests, enables coverage for `src/danish_personas`, and treats most
+warnings as errors. Run the repository's full pre-commit checks before submitting
+changes:
+
+```bash
+make check
+```
+
+`make check` runs the configured annotation, hygiene, vulture, function-ordering, Ruff,
+type-checking, notebook, and Markdown checks. It may fix files in place. To run the
+checks without Make, use `uv run pre-commit run --all-files`. The `make test` target
+also runs `readme-cov` and commits a README coverage-badge update, so prefer `uv run
+pytest` when a side-effect-free test run is required.
+
+## Further documentation
+
+- [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md): mandatory gates and
+  non-zero failure behaviour;
+- [`docs/source-register.md`](docs/source-register.md): source tables, periods, and
+  harmonisation decisions;
+- [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md): design and deferred
+  delivery phases;
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): project contribution process;
+- [`LICENSE`](LICENSE): project licence.
