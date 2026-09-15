@@ -167,4 +167,5 @@ See:
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md);
 - [`docs/reports/hf-gemma-cost-smoke.md`](docs/reports/hf-gemma-cost-smoke.md);
 - [`docs/reports/hf-model-comparison.md`](docs/reports/hf-model-comparison.md);
-- [`docs/reports/hf-deepseek-comparison.md`](docs/reports/hf-deepseek-comparison.md).
+- [`docs/reports/hf-deepseek-comparison.md`](docs/reports/hf-deepseek-comparison.md);
+- [`docs/reports/deepseek-v41-pilot.md`](docs/reports/deepseek-v41-pilot.md).

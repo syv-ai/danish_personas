@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import RunManifest, ValidationReport
-from .client import OpenAIClient
+from .client import OpenAIClient, RequestBudgetExceeded
 from .models import (
     AttributeCheckpoint,
     FrozenSampleManifest,
@@ -21,6 +21,7 @@ from .models import (
     LLMResponse,
     PersonaCheckpoint,
     PersonaDescriptions,
+    RequestLedger,
 )
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
@@ -35,6 +36,7 @@ def generate_personas(
     output_dir: Path,
     rows: int,
     live: bool,
+    offset: int = 0,
 ) -> Path:
     """Generate structured attributes and six persona descriptions.
 
@@ -48,19 +50,29 @@ def generate_personas(
         output_dir:
             Root directory for generation runs.
         rows:
-            Number of smoke records, capped at five.
+            Number of records, capped at five per invocation.
         live:
             Whether network calls are explicitly authorised.
+        offset:
+            Zero-based position within the ordered frozen sample.
 
     Returns:
         Planned or completed generation run directory.
+
+    Raises:
+        ValueError:
+            If the requested range is outside the frozen sample.
     """
     config = load_yaml_model(path=config_path, model=GenerationConfig)
     _validate_guards(config=config, rows=rows, live=live)
     upstream_run = validate_upstream_sample(
         input_path=input_path, sample_manifest_path=sample_manifest_path
     )
-    frame = pl.read_parquet(input_path).sort("persona_id").head(rows)
+    sample = pl.read_parquet(input_path).sort("persona_id")
+    if offset < 0 or offset + rows > sample.height:
+        message = "Requested row range exceeds the frozen sample"
+        raise ValueError(message)
+    frame = sample.slice(offset, rows)
     selected_ids = frame.get_column("persona_id").to_list()
     ordered_ids_sha = sha256_text(canonical_json(selected_ids))
     attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
@@ -92,7 +104,27 @@ def generate_personas(
         return run_dir
 
     api_key = os.environ.get(config.api_key_env) if config.api_key_env else None
-    client = OpenAIClient(config=config, api_key=api_key)
+    ledger_path = run_dir / "request-ledger.json"
+    ledger = _load_request_ledger(
+        run_dir=run_dir,
+        generation_context_sha=generation_context_sha,
+        maximum_attempts=config.maximum_total_requests,
+    )
+
+    def record_request(attempts: int) -> None:
+        nonlocal ledger
+        if attempts > ledger.maximum_attempts:
+            message = "Generation HTTP request budget is exhausted"
+            raise RequestBudgetExceeded(message)
+        ledger = ledger.model_copy(update={"attempts": attempts})
+        write_json(path=ledger_path, payload=ledger)
+
+    client = OpenAIClient(
+        config=config,
+        api_key=api_key,
+        initial_requests_made=ledger.attempts,
+        record_request=record_request,
+    )
     checkpoints: list[PersonaCheckpoint] = []
     try:
         for row in frame.iter_rows(named=True):
@@ -118,6 +150,7 @@ def generate_personas(
         sample_manifest_file=sample_manifest_path,
         input_sha256=sha256_file(input_path),
         ordered_persona_ids_sha256=ordered_ids_sha,
+        generation_config_file=config_path,
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context_sha,
         validator_version=VALIDATOR_VERSION,
@@ -126,10 +159,9 @@ def generate_personas(
         model=config.model or "",
         base_url=config.base_url or "",
         rows=rows,
-        requests=sum(_checkpoint_requests(item=item) for item in checkpoints),
-        retries=max(
-            0, sum(_checkpoint_requests(item=item) for item in checkpoints) - rows * 2
-        ),
+        offset=offset,
+        requests=ledger.attempts,
+        retries=max(0, ledger.attempts - rows * 2),
         prompt_tokens=sum(response.prompt_tokens for response in responses),
         completion_tokens=sum(response.completion_tokens for response in responses),
         total_tokens=sum(response.total_tokens for response in responses),
@@ -150,12 +182,6 @@ def generate_personas(
         "Completed persona smoke run %s with %s requests", run_id, manifest.requests
     )
     return run_dir
-
-
-def _checkpoint_requests(item: PersonaCheckpoint) -> int:
-    if item.http_requests:
-        return item.http_requests
-    return sum(response.request_attempts for response in item.responses)
 
 
 def _generate_one(
@@ -340,6 +366,45 @@ def models_match(configured: str, returned: str) -> bool:
     return (
         configured.partition(":")[0].casefold() == returned.partition(":")[0].casefold()
     )
+
+
+def _load_request_ledger(
+    run_dir: Path, generation_context_sha: str, maximum_attempts: int
+) -> RequestLedger:
+    ledger_path = run_dir / "request-ledger.json"
+    if ledger_path.exists():
+        ledger = RequestLedger.model_validate_json(ledger_path.read_text())
+        if (
+            ledger.generation_context_sha256 != generation_context_sha
+            or ledger.maximum_attempts != maximum_attempts
+        ):
+            message = "Stale request ledger does not match generation context"
+            raise ValueError(message)
+    else:
+        checkpoints: dict[str, AttributeCheckpoint | PersonaCheckpoint] = {}
+        checkpoint_dir = run_dir / "checkpoints"
+        for checkpoint_path in checkpoint_dir.glob("*.json"):
+            if checkpoint_path.name.endswith(".attributes.json"):
+                continue
+            checkpoint = PersonaCheckpoint.model_validate_json(
+                checkpoint_path.read_text()
+            )
+            checkpoints[checkpoint.persona_id] = checkpoint
+        for checkpoint_path in checkpoint_dir.glob("*.attributes.json"):
+            checkpoint = AttributeCheckpoint.model_validate_json(
+                checkpoint_path.read_text()
+            )
+            checkpoints.setdefault(checkpoint.persona_id, checkpoint)
+        ledger = RequestLedger(
+            generation_context_sha256=generation_context_sha,
+            attempts=sum(item.http_requests for item in checkpoints.values()),
+            maximum_attempts=maximum_attempts,
+        )
+        write_json(path=ledger_path, payload=ledger)
+    if ledger.attempts > maximum_attempts:
+        message = "Persisted HTTP requests exceed the generation budget"
+        raise RequestBudgetExceeded(message)
+    return ledger
 
 
 def _sum_estimated_cost(responses: list[LLMResponse]) -> float | None:

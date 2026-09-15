@@ -14,6 +14,7 @@ from danish_personas.generation.pipeline import generate_personas
 @click.option("--config", "config_path", type=click.Path(path_type=Path), required=True)
 @click.option("--output-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--rows", type=click.IntRange(min=1), required=True)
+@click.option("--offset", type=click.IntRange(min=0), default=0, show_default=True)
 @click.option("--live", is_flag=True, help="Explicitly authorise model requests.")
 def main(
     input_path: Path,
@@ -21,6 +22,7 @@ def main(
     config_path: Path,
     output_dir: Path,
     rows: int,
+    offset: int,
     live: bool,
 ) -> None:
     """Plan or execute a smoke persona-generation run.
@@ -37,6 +39,7 @@ def main(
             config_path=config_path,
             output_dir=output_dir,
             rows=rows,
+            offset=offset,
             live=live,
         )
     except Exception as error:

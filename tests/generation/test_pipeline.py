@@ -1,11 +1,13 @@
 """Integration tests for guarded persona pipeline provenance and resume."""
 
+import collections.abc as c
 import json
 from pathlib import Path
 
 import polars as pl
 import pytest
 import yaml
+from click.testing import CliRunner
 
 from danish_personas.generation.client import RequestBudgetExceeded
 from danish_personas.generation.models import (
@@ -14,17 +16,28 @@ from danish_personas.generation.models import (
     LLMResponse,
 )
 from danish_personas.generation.pipeline import generate_personas, models_match
-from danish_personas.generation.report import validate_persona_run
+from danish_personas.generation.report import (
+    validate_persona_pilot,
+    validate_persona_run,
+)
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import RunManifest, ValidationReport
+from scripts.generate_persona_pilot import main as pilot_main
 
 
 class _MockClient:
     requests = 0
 
-    def __init__(self, config: GenerationConfig, **_: object) -> None:
+    def __init__(
+        self,
+        config: GenerationConfig,
+        initial_requests_made: int = 0,
+        record_request: c.Callable[[int], None] | None = None,
+        **_: object,
+    ) -> None:
         self._model = config.model or ""
-        self._requests_made = 0
+        self._requests_made = initial_requests_made
+        self._record_request = record_request
 
     def close(self) -> None:
         return None
@@ -32,6 +45,8 @@ class _MockClient:
     def complete(self, schema_name: str, **_: object) -> LLMResponse:
         type(self).requests += 1
         self._requests_made += 1
+        if self._record_request is not None:
+            self._record_request(self._requests_made)
         content = (
             _attributes_json()
             if schema_name == "generated_attributes"
@@ -64,6 +79,8 @@ class _InterruptingClient(_MockClient):
             type(self).interrupt_once = False
             type(self).requests += 1
             self._requests_made += 1
+            if self._record_request is not None:
+                self._record_request(self._requests_made)
             raise RequestBudgetExceeded("test interruption")
         return super().complete(schema_name=schema_name, **kwargs)
 
@@ -131,6 +148,154 @@ class _RejectingClient(_MockClient):
         return response
 
 
+def test_pilot_merges_validated_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pilot runner merges each bounded invocation exactly once."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    result = CliRunner().invoke(
+        pilot_main,
+        [
+            "--input",
+            str(paths["sample"]),
+            "--sample-manifest",
+            str(paths["sample_manifest"]),
+            "--config",
+            str(paths["config"]),
+            "--output-dir",
+            str(tmp_path / "pilot"),
+            "--rows",
+            "2",
+            "--batch-size",
+            "1",
+            "--concurrency",
+            "1",
+            "--maximum-total-requests",
+            "10",
+            "--input-price-per-million",
+            "0.3",
+            "--output-price-per-million",
+            "1.2",
+            "--live",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
+    output = pl.read_parquet(output_path)
+    assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
+    assert _MockClient.requests == 4
+
+    pilot_dir = output_path.parent
+    manifest_path = pilot_dir / "pilot-manifest.json"
+    original_manifest = json.loads(manifest_path.read_text())
+
+    tampered_manifest = {**original_manifest, "requests": 0}
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    alternate_config = tmp_path / "same-generation.yaml"
+    alternate_config.write_bytes(paths["config"].read_bytes())
+    tampered_manifest = {
+        **original_manifest,
+        "generation_config_file": str(alternate_config),
+    }
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    batch_reference = original_manifest["batch_runs"][1]
+    batch_manifest_path = pilot_dir / batch_reference["manifest_file"]
+    original_batch_manifest = batch_manifest_path.read_bytes()
+    tampered_batch_manifest = json.loads(original_batch_manifest)
+    tampered_batch_manifest["upstream_run_id"] = "different-upstream"
+    write_json(path=batch_manifest_path, payload=tampered_batch_manifest)
+    tampered_manifest = json.loads(json.dumps(original_manifest))
+    tampered_manifest["batch_runs"][1]["manifest_sha256"] = sha256_file(
+        batch_manifest_path
+    )
+    write_json(path=manifest_path, payload=tampered_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    batch_manifest_path.write_bytes(original_batch_manifest)
+    write_json(path=manifest_path, payload=original_manifest)
+
+
+def _write_inputs(root: Path) -> dict[str, Path]:
+    run_dir = root / "upstream"
+    run_dir.mkdir()
+    source = pl.DataFrame({"persona_id": ["persona-1", "persona-2"], "value": [1, 2]})
+    source_path = run_dir / "structured-records.parquet"
+    sample_path = run_dir / "text-development-seeds.parquet"
+    source.write_parquet(source_path)
+    source.write_parquet(sample_path)
+    run_manifest = RunManifest(
+        run_id="upstream-run",
+        created_at="2026-01-01T00:00:00+00:00",
+        bundle_id="bundle",
+        bundle_manifest_sha256="0" * 64,
+        sampling_config_sha256="1" * 64,
+        rows=2,
+        seed=1,
+        data_file=Path(source_path.name),
+        data_sha256=sha256_file(source_path),
+        logical_content_sha256="2" * 64,
+        llm_calls=0,
+    )
+    write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
+    write_json(
+        path=run_dir / "validation-report.json",
+        payload=ValidationReport(
+            kind="demographics",
+            passed=True,
+            created_at="2026-01-01T00:00:00+00:00",
+            subject_id=run_manifest.run_id,
+            metrics=[],
+        ),
+    )
+    sample_manifest = FrozenSampleManifest(
+        source_run_id=run_manifest.run_id,
+        rows=2,
+        strata=[],
+        method="test",
+        data_file=Path(sample_path.name),
+        sha256=sha256_file(sample_path),
+        llm_calls=0,
+    )
+    sample_manifest_path = sample_path.with_suffix(".manifest.json")
+    write_json(path=sample_manifest_path, payload=sample_manifest)
+    attributes_prompt = root / "attributes.md"
+    personas_prompt = root / "personas.md"
+    attributes_prompt.write_text("Danske attributter")
+    personas_prompt.write_text("Danske personaer")
+    config_path = root / "generation.yaml"
+    config = {
+        "version": 1,
+        "llm_generation_enabled": True,
+        "base_url": "http://test/v1",
+        "model": "test-model",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 2,
+        "maximum_validation_attempts": 2,
+        "maximum_total_requests": 5,
+        "retry_backoff_seconds": 0.0,
+        "maximum_smoke_rows": 2,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": None,
+        "response_format": "json_schema",
+        "attributes_prompt": str(attributes_prompt),
+        "personas_prompt": str(personas_prompt),
+    }
+    config_path.write_text(yaml.safe_dump(config))
+    return {
+        "sample": sample_path,
+        "sample_manifest": sample_manifest_path,
+        "config": config_path,
+    }
+
+
 def test_pipeline_rejects_tampering_and_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,79 +356,25 @@ def test_pipeline_rejects_tampering_and_resumes(
         )
 
 
-def _write_inputs(root: Path) -> dict[str, Path]:
-    run_dir = root / "upstream"
-    run_dir.mkdir()
-    source = pl.DataFrame({"persona_id": ["persona-1"], "value": [1]})
-    source_path = run_dir / "structured-records.parquet"
-    sample_path = run_dir / "text-development-seeds.parquet"
-    source.write_parquet(source_path)
-    source.write_parquet(sample_path)
-    run_manifest = RunManifest(
-        run_id="upstream-run",
-        created_at="2026-01-01T00:00:00+00:00",
-        bundle_id="bundle",
-        bundle_manifest_sha256="0" * 64,
-        sampling_config_sha256="1" * 64,
+def test_pipeline_selects_an_offset_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded invocation can select a later frozen-sample shard."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
         rows=1,
-        seed=1,
-        data_file=Path(source_path.name),
-        data_sha256=sha256_file(source_path),
-        logical_content_sha256="2" * 64,
-        llm_calls=0,
+        live=True,
+        offset=1,
     )
-    write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
-    write_json(
-        path=run_dir / "validation-report.json",
-        payload=ValidationReport(
-            kind="demographics",
-            passed=True,
-            created_at="2026-01-01T00:00:00+00:00",
-            subject_id=run_manifest.run_id,
-            metrics=[],
-        ),
-    )
-    sample_manifest = FrozenSampleManifest(
-        source_run_id=run_manifest.run_id,
-        rows=1,
-        strata=[],
-        method="test",
-        data_file=Path(sample_path.name),
-        sha256=sha256_file(sample_path),
-        llm_calls=0,
-    )
-    sample_manifest_path = sample_path.with_suffix(".manifest.json")
-    write_json(path=sample_manifest_path, payload=sample_manifest)
-    attributes_prompt = root / "attributes.md"
-    personas_prompt = root / "personas.md"
-    attributes_prompt.write_text("Danske attributter")
-    personas_prompt.write_text("Danske personaer")
-    config_path = root / "generation.yaml"
-    config = {
-        "version": 1,
-        "llm_generation_enabled": True,
-        "base_url": "http://test/v1",
-        "model": "test-model",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 2,
-        "maximum_validation_attempts": 2,
-        "maximum_total_requests": 5,
-        "retry_backoff_seconds": 0.0,
-        "maximum_smoke_rows": 2,
-        "max_tokens": None,
-        "enable_thinking": None,
-        "reasoning_effort": None,
-        "response_format": "json_schema",
-        "attributes_prompt": str(attributes_prompt),
-        "personas_prompt": str(personas_prompt),
-    }
-    config_path.write_text(yaml.safe_dump(config))
-    return {
-        "sample": sample_path,
-        "sample_manifest": sample_manifest_path,
-        "config": config_path,
-    }
+    output = pl.read_parquet(run_dir / "generated-personas.parquet")
+    assert output.get_column("persona_id").to_list() == ["persona-2"]
+    assert validate_persona_run(run_dir=run_dir).passed
 
 
 def test_provider_qualified_model_alias_matches_case_insensitively() -> None:
@@ -313,22 +424,28 @@ def test_stage_checkpoint_avoids_repeating_attributes(
     )
     _InterruptingClient.requests = 0
     _InterruptingClient.interrupt_once = True
-    arguments = {
-        "input_path": paths["sample"],
-        "sample_manifest_path": paths["sample_manifest"],
-        "config_path": paths["config"],
-        "output_dir": tmp_path / "outputs",
-        "rows": 1,
-        "live": True,
-    }
     with pytest.raises(RequestBudgetExceeded):
-        generate_personas(**arguments)
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=tmp_path / "outputs",
+            rows=1,
+            live=True,
+        )
     assert _InterruptingClient.requests == 2
     assert (
         len(list((tmp_path / "outputs").glob("*/checkpoints/*.attributes.json"))) == 1
     )
 
-    run_dir = generate_personas(**arguments)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
     assert _InterruptingClient.requests == 3
     manifest = json.loads((run_dir / "generation-manifest.json").read_text())
     assert manifest["requests"] == 3

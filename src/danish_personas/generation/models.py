@@ -85,6 +85,7 @@ class GenerationManifest(StrictModel):
     sample_manifest_file: Path
     input_sha256: str
     ordered_persona_ids_sha256: str
+    generation_config_file: Path | None = None
     generation_config_sha256: str
     generation_context_sha256: str
     validator_version: str
@@ -93,6 +94,7 @@ class GenerationManifest(StrictModel):
     model: str
     base_url: str
     rows: int = Field(ge=1, le=5)
+    offset: int = Field(default=0, ge=0)
     requests: int = Field(ge=0)
     retries: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
@@ -156,3 +158,62 @@ class PersonaCheckpoint(StrictModel):
     responses: list[LLMResponse]
     attempts: int = Field(ge=2)
     http_requests: int = Field(default=0, ge=0)
+
+
+class PilotBatchReference(StrictModel):
+    """Checksummed reference to one validated pilot shard."""
+
+    offset: int = Field(ge=0)
+    rows: int = Field(ge=1, le=5)
+    run_id: str
+    manifest_file: Path
+    manifest_sha256: str
+    validation_report_file: Path
+    validation_report_sha256: str
+
+
+class PilotManifest(StrictModel):
+    """Provenance and accounting for a merged persona pilot."""
+
+    pilot_id: str
+    created_at: str
+    model: str
+    base_url: str
+    upstream_run_id: str
+    input_file: Path
+    input_sha256: str
+    sample_manifest_file: Path
+    sample_manifest_sha256: str
+    generation_config_file: Path
+    generation_config_sha256: str
+    generation_context_sha256: str
+    validator_version: str
+    attributes_prompt_sha256: str
+    personas_prompt_sha256: str
+    rows: int = Field(ge=1)
+    batch_size: int = Field(ge=1, le=5)
+    batches: int = Field(ge=1)
+    batch_runs: list[PilotBatchReference]
+    maximum_total_requests: int = Field(ge=1)
+    maximum_shard_requests: int = Field(ge=1)
+    requests: int = Field(ge=0)
+    retries: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    input_price_per_million_usd: float = Field(ge=0.0)
+    output_price_per_million_usd: float = Field(ge=0.0)
+    list_price_estimated_cost_usd: float = Field(ge=0.0)
+    provider_estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    inference_providers: list[str]
+    output_file: Path
+    output_sha256: str
+    llm_generation: bool
+
+
+class RequestLedger(StrictModel):
+    """Durable HTTP-attempt budget for one bounded generation run."""
+
+    generation_context_sha256: str
+    attempts: int = Field(ge=0)
+    maximum_attempts: int = Field(ge=1)

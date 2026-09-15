@@ -1,0 +1,377 @@
+"""Run and merge a resumable pilot from guarded persona-generation shards."""
+
+import concurrent.futures as futures
+import logging
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+import click
+import polars as pl
+
+from danish_personas.generation.models import (
+    GenerationConfig,
+    GenerationManifest,
+    PilotBatchReference,
+    PilotManifest,
+)
+from danish_personas.generation.pipeline import (
+    generate_personas,
+    validate_upstream_sample,
+)
+from danish_personas.generation.report import (
+    validate_persona_pilot,
+    validate_persona_run,
+)
+from danish_personas.io import (
+    canonical_json,
+    load_yaml_model,
+    sha256_file,
+    sha256_text,
+    write_json,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+@click.command()
+@click.option("--input", "input_path", type=click.Path(path_type=Path), required=True)
+@click.option("--sample-manifest", type=click.Path(path_type=Path), required=True)
+@click.option("--config", "config_path", type=click.Path(path_type=Path), required=True)
+@click.option("--output-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--rows", type=click.IntRange(min=1), required=True)
+@click.option("--batch-size", type=click.IntRange(min=1, max=5), default=5)
+@click.option("--concurrency", type=click.IntRange(min=1, max=8), default=4)
+@click.option("--delay-between-batches", type=click.FloatRange(min=0), default=0.0)
+@click.option("--maximum-total-requests", type=click.IntRange(min=1), required=True)
+@click.option("--input-price-per-million", type=click.FloatRange(min=0), required=True)
+@click.option("--output-price-per-million", type=click.FloatRange(min=0), required=True)
+@click.option(
+    "--live", is_flag=True, help="Explicitly authorise all pilot model requests."
+)
+def main(
+    input_path: Path,
+    sample_manifest: Path,
+    config_path: Path,
+    output_dir: Path,
+    rows: int,
+    batch_size: int,
+    concurrency: int,
+    delay_between_batches: float,
+    maximum_total_requests: int,
+    input_price_per_million: float,
+    output_price_per_million: float,
+    live: bool,
+) -> None:
+    """Generate a validated pilot without weakening per-invocation safety limits.
+
+    Raises:
+        click.ClickException:
+            If live approval, provenance, generation, or validation fails.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if not live:
+        raise click.ClickException("Pilot generation requires explicit --live approval")
+    try:
+        pilot_dir = _run_pilot(
+            input_path=input_path,
+            sample_manifest_path=sample_manifest,
+            config_path=config_path,
+            output_dir=output_dir,
+            rows=rows,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            delay_between_batches=delay_between_batches,
+            maximum_total_requests=maximum_total_requests,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+        )
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    LOGGER.info("Completed persona pilot: %s", pilot_dir)
+
+
+def _run_pilot(
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    output_dir: Path,
+    rows: int,
+    batch_size: int,
+    concurrency: int,
+    delay_between_batches: float,
+    maximum_total_requests: int,
+    input_price_per_million: float,
+    output_price_per_million: float,
+) -> Path:
+    validate_upstream_sample(
+        input_path=input_path, sample_manifest_path=sample_manifest_path
+    )
+    config = load_yaml_model(path=config_path, model=GenerationConfig)
+    sample = pl.read_parquet(input_path).sort("persona_id")
+    if rows > sample.height:
+        message = "Requested pilot exceeds the frozen sample"
+        raise ValueError(message)
+    if batch_size > config.maximum_smoke_rows:
+        message = "Pilot batch size exceeds the per-invocation row limit"
+        raise ValueError(message)
+    offsets = list(range(0, rows, batch_size))
+    worst_case_requests = len(offsets) * config.maximum_total_requests
+    if worst_case_requests > maximum_total_requests:
+        message = (
+            f"Worst-case pilot requests ({worst_case_requests}) exceed the pilot limit "
+            f"({maximum_total_requests})"
+        )
+        raise ValueError(message)
+    pilot_id = sha256_text(
+        canonical_json(
+            {
+                "input_sha256": sha256_file(input_path),
+                "config_sha256": sha256_file(config_path),
+                "rows": rows,
+                "batch_size": batch_size,
+            }
+        )
+    )[:16]
+    pilot_dir = output_dir / pilot_id
+    batch_root = pilot_dir / "batches"
+    run_dirs = _run_batches(
+        offsets=offsets,
+        rows=rows,
+        batch_size=batch_size,
+        concurrency=concurrency,
+        delay_between_batches=delay_between_batches,
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        config_path=config_path,
+        output_dir=batch_root,
+    )
+    manifests = [
+        GenerationManifest.model_validate_json(
+            (run_dir / "generation-manifest.json").read_text()
+        )
+        for run_dir in run_dirs
+    ]
+    requests = sum(manifest.requests for manifest in manifests)
+    if requests > maximum_total_requests:
+        message = "Completed pilot exceeds its global request limit"
+        raise ValueError(message)
+    return _merge_pilot(
+        pilot_dir=pilot_dir,
+        run_dirs=run_dirs,
+        manifests=manifests,
+        expected=sample.head(rows),
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        config_path=config_path,
+        maximum_total_requests=maximum_total_requests,
+        maximum_shard_requests=config.maximum_total_requests,
+        input_price_per_million=input_price_per_million,
+        output_price_per_million=output_price_per_million,
+    )
+
+
+def _merge_pilot(
+    pilot_dir: Path,
+    run_dirs: list[Path],
+    manifests: list[GenerationManifest],
+    expected: pl.DataFrame,
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    maximum_total_requests: int,
+    maximum_shard_requests: int,
+    input_price_per_million: float,
+    output_price_per_million: float,
+) -> Path:
+    output = pl.concat(
+        [
+            pl.read_parquet(run_dir / manifest.output_file)
+            for run_dir, manifest in zip(run_dirs, manifests, strict=True)
+        ]
+    ).sort("persona_id")
+    expected_ids = expected.get_column("persona_id").to_list()
+    if (
+        output.height != expected.height
+        or output.n_unique("persona_id") != output.height
+        or output.get_column("persona_id").to_list() != expected_ids
+        or not output.select(expected.columns).equals(expected)
+    ):
+        message = "Merged pilot does not preserve the requested frozen records"
+        raise ValueError(message)
+    pilot_dir.mkdir(parents=True, exist_ok=True)
+    output_path = pilot_dir / "generated-personas.parquet"
+    output.write_parquet(output_path, compression="zstd")
+    if len({manifest.generation_context_sha256 for manifest in manifests}) != 1:
+        message = "Pilot shards have inconsistent generation contexts"
+        raise ValueError(message)
+    prompt_tokens = sum(manifest.prompt_tokens for manifest in manifests)
+    completion_tokens = sum(manifest.completion_tokens for manifest in manifests)
+    list_price_cost = (
+        prompt_tokens * input_price_per_million
+        + completion_tokens * output_price_per_million
+    ) / 1_000_000
+    provider_costs = [manifest.estimated_cost_usd for manifest in manifests]
+    provider_cost = (
+        sum(cost for cost in provider_costs if cost is not None)
+        if all(cost is not None for cost in provider_costs)
+        else None
+    )
+    batch_runs = [
+        PilotBatchReference(
+            offset=manifest.offset,
+            rows=manifest.rows,
+            run_id=manifest.run_id,
+            manifest_file=(run_dir / "generation-manifest.json").relative_to(pilot_dir),
+            manifest_sha256=sha256_file(run_dir / "generation-manifest.json"),
+            validation_report_file=(run_dir / "validation-report.json").relative_to(
+                pilot_dir
+            ),
+            validation_report_sha256=sha256_file(run_dir / "validation-report.json"),
+        )
+        for run_dir, manifest in zip(run_dirs, manifests, strict=True)
+    ]
+    first = manifests[0]
+    pilot_manifest = PilotManifest(
+        pilot_id=pilot_dir.name,
+        created_at=datetime.now(tz=UTC).isoformat(),
+        model=first.model,
+        base_url=first.base_url,
+        upstream_run_id=first.upstream_run_id,
+        input_file=input_path,
+        input_sha256=sha256_file(input_path),
+        sample_manifest_file=sample_manifest_path,
+        sample_manifest_sha256=sha256_file(sample_manifest_path),
+        generation_config_file=config_path,
+        generation_config_sha256=sha256_file(config_path),
+        generation_context_sha256=first.generation_context_sha256,
+        validator_version=first.validator_version,
+        attributes_prompt_sha256=first.attributes_prompt_sha256,
+        personas_prompt_sha256=first.personas_prompt_sha256,
+        rows=output.height,
+        batch_size=max(manifest.rows for manifest in manifests),
+        batches=len(manifests),
+        batch_runs=batch_runs,
+        maximum_total_requests=maximum_total_requests,
+        maximum_shard_requests=maximum_shard_requests,
+        requests=sum(manifest.requests for manifest in manifests),
+        retries=sum(manifest.retries for manifest in manifests),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=sum(manifest.total_tokens for manifest in manifests),
+        input_price_per_million_usd=input_price_per_million,
+        output_price_per_million_usd=output_price_per_million,
+        list_price_estimated_cost_usd=list_price_cost,
+        provider_estimated_cost_usd=provider_cost,
+        inference_providers=sorted(
+            {
+                provider
+                for manifest in manifests
+                for provider in manifest.inference_providers
+            }
+        ),
+        output_file=Path(output_path.name),
+        output_sha256=sha256_file(output_path),
+        llm_generation=True,
+    )
+    write_json(path=pilot_dir / "pilot-manifest.json", payload=pilot_manifest)
+    report = validate_persona_pilot(pilot_dir=pilot_dir)
+    if not report.passed:
+        message = "Merged pilot failed validation"
+        raise ValueError(message)
+    return pilot_dir
+
+
+def _run_batches(
+    offsets: list[int],
+    rows: int,
+    batch_size: int,
+    concurrency: int,
+    delay_between_batches: float,
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    output_dir: Path,
+) -> list[Path]:
+    run_dirs: dict[int, Path] = {}
+    remaining = iter(offsets)
+    executor = futures.ThreadPoolExecutor(max_workers=concurrency)
+    pending: dict[futures.Future[Path], int] = {}
+    try:
+        for _ in range(min(concurrency, len(offsets))):
+            offset = next(remaining)
+            pending[
+                _submit_batch(
+                    executor=executor,
+                    offset=offset,
+                    rows=rows,
+                    batch_size=batch_size,
+                    input_path=input_path,
+                    sample_manifest_path=sample_manifest_path,
+                    config_path=config_path,
+                    output_dir=output_dir,
+                )
+            ] = offset
+        while pending:
+            completed, _ = futures.wait(pending, return_when=futures.FIRST_COMPLETED)
+            completed_runs = [
+                (pending.pop(completed_future), completed_future.result())
+                for completed_future in completed
+            ]
+            for offset, run_dir in completed_runs:
+                report = validate_persona_run(run_dir=run_dir)
+                if not report.passed:
+                    message = f"Pilot batch at offset {offset} failed validation"
+                    raise ValueError(message)
+                run_dirs[offset] = run_dir
+            if delay_between_batches and not pending:
+                time.sleep(delay_between_batches)
+            for _ in completed_runs:
+                next_offset = next(remaining, None)
+                if next_offset is not None:
+                    pending[
+                        _submit_batch(
+                            executor=executor,
+                            offset=next_offset,
+                            rows=rows,
+                            batch_size=batch_size,
+                            input_path=input_path,
+                            sample_manifest_path=sample_manifest_path,
+                            config_path=config_path,
+                            output_dir=output_dir,
+                        )
+                    ] = next_offset
+    except Exception:
+        for pending_future in pending:
+            pending_future.cancel()
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    return [run_dirs[offset] for offset in offsets]
+
+
+def _submit_batch(
+    executor: futures.ThreadPoolExecutor,
+    offset: int,
+    rows: int,
+    batch_size: int,
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    output_dir: Path,
+) -> futures.Future[Path]:
+    shard_rows = min(batch_size, rows - offset)
+    return executor.submit(
+        generate_personas,
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        config_path=config_path,
+        output_dir=output_dir,
+        rows=shard_rows,
+        live=True,
+        offset=offset,
+    )
+
+
+if __name__ == "__main__":
+    main()

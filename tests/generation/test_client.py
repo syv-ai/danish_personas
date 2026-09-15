@@ -13,6 +13,7 @@ from danish_personas.generation.models import GenerationConfig
 def test_client_enforces_total_request_budget_across_retries() -> None:
     """Transport retries cannot exceed the invocation-wide HTTP budget."""
     calls = 0
+    persisted: list[int] = []
 
     def handler(_: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -22,6 +23,7 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
     client = OpenAIClient(
         config=_config().model_copy(update={"maximum_total_requests": 1}),
         transport=httpx.MockTransport(handler=handler),
+        record_request=persisted.append,
     )
     with pytest.raises(RequestBudgetExceeded):
         client.complete(
@@ -32,6 +34,7 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
         )
     client.close()
     assert calls == 1
+    assert persisted == [1]
 
 
 def _config() -> GenerationConfig:
@@ -100,3 +103,44 @@ def test_client_sends_supported_schema_request() -> None:
         "type": "json_schema",
         "json_schema": {"name": "probe", "strict": True, "schema": {"type": "object"}},
     }
+
+
+@pytest.mark.parametrize(
+    ("headers", "minimum_delay"),
+    [({}, 60.0), ({"retry-after": "Fri, 31 Dec 9999 23:59:59 GMT"}, 61.0)],
+)
+def test_client_uses_rate_limit_backoff(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], minimum_delay: float
+) -> None:
+    """Rate-limit retries honour HTTP dates or use a conservative fallback."""
+    calls = 0
+    sleeps: list[float] = []
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code=429, headers=headers)
+        return httpx.Response(
+            status_code=200,
+            json={
+                "id": "chatcmpl-test",
+                "model": "gpt-test",
+                "choices": [{"message": {"content": '{"ok":true}'}}],
+                "usage": {},
+            },
+        )
+
+    monkeypatch.setattr("danish_personas.generation.client.time.sleep", sleeps.append)
+    client = OpenAIClient(
+        config=_config(), transport=httpx.MockTransport(handler=handler)
+    )
+    client.complete(
+        system_prompt="Svar på dansk.",
+        user_payload={"input": "test"},
+        schema_name="probe",
+        json_schema={"type": "object"},
+    )
+    client.close()
+    assert len(sleeps) == 1
+    assert sleeps[0] >= minimum_delay
