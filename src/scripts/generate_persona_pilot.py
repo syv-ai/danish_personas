@@ -190,6 +190,14 @@ def _merge_pilot(
             for run_dir, manifest in zip(run_dirs, manifests, strict=True)
         ]
     ).sort("persona_id")
+    # Records the safety gates rejected are absent from the shards by design, so the
+    # merge preserves the requested frozen records minus exactly those.
+    skipped = {
+        persona_id
+        for manifest in manifests
+        for persona_id in manifest.skipped_persona_ids
+    }
+    expected = expected.filter(~pl.col("persona_id").is_in(skipped))
     expected_ids = expected.get_column("persona_id").to_list()
     if (
         output.height != expected.height

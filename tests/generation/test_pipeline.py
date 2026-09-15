@@ -15,6 +15,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     GenerationManifest,
     LLMResponse,
+    PilotManifest,
 )
 from danish_personas.generation.pipeline import generate_personas, models_match
 from danish_personas.generation.report import (
@@ -509,3 +510,52 @@ def test_unsafe_persona_is_skipped_without_failing_the_run(
     output = pl.read_parquet(run_dir / manifest.output_file)
     assert output.get_column("persona_id").to_list() == ["persona-2"]
     assert validate_persona_run(run_dir=run_dir).passed
+
+
+def test_pilot_merges_shards_that_skipped_a_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped record is absent from the merge, and the pilot still validates."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", _SensitiveForFirstClient
+    )
+    _SensitiveForFirstClient.requests = 0
+    _SensitiveForFirstClient.description_calls = 0
+    result = CliRunner().invoke(
+        pilot_main,
+        [
+            "--input",
+            str(paths["sample"]),
+            "--sample-manifest",
+            str(paths["sample_manifest"]),
+            "--config",
+            str(paths["config"]),
+            "--output-dir",
+            str(tmp_path / "pilot"),
+            "--rows",
+            "2",
+            "--batch-size",
+            "2",
+            "--concurrency",
+            "1",
+            "--maximum-total-requests",
+            "10",
+            "--input-price-per-million",
+            "0.3",
+            "--output-price-per-million",
+            "1.2",
+            "--live",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
+    output = pl.read_parquet(output_path)
+    assert output.get_column("persona_id").to_list() == ["persona-2"]
+    manifest = PilotManifest.model_validate_json(
+        (output_path.parent / "pilot-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest.rows == 2
+    assert manifest.generated_rows == 1
+    assert manifest.skipped_persona_ids == ["persona-1"]
+    assert validate_persona_pilot(pilot_dir=output_path.parent).passed
