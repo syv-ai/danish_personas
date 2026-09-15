@@ -12,8 +12,9 @@ The design rationale and deferred work are documented in
 
 The source-acquisition, preparation, deterministic sampling, and validation stages are
 implemented. The committed configuration keeps LLM generation disabled. The LLM code is
-smoke-test infrastructure only: it supports at most five rows per invocation, and
-release-scale generation and human approval are not implemented release gates.
+smoke-test infrastructure only: each direct generation invocation is capped at five
+rows, while a pilot can span multiple shards. Release-scale generation and human
+approval are not implemented release gates.
 
 The validated local Phase 2 run has 100,000 records. The Phase 3 smoke report
 documents a passed three-record run, but that generated data is not committed. Read
@@ -50,6 +51,14 @@ add a GitHub remote; use it only when those side effects are wanted:
 make install
 ```
 
+Install the pre-commit hook separately when needed. This target also runs
+`pre-commit autoupdate`, which may modify the tracked hook configuration; it is not
+part of `make install`:
+
+```bash
+make install-pre-commit
+```
+
 ## Environment setup
 
 The application does not require environment variables for the non-LLM pipeline. For
@@ -61,10 +70,11 @@ cp .env.example .env
 
 Set `GIT_NAME` and `GIT_EMAIL` only if using the Makefile's Git setup. `OPENAI_API_KEY`
 and `HF_TOKEN` are examples of optional bearer-token variables; a generation config
-selects the variable through `api_key_env`. A shell does not automatically export
-values from `.env`, so export an LLM token in the shell that runs the generation
-command, or use the Makefile's environment handling. Never commit `.env`, tokens, or
-generated data artefacts.
+selects the variable through `api_key_env`. Direct LLM commands do not load `.env`; use
+a short-lived shell export or command-scoped assignment for the configured token. The
+Makefile includes `.env` and exports all of its variables to subprocesses and hooks, so
+do not use it as credential loading for direct LLM commands. Never commit `.env`,
+tokens, or generated data artefacts.
 
 ## Quickstart: non-LLM workflow
 
@@ -74,28 +84,37 @@ stage without network access. The archive and attribution are documented in
 [`data/README.md`](data/README.md).
 
 ```bash
+set -o pipefail
+
 uv run src/scripts/restore_raw_sources.py
 
-uv run src/scripts/build_distributions.py \
-  --lock config/sources.lock.yaml \
-  --categories config/categories.yaml \
-  --raw-dir data/raw-hardened-20260914 \
-  --output-dir data/processed
-
-BUNDLE=$(ls -td data/processed/* | head -1)
+BUNDLE=$( \
+  uv run src/scripts/build_distributions.py \
+    --lock config/sources.lock.yaml \
+    --categories config/categories.yaml \
+    --raw-dir data/raw-hardened-20260914 \
+    --output-dir data/processed \
+    2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
+)
+test -n "$BUNDLE" || exit 1
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 
-uv run src/scripts/generate_demographics.py \
-  --bundle "$BUNDLE" \
-  --rows 1000 \
-  --seed 20260914 \
-  --output-dir data/runs/smoke
-
-RUN=$(ls -td data/runs/smoke/* | head -1)
+RUN=$( \
+  uv run src/scripts/generate_demographics.py \
+    --bundle "$BUNDLE" \
+    --rows 1000 \
+    --seed 20260914 \
+    --output-dir data/runs/smoke \
+    2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
+)
+test -n "$RUN" || exit 1
 uv run src/scripts/validate_dataset.py demographics \
   --run "$RUN" \
   --bundle "$BUNDLE"
 ```
+
+The assignments capture the exact paths printed by the CLI commands. They do not
+select an arbitrary newest directory, and fail if a command emits no path.
 
 All generated run identifiers are derived from input checksums, row count, and seed.
 Repeating a valid command reuses the existing run; a checksum mismatch fails instead of
@@ -108,29 +127,38 @@ StatBank API only when intentionally updating the source lock; refreshed respons
 a new provenance chain rather than reproducing this release.
 
 ```bash
+set -o pipefail
+
 uv run src/scripts/restore_raw_sources.py
 
-uv run src/scripts/build_distributions.py \
-  --lock config/sources.lock.yaml \
-  --categories config/categories.yaml \
-  --raw-dir data/raw-hardened-20260914 \
-  --output-dir data/processed
-
-BUNDLE=$(ls -td data/processed/* | head -1)
+BUNDLE=$( \
+  uv run src/scripts/build_distributions.py \
+    --lock config/sources.lock.yaml \
+    --categories config/categories.yaml \
+    --raw-dir data/raw-hardened-20260914 \
+    --output-dir data/processed \
+    2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
+)
+test -n "$BUNDLE" || exit 1
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 
-uv run src/scripts/generate_demographics.py \
-  --bundle "$BUNDLE" \
-  --config config/sampling.yaml \
-  --rows 100000 \
-  --seed 20260914 \
-  --output-dir data/runs/statistical
-
-RUN=$(ls -td data/runs/statistical/* | head -1)
+RUN=$( \
+  uv run src/scripts/generate_demographics.py \
+    --bundle "$BUNDLE" \
+    --config config/sampling.yaml \
+    --rows 100000 \
+    --seed 20260914 \
+    --output-dir data/runs/statistical \
+    2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
+)
+test -n "$RUN" || exit 1
 uv run src/scripts/validate_dataset.py demographics \
   --run "$RUN" \
   --bundle "$BUNDLE"
 ```
+
+The assignments capture the exact paths printed by the CLI commands rather than
+selecting an arbitrary newest directory.
 
 Freeze a deterministic 1,000-row input for optional LLM development work only after the
 statistical validation passes:
@@ -175,33 +203,52 @@ uv run src/scripts/generate_personas.py \
 
 For an approved smoke test, edit only the ignored local config: set
 `llm_generation_enabled: true`, `base_url`, and `model`. Set `api_key_env` to the name
-of an exported bearer-token variable if the endpoint requires authentication. Then add
-`--live` explicitly:
+of a bearer-token variable if the endpoint requires authentication. Use a short-lived
+command-scoped token assignment and add `--live` explicitly. Replace
+`OPENAI_API_KEY` below with the configured `api_key_env` name when needed:
 
 ```bash
-export OPENAI_API_KEY='replace-with-a-token'
-uv run src/scripts/generate_personas.py \
-  --input "$RUN/text-development-seeds.parquet" \
-  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
-  --config config/generation.local.yaml \
-  --output-dir data/persona-smoke \
-  --rows 3 \
-  --live
-
-PERSONA_RUN=$(ls -td data/persona-smoke/* | head -1)
+set -o pipefail
+PERSONA_RUN=$( \
+  OPENAI_API_KEY='replace-with-a-token' \
+  uv run src/scripts/generate_personas.py \
+    --input "$RUN/text-development-seeds.parquet" \
+    --sample-manifest "$RUN/text-development-seeds.manifest.json" \
+    --config config/generation.local.yaml \
+    --output-dir data/persona-smoke \
+    --rows 3 \
+    --live \
+    2>&1 | tee /dev/stderr | sed -n 's/^INFO Persona generation run: //p' \
+)
+test -n "$PERSONA_RUN" || exit 1
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
 Each record uses two model stages: structured attributes, then six Danish descriptions.
 A repeated live command resumes valid per-record checkpoints and does not repeat
-completed calls. The invocation cap is five rows and the default HTTP-attempt budget is
-15.
+completed calls. Each `generate_personas.py` invocation is one shard capped at five
+rows, while a pilot can span multiple such shards. The default HTTP-attempt budget is 15
+per shard.
 
 For a multi-shard pilot, use `generate_persona_pilot.py`. It requires `--live`, limits
-shards to five rows, validates each shard, merges them, records token/cost accounting,
-and validates the merged pilot. Its required prices are estimates supplied by the user:
+each shard to five rows, validates each shard, merges them, records token/cost
+accounting, and validates the merged pilot. A pilot can therefore contain more than five
+rows. Enter the provider's current list prices before running the live pilot. Use zero
+only when the configured endpoint is genuinely free:
 
 ```bash
+read -r -p "Current input price (USD per million tokens): " \
+  INPUT_PRICE_PER_MILLION
+read -r -p "Current output price (USD per million tokens): " \
+  OUTPUT_PRICE_PER_MILLION
+```
+
+Then run the pilot with the configured bearer-token variable as a short-lived command
+assignment. Replace `OPENAI_API_KEY` below with the configured `api_key_env` name when
+needed:
+
+```bash
+OPENAI_API_KEY='replace-with-a-token' \
 uv run src/scripts/generate_persona_pilot.py \
   --input "$RUN/text-development-seeds.parquet" \
   --sample-manifest "$RUN/text-development-seeds.manifest.json" \
@@ -211,13 +258,13 @@ uv run src/scripts/generate_persona_pilot.py \
   --batch-size 5 \
   --concurrency 1 \
   --maximum-total-requests 30 \
-  --input-price-per-million 0 \
-  --output-price-per-million 0 \
+  --input-price-per-million "$INPUT_PRICE_PER_MILLION" \
+  --output-price-per-million "$OUTPUT_PRICE_PER_MILLION" \
   --live
 ```
 
-Do not run the LLM commands merely to verify installation. They need a reachable
-provider and, with `--live`, can consume paid requests.
+The dry-run commands above do not contact a provider. Only commands with `--live` need
+provider reachability, and live commands can consume paid requests.
 
 ## Outputs and data handling
 
@@ -275,18 +322,20 @@ uv run pytest
 ```
 
 Pytest also runs doctests, enables coverage for `src/danish_personas`, and treats most
-warnings as errors. Run the repository's full pre-commit checks before submitting
-changes:
+warnings as errors. Run the repository's full pre-commit checks directly before
+submitting changes:
 
 ```bash
-make check
+uv run pre-commit run --all-files
 ```
 
-`make check` runs the configured annotation, hygiene, vulture, function-ordering, Ruff,
-type-checking, notebook, and Markdown checks. It may fix files in place. To run the
-checks without Make, use `uv run pre-commit run --all-files`. The `make test` target
-also runs `readme-cov` and commits a README coverage-badge update, so prefer `uv run
-pytest` when a side-effect-free test run is required.
+The direct command runs the configured annotation, hygiene, vulture, function-ordering,
+Ruff, type-checking, notebook, and Markdown checks. It may fix files in place. Avoid
+`make check` unless the index is disposable: it runs `git add .`, invokes the same
+hooks, and unconditionally runs `git reset`; it requires nothing staged and discards
+staged state. The `make test` target also runs `readme-cov` and commits a README
+coverage-badge update, so prefer `uv run pytest` when a side-effect-free test run is
+required.
 
 ## Further documentation
 

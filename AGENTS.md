@@ -46,12 +46,13 @@ prompts are interpreted relative to that working directory.
 
 | Script | Responsibility and invocation |
 | --- | --- |
-| `download_sources.py` | `resolve` locks selectors; `fetch` gets immutable snapshots. |
+| `restore_raw_sources.py` | Verifies and restores the committed snapshot archive. |
+| `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
 | `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
 | `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |
 | `validate_dataset.py` | Validates `sources`, `demographics`, or `personas`. |
 | `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample. |
-| `generate_personas.py` | Guarded two-stage LLM run, max five rows. |
+| `generate_personas.py` | Guarded two-stage LLM run, max five rows per shard. |
 | `generate_persona_pilot.py` | Merges validated shards; requires `--live`. |
 | `fix_dot_env_file.py` | Creates `.env`; non-interactive leaves Git identity blank. |
 
@@ -67,6 +68,7 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 | `tests/test_llm_guard.py` | Default LLM-disabled guard. |
 | `tests/test_non_llm_pipeline.py` | Deterministic fixture pipeline. |
 | `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
+| `tests/test_raw_archive.py` | Committed archive integrity and safe restoration. |
 | `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
 | `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
 | `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |
@@ -101,23 +103,26 @@ uv sync --locked --all-extras --dev
 ```
 
 For a local environment file, use `cp .env.example .env`. The non-LLM tests and pipeline
-need no secrets. `make install` is a convenience bootstrap that can install/update `uv`,
-initialise Git, configure identity, and add a remote; do not use it merely to install
-Python dependencies in an existing clone.
+need no secrets. Direct LLM commands do not load `.env`; use a short-lived shell export
+or command-scoped assignment for the configured provider token. The Makefile includes
+`.env` and exports all of its variables to subprocesses and hooks, so do not use it as
+credential loading for direct LLM commands. `make install` is a convenience bootstrap
+that can install/update `uv`, initialise Git, configure identity, and add a remote; do
+not use it merely to install Python dependencies in an existing clone.
 
 Run tests and quality checks with these exact commands:
 
 ```bash
 uv run pytest
-make check
 uv run pre-commit run --all-files
 ```
 
 `pytest` runs `tests/` plus package doctests, with coverage enabled for
-`src/danish_personas`. `make check` stages files temporarily, runs all configured
-pre-commit hooks, resets the index, and can rewrite files. The CI equivalent is
-`uvx pre-commit run --show-diff-on-failure --color=always --all-files` followed by
-`uv run pytest` in a locked environment.
+`src/danish_personas`. `make check` runs `git add .`, runs all configured pre-commit
+hooks, then unconditionally runs `git reset`; it requires nothing staged and discards
+any staged state. Prefer `uv run pre-commit run --all-files` directly. The CI equivalent
+is the `uvx pre-commit run --show-diff-on-failure --color=always --all-files` command
+followed by `uv run pytest` in a locked environment.
 
 Avoid `make test` for routine verification: after pytest it runs `readme-cov`, stages
 `README.md`, and creates a coverage-badge commit. This side effect is part of the
@@ -127,8 +132,9 @@ Make target notes:
 
 - `help` lists documented targets; `install` is the interactive full bootstrap.
 - `install-non-interactive` performs the same bootstrap with blank Git identity;
-  `install-uv`, `install-dependencies`, and `install-pre-commit` are its component
-  steps.
+  `install-uv` and `install-dependencies` are its component steps. `install-pre-commit`
+  is standalone, installs the hook, and runs `pre-commit autoupdate`, which may modify
+  tracked hook configuration; it is not part of `install`.
 - `setup-environment-variables` prompts for Git identity; its non-interactive variant
   leaves values blank. `setup-git` changes local Git settings.
 - `add-repo-to-git` may create an initial commit and add the GitHub origin remote.
@@ -139,25 +145,23 @@ Make target notes:
 
 Do not skip a boundary or call an LLM before the demographic gate passes:
 
-1. Resolve selectors when refreshing sources, then review the resulting lock.
-2. Fetch locked StatBank snapshots into `data/raw`.
-3. Build and validate the offline bundle in `data/processed`.
-4. Generate deterministic demographic/OCEAN records.
-5. Validate the smoke run, then generate and validate the statistical run.
-6. Freeze the stratified text-development sample.
-7. Dry-run LLM planning; only an approved operator may enable `--live`.
-8. Validate each persona run; pilot shards must pass before merge and pilot validation.
+1. Restore and verify the committed raw-source archive for exact offline reproduction.
+2. Build and validate the offline bundle in `data/processed`.
+3. Generate deterministic demographic/OCEAN records.
+4. Validate the smoke run, then generate and validate the statistical run.
+5. Freeze the stratified text-development sample.
+6. Dry-run LLM planning; it needs no provider, and only an approved operator may
+   enable `--live`.
+7. Validate each persona run; each `generate_personas.py` shard is capped at five rows,
+   while a pilot may span multiple validated shards before merge and pilot validation.
 
-The normal non-LLM commands are:
+The normal non-LLM stages are:
 
 ```bash
-uv run src/scripts/download_sources.py resolve \
-  --config config/sources.yaml --lock config/sources.lock.yaml
-uv run src/scripts/download_sources.py fetch \
-  --lock config/sources.lock.yaml --raw-dir data/raw
+uv run src/scripts/restore_raw_sources.py
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml --categories config/categories.yaml \
-  --raw-dir data/raw --output-dir data/processed
+  --raw-dir data/raw-hardened-20260914 --output-dir data/processed
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 uv run src/scripts/generate_demographics.py \
   --bundle "$BUNDLE" --rows 1000 --seed 20260914 \
@@ -166,17 +170,19 @@ uv run src/scripts/validate_dataset.py demographics \
   --run "$RUN" --bundle "$BUNDLE"
 ```
 
-Use the full copy-pasteable workflows in `README.md` for bundle/run discovery, the
-100,000-row run, and sample freezing. The `resolve` step is not needed to reproduce the
-committed lock and requires StatBank network access. Fetching sources also downloads
-external data and is deliberately not part of ordinary tests.
+Use the full copy-pasteable workflows in `README.md` to capture exact bundle/run paths,
+produce the 100,000-row run, and freeze a sample. Run `download_sources.py resolve` and
+`fetch` only for an intentional source refresh: both require StatBank network access,
+and refreshed responses create a new provenance chain. Review changes to the lock and
+source register before accepting refreshed snapshots.
 
 ## Outputs and provenance
 
-`data/` is ignored and starts with only `.gitkeep`. Source snapshots are
-content-addressed by table and query checksum. They contain `data.csv`,
-English/Danish metadata, `query.json`, response headers, and
-`snapshot-manifest.json`. Existing valid snapshots are immutable.
+`data/raw-hardened-20260914.tar.zst` and `data/README.md` are tracked. The restore
+script verifies the archive checksum and extracts ignored, immutable snapshots into
+`data/raw-hardened-20260914/`. Snapshots are content-addressed by table and query
+checksum and contain `data.csv`, English/Danish metadata, `query.json`, response
+headers, and `snapshot-manifest.json`.
 
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
 preparation reports. Deterministic runs contain `structured-records.parquet`,
@@ -209,9 +215,11 @@ must fail loudly, not be repaired by overwriting files.
 ## Non-obvious gotchas and safety
 
 - The committed generation config is disabled. `generate_personas.py` dry-run performs
-  validation and planning only; `--live` additionally requires local enablement,
-  endpoint, model, and may spend money. The pilot has its own global request limit and
-  prices, and `--concurrency` can issue requests in parallel.
+  validation and planning only; it does not need provider reachability. `--live`
+  additionally requires local enablement, endpoint, model, provider reachability, and
+  may spend money. The pilot has its own global request limit and requires current input
+  and output prices; use zero only for a genuinely free endpoint. `--concurrency` can
+  issue requests in parallel.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
   validator context. Re-running a valid live run resumes completed records.
@@ -226,8 +234,9 @@ must fail loudly, not be repaired by overwriting files.
   from Phase 2 output. Do not add names, addresses, occupations, employers, income,
   households, citizenship, ancestry, health, religion, sexuality, politics, criminal
   history, or other sensitive fields without a separate privacy review.
-- `makefile` and `Makefile` currently have identical tracked contents. Make targets can
-  mutate Git state; inspect `git status` before and after using them.
+- Only lowercase `makefile` is tracked; case-insensitive systems may display it as
+  `Makefile`. Make targets can mutate Git state; inspect `git status` before and after
+  using them.
 - `fix_dot_env_file.py` deletes `.name_and_email` after copying any values and does not
   populate optional token variables. Direct Python execution should still use `uv run`.
 
