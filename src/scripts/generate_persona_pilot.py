@@ -248,7 +248,13 @@ def _merge_pilot(
         validator_version=first.validator_version,
         attributes_prompt_sha256=first.attributes_prompt_sha256,
         personas_prompt_sha256=first.personas_prompt_sha256,
-        rows=output.height,
+        rows=sum(manifest.rows for manifest in manifests),
+        generated_rows=output.height,
+        skipped_persona_ids=[
+            persona_id
+            for manifest in manifests
+            for persona_id in manifest.skipped_persona_ids
+        ],
         batch_size=max(manifest.rows for manifest in manifests),
         batches=len(manifests),
         batch_runs=batch_runs,

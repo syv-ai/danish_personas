@@ -94,6 +94,8 @@ class GenerationManifest(StrictModel):
     model: str
     base_url: str
     rows: int = Field(ge=1, le=5)
+    generated_rows: int = Field(ge=0, le=5)
+    skipped_persona_ids: list[str] = Field(default_factory=list)
     offset: int = Field(default=0, ge=0)
     requests: int = Field(ge=0)
     retries: int = Field(ge=0)
@@ -192,6 +194,8 @@ class PilotManifest(StrictModel):
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)
+    generated_rows: int = Field(ge=0)
+    skipped_persona_ids: list[str] = Field(default_factory=list)
     batch_size: int = Field(ge=1, le=5)
     batches: int = Field(ge=1)
     batch_runs: list[PilotBatchReference]

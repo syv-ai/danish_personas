@@ -31,7 +31,12 @@ from .models import (
     PersonaDescriptions,
     RequestLedger,
 )
-from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
+from .validation import (
+    VALIDATOR_VERSION,
+    PersonaContentError,
+    parse_attributes,
+    parse_descriptions,
+)
 
 LOGGER = logging.getLogger(__name__)
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
@@ -134,22 +139,38 @@ def generate_personas(
         record_request=record_request,
     )
     checkpoints: list[PersonaCheckpoint] = []
+    skipped: list[str] = []
     try:
         for row in frame.iter_rows(named=True):
-            checkpoints.append(
-                _generate_one(
-                    row=t.cast(dict[str, object], row),
-                    run_dir=run_dir,
-                    config=config,
-                    client=client,
-                    attributes_prompt=attributes_prompt,
-                    personas_prompt=personas_prompt,
-                    generation_context_sha=generation_context_sha,
+            persona_id = str(row["persona_id"])
+            try:
+                checkpoints.append(
+                    _generate_one(
+                        row=t.cast(dict[str, object], row),
+                        run_dir=run_dir,
+                        config=config,
+                        client=client,
+                        attributes_prompt=attributes_prompt,
+                        personas_prompt=personas_prompt,
+                        generation_context_sha=generation_context_sha,
+                    )
                 )
-            )
+            except PersonaContentError as error:
+                # The model failed every validation attempt for this record. Dropping it
+                # keeps the rest of the run, and the manifest records which and why.
+                LOGGER.warning("Skipped persona %s: %s", persona_id, error)
+                skipped.append(persona_id)
     finally:
         client.close()
-    output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
+    if not checkpoints:
+        message = f"Every requested persona failed validation in {run_dir}"
+        raise ValueError(message)
+    generated_ids = [checkpoint.persona_id for checkpoint in checkpoints]
+    output_path = _write_output(
+        frame=frame.filter(pl.col("persona_id").is_in(generated_ids)),
+        checkpoints=checkpoints,
+        run_dir=run_dir,
+    )
     responses = [response for item in checkpoints for response in item.responses]
     manifest = GenerationManifest(
         run_id=run_id,
@@ -157,7 +178,7 @@ def generate_personas(
         input_file=input_path,
         sample_manifest_file=sample_manifest_path,
         input_sha256=sha256_file(input_path),
-        ordered_persona_ids_sha256=ordered_ids_sha,
+        ordered_persona_ids_sha256=sha256_text(canonical_json(generated_ids)),
         generation_config_file=config_path,
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context_sha,
@@ -167,6 +188,8 @@ def generate_personas(
         model=config.model or "",
         base_url=config.base_url or "",
         rows=rows,
+        generated_rows=len(checkpoints),
+        skipped_persona_ids=skipped,
         offset=offset,
         requests=ledger.attempts,
         retries=max(0, ledger.attempts - rows * 2),

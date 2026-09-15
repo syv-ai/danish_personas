@@ -70,19 +70,23 @@ def parse_attributes(content: str) -> GeneratedAttributes:
         Validated attributes.
 
     Raises:
-        ValueError:
+        PersonaContentError:
             If JSON, language, or safety validation fails.
     """
     try:
         attributes = GeneratedAttributes.model_validate_json(content)
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise PersonaContentError(str(error)) from error
     _validate_text(text=attributes.cultural_context, require_danish=True)
     _validate_texts(texts=attributes.skills_and_expertise, require_each_danish=False)
     _validate_texts(texts=attributes.hobbies_and_interests, require_each_danish=False)
     if attributes.career_goals_and_ambitions:
         _validate_text(text=attributes.career_goals_and_ambitions, require_danish=True)
     return attributes
+
+
+class PersonaContentError(ValueError):
+    """Raised when generated content fails a schema, language, or safety gate."""
 
 
 def _validate_text(text: str, require_danish: bool) -> None:
@@ -97,14 +101,14 @@ def _validate_text(text: str, require_danish: bool) -> None:
     for name, pattern in patterns.items():
         if pattern.search(text):
             message = f"Generated content contains a prohibited {name}"
-            raise ValueError(message)
+            raise PersonaContentError(message)
     if _contains_url(text=text):
         message = "Generated content contains a prohibited URL"
-        raise ValueError(message)
+        raise PersonaContentError(message)
     found_sensitive = sorted(term for term in SENSITIVE_TERMS if term in normalized)
     if found_sensitive:
         message = f"Generated content contains sensitive terms: {found_sensitive}"
-        raise ValueError(message)
+        raise PersonaContentError(message)
     if require_danish:
         _require_danish(text=text)
 
@@ -127,7 +131,7 @@ def _normalize(text: str) -> str:
 def _require_danish(text: str) -> None:
     if LANGUAGE_DETECTOR.detect_language_of(text) != Language.DANISH:
         message = "Generated content does not appear to be natural Danish"
-        raise ValueError(message)
+        raise PersonaContentError(message)
 
 
 def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
@@ -148,17 +152,17 @@ def parse_descriptions(content: str) -> PersonaDescriptions:
         Validated descriptions.
 
     Raises:
-        ValueError:
+        PersonaContentError:
             If JSON, language, safety, or duplication validation fails.
     """
     try:
         descriptions = PersonaDescriptions.model_validate_json(content)
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise PersonaContentError(str(error)) from error
     texts = list(descriptions.model_dump().values())
     _validate_texts(texts=texts, require_each_danish=True)
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
         message = "Persona descriptions must not be exact duplicates"
-        raise ValueError(message)
+        raise PersonaContentError(message)
     return descriptions

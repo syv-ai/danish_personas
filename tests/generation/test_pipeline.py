@@ -13,6 +13,7 @@ from danish_personas.generation.client import RequestBudgetExceeded
 from danish_personas.generation.models import (
     FrozenSampleManifest,
     GenerationConfig,
+    GenerationManifest,
     LLMResponse,
 )
 from danish_personas.generation.pipeline import generate_personas, models_match
@@ -150,6 +151,27 @@ class _RejectingClient(_MockClient):
             ]
             return response.model_copy(update={"content": json.dumps(invalid)})
         return response
+
+
+class _SensitiveForFirstClient(_MockClient):
+    """Returns a banned term for the first persona, on every validation attempt."""
+
+    description_calls = 0
+
+    def complete(self, schema_name: str, **kwargs: object) -> LLMResponse:
+        response = super().complete(schema_name=schema_name, **kwargs)
+        if schema_name != "persona_descriptions":
+            return response
+        type(self).description_calls += 1
+        # The first persona exhausts its validation attempts; later ones pass.
+        if type(self).description_calls > 2:
+            return response
+        descriptions = json.loads(_descriptions_json())
+        descriptions["persona"] = (
+            "Personen lever med angst og undgår derfor større forsamlinger i "
+            "hverdagen, men holder fast i sine faste rutiner."
+        )
+        return response.model_copy(update={"content": json.dumps(descriptions)})
 
 
 def test_pilot_merges_validated_shards(
@@ -458,3 +480,32 @@ def test_stage_checkpoint_avoids_repeating_attributes(
     assert manifest["retries"] == 1
     assert manifest["estimated_cost_usd"] == 0.002
     assert manifest["inference_providers"] == ["mock-provider"]
+
+
+def test_unsafe_persona_is_skipped_without_failing_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record the safety gate rejects is dropped, and the rest of the run stands."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", _SensitiveForFirstClient
+    )
+    _SensitiveForFirstClient.requests = 0
+    _SensitiveForFirstClient.description_calls = 0
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=2,
+        live=True,
+    )
+    manifest = GenerationManifest.model_validate_json(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest.skipped_persona_ids == ["persona-1"]
+    assert manifest.generated_rows == 1
+    assert manifest.rows == 2
+    output = pl.read_parquet(run_dir / manifest.output_file)
+    assert output.get_column("persona_id").to_list() == ["persona-2"]
+    assert validate_persona_run(run_dir=run_dir).passed

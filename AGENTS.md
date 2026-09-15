@@ -241,7 +241,9 @@ must fail loudly, not be repaired by overwriting files.
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
 - LLM output must remain strict JSON, Danish, non-identifying, free of configured
-  sensitive terms, and free of exact duplicate descriptions. Automated validation is not
+  sensitive terms, and free of exact duplicate descriptions. Content failures raise
+  `PersonaContentError`, which skips the record and is recorded in the manifest;
+  every other error still aborts the run. Automated validation is not
   a substitute for blinded human review.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
   individual records. Municipality data is used for regional calibration and is absent

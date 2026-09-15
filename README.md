@@ -59,6 +59,13 @@ per persona. The first sends the whole record as JSON and receives four attribut
 the second sends the record plus those attributes and receives seven Danish
 descriptions. Both are validated against strict schemas before they are checkpointed.
 
+A record whose generated text fails a schema, language or safety gate is retried, and
+dropped from the run if it fails again. The run continues, and the manifest records the
+dropped identifiers in `skipped_persona_ids` next to `generated_rows`, so a dataset is
+never silently short. Provenance failures, such as a tampered checkpoint, still abort
+the run. Dropping records is not neutral: the gates correlate with topics, so a dataset
+with many skips is no longer a clean sample of its inputs.
+
 Six of those descriptions are prose about one facet of the person. The seventh,
 `visual_persona`, is written to seed a portrait image instead: it opens with sex and
 age, states the origin region in one fixed sentence, and then gives two or three

@@ -36,7 +36,10 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
     output_path = pilot_dir / manifest.output_file
     output = pl.read_parquet(output_path)
     expected = (
-        pl.read_parquet(manifest.input_file).sort("persona_id").head(manifest.rows)
+        pl.read_parquet(manifest.input_file)
+        .sort("persona_id")
+        .head(manifest.rows)
+        .filter(~pl.col("persona_id").is_in(manifest.skipped_persona_ids))
     )
     batch_outputs: list[pl.DataFrame] = []
     batch_manifests: list[GenerationManifest] = []
@@ -102,7 +105,12 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             name="output_checksum",
             passed=sha256_file(output_path) == manifest.output_sha256,
         ),
-        _metric(name="row_count", passed=output.height == manifest.rows),
+        _metric(name="row_count", passed=output.height == manifest.generated_rows),
+        _metric(
+            name="skipped_accounting",
+            passed=manifest.generated_rows + len(manifest.skipped_persona_ids)
+            == manifest.rows,
+        ),
         _metric(name="upstream_provenance", passed=provenance_passed),
         _metric(
             name="upstream_preservation",
@@ -202,6 +210,8 @@ def _pilot_aggregates_match(
     )
     return (
         manifest.rows == sum(item.rows for item in batch_manifests)
+        and manifest.generated_rows
+        == sum(item.generated_rows for item in batch_manifests)
         and manifest.batches == len(batch_manifests)
         and manifest.requests == sum(item.requests for item in batch_manifests)
         and manifest.retries == sum(item.retries for item in batch_manifests)
@@ -250,6 +260,7 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
         pl.read_parquet(manifest.input_file)
         .sort("persona_id")
         .slice(manifest.offset, manifest.rows)
+        .filter(~pl.col("persona_id").is_in(manifest.skipped_persona_ids))
     )
     upstream_columns = upstream.columns
     ids = output.get_column("persona_id").to_list()
@@ -266,7 +277,12 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
             name="output_checksum",
             passed=sha256_file(output_path) == manifest.output_sha256,
         ),
-        _metric(name="row_count", passed=output.height == manifest.rows),
+        _metric(name="row_count", passed=output.height == manifest.generated_rows),
+        _metric(
+            name="skipped_accounting",
+            passed=manifest.generated_rows + len(manifest.skipped_persona_ids)
+            == manifest.rows,
+        ),
         _metric(name="upstream_provenance", passed=provenance_passed),
         _metric(
             name="ordered_persona_ids",
