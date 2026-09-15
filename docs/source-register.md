@@ -1,9 +1,11 @@
 # Source register
 
 Retrieved through the official Statistics Denmark StatBank API on 14 September 2026.
-The exact dimension selections are frozen in `config/sources.lock.yaml`. Raw snapshots
-are immutable and locally stored under `data/raw-hardened-20260914/` in
-content-addressed query subdirectories.
+The exact dimension selections are frozen in `config/sources.lock.yaml`. The immutable
+snapshots are committed as `data/raw-hardened-20260914.tar.zst` under CC BY 4.0; its
+SHA-256 is `0d00761c284c616d66a5871d3418cc565b1bfe9879f24665119fdf7dcc4c014f`.
+Restoration creates content-addressed query subdirectories under
+`data/raw-hardened-20260914/`.
 
 | Table | Period | Pipeline role | Raw bytes | CSV SHA-256 |
 | --- | --- | --- | ---: | --- |
@@ -36,12 +38,14 @@ query, response headers, and a machine-readable checksum manifest.
 
 ## Terms
 
-Statistics Denmark's public StatBank API is free to access. Attribution and reuse must
-follow [Statistics Denmark's source-attribution guidance][terms].
+Statistics Denmark's public StatBank API is free to access. Its open data may be freely
+reused commercially and non-commercially under CC BY 4.0 with source attribution. This
+project further processes the data. See [Statistics Denmark's source-attribution
+guidance][terms].
 
 [folk1a]: https://www.statbank.dk/FOLK1A
 [ras209]: https://www.statbank.dk/RAS209
 [ras202]: https://www.statbank.dk/RAS202
 [befolk3]: https://www.statbank.dk/BEFOLK3
 [ras210]: https://www.statbank.dk/RAS210
-[terms]: https://www.dst.dk/en/informationsservice/oss
+[terms]: https://www.dst.dk/en/presse/kildeangivelse

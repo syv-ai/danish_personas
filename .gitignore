@@ -89,9 +89,11 @@ config/*.local.yaml
 outputs/
 multirun/
 
-# Data
+# Data
 data/*
 !data/.gitkeep
+!data/README.md
+!data/raw-hardened-20260914.tar.zst
 
 # Models
 models/*

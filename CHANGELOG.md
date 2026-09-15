@@ -6,6 +6,8 @@
 
 - Reproducible acquisition and immutable snapshots for five Statistics Denmark tables.
 - Prepared demographic distributions with age and education pooling for sparse cells.
+- A compressed, attributed Statistics Denmark source archive and offline restoration
+  command for deterministic demographic regeneration.
 - Deterministic demographic and independent OCEAN generation without LLM calls.
 - Source, structural, statistical, held-out, and personality validation gates.
 - Guarded, resumable two-stage persona generation through an OpenAI-compatible API.

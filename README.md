@@ -63,26 +63,23 @@ Set `GIT_NAME` and `GIT_EMAIL` only if using the Makefile's Git setup. `OPENAI_A
 and `HF_TOKEN` are examples of optional bearer-token variables; a generation config
 selects the variable through `api_key_env`. A shell does not automatically export
 values from `.env`, so export an LLM token in the shell that runs the generation
-command, or use the Makefile's environment handling.
-Never commit `.env`, tokens, or generated `data/`.
+command, or use the Makefile's environment handling. Never commit `.env`, tokens, or
+generated data artefacts.
 
 ## Quickstart: non-LLM workflow
 
-The following commands fetch five public Statistics Denmark aggregate tables, prepare a
-local source bundle, generate 1,000 deterministic records, and validate every stage. The
-fetch step is the only part of this quickstart that needs external data. The committed
-`config/sources.lock.yaml` is used as-is, so this reproduces the locked queries rather
-than silently resolving current selectors.
+The following commands restore the five exact Statistics Denmark aggregate snapshots,
+prepare a local source bundle, generate 1,000 deterministic records, and validate every
+stage without network access. The archive and attribution are documented in
+[`data/README.md`](data/README.md).
 
 ```bash
-uv run src/scripts/download_sources.py fetch \
-  --lock config/sources.lock.yaml \
-  --raw-dir data/raw
+uv run src/scripts/restore_raw_sources.py
 
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml \
   --categories config/categories.yaml \
-  --raw-dir data/raw \
+  --raw-dir data/raw-hardened-20260914 \
   --output-dir data/processed
 
 BUNDLE=$(ls -td data/processed/* | head -1)
@@ -106,23 +103,17 @@ overwriting data.
 
 ## Reproduce the statistical pipeline
 
-Use the same ordering for a 100,000-row local run. Resolve selectors only when updating
-the source lock; that command contacts the StatBank metadata API and changes the tracked
-lock file.
+Use the same ordering for a 100,000-row local run. Resolve selectors or fetch from the
+StatBank API only when intentionally updating the source lock; refreshed responses form
+a new provenance chain rather than reproducing this release.
 
 ```bash
-uv run src/scripts/download_sources.py resolve \
-  --config config/sources.yaml \
-  --lock config/sources.lock.yaml
-
-uv run src/scripts/download_sources.py fetch \
-  --lock config/sources.lock.yaml \
-  --raw-dir data/raw
+uv run src/scripts/restore_raw_sources.py
 
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml \
   --categories config/categories.yaml \
-  --raw-dir data/raw \
+  --raw-dir data/raw-hardened-20260914 \
   --output-dir data/processed
 
 BUNDLE=$(ls -td data/processed/* | head -1)
@@ -230,11 +221,16 @@ provider and, with `--live`, can consume paid requests.
 
 ## Outputs and data handling
 
+The repository includes the 609 KB compressed raw StatBank snapshot archive and its
+attribution. The source archive, lock, category mappings, sampling parameters,
+validation thresholds, and code are version controlled. Restored and derived artefacts
+remain ignored and reproducible.
+
 All generated artefacts belong under the ignored `data/` directory. Important outputs
 are:
 
-- `data/raw/<table>/<query-hash>/`: immutable `data.csv`, metadata, query, response
-  headers, and `snapshot-manifest.json` files;
+- `data/raw-hardened-20260914/<table>/<query-hash>/`: restored immutable `data.csv`,
+  metadata, query, response headers, and `snapshot-manifest.json` files;
 - `data/processed/<bundle-id>/`: normalised Parquet distributions,
   `bundle-manifest.json`, and source preparation reports;
 - `data/runs/<name>/<run-id>/`: `structured-records.parquet`, `run-manifest.json`, and

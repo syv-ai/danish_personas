@@ -13,8 +13,9 @@ Run completed on 14 September 2026 without any LLM calls.
   `fa2c6e5d3541298c4723200cbd51bda3647960da087cc86bbf4fb4f99d74b1c5`
 - Frozen text-development input: 1,000 stratified rows
 
-Generated datasets and raw snapshots are ignored by Git but remain reproducible from the
-committed source lock, mappings, configurations, and code.
+The compressed raw snapshots are committed with attribution. Restored and generated
+datasets remain ignored by Git and are reproducible from the source archive, lock,
+mappings, configurations, and code.
 
 ## Source result
 
