@@ -24,7 +24,13 @@ the reports before making statistical or quality claims:
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
 
-## Prerequisites
+## Developer setup guide
+
+This guide takes a developer from a fresh clone to validated demographic data and the
+frozen input used for persona generation. No network access or LLM credentials are
+required for deterministic data regeneration.
+
+### Prerequisites
 
 - Python 3.14 or later (and below Python 4.0), as required by `pyproject.toml`.
 - [`uv`](https://docs.astral.sh/uv/) for Python and dependency management.
@@ -35,7 +41,7 @@ the reports before making statistical or quality claims:
 The pipeline uses `polars`, `numpy`, `scipy`, Pydantic, Click, PyYAML, and HTTPX. The
 full dependency list and locked versions are in `pyproject.toml` and `uv.lock`.
 
-## Installation
+### Install dependencies
 
 From the repository root, install the locked development environment:
 
@@ -59,7 +65,7 @@ part of `make install`:
 make install-pre-commit
 ```
 
-## Environment setup
+### Configure the local environment
 
 The application does not require environment variables for the non-LLM pipeline. For
 local Git metadata or optional LLM credentials, create the ignored environment file:
@@ -76,7 +82,7 @@ Makefile includes `.env` and exports all of its variables to subprocesses and ho
 do not use it as credential loading for direct LLM commands. Never commit `.env`,
 tokens, or generated data artefacts.
 
-## Quickstart: non-LLM workflow
+### Regenerate development data
 
 The following commands restore the five exact Statistics Denmark aggregate snapshots,
 prepare a local source bundle, generate 1,000 deterministic records, and validate every
@@ -120,7 +126,7 @@ All generated run identifiers are derived from input checksums, row count, and s
 Repeating a valid command reuses the existing run; a checksum mismatch fails instead of
 overwriting data.
 
-## Reproduce the statistical pipeline
+### Regenerate canonical data and persona seeds
 
 Use the same ordering for a 100,000-row local run. Resolve selectors or fetch from the
 StatBank API only when intentionally updating the source lock; refreshed responses form

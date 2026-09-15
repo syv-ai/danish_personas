@@ -12,7 +12,7 @@ uv run src/scripts/restore_raw_sources.py
 
 The command creates `data/raw-hardened-20260914/`. Derived source bundles, demographic
 records, and LLM outputs remain ignored by Git and can be rebuilt using the main
-[reproduction instructions](../README.md#reproduce-the-non-llm-pipeline).
+[developer setup guide](../README.md#developer-setup-guide).
 
 Archive SHA-256:
 

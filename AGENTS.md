@@ -96,6 +96,10 @@ thresholds retrospectively to make an existing run pass.
 
 ## Setup and checks
 
+Use the [`README.md` developer setup guide](README.md#developer-setup-guide) for the
+complete clean-clone workflow, including offline raw-source restoration, prepared bundle
+generation, canonical demographic generation, validation, and persona-seed freezing.
+
 Install the exact development environment:
 
 ```bash
