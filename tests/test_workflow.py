@@ -6,6 +6,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from click.testing import CliRunner
 
 from danish_personas.io import load_env_file, sha256_file, write_json
 from danish_personas.models import RunManifest
@@ -17,6 +18,7 @@ from danish_personas.workflow import (
     summarise_run,
     write_pointer,
 )
+from scripts.publish_release import main as publish_main
 
 
 def test_env_file_fills_gaps_without_overriding_the_environment(
@@ -120,6 +122,38 @@ def test_pointers_record_and_report_stage_paths(tmp_path: Path) -> None:
     assert read_pointer(pointer) is None
     write_pointer(pointer, Path("data/runs/local/abc"))
     assert read_pointer(pointer) == Path("data/runs/local/abc")
+
+
+def test_release_requires_a_pilot_that_passed(tmp_path: Path) -> None:
+    """Publishing refuses a pilot whose own validation did not pass."""
+    pilot_dir = tmp_path / "pilot"
+    pilot_dir.mkdir()
+    write_json(
+        path=pilot_dir / "pilot-validation-report.json",
+        payload={
+            "kind": "persona_pilot",
+            "passed": False,
+            "created_at": "2026-09-16T00:00:00+00:00",
+            "subject_id": "pilot-1",
+            "metrics": [],
+        },
+    )
+    (pilot_dir / "pilot-manifest.json").write_text("{}", encoding="utf-8", newline="\n")
+    result = CliRunner().invoke(
+        publish_main,
+        [
+            "--pilot",
+            str(pilot_dir),
+            "--name",
+            "attempted",
+            "--reviewed-by",
+            "tester",
+            "--output-dir",
+            str(tmp_path / "releases"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert not (tmp_path / "releases").exists()
 
 
 def test_select_fields_keeps_the_identifier_and_rejects_unknown_fields() -> None:

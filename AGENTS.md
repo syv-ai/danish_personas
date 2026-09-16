@@ -51,6 +51,7 @@ prompts are interpreted relative to that working directory.
 | --- | --- |
 | `restore_raw_sources.py` | Safely restores the archive after validating its members. |
 | `build_raw_archive.py` | Repacks restored snapshots into the committed archive. |
+| `publish_release.py` | Copies a passed pilot into the tracked release directory. |
 | `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
 | `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
 | `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |

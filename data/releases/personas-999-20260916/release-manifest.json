@@ -1,0 +1,15 @@
+{
+  "files": {
+    "personas.parquet": "f2d01454d39522a7341870af792d9bf0aa8144d5eb52d69b3c2182b8aebf0532",
+    "pilot-manifest.json": "e55dc93d7d35481c4895fab9d27e9650c5637c21b7b3f5907157e2ea2a6e20e4",
+    "pilot-validation-report.json": "ca04807ab00abc57ba353a171d2af5cb01c6ce286dd022563ec33734d7017659"
+  },
+  "model": "gpt-5.6-terra",
+  "name": "personas-999-20260916",
+  "pilot_id": "ae62925e8c4e59da",
+  "reviewed_by": "pending",
+  "rows": 999,
+  "skipped_persona_ids": [
+    "233637ed-dd15-59ff-bea3-d48b0c2567bc"
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "created_at": "2026-09-16T05:41:45.209154+00:00",
+  "kind": "persona_pilot",
+  "metrics": [
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "output_checksum",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "row_count",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "skipped_accounting",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "upstream_provenance",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "upstream_preservation",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "batch_provenance",
+      "passed": true,
+      "threshold": "pass",
+      "value": 0
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "aggregate_provenance",
+      "passed": true,
+      "threshold": "pass",
+      "value": "pass"
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "request_budget",
+      "passed": true,
+      "threshold": 3000,
+      "value": 2096
+    },
+    {
+      "details": "Mandatory persona generation integrity gate.",
+      "name": "generated_content_errors",
+      "passed": true,
+      "threshold": 0,
+      "value": 0
+    }
+  ],
+  "passed": true,
+  "subject_id": "ae62925e8c4e59da"
+}
