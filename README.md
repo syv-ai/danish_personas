@@ -97,6 +97,39 @@ configured normal distribution, and nothing in the source tables constrains them
 attributes and descriptions are invented by the model from the record alone; no source
 table says anything about hobbies, skills, or ambitions.
 
+### An example record
+
+One row of the released dataset, abbreviated. The first block is sampled from Statistics
+Denmark, the second is written by the model from that block alone:
+
+```text
+persona_id            00000a0b-460e-558b-a2d2-be4a9f2f78cd
+age / sex             43 / male
+region                Region Syddanmark
+origin                immigrant_non_western
+origin_region         asien
+education_level       higher_education
+labour_market_status  employed
+detailed_status       Self-employed
+
+hobbies_and_interests ["Bager krydrede brød og småkager efter familieopskrifter",
+                       "Passer chili, krydderurter og tomatplanter", ...]
+
+visual_persona        Mand, 43 år. Han er indvandret til Danmark fra et land i
+                      Asien. Han har kort, mørkt hår, diskrete briller og et
+                      enkelt mørkeblåt skjorteoverdel med et roligt, neutralt
+                      ansigtsudtryk.
+
+persona               Han er 43 år, bor i Region Syddanmark og driver en lille
+                      rådgivningsforretning, hvor han skaber klare rammer for
+                      kundernes digitale og administrative opgaver. ...
+```
+
+`visual_persona` names the origin region and never a country, and its appearance details
+are invented rather than derived from that region. The released dataset lives under
+[`data/releases/`](data/releases); see [`data/README.md`](data/README.md) for how a
+reviewed pilot is published there.
+
 ### Relationship to Nemotron Personas
 
 The schema and the two-stage structure follow NVIDIA's

@@ -7,7 +7,7 @@
   "model": "gpt-5.6-terra",
   "name": "personas-999-20260916",
   "pilot_id": "ae62925e8c4e59da",
-  "reviewed_by": "pending",
+  "reviewed_by": "Magnus",
   "rows": 999,
   "skipped_persona_ids": [
     "233637ed-dd15-59ff-bea3-d48b0c2567bc"
