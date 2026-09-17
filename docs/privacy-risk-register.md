@@ -12,7 +12,7 @@ individual-level Statistics Denmark records.
 | Personality stereotyping | OCEAN is independent of demographics; prompts require probabilistic, non-deficit framing | Generated prose can still reintroduce associations or overstate traits |
 | Source-response leakage | Only aggregate-derived records enter prompts; raw response envelopes and rejected completion text are not stored, while accepted content, usage metadata, and response hashes are checkpointed | Accepted generated text and checkpoints still require restricted handling before release |
 | False statistical claims | Source universes, dates, proxies, pooling, and holdouts are explicit | The output is still a fitted synthetic model, not official microdata |
-| Visual presentation becoming sensitive or identifying | `visual_persona` is required to use mutable style choices and a generic environment; prompts and validators reject sensitive, location, institution, body, and attractiveness claims | A finite term list cannot detect every implication; human review remains mandatory |
+| Visual presentation becoming sensitive or identifying | `visual_persona` is required to use the closed Danish format and vocabulary for mutable clothing, accessories, colours, and a generic background; the validator rejects every other token, including sensitive, location, institution, and physical claims | Human review remains mandatory for implications outside the controlled format |
 | Unauthorised LLM execution | Committed configuration is disabled; live calls require a local configuration and `--live`; invocations have row and HTTP-request caps | A user with repository and provider access can deliberately enable bounded calls |
 
 ## Prohibited Phase-2 fields
