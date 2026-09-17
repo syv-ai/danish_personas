@@ -44,8 +44,7 @@ def main(archive_path: Path, output_dir: Path, force: bool) -> None:
 
     Raises:
         click.ClickException:
-            If the archive is missing, unsafe, corrupt, or the target already
-            exists.
+            If the archive is missing, unsafe, corrupt, or the target already exists.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:

@@ -37,13 +37,13 @@ def build_raw_archive(raw_dir: Path, archive_path: Path) -> int:
             If the snapshot directory is missing, unsafe, or contains no
             regular files.
     """
-    _validate_directory(path=raw_dir, description="Raw snapshot directory")
-    paths = _regular_files(raw_dir=raw_dir)
-    if not paths:
-        message = f"Raw snapshot directory contains no files: {raw_dir}"
-        raise SourceArchiveError(message)
-
     try:
+        _validate_directory(path=raw_dir, description="Raw snapshot directory")
+        paths = _regular_files(raw_dir=raw_dir)
+        if not paths:
+            message = f"Raw snapshot directory contains no files: {raw_dir}"
+            raise SourceArchiveError(message)
+
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(
             name=archive_path, mode="w:zst", options=COMPRESSION_OPTIONS
