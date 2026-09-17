@@ -111,8 +111,11 @@ content-addressed run identity, so a legacy run cannot be silently reused.
   review attestation. Any population of at least 100,000 requires at least 500.
   Other positive population sizes fail closed; policy minima may only be stricter.
 - The attestation binds the pilot ID, output checksum, population, protocol, timestamp,
-  and reviewed IDs. Eligibility also rejects duplicate output IDs and reviewed IDs not
-  present in the output.
+  and reviewed IDs. Eligibility requires exactly one unique output ID per attested row
+  and rejects reviewed IDs not present in the output.
+- Policy, attestation, and approval-result contracts are frozen and use immutable tuple
+  collections. Security-relevant values are strict and are never silently coerced or
+  stripped.
 - These checks are pure in-memory contracts. Packaging, publication, uploads, and
   release manifests are not implemented by this release.
 

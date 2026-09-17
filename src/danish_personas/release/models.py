@@ -2,10 +2,18 @@
 
 import re
 import typing as t
-from dataclasses import dataclass
 from datetime import datetime
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from ..models import StrictModel
 
@@ -18,25 +26,65 @@ _HEX_16 = re.compile(r"\A[0-9a-fA-F]{16}\Z")
 _HEX_64 = re.compile(r"\A[0-9a-fA-F]{64}\Z")
 _LICENCE_IDENTIFIER = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9.-]*(?:\+[A-Za-z0-9.-]+)?\Z")
 _SAFE_IDENTIFIER = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@+\-]*\Z")
+_CANONICAL_TIMESTAMP = re.compile(
+    r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\Z"
+)
 PILOT_ROWS = 10_000
 RELEASE_MINIMUM_ROWS = 100_000
 
 
-@dataclass(frozen=True, slots=True)
-class ReleaseApproval:
+class ReleaseApproval(StrictModel):
     """Immutable in-memory result of a successful release eligibility check.
 
     The result records organisational review evidence; it does not authenticate the
     reviewer cryptographically and does not write or represent a release file.
     """
 
-    pilot_id: str
-    output_sha256: str
-    population_rows: int
-    model: str
-    reviewer_id: str
-    reviewed_persona_ids: tuple[str, ...]
-    required_review_count: int
+    pilot_id: StrictStr
+    output_sha256: StrictStr
+    population_rows: StrictInt = Field(gt=0)
+    model: StrictStr
+    reviewer_id: StrictStr
+    reviewed_persona_ids: tuple[StrictStr, ...]
+    required_review_count: StrictInt = Field(gt=0)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model(_cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("Model identifier must be nonblank and unpadded")
+        return value
+
+    @field_validator("output_sha256")
+    @classmethod
+    def _validate_output_sha256(_cls, value: str) -> str:
+        if not _HEX_64.fullmatch(value):
+            raise ValueError("Output SHA-256 must contain exactly 64 hex characters")
+        return value
+
+    @field_validator("pilot_id")
+    @classmethod
+    def _validate_pilot_id(_cls, value: str) -> str:
+        if not _HEX_16.fullmatch(value):
+            raise ValueError("Pilot ID must contain exactly 16 hex characters")
+        return value
+
+    @field_validator("reviewed_persona_ids")
+    @classmethod
+    def _validate_reviewed_persona_ids(
+        _cls, values: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        _require_exact_unique_ids(values=values)
+        return values
+
+    @field_validator("reviewer_id")
+    @classmethod
+    def _validate_reviewer_id(_cls, value: str) -> str:
+        if not _SAFE_IDENTIFIER.fullmatch(value):
+            raise ValueError("Reviewer ID must be a nonblank safe identifier")
+        return value
 
     @property
     def reviewed_count(self) -> int:
@@ -53,17 +101,19 @@ class ReleasePolicy(StrictModel):
     """Version-one policy describing whether release eligibility may be checked.
 
     A disabled policy is useful for the committed default configuration and does not
-    need to name a model or a licence.  The row boundaries are deliberately constants
+    need to name a model or a licence. The row boundaries are deliberately constants
     in :mod:`danish_personas.release.policy`; the two minima may only be tightened.
     """
 
     version: t.Literal[1]
-    enabled: bool = Field(validation_alias=AliasChoices("enabled", "release_enabled"))
-    approved_models: list[str] = Field(
-        default_factory=list,
+    enabled: StrictBool = Field(
+        validation_alias=AliasChoices("enabled", "release_enabled")
+    )
+    approved_models: tuple[StrictStr, ...] = Field(
+        default_factory=tuple,
         validation_alias=AliasChoices("approved_models", "approved_model_identifiers"),
     )
-    dataset_licence: str | None = Field(
+    dataset_licence: StrictStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
             "dataset_licence",
@@ -72,18 +122,18 @@ class ReleasePolicy(StrictModel):
             "dataset_license_spdx",
         ),
     )
-    licence_file_sha256: str | None = Field(
+    licence_file_sha256: StrictStr | None = Field(
         default=None,
         validation_alias=AliasChoices("licence_file_sha256", "license_file_sha256"),
     )
-    pilot_minimum_reviewed_ids: int = Field(
+    pilot_minimum_reviewed_ids: StrictInt = Field(
         default=300,
         ge=300,
         validation_alias=AliasChoices(
             "pilot_minimum_reviewed_ids", "minimum_reviewed_ids_pilot"
         ),
     )
-    release_minimum_reviewed_ids: int = Field(
+    release_minimum_reviewed_ids: StrictInt = Field(
         default=500,
         ge=500,
         validation_alias=AliasChoices(
@@ -91,7 +141,39 @@ class ReleasePolicy(StrictModel):
         ),
     )
 
-    model_config = {"populate_by_name": True, "extra": "forbid"}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_strict_version(_cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("Policy version must be an integer")
+        return value
+
+    @field_validator("approved_models")
+    @classmethod
+    def _validate_approved_models(_cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value or value != value.strip() for value in values):
+            raise ValueError("Approved model identifiers must be nonblank and unpadded")
+        if len(set(values)) != len(values):
+            raise ValueError("Approved model identifiers must be unique")
+        return values
+
+    @field_validator("dataset_licence")
+    @classmethod
+    def _validate_dataset_licence(_cls, value: str | None) -> str | None:
+        if value is not None and not _LICENCE_IDENTIFIER.fullmatch(value):
+            raise ValueError("Dataset licence must be a strict SPDX-like identifier")
+        return value
+
+    @field_validator("licence_file_sha256")
+    @classmethod
+    def _validate_licence_file_sha256(_cls, value: str | None) -> str | None:
+        if value is not None and not _HEX_64.fullmatch(value):
+            raise ValueError(
+                "Licence-file SHA-256 must contain exactly 64 hex characters"
+            )
+        return value
 
     @model_validator(mode="after")
     def require_enabled_release_metadata(self) -> "ReleasePolicy":
@@ -133,7 +215,7 @@ class ReleasePolicy(StrictModel):
             ReleasePolicyError:
                 If this policy is disabled or the population size is unsupported.
         """
-        if not isinstance(population_rows, int) or isinstance(population_rows, bool):
+        if type(population_rows) is not int:
             raise ReleasePolicyError("Population row count must be an integer")
         if not self.enabled:
             raise ReleasePolicyError("Release policy is disabled")
@@ -144,60 +226,6 @@ class ReleasePolicy(StrictModel):
         raise ReleasePolicyError(
             "Only exactly 10,000 rows or at least 100,000 rows are eligible for release"
         )
-
-    @field_validator("approved_models")
-    @classmethod
-    def validate_approved_models(_cls, values: list[str]) -> list[str]:
-        """Require exact, nonblank and unique model identifiers.
-
-        Returns:
-            The unchanged model identifiers.
-
-        Raises:
-            ValueError:
-                If an identifier is blank, padded, or duplicated.
-        """
-        if any(not value or value != value.strip() for value in values):
-            raise ValueError(
-                "Approved model identifiers must be nonblank and untrimmed"
-            )
-        if len(set(values)) != len(values):
-            raise ValueError("Approved model identifiers must be unique")
-        return values
-
-    @field_validator("dataset_licence")
-    @classmethod
-    def validate_dataset_licence(_cls, value: str | None) -> str | None:
-        """Require an SPDX-like identifier when a licence is supplied.
-
-        Returns:
-            The unchanged licence identifier, or ``None``.
-
-        Raises:
-            ValueError:
-                If the identifier is not SPDX-like.
-        """
-        if value is not None and not _LICENCE_IDENTIFIER.fullmatch(value):
-            raise ValueError("Dataset licence must be a strict SPDX-like identifier")
-        return value
-
-    @field_validator("licence_file_sha256")
-    @classmethod
-    def validate_licence_file_sha256(_cls, value: str | None) -> str | None:
-        """Require an exact hexadecimal SHA-256 when a hash is supplied.
-
-        Returns:
-            The unchanged checksum, or ``None``.
-
-        Raises:
-            ValueError:
-                If the checksum is not exactly 64 hexadecimal characters.
-        """
-        if value is not None and not _HEX_64.fullmatch(value):
-            raise ValueError(
-                "Licence-file SHA-256 must contain exactly 64 hex characters"
-            )
-        return value
 
 
 ReleaseApprovalResult = ReleaseApproval
@@ -213,101 +241,89 @@ class ReviewAttestation(StrictModel):
     version: t.Literal[1]
     release_approved: t.Literal[True]
     blinded: t.Literal[True]
-    reviewer_id: str = Field(
+    reviewer_id: StrictStr = Field(
         validation_alias=AliasChoices("reviewer_id", "reviewer_identifier")
     )
-    protocol: str = Field(validation_alias=AliasChoices("protocol", "review_protocol"))
-    protocol_version: str = Field(
+    protocol: StrictStr = Field(
+        validation_alias=AliasChoices("protocol", "review_protocol")
+    )
+    protocol_version: StrictStr = Field(
         validation_alias=AliasChoices("protocol_version", "review_protocol_version")
     )
     reviewed_at: datetime
-    pilot_id: str
-    output_sha256: str
-    population_rows: int = Field(gt=0)
-    reviewed_persona_ids: list[str] = Field(
+    pilot_id: StrictStr
+    output_sha256: StrictStr
+    population_rows: StrictInt = Field(gt=0)
+    reviewed_persona_ids: tuple[StrictStr, ...] = Field(
         min_length=1,
         validation_alias=AliasChoices("reviewed_persona_ids", "reviewed_ids"),
     )
 
-    model_config = {"populate_by_name": True, "extra": "forbid"}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
+
+    @field_validator("release_approved", "blinded", mode="before")
+    @classmethod
+    def _require_literal_true(_cls, value: object) -> object:
+        if value is not True:
+            raise ValueError("Approval and blindedness must be literal true values")
+        return value
+
+    @field_validator("reviewed_at", mode="before")
+    @classmethod
+    def _require_strict_timestamp_input(_cls, value: object) -> object:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str) and _CANONICAL_TIMESTAMP.fullmatch(value):
+            return value
+        raise ValueError(
+            "Review timestamp must be a datetime or canonical timezone-aware ISO-8601"
+        )
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_strict_version(_cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("Attestation version must be an integer")
+        return value
 
     @model_validator(mode="after")
-    def require_timezone_aware_timestamp(self) -> "ReviewAttestation":
-        """Reject timestamps that do not identify a timezone.
-
-        Returns:
-            The validated attestation.
-
-        Raises:
-            ValueError:
-                If ``reviewed_at`` is naive.
-        """
+    def _require_timezone_aware_timestamp(self) -> "ReviewAttestation":
         if self.reviewed_at.tzinfo is None or self.reviewed_at.utcoffset() is None:
             raise ValueError("Review timestamp must be timezone-aware")
         return self
 
     @field_validator("output_sha256")
     @classmethod
-    def validate_output_sha256(_cls, value: str) -> str:
-        """Require the fixed-size hexadecimal output checksum.
-
-        Returns:
-            The unchanged output checksum.
-
-        Raises:
-            ValueError:
-                If the value is not exactly 64 hexadecimal characters.
-        """
+    def _validate_output_sha256(_cls, value: str) -> str:
         if not _HEX_64.fullmatch(value):
             raise ValueError("Output SHA-256 must contain exactly 64 hex characters")
         return value
 
     @field_validator("pilot_id")
     @classmethod
-    def validate_pilot_id(_cls, value: str) -> str:
-        """Require the fixed-size hexadecimal pilot identifier.
-
-        Returns:
-            The unchanged pilot identifier.
-
-        Raises:
-            ValueError:
-                If the value is not exactly 16 hexadecimal characters.
-        """
+    def _validate_pilot_id(_cls, value: str) -> str:
         if not _HEX_16.fullmatch(value):
             raise ValueError("Pilot ID must contain exactly 16 hex characters")
         return value
 
     @field_validator("reviewed_persona_ids")
     @classmethod
-    def validate_reviewed_persona_ids(_cls, values: list[str]) -> list[str]:
-        """Require nonblank, exactly unique reviewed persona identifiers.
-
-        Returns:
-            The unchanged reviewed identifiers.
-
-        Raises:
-            ValueError:
-                If an identifier is blank or duplicated.
-        """
-        if any(not value or not value.strip() for value in values):
-            raise ValueError("Reviewed persona IDs must be nonblank")
-        if len(set(values)) != len(values):
-            raise ValueError("Reviewed persona IDs must be unique")
+    def _validate_reviewed_persona_ids(
+        _cls, values: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        _require_exact_unique_ids(values=values)
         return values
 
     @field_validator("reviewer_id", "protocol", "protocol_version")
     @classmethod
-    def validate_safe_text_identifier(_cls, value: str) -> str:
-        """Require a nonblank safe token for review metadata.
-
-        Returns:
-            The unchanged safe identifier.
-
-        Raises:
-            ValueError:
-                If the value is blank or contains unsafe characters.
-        """
+    def _validate_safe_text_identifier(_cls, value: str) -> str:
         if not _SAFE_IDENTIFIER.fullmatch(value):
             raise ValueError("Review metadata must be nonblank safe identifiers")
         return value
+
+
+def _require_exact_unique_ids(*, values: tuple[str, ...]) -> None:
+    if any(not value or value != value.strip() for value in values):
+        raise ValueError("Reviewed persona IDs must be nonblank and unpadded")
+    if len(set(values)) != len(values):
+        raise ValueError("Reviewed persona IDs must be unique")
