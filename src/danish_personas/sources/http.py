@@ -30,23 +30,20 @@ def request_with_retries(
         httpx.HTTPError:
             If every attempt fails.
         RuntimeError:
-            If the retry loop exits without a response or an error.
+            If RETRY_ATTEMPTS is not positive, so no request is ever made.
     """
-    last_error: httpx.HTTPError | None = None
     for attempt in range(RETRY_ATTEMPTS):
         try:
             response = client.request(method=method, url=url, json=json_payload)
             response.raise_for_status()
-            return response
-        except httpx.HTTPError as error:
-            last_error = error
+        except httpx.HTTPError:
             if attempt == RETRY_ATTEMPTS - 1:
-                break
+                raise
             time.sleep(2**attempt)
-    if last_error is None:
-        message = "Request failed without an HTTP error"
-        raise RuntimeError(message)
-    raise last_error
+        else:
+            return response
+    message = "Retry loop ended without a response or an error"
+    raise RuntimeError(message)
 
 
 def response_headers_content(response: httpx.Response) -> bytes:
