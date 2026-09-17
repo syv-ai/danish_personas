@@ -84,9 +84,14 @@ def prepare_bundle(
             (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
         )
         metadata_by_table[source.table_id] = metadata
-        source_frames[source.table_id] = _read_source(
+        source_frame = _read_source(
             csv_path=snapshot_dir / "data.csv", dimension_codes=list(source.dimensions)
         )
+        if source.table_id == "FOLK2":
+            source_frame = _materialise_origin_zero_codes(
+                raw_frame=source_frame, selected_codes=source.dimensions["IELAND"]
+            )
+        source_frames[source.table_id] = source_frame
 
     classification_snapshots: list[ClassificationManifest] = []
     geography_csv_path: Path | None = None
@@ -250,6 +255,38 @@ def _geography_metrics(
         "complete": complete,
         "passed": passed,
     }
+
+
+def _materialise_origin_zero_codes(
+    raw_frame: pl.DataFrame, selected_codes: list[str]
+) -> pl.DataFrame:
+    """Make BULK's omitted zero-count origin categories explicit.
+
+    StatBank's BULK response omits combinations whose observation is zero. FOLK2's
+    prepared marginal nevertheless needs one row for every selected official category,
+    so absent IELAND codes are added as explicit, unsuppressed zeroes before validation.
+
+    Args:
+        raw_frame:
+            Parsed FOLK2 response rows.
+        selected_codes:
+            IELAND values frozen in the source lock.
+
+    Returns:
+        Parsed rows with explicit zero rows for absent selected IELAND codes.
+    """
+    observed_codes = set(raw_frame.get_column("IELAND").to_list())
+    missing_codes = sorted(set(selected_codes) - observed_codes)
+    if not missing_codes:
+        return raw_frame
+    zero_rows = pl.DataFrame(
+        {
+            "IELAND": missing_codes,
+            "count": [0] * len(missing_codes),
+            "suppressed": [False] * len(missing_codes),
+        }
+    )
+    return pl.concat([raw_frame, zero_rows], how="diagonal_relaxed")
 
 
 def _metadata_labels(metadata: StatBankMetadata) -> dict[str, dict[str, str]]:
@@ -658,33 +695,69 @@ def _origin_country_metrics(
     """
     observed_codes = set(raw_frame.get_column("IELAND").to_list())
     expected_codes = set(selected_codes)
-    prepared_codes = set(prepared_frame.get_column("origin_country_code").to_list())
+    prepared_code_values = prepared_frame.get_column("origin_country_code").to_list()
+    prepared_label_values = prepared_frame.get_column("origin_country").to_list()
+    prepared_codes = set(prepared_code_values)
+    selected_metadata = {
+        code: official_labels[code]
+        for code in expected_codes
+        if code in official_labels
+    }
+    prepared_mapping = dict(
+        zip(prepared_code_values, prepared_label_values, strict=True)
+    )
     unhandled_values = sorted(observed_codes - set(official_labels))
+    missing_metadata = sorted(expected_codes - set(selected_metadata))
     missing_raw = sorted(expected_codes - observed_codes)
     missing_prepared = sorted(expected_codes - prepared_codes)
     extra_prepared = sorted(prepared_codes - expected_codes)
+    mapping_mismatches = sorted(
+        code
+        for code in expected_codes | prepared_codes
+        if prepared_mapping.get(code) != selected_metadata.get(code)
+    )
     suppressed_cells = int(raw_frame.get_column("suppressed").sum())
     total = int(prepared_frame.get_column("count").sum())
-    code_unique = (
-        prepared_frame.height
-        == prepared_frame.get_column("origin_country_code").n_unique()
+    code_unique = prepared_frame.height == len(prepared_codes)
+    prepared_label_unique = prepared_frame.height == len(set(prepared_label_values))
+    metadata_label_unique = len(selected_metadata) == len(
+        set(selected_metadata.values())
     )
-    expected_partition = not missing_prepared and not extra_prepared
+    label_unique = prepared_label_unique and metadata_label_unique
+    expected_partition = not missing_raw and not missing_prepared and not extra_prepared
+    metadata_mapping = (
+        not missing_metadata and not mapping_mismatches and metadata_label_unique
+    )
     zero_suppression = suppressed_cells == 0
     passed = (
         total > 0
         and code_unique
+        and label_unique
         and zero_suppression
         and not unhandled_values
         and expected_partition
+        and metadata_mapping
     )
     return {
         "passed": passed,
         "positive_total": {"value": total, "passed": total > 0},
         "code_uniqueness": {
             "value": prepared_frame.height,
-            "unique": prepared_frame.get_column("origin_country_code").n_unique(),
+            "unique": len(prepared_codes),
             "passed": code_unique,
+        },
+        "label_uniqueness": {
+            "value": prepared_frame.height,
+            "prepared_unique": len(set(prepared_label_values)),
+            "metadata_unique": len(set(selected_metadata.values())),
+            "passed": label_unique,
+        },
+        "metadata_mapping": {
+            "expected": selected_metadata,
+            "prepared": prepared_mapping,
+            "missing_metadata": missing_metadata,
+            "mismatches": mapping_mismatches,
+            "passed": metadata_mapping,
         },
         "zero_suppression": {
             "suppressed_cells": suppressed_cells,
@@ -697,7 +770,7 @@ def _origin_country_metrics(
         },
         "expected_partition": {
             "expected_codes": len(expected_codes),
-            "prepared_codes": prepared_frame.height,
+            "prepared_codes": len(prepared_codes),
             "missing_raw": missing_raw,
             "missing_prepared": missing_prepared,
             "extra_prepared": extra_prepared,
@@ -834,6 +907,9 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
             f"{origin['expected_partition']['expected_codes']:,}",
             f"- Positive total: **{origin_results['positive_total']}**",
             f"- Code uniqueness: **{origin_results['code_uniqueness']}**",
+            f"- Label uniqueness: **{origin_results['label_uniqueness']}**",
+            "- Official code-to-label mapping: "
+            f"**{origin_results['metadata_mapping']}**",
             f"- Zero suppression: **{origin_results['zero_suppression']}**",
             f"- Unhandled values: **{origin_results['unhandled_values']}**",
             f"- Expected partition: **{origin_results['expected_partition']}**",

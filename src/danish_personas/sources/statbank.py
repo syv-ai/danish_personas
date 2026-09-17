@@ -243,11 +243,12 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
                 client=client, table_id=source.table_id, language=config.language
             )
             dimensions = _resolve_dimensions(source=source, metadata=metadata)
-            estimated_cells = math.prod(len(values) for values in dimensions.values())
-            if estimated_cells > MAX_CELLS:
+            estimated_cells = estimate_query_cells(dimensions=dimensions)
+            if source.format != "BULK" and estimated_cells > MAX_CELLS:
                 message = (
                     f"{source.table_id} resolves to {estimated_cells:,} cells, "
-                    f"above the {MAX_CELLS:,}-cell API limit"
+                    f"above the {MAX_CELLS:,}-cell API limit for {source.format}; "
+                    "use BULK for an explicitly exempt streaming query"
                 )
                 raise ValueError(message)
             locked_sources.append(
@@ -392,3 +393,19 @@ def _apply_selector(selector: str, values: list[StatBankValue]) -> list[str]:
         ]
     message = f"Unknown source selector: {selector}"
     raise ValueError(message)
+
+
+def estimate_query_cells(dimensions: dict[str, list[str]]) -> int:
+    """Calculate the StatBank cell count for a selected query.
+
+    Args:
+        dimensions:
+            Selected values for every returned StatBank dimension, including time.
+
+    Returns:
+        Maximum observations multiplied by the returned columns. The columns are
+        every selected dimension plus the observation value.
+    """
+    observations = math.prod(len(values) for values in dimensions.values())
+    returned_columns = len(dimensions) + 1
+    return observations * returned_columns

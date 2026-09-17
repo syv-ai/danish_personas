@@ -29,7 +29,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "a637a48f35aa2fad"
+    assert bundle_dir.name == "e4bddc3622dd00fa"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
