@@ -325,11 +325,15 @@ deterministic quotas and retains its official code and label; origin is withheld
 both LLM stages and cannot drive language, culture, religion, occupation, personality,
 or visual appearance. Source bundle `fda86665792f7734` produced passing canonical runs
 `0122b894dec6829e` (2,000-row smoke) and `ea321089a79d3650` (100,000-row statistical).
-See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics. LLM
-generation remains disabled in configuration and guarded by an executable failure.
+See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics.
+LLM generation remains disabled in configuration and guarded by an executable failure.
 
 The frozen text-development input remains a separate, deliberately stratified 1,000-row
 Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
+The first release-contract increment defines a disabled-by-default, pure eligibility gate:
+exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and populations of
+at least 100,000 require 500 (with stricter policy minima permitted). Other sizes fail
+closed. Packaging, publication, uploads, and release manifests remain unimplemented.
 
 ## Generation architecture
 

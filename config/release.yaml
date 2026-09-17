@@ -1,0 +1,8 @@
+# Publication eligibility policy. Release tooling is intentionally not implemented yet.
+version: 1
+enabled: false
+approved_models: []
+dataset_licence: null
+licence_file_sha256: null
+pilot_minimum_reviewed_ids: 300
+release_minimum_reviewed_ids: 500
