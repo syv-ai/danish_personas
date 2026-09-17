@@ -88,11 +88,14 @@ def generate_records(
 
     source_dir = bundle_dir / "normalized"
     joint_frame = pl.read_parquet(source_dir / "ras209_sampling.parquet")
-    demographic_seed, ocean_seed = np.random.SeedSequence(seed).spawn(2)
+    demographic_seed, ocean_seed, origin_seed = np.random.SeedSequence(seed).spawn(3)
     demographic_rng = np.random.default_rng(demographic_seed)
     ocean_rng = np.random.default_rng(ocean_seed)
+    origin_rng = np.random.default_rng(origin_seed)
 
     sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
+    origin_frame = pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet")
+    sampled_origin = _origin_quota_sample(frame=origin_frame, rows=rows, rng=origin_rng)
     ladders = {
         attribute.resolution_column: _ladder_index(
             frame=pl.read_parquet(source_dir / attribute.prepared_file),
@@ -110,6 +113,7 @@ def generate_records(
         seed=seed,
     )
     _add_ocean(records=records, config=config, rng=ocean_rng)
+    _attach_origin(records=records, sampled_origin=sampled_origin)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     data_path = run_dir / "structured-records.parquet"
@@ -149,6 +153,25 @@ def _add_ocean(
             label_index = int(np.searchsorted(boundaries, score, side="right"))
             record[f"{trait}_score"] = score
             record[f"{trait}_label"] = ocean.labels[label_index]
+
+
+def _attach_origin(
+    records: list[dict[str, object]], sampled_origin: pl.DataFrame
+) -> None:
+    """Attach an independent origin-country draw without touching other fields.
+
+    Raises:
+        ValueError:
+            If the origin sample does not match the record count.
+    """
+    if len(records) != sampled_origin.height:
+        message = "Origin sample size must equal the requested record count"
+        raise ValueError(message)
+    for record, origin in zip(
+        records, sampled_origin.iter_rows(named=True), strict=True
+    ):
+        record["origin_country_code"] = origin["origin_country_code"]
+        record["origin_country"] = origin["origin_country"]
 
 
 def _build_records(
@@ -359,6 +382,67 @@ def _logical_checksum(frame: pl.DataFrame) -> str:
 
 def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
+
+
+def _origin_quota_sample(
+    frame: pl.DataFrame, rows: int, rng: np.random.Generator
+) -> pl.DataFrame:
+    """Sample the official FOLK2 marginal with exact deterministic quotas.
+
+    Only positive-weight categories can be emitted. The code, label, and count
+    columns are validated here as a defence against a malformed prepared bundle.
+    Largest-remainder ties follow sorted official codes, then the independent
+    child RNG shuffles the resulting rows.
+
+    Returns:
+        A shuffled frame containing exactly ``rows`` positive-weight categories.
+
+    Raises:
+        ValueError:
+            If codes, labels, or counts are malformed, or the total is not
+            positive.
+    """
+    required = {"origin_country_code", "origin_country", "count"}
+    if set(frame.columns) < required:
+        missing = sorted(required - set(frame.columns))
+        raise ValueError(f"FOLK2 marginal is missing columns: {missing}")
+    selected = frame.select(sorted(required)).sort(
+        ["origin_country_code", "origin_country"]
+    )
+    if selected.is_empty():
+        raise ValueError("FOLK2 marginal must contain at least one category")
+    if selected.null_count().sum_horizontal().item() > 0:
+        raise ValueError("FOLK2 marginal contains null code, label, or count")
+    if selected.get_column("origin_country_code").n_unique() != selected.height:
+        raise ValueError("FOLK2 marginal contains duplicate origin codes")
+    if selected.get_column("origin_country").n_unique() != selected.height:
+        raise ValueError("FOLK2 marginal contains duplicate origin labels")
+    counts = selected.get_column("count")
+    if counts.dtype not in (
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+    ):
+        raise ValueError("FOLK2 marginal counts must be integers")
+    if bool((counts < 0).any()):
+        raise ValueError("FOLK2 marginal counts cannot be negative")
+    positive = selected.filter(pl.col("count") > 0)
+    if positive.is_empty():
+        raise ValueError("FOLK2 marginal must have a positive total")
+    weights = positive.get_column("count").to_numpy().astype(np.float64)
+    expected = weights / weights.sum() * rows
+    allocations = np.floor(expected).astype(np.int64)
+    remainder = rows - int(allocations.sum())
+    fractions = expected - allocations
+    allocations[np.argsort(-fractions, kind="stable")[:remainder]] += 1
+    indices = np.repeat(np.arange(positive.height), allocations)
+    rng.shuffle(indices)
+    return positive[indices]
 
 
 def _quota_sample(

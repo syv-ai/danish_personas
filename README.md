@@ -183,9 +183,11 @@ uv run src/scripts/freeze_demographic_sample.py \
 
 The source preparation stage uses FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210.
 FOLK2 is an independent national marginal of official IELAND country-of-origin categories
-for adults. It preserves categories such as Stateless and Not stated, but is not ethnicity
-or citizenship. It is not emitted in Phase 2 records, sampled, or sent to LLMs; a later
-sampling/privacy PR is required. FOLK1A, RAS209, and RAS202 ground the distributions;
+for adults. It preserves categories such as Stateless and Not stated, but is not ethnicity,
+citizenship, or residence. Each Phase 2 record receives an independently quota-sampled
+`origin_country_code` and `origin_country`; the fields are withheld from both LLM payloads.
+They cannot drive language, culture, religion, occupation, personality, or visual
+appearance. FOLK1A, RAS209, and RAS202 ground the distributions;
 BEFOLK3 and RAS210 are held-out aggregate diagnostics.
 Municipality aggregates are used to construct regional counts, but municipality fields
 are not emitted in generated records. The municipality, landsdel, and region hierarchy
@@ -321,10 +323,12 @@ approve any proposed release.
 
 Statistics Denmark inputs are public aggregate tables, not individual-level records. The
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
-aged 18-125 with the fixed country value Denmark, sex, age, marital status, region, broad
-education, labour status, detailed status, and independent OCEAN scores. The FOLK2 origin
-marginal is not a Phase-2 field. It does not emit names, exact addresses, coordinates, CPR
-or other administrative identifiers, employers, occupations,
+aged 18-125 with the fixed residence value `Danmark`, independently sampled official
+FOLK2 origin fields, sex, age, marital status, region, broad education, labour status,
+detailed status, and independent OCEAN scores. Origin is not ethnicity, citizenship, or
+residence, and cannot drive language, culture, religion, occupation, personality, or
+visual appearance. It does not emit names, exact addresses, coordinates, CPR or other
+administrative identifiers, employers, occupations,
 income, household details, ancestry, citizenship, health, religion, sexuality, politics,
 criminal history, or free text.
 

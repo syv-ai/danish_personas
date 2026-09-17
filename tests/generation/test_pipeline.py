@@ -184,6 +184,8 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "marital_resolution",
         "education_resolution",
         "detailed_status_resolution",
+        "origin_country_code",
+        "origin_country",
     )
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
@@ -222,6 +224,8 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "marital_resolution": ["region_age_band_sex", "age_band"],
             "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
             "detailed_status_resolution": ["status", "sex_status"],
+            "origin_country_code": ["5100", "5103"],
+            "origin_country": ["Denmark", "Stateless"],
         }
     )
     source_path = run_dir / "structured-records.parquet"

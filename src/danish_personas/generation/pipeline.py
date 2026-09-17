@@ -30,7 +30,14 @@ LOGGER = logging.getLogger(__name__)
 # Sampler back-off and proxy provenance are withheld from prompts: they record how
 # a value was obtained, not anything about the person. Keep non-ladder resolution
 # fields listed here explicitly so they cannot be omitted when ladders change.
-AUDIT_FIELDS = frozenset((*MOST_SPECIFIC_RESOLUTION, "education_resolution"))
+AUDIT_FIELDS = frozenset(
+    (
+        *MOST_SPECIFIC_RESOLUTION,
+        "education_resolution",
+        "origin_country_code",
+        "origin_country",
+    )
+)
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
