@@ -1,8 +1,17 @@
-version: 1
+version: 2
 language: en
 release_rows: 100000
 minimum_source_count: 50
 minimum_expected_release_count: 5
+classifications:
+  # Statistics Denmark publishes classifications as attachments on dst.dk rather
+  # than through the StatBank data API, so they use a separate source adapter.
+  - classification_id: NUTS_V1_2007_DK
+    role: geography_hierarchy
+    title: Regioner, landsdele og kommuner
+    valid_from: "2007-01-01"
+    page_url: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
+    attachment_url: https://www.dst.dk/klassifikationsbilag/5d18d1e0-400b-4505-92ad-6782915980a3csv_da
 sources:
   - table_id: FOLK1A
     role: demographic_base

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-RAW_DIRECTORY = "raw-hardened-20260914"
+RAW_DIRECTORY = "raw-hardened-20260917"
 DEFAULT_ARCHIVE = Path("data") / f"{RAW_DIRECTORY}.tar.zst"
 
 

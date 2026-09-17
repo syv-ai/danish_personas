@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from ..io import (
     canonical_json,
@@ -15,6 +16,7 @@ from ..io import (
     sha256_file,
     sha256_text,
     write_json,
+    write_new_bytes,
     write_yaml,
 )
 from ..models import (
@@ -88,7 +90,7 @@ def _fetch_source(
         ).encode(),
     }
     for name, content in files.items():
-        _write_new_bytes(path=snapshot_dir / name, content=content)
+        write_new_bytes(path=snapshot_dir / name, content=content)
     manifest = SnapshotManifest(
         table_id=source.table_id,
         role=source.role,
@@ -202,13 +204,6 @@ def source_query_content(source: LockedSource) -> str:
     return json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
 
 
-def _write_new_bytes(path: Path, content: bytes) -> None:
-    if path.exists():
-        message = f"Refusing to overwrite immutable source file: {path}"
-        raise FileExistsError(message)
-    path.write_bytes(content)
-
-
 def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
     """Return the content-addressed directory for a locked source query.
 
@@ -280,12 +275,14 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
         minimum_expected_release_count=config.minimum_expected_release_count,
         resolved_at=resolved_at,
         sources=locked_sources,
+        classifications=config.classifications,
     )
-    if lock_path.exists():
-        existing = load_yaml_model(path=lock_path, model=SourceLock)
-        if _lock_identity(lock=existing) == _lock_identity(lock=lock):
-            LOGGER.info("Source metadata is unchanged; retaining %s", lock_path)
-            return existing
+    existing = _readable_lock(lock_path=lock_path)
+    if existing is not None and _lock_identity(lock=existing) == _lock_identity(
+        lock=lock
+    ):
+        LOGGER.info("Source metadata is unchanged; retaining %s", lock_path)
+        return existing
     write_yaml(path=lock_path, payload=lock)
     return lock
 
@@ -303,6 +300,28 @@ def _lock_identity(lock: SourceLock) -> str:
             raise TypeError(message)
         source.pop("retrieved_metadata_at")
     return canonical_json(payload)
+
+
+def _readable_lock(lock_path: Path) -> SourceLock | None:
+    """Load an existing lock when it matches the current schema.
+
+    Args:
+        lock_path:
+            Existing lock path.
+
+    Returns:
+        The parsed lock, or None when absent or schema-incompatible.
+    """
+    if not lock_path.exists():
+        return None
+    try:
+        return load_yaml_model(path=lock_path, model=SourceLock)
+    except ValidationError:
+        LOGGER.warning(
+            "Existing lock %s does not match the current schema; rewriting it",
+            lock_path,
+        )
+        return None
 
 
 def _resolve_dimensions(

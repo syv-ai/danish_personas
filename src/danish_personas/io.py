@@ -120,6 +120,25 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def write_new_bytes(path: Path, content: bytes) -> None:
+    """Write bytes, refusing to overwrite an existing immutable file.
+
+    Args:
+        path:
+            Destination path.
+        content:
+            Bytes to write.
+
+    Raises:
+        FileExistsError:
+            If the destination already exists.
+    """
+    if path.exists():
+        message = f"Refusing to overwrite immutable source file: {path}"
+        raise FileExistsError(message)
+    path.write_bytes(content)
+
+
 def write_yaml(path: Path, payload: BaseModel | dict[str, object]) -> None:
     """Atomically write a YAML document.
 

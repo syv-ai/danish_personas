@@ -12,14 +12,19 @@ from ..io import load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import (
     BundleManifest,
     CategoryConfig,
+    ClassificationManifest,
     SnapshotManifest,
     SourceLock,
     StatBankMetadata,
 )
+from .classification import classification_snapshot_dir, verify_classification_snapshot
 from .statbank import source_query_content, source_snapshot_dir
 
 LOGGER = logging.getLogger(__name__)
 REGION_PREFIX = "Region "
+REGION_LEVEL = "1"
+LANDSDEL_LEVEL = "2"
+MUNICIPALITY_LEVEL = "3"
 
 
 def prepare_bundle(
@@ -39,6 +44,10 @@ def prepare_bundle(
 
     Returns:
         Prepared bundle directory.
+
+    Raises:
+        ValueError:
+            If the lock has no geography classification.
     """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
@@ -79,7 +88,30 @@ def prepare_bundle(
             csv_path=snapshot_dir / "data.csv", dimension_codes=list(source.dimensions)
         )
 
-    region_map = _build_region_map(metadata=metadata_by_table["FOLK1A"])
+    classification_snapshots: list[ClassificationManifest] = []
+    geography = pl.DataFrame()
+    for classification in lock.classifications:
+        snapshot_dir = classification_snapshot_dir(
+            classification=classification, raw_dir=raw_dir
+        )
+        classification_snapshot = ClassificationManifest.model_validate_json(
+            (snapshot_dir / "snapshot-manifest.json").read_text()
+        )
+        verify_classification_snapshot(
+            snapshot_dir=snapshot_dir,
+            snapshot=classification_snapshot,
+            classification=classification,
+        )
+        classification_snapshots.append(classification_snapshot)
+        if classification.role == "geography_hierarchy":
+            geography = read_geography_classification(
+                csv_path=snapshot_dir / "data.csv"
+            )
+    if geography.is_empty():
+        message = "The source lock has no geography_hierarchy classification"
+        raise ValueError(message)
+
+    region_map = _region_map_from_geography(geography=geography)
     frames = _normalise_frames(
         raw_frames=source_frames,
         metadata_by_table=metadata_by_table,
@@ -96,7 +128,15 @@ def prepare_bundle(
         frame.write_parquet(path)
         files[str(path.relative_to(bundle_dir))] = sha256_file(path)
 
-    source_metrics = _source_metrics(frames=frames)
+    geography_path = normalized_dir / "geography_hierarchy.parquet"
+    geography.sort(sorted(geography.columns)).write_parquet(geography_path)
+    files[str(geography_path.relative_to(bundle_dir))] = sha256_file(geography_path)
+
+    source_metrics = _source_metrics(
+        frames=frames,
+        geography=geography,
+        statbank_region_map=_build_region_map(metadata=metadata_by_table["FOLK1A"]),
+    )
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
     files[str(source_report_path.relative_to(bundle_dir))] = sha256_file(
@@ -115,6 +155,7 @@ def prepare_bundle(
         source_lock_sha256=sha256_file(lock_path),
         categories_sha256=sha256_file(categories_path),
         source_snapshots=snapshots,
+        classification_snapshots=classification_snapshots,
         files=files,
         reference_periods={source.role: source.period for source in lock.sources},
         assumptions=[
@@ -124,6 +165,8 @@ def prepare_bundle(
             "RAS202 refines detailed status only within the RAS209 broad status.",
             "The RAS209 67+ education band is a proxy for ages 70 and over.",
             "BEFOLK3 and RAS210 are held-out diagnostics, not fitted microdata.",
+            "The municipality-region hierarchy comes from the official DST "
+            "classification, not from StatBank metadata ordering.",
             "OCEAN traits are a documented design distribution, not official "
             "statistics.",
         ],
@@ -517,7 +560,18 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _source_metrics(frames: dict[str, pl.DataFrame]) -> dict[str, object]:
+def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, str]]:
+    return {
+        row["municipality_code"]: (row["region_code"], row["region"])
+        for row in geography.iter_rows(named=True)
+    }
+
+
+def _source_metrics(
+    frames: dict[str, pl.DataFrame],
+    geography: pl.DataFrame,
+    statbank_region_map: dict[str, tuple[str, str]],
+) -> dict[str, object]:
     table_metrics: dict[str, object] = {}
     passed = True
     for name, frame in frames.items():
@@ -531,7 +585,42 @@ def _source_metrics(frames: dict[str, pl.DataFrame]) -> dict[str, object]:
             "suppressed_cells": suppressed,
             "passed": valid,
         }
-    return {"passed": passed, "tables": table_metrics}
+    geography_metrics = _geography_metrics(
+        geography=geography, statbank_region_map=statbank_region_map
+    )
+    passed = passed and bool(geography_metrics["passed"])
+    return {
+        "passed": passed,
+        "tables": table_metrics,
+        "geography_hierarchy": geography_metrics,
+    }
+
+
+def _geography_metrics(
+    geography: pl.DataFrame, statbank_region_map: dict[str, tuple[str, str]]
+) -> dict[str, object]:
+    classification_codes = {
+        code: region[0]
+        for code, region in _region_map_from_geography(geography=geography).items()
+    }
+    statbank_codes = {code: region[0] for code, region in statbank_region_map.items()}
+    disagreements = sorted(
+        code
+        for code in classification_codes.keys() & statbank_codes.keys()
+        if classification_codes[code] != statbank_codes[code]
+    )
+    missing = sorted(statbank_codes.keys() - classification_codes.keys())
+    complete = geography.null_count().sum_horizontal().item() == 0
+    passed = not disagreements and not missing and complete
+    return {
+        "municipalities": geography.height,
+        "regions": geography.get_column("region_code").n_unique(),
+        "landsdele": geography.get_column("landsdel_code").n_unique(),
+        "statbank_disagreements": disagreements,
+        "missing_from_classification": missing,
+        "complete": complete,
+        "passed": passed,
+    }
 
 
 def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
@@ -559,6 +648,28 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
             f"{raw_metric['population_total']:,} | "
             f"{raw_metric['suppressed_cells']:,} | {result} |"
         )
+    geography = metrics["geography_hierarchy"]
+    if not isinstance(geography, dict):
+        message = "Geography metrics must be a mapping"
+        raise TypeError(message)
+    lines.extend(
+        [
+            "",
+            "## Geography hierarchy",
+            "",
+            "Sourced from the official Statistics Denmark classification and "
+            "cross-checked against StatBank table metadata.",
+            "",
+            f"- Municipalities: {geography['municipalities']:,}",
+            f"- Landsdele: {geography['landsdele']:,}",
+            f"- Regions: {geography['regions']:,}",
+            f"- Disagreements with StatBank: "
+            f"{len(geography['statbank_disagreements'])}",
+            f"- Missing from classification: "
+            f"{len(geography['missing_from_classification'])}",
+            f"- Result: **{'PASS' if geography['passed'] else 'FAIL'}**",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -569,6 +680,60 @@ def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
         if not path.exists() or sha256_file(path) != expected_checksum:
             message = f"Prepared bundle verification failed: {path}"
             raise ValueError(message)
+
+
+def read_geography_classification(csv_path: Path) -> pl.DataFrame:
+    """Read the official region, landsdel, and municipality classification.
+
+    The attachment is a semicolon-delimited hierarchical listing ordered by
+    ``SEKVENS``, where ``NIVEAU`` gives the level of each row. Notes embed
+    newlines inside quoted fields, so it must be parsed as CSV rather than
+    split by line.
+
+    Args:
+        csv_path:
+            Classification attachment.
+
+    Returns:
+        One row per municipality with its landsdel and region.
+
+    Raises:
+        ValueError:
+            If a row appears before its parent level.
+    """
+    rows: list[dict[str, str]] = []
+    region: tuple[str, str] | None = None
+    landsdel: tuple[str, str] | None = None
+    with csv_path.open(encoding="utf-8-sig", newline="") as file:
+        for record in csv.DictReader(file, delimiter=";"):
+            code = (record["KODE"] or "").strip()
+            title = (record["TITEL"] or "").strip()
+            level = (record["NIVEAU"] or "").strip()
+            if not code:
+                continue
+            if level == REGION_LEVEL:
+                region = (code, title)
+                landsdel = None
+            elif level == LANDSDEL_LEVEL:
+                landsdel = (code, title)
+            elif level == MUNICIPALITY_LEVEL:
+                if region is None or landsdel is None:
+                    message = f"Municipality {code} appears before its parents"
+                    raise ValueError(message)
+                rows.append(
+                    {
+                        "municipality_code": code,
+                        "municipality": title,
+                        "landsdel_code": landsdel[0],
+                        "landsdel": landsdel[1],
+                        "region_code": region[0],
+                        "region": region[1],
+                    }
+                )
+    if not rows:
+        message = f"No municipalities found in {csv_path}"
+        raise ValueError(message)
+    return pl.DataFrame(rows)
 
 
 def verify_raw_snapshot(

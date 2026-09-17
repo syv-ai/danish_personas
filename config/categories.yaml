@@ -20,6 +20,53 @@ education:
   H70: masters
   H80: phd
   H90: not_stated
+# Official DST labels for the RAS209 UDDANNELSE codes, taken verbatim from
+# the table's own StatBank metadata in Danish and English. H10-H90 are a
+# StatBank presentation grouping of HFUDD, not a published DST nomenclature:
+# DISCED-15 does not contain these codes and DST publishes no crosswalk for
+# them. local_isced_assertion is therefore this repository's editorial
+# judgement, not an official mapping, and must be cited as such.
+education_labels:
+  H10:
+    danish: "H10 Grundskole"
+    english: "H10 Primary education"
+    local_isced_assertion: "1-2"
+  H20:
+    danish: "H20 Gymnasiale uddannelser"
+    english: "H20 Upper secondary education"
+    local_isced_assertion: "3"
+  H30:
+    danish: "H30 Erhvervsfaglige uddannelser"
+    english: "H30 Vocational Education and Training (VET)"
+    local_isced_assertion: "3"
+  H35:
+    danish: "H35 Adgangsgivende uddannelsesforløb"
+    english: "H35 Qualifying educational programs"
+    local_isced_assertion: "4"
+  H40:
+    danish: "H40 Korte videregående uddannelser, KVU"
+    english: "H40 Short cycle higher education"
+    local_isced_assertion: "5"
+  H50:
+    danish: "H50 Mellemlange videregående uddannelser, MVU"
+    english: "H50 Vocational bachelors educations"
+    local_isced_assertion: "6"
+  H60:
+    danish: "H60 Bacheloruddannelser, BACH"
+    english: "H60 Bachelors programs"
+    local_isced_assertion: "6"
+  H70:
+    danish: "H70 Lange videregående uddannelser, LVU"
+    english: "H70 Masters programs"
+    local_isced_assertion: "7"
+  H80:
+    danish: "H80 Ph.d. og forskeruddannelser"
+    english: "H80 PhD programs"
+    local_isced_assertion: "8"
+  H90:
+    danish: "H90 Uoplyst mv."
+    english: "H90 Not stated"
+    local_isced_assertion: "unknown"
 education_pooling:
   primary: primary
   upper_secondary: secondary_or_vocational

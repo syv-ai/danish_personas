@@ -142,6 +142,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
         source_snapshots=[],
+        classification_snapshots=[],
         files=files,
         reference_periods={},
         assumptions=[],
@@ -208,6 +209,13 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "F": "divorced",
             },
             "education": {"H70": "masters"},
+            "education_labels": {
+                "H70": {
+                    "danish": "H70 Lange videreg\u00e5ende uddannelser, LVU",
+                    "english": "H70 Masters programs",
+                    "local_isced_assertion": "7",
+                }
+            },
             "education_pooling": {"masters": "higher_education"},
             "labour_market_status": {
                 "employed": ["30"],

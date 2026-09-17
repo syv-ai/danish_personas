@@ -1,16 +1,16 @@
-version: 1
+version: 2
 language: en
 release_rows: 100000
 minimum_source_count: 50
 minimum_expected_release_count: 5
-resolved_at: '2026-09-14T12:16:07.315779+00:00'
+resolved_at: '2026-09-17T08:11:27.940715+00:00'
 sources:
 - table_id: FOLK1A
   role: demographic_base
   period: 2025K1
   metadata_url: https://api.statbank.dk/v1/tableinfo/FOLK1A?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-14T12:16:07.315779+00:00'
+  retrieved_metadata_at: '2026-09-17T08:11:27.940715+00:00'
   table_updated_at: '2026-08-10T08:00:00'
   unit: Number
   dimensions:
@@ -241,7 +241,7 @@ sources:
   period: '2024'
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS209?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-14T12:16:07.315779+00:00'
+  retrieved_metadata_at: '2026-09-17T08:11:27.940715+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
@@ -321,7 +321,7 @@ sources:
   period: '2024'
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS202?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-14T12:16:07.315779+00:00'
+  retrieved_metadata_at: '2026-09-17T08:11:27.940715+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
@@ -426,7 +426,7 @@ sources:
   period: '2025'
   metadata_url: https://api.statbank.dk/v1/tableinfo/BEFOLK3?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-14T12:16:07.315779+00:00'
+  retrieved_metadata_at: '2026-09-17T08:11:27.940715+00:00'
   table_updated_at: '2026-07-01T08:00:00'
   unit: Number
   dimensions:
@@ -650,7 +650,7 @@ sources:
   period: '2024'
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS210?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-14T12:16:07.315779+00:00'
+  retrieved_metadata_at: '2026-09-17T08:11:27.940715+00:00'
   table_updated_at: '2025-11-18T08:00:00'
   unit: Number
   dimensions:
@@ -819,3 +819,10 @@ sources:
     Tid:
     - '2024'
   estimated_cells: 32076
+classifications:
+- classification_id: NUTS_V1_2007_DK
+  role: geography_hierarchy
+  title: Regioner, landsdele og kommuner
+  valid_from: '2007-01-01'
+  page_url: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
+  attachment_url: https://www.dst.dk/klassifikationsbilag/5d18d1e0-400b-4505-92ad-6782915980a3csv_da
