@@ -83,11 +83,12 @@ def _fetch_source(
         client=client, method="POST", url=source.data_url, json_payload=query
     )
     retrieved_at = _now()
+    data_bytes = _canonical_csv_bytes(content=response.content)
     files = {
         "metadata-en.json": metadata_bytes,
         "metadata-da.json": metadata_da_bytes,
-        "query.json": query_content.encode(),
-        "data.csv": response.content,
+        "query.json": query_content.encode("utf-8"),
+        "data.csv": data_bytes,
         "response-headers.json": response_headers_content(response=response),
     }
     for name, content in files.items():
@@ -104,7 +105,7 @@ def _fetch_source(
             path=snapshot_dir / "response-headers.json"
         ),
         retrieved_at=retrieved_at,
-        data_bytes=len(response.content),
+        data_bytes=len(data_bytes),
     )
     write_json(path=manifest_path, payload=manifest)
     LOGGER.info(
@@ -114,6 +115,20 @@ def _fetch_source(
         f"{len(response.content):,}",
     )
     return manifest
+
+
+def _canonical_csv_bytes(content: bytes) -> bytes:
+    """Return UTF-8 CSV bytes with explicit LF line endings.
+
+    Args:
+        content:
+            CSV response bytes from StatBank.
+
+    Returns:
+        Canonical UTF-8 CSV bytes.
+    """
+    text = content.decode("utf-8-sig")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def _get_metadata(
@@ -133,17 +148,18 @@ def _now() -> str:
 
 
 def _source_query(source: LockedSource) -> dict[str, object]:
-    return {
+    query: dict[str, object] = {
         "table": source.table_id,
-        "format": "CSV",
+        "format": source.format,
         "lang": "en",
         "valuePresentation": "CodeAndValue",
-        "timeOrder": "Ascending",
-        "variables": [
-            {"code": code, "values": values}
-            for code, values in source.dimensions.items()
-        ],
     }
+    if source.format != "BULK":
+        query["timeOrder"] = "Ascending"
+    query["variables"] = [
+        {"code": code, "values": values} for code, values in source.dimensions.items()
+    ]
+    return query
 
 
 def _verify_snapshot(
@@ -239,6 +255,7 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
                     table_id=source.table_id,
                     role=source.role,
                     period=source.period,
+                    format=source.format,
                     metadata_url=(
                         f"{BASE_URL}/tableinfo/{source.table_id}?lang={config.language}"
                     ),

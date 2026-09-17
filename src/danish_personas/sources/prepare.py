@@ -135,7 +135,20 @@ def prepare_bundle(
         geography=geography,
         statbank_region_map=_build_region_map(metadata=metadata_by_table["FOLK1A"]),
     )
-    source_metrics = _source_metrics(frames=frames, geography_metrics=geography_metrics)
+    origin_source = next(
+        source for source in lock.sources if source.table_id == "FOLK2"
+    )
+    origin_metrics = _origin_country_metrics(
+        raw_frame=source_frames["FOLK2"],
+        prepared_frame=frames["folk2_origin_country_marginal"],
+        official_labels=_metadata_labels(metadata_by_table["FOLK2"])["IELAND"],
+        selected_codes=origin_source.dimensions["IELAND"],
+    )
+    source_metrics = _source_metrics(
+        frames=frames,
+        geography_metrics=geography_metrics,
+        origin_metrics=origin_metrics,
+    )
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
     files[str(source_report_path.relative_to(bundle_dir))] = sha256_file(
@@ -166,6 +179,12 @@ def prepare_bundle(
             "BEFOLK3 and RAS210 are held-out diagnostics, not fitted microdata.",
             "The municipality-region hierarchy comes from the official DST "
             "classification, not from StatBank metadata ordering.",
+            "FOLK2 is an independent national adult marginal by official IELAND "
+            "code and label; it is neither ethnicity nor citizenship.",
+            "FOLK2 origin categories are retained verbatim, including Stateless "
+            "and Not stated; no continents, regions, or correlations are inferred.",
+            "FOLK2 is prepared for audit and future sampling only; it is not "
+            "emitted in Phase 2 records or sent to an LLM.",
             "OCEAN traits are a documented design distribution, not official "
             "statistics.",
         ],
@@ -233,6 +252,13 @@ def _geography_metrics(
     }
 
 
+def _metadata_labels(metadata: StatBankMetadata) -> dict[str, dict[str, str]]:
+    return {
+        variable.id: {value.id: value.text for value in variable.values}
+        for variable in metadata.variables
+    }
+
+
 def _normalise_frames(
     raw_frames: dict[str, pl.DataFrame],
     metadata_by_table: dict[str, StatBankMetadata],
@@ -247,6 +273,10 @@ def _normalise_frames(
         for table, metadata in metadata_by_table.items()
     }
     status_map = _invert_status_mapping(categories=categories)
+
+    folk2 = _origin_country_marginal(
+        raw_frame=raw_frames["FOLK2"], official_labels=labels["FOLK2"]["IELAND"]
+    )
 
     folk_calibration = raw_frames["FOLK1A"].select(
         pl.col("OMRÅDE").alias("municipality_code"),
@@ -384,6 +414,7 @@ def _normalise_frames(
         municipality_labels=labels["RAS210"]["BOPKOM"],
     )
     return {
+        "folk2_origin_country_marginal": folk2,
         "folk1a_base_unpooled": folk,
         "folk_age_sampling": folk_age_sampling,
         "folk_marital_sampling": folk_marital_sampling,
@@ -468,11 +499,34 @@ def _invert_status_mapping(categories: CategoryConfig) -> dict[str, str]:
     return result
 
 
-def _metadata_labels(metadata: StatBankMetadata) -> dict[str, dict[str, str]]:
-    return {
-        variable.id: {value.id: value.text for value in variable.values}
-        for variable in metadata.variables
-    }
+def _origin_country_marginal(
+    raw_frame: pl.DataFrame, official_labels: dict[str, str]
+) -> pl.DataFrame:
+    """Aggregate FOLK2 to the official national origin marginal.
+
+    Args:
+        raw_frame:
+            Selected FOLK2 cells.
+        official_labels:
+            Official IELAND code-to-label mapping from table metadata.
+
+    Returns:
+        One row per official IELAND value, including zero-count categories.
+    """
+    counts = raw_frame.group_by("IELAND").agg(pl.col("count").sum())
+    categories = pl.DataFrame(
+        {
+            "origin_country_code": list(official_labels),
+            "origin_country": list(official_labels.values()),
+        }
+    )
+    return (
+        categories.join(
+            counts, left_on="origin_country_code", right_on="IELAND", how="left"
+        )
+        .with_columns(pl.col("count").fill_null(0).cast(pl.Int64))
+        .select("origin_country_code", "origin_country", "count")
+    )
 
 
 def _pool_ras209(
@@ -581,6 +635,77 @@ def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
+def _origin_country_metrics(
+    raw_frame: pl.DataFrame,
+    prepared_frame: pl.DataFrame,
+    official_labels: dict[str, str],
+    selected_codes: list[str],
+) -> dict[str, object]:
+    """Validate the FOLK2 origin marginal and its official partition.
+
+    Args:
+        raw_frame:
+            Selected FOLK2 cells before aggregation.
+        prepared_frame:
+            Prepared national marginal.
+        official_labels:
+            Official IELAND code-to-label mapping from table metadata.
+        selected_codes:
+            IELAND values frozen in the source lock.
+
+    Returns:
+        FOLK2-specific validation metrics.
+    """
+    observed_codes = set(raw_frame.get_column("IELAND").to_list())
+    expected_codes = set(selected_codes)
+    prepared_codes = set(prepared_frame.get_column("origin_country_code").to_list())
+    unhandled_values = sorted(observed_codes - set(official_labels))
+    missing_raw = sorted(expected_codes - observed_codes)
+    missing_prepared = sorted(expected_codes - prepared_codes)
+    extra_prepared = sorted(prepared_codes - expected_codes)
+    suppressed_cells = int(raw_frame.get_column("suppressed").sum())
+    total = int(prepared_frame.get_column("count").sum())
+    code_unique = (
+        prepared_frame.height
+        == prepared_frame.get_column("origin_country_code").n_unique()
+    )
+    expected_partition = not missing_prepared and not extra_prepared
+    zero_suppression = suppressed_cells == 0
+    passed = (
+        total > 0
+        and code_unique
+        and zero_suppression
+        and not unhandled_values
+        and expected_partition
+    )
+    return {
+        "passed": passed,
+        "positive_total": {"value": total, "passed": total > 0},
+        "code_uniqueness": {
+            "value": prepared_frame.height,
+            "unique": prepared_frame.get_column("origin_country_code").n_unique(),
+            "passed": code_unique,
+        },
+        "zero_suppression": {
+            "suppressed_cells": suppressed_cells,
+            "zero_count_cells": int((raw_frame.get_column("count") == 0).sum()),
+            "passed": zero_suppression,
+        },
+        "unhandled_values": {
+            "values": unhandled_values,
+            "passed": not unhandled_values,
+        },
+        "expected_partition": {
+            "expected_codes": len(expected_codes),
+            "prepared_codes": prepared_frame.height,
+            "missing_raw": missing_raw,
+            "missing_prepared": missing_prepared,
+            "extra_prepared": extra_prepared,
+            "passed": expected_partition,
+        },
+    }
+
+
 def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     with csv_path.open(encoding="utf-8-sig", newline="") as file:
@@ -617,7 +742,9 @@ def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, 
 
 
 def _source_metrics(
-    frames: dict[str, pl.DataFrame], geography_metrics: dict[str, object]
+    frames: dict[str, pl.DataFrame],
+    geography_metrics: dict[str, object],
+    origin_metrics: dict[str, object],
 ) -> dict[str, object]:
     """Summarise prepared tables and the geography cross-check.
 
@@ -626,6 +753,8 @@ def _source_metrics(
             Normalised tables keyed by output name.
         geography_metrics:
             Result of the geography hierarchy cross-check.
+        origin_metrics:
+            Checks specific to the FOLK2 origin marginal.
 
     Returns:
         Report payload whose ``passed`` flag gates the prepared bundle.
@@ -633,7 +762,11 @@ def _source_metrics(
     table_metrics: dict[str, object] = {}
     passed = True
     for name, frame in frames.items():
-        suppressed = int(frame.get_column("suppressed").sum())
+        suppressed = (
+            int(frame.get_column("suppressed").sum())
+            if "suppressed" in frame.columns
+            else 0
+        )
         total = int(frame.get_column("count").sum())
         valid = frame.height > 0 and total > 0 and suppressed == 0
         passed = passed and valid
@@ -644,10 +777,12 @@ def _source_metrics(
             "passed": valid,
         }
     passed = passed and bool(geography_metrics["passed"])
+    passed = passed and bool(origin_metrics["passed"])
     return {
         "passed": passed,
         "tables": table_metrics,
         "geography_hierarchy": geography_metrics,
+        "origin_country_checks": origin_metrics,
     }
 
 
@@ -680,8 +815,28 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
     if not isinstance(geography, dict):
         message = "Geography metrics must be a mapping"
         raise TypeError(message)
+    origin = metrics["origin_country_checks"]
+    if not isinstance(origin, dict):
+        message = "Origin-country metrics must be a mapping"
+        raise TypeError(message)
+    origin_results = {
+        name: _result_text(result["passed"])
+        for name, result in origin.items()
+        if isinstance(result, dict) and "passed" in result
+    }
     lines.extend(
         [
+            "",
+            "## FOLK2 origin-country marginal",
+            "",
+            "This is an independent national marginal, not ethnicity or citizenship.",
+            f"- Official IELAND categories: "
+            f"{origin['expected_partition']['expected_codes']:,}",
+            f"- Positive total: **{origin_results['positive_total']}**",
+            f"- Code uniqueness: **{origin_results['code_uniqueness']}**",
+            f"- Zero suppression: **{origin_results['zero_suppression']}**",
+            f"- Unhandled values: **{origin_results['unhandled_values']}**",
+            f"- Expected partition: **{origin_results['expected_partition']}**",
             "",
             "## Geography hierarchy",
             "",
@@ -699,6 +854,10 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _result_text(passed: object) -> str:
+    return "PASS" if passed else "FAIL"
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:

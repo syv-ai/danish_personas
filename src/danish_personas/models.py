@@ -86,6 +86,7 @@ class LockedSource(StrictModel):
     table_id: str
     role: str
     period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
     metadata_url: str
     data_url: str
     retrieved_metadata_at: str
@@ -256,6 +257,7 @@ class SourceDefinition(StrictModel):
     table_id: str
     role: str
     period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
     dimensions: dict[str, SourceSelection]
 
 
