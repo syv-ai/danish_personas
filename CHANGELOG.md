@@ -21,9 +21,9 @@
   `detailed_status_resolution`. A ladder ends at the most general cell that is still
   structurally valid rather than a national one, so an age cannot leave its band and
   a detailed status cannot leave its broad RAS209 status; a cell missing at the final
-  level is a structural zero and still fails loudly. Validation reports the back-off
-  rate against a configured ceiling, and the generation stage withholds the levels
-  from the prompts.
+  level is a structural zero and still fails loudly. Validation reports a back-off rate
+  per ladder against a configured ceiling, with the level mix behind each one, and the
+  generation stage withholds the levels from the prompts.
 - Source, structural, statistical, held-out, and personality validation gates.
 - Guarded, resumable two-stage persona generation through an OpenAI-compatible API.
 - Provider-qualified Hugging Face routing, optional model thinking/reasoning control,

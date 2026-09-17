@@ -23,7 +23,10 @@ These gates apply before any LLM integration may be enabled.
 - Detailed labour status remains within its sampled broad status, including when a
   draw backs off to a coarser cell.
 - Every record records the back-off level that produced its age, marital status,
-  and detailed status, and at most 1% of records rely on a coarser cell.
+  and detailed status, and each of those ladders independently keeps at most 1% of
+  records on a coarser cell.
+- A combination no ladder can serve is a hard failure, not a reported rate: generation
+  aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
   younger than 70.
 - Every fitted marginal cell with expected count of at least five lies within the larger

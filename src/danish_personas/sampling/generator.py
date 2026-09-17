@@ -11,6 +11,7 @@ import numpy as np
 import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
+from ..ladders import SAMPLED_ATTRIBUTES, Ladder
 from ..models import BundleManifest, RunManifest, SamplingConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -22,7 +23,6 @@ TRAITS = (
     "neuroticism",
 )
 Distribution = tuple[list[dict[str, object]], np.ndarray]
-Ladder = tuple[tuple[str, tuple[str, ...]], ...]
 
 
 @dataclass(frozen=True)
@@ -35,38 +35,6 @@ class LadderLevel:
 
 
 LadderIndex = list[LadderLevel]
-
-# Ordered sparse-cell back-off. Each ladder ends at the most general cell that
-# is still structurally valid, so backing off can never cross an invariant:
-# an age stays inside its band, and a detailed status stays inside the broad
-# RAS209 status it refines. A missing final level is a structural zero, not
-# sparsity, and must fail rather than silently widen further.
-# The ladders live in code rather than config because a ladder's final level
-# encodes a structural invariant rather than a tunable: widening past it would
-# emit structurally invalid records that no configuration schema could catch.
-AGE_LADDER: Ladder = (
-    ("age_band_sex", ("age_band", "sex")),
-    ("age_band", ("age_band",)),
-)
-MARITAL_LADDER: Ladder = (
-    ("region_age_band_sex", ("region_code", "age_band", "sex")),
-    ("age_band_sex", ("age_band", "sex")),
-    ("age_band", ("age_band",)),
-)
-DETAIL_LADDER: Ladder = (
-    ("age_band_sex_status", ("age_band", "sex", "labour_market_status")),
-    ("sex_status", ("sex", "labour_market_status")),
-    ("status", ("labour_market_status",)),
-)
-LADDER_SOURCES = (
-    ("folk_age_sampling.parquet", AGE_LADDER, ["age"]),
-    ("folk_marital_sampling.parquet", MARITAL_LADDER, ["marital_status"]),
-    (
-        "ras202_sampling.parquet",
-        DETAIL_LADDER,
-        ["detailed_status_code", "detailed_status"],
-    ),
-)
 
 
 def generate_records(
@@ -117,20 +85,18 @@ def generate_records(
     ocean_rng = np.random.default_rng(ocean_seed)
 
     sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
-    age_distributions, marital_distributions, detail_distributions = (
-        _ladder_index(
-            frame=pl.read_parquet(source_dir / file_name),
-            ladder=ladder,
-            payload_columns=payload_columns,
+    ladders = {
+        attribute.resolution_column: _ladder_index(
+            frame=pl.read_parquet(source_dir / attribute.prepared_file),
+            ladder=attribute.ladder,
+            payload_columns=list(attribute.payload_columns),
             smoothing=config.smoothing,
         )
-        for file_name, ladder, payload_columns in LADDER_SOURCES
-    )
+        for attribute in SAMPLED_ATTRIBUTES
+    }
     records = _build_records(
         sampled_joint=sampled_joint,
-        age_distributions=age_distributions,
-        marital_distributions=marital_distributions,
-        detail_distributions=detail_distributions,
+        ladders=ladders,
         rng=demographic_rng,
         country=config.country,
         seed=seed,
@@ -178,9 +144,7 @@ def _add_ocean(
 
 def _build_records(
     sampled_joint: pl.DataFrame,
-    age_distributions: LadderIndex,
-    marital_distributions: LadderIndex,
-    detail_distributions: LadderIndex,
+    ladders: dict[str, LadderIndex],
     rng: np.random.Generator,
     country: str,
     seed: int,
@@ -190,12 +154,8 @@ def _build_records(
     Args:
         sampled_joint:
             One row per record from the RAS209 joint backbone.
-        age_distributions:
-            Built age ladder.
-        marital_distributions:
-            Built marital-status ladder.
-        detail_distributions:
-            Built detailed-status ladder.
+        ladders:
+            Built ladder per resolution column.
         rng:
             Random generator, consumed once per drawn field.
         country:
@@ -212,17 +172,12 @@ def _build_records(
             column: str(joint[column])
             for column in ("age_band", "sex", "region_code", "labour_market_status")
         }
-        age_payload, age_resolution = _draw(
-            ladder_index=age_distributions, values=values, rng=rng
-        )
-        age = _as_int(value=age_payload["age"])
-        marital_payload, marital_resolution = _draw(
-            ladder_index=marital_distributions, values=values, rng=rng
-        )
-        marital_status = str(marital_payload["marital_status"])
-        detail_payload, detail_resolution = _draw(
-            ladder_index=detail_distributions, values=values, rng=rng
-        )
+        drawn: dict[str, object] = {}
+        for column, ladder_index in ladders.items():
+            payload, level = _draw(ladder_index=ladder_index, values=values, rng=rng)
+            drawn.update(payload)
+            drawn[column] = level
+        age = _as_int(value=drawn["age"])
         records.append(
             {
                 "persona_id": str(
@@ -230,11 +185,11 @@ def _build_records(
                 ),
                 "country": country,
                 "age": age,
-                "age_resolution": age_resolution,
+                "age_resolution": drawn["age_resolution"],
                 "age_band": values["age_band"],
                 "sex": values["sex"],
-                "marital_status": marital_status,
-                "marital_resolution": marital_resolution,
+                "marital_status": drawn["marital_status"],
+                "marital_resolution": drawn["marital_resolution"],
                 "region_code": values["region_code"],
                 "region": joint["region"],
                 "education_level": joint["education_level"],
@@ -243,9 +198,9 @@ def _build_records(
                     "ras209_67_plus_proxy" if age >= 70 else "ras209_age_band"
                 ),
                 "labour_market_status": values["labour_market_status"],
-                "detailed_status_code": detail_payload["detailed_status_code"],
-                "detailed_status": detail_payload["detailed_status"],
-                "detailed_status_resolution": detail_resolution,
+                "detailed_status_code": drawn["detailed_status_code"],
+                "detailed_status": drawn["detailed_status"],
+                "detailed_status_resolution": drawn["detailed_status_resolution"],
             }
         )
     return records
@@ -314,7 +269,7 @@ def _ladder_index(
     Returns:
         Built levels in ladder order.
     """
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
+    eligible = _eligible(frame=frame)
     return [
         LadderLevel(
             name=level,
@@ -372,6 +327,19 @@ def _distribution_index(
     return distributions
 
 
+def _eligible(frame: pl.DataFrame) -> pl.DataFrame:
+    """Drop structurally impossible source cells.
+
+    Args:
+        frame:
+            Prepared source counts.
+
+    Returns:
+        Rows with a positive, unsuppressed count.
+    """
+    return frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
+
+
 def _logical_checksum(frame: pl.DataFrame) -> str:
     digest = hashlib.sha256()
     for row in frame.iter_rows(named=True):
@@ -387,9 +355,7 @@ def _now() -> str:
 def _quota_sample(
     frame: pl.DataFrame, rows: int, rng: np.random.Generator
 ) -> pl.DataFrame:
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
-        sorted(frame.columns)
-    )
+    eligible = _eligible(frame=frame).sort(sorted(frame.columns))
     weights = eligible.get_column("count").to_numpy().astype(np.float64)
     expected = weights / weights.sum() * rows
     allocations = np.floor(expected).astype(np.int64)

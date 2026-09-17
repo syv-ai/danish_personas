@@ -11,8 +11,8 @@ import polars as pl
 from pydantic import ValidationError
 
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
+from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
-    MOST_SPECIFIC_RESOLUTION,
     BundleManifest,
     CategoryConfig,
     DemographicRecord,
@@ -361,24 +361,8 @@ def _structural_metrics(
         | ((pl.col("age") < 70) & (pl.col("education_resolution") != "ras209_age_band"))
     ).height
     unique_ids = frame.get_column("persona_id").n_unique()
-    backed_off = frame.filter(
-        pl.any_horizontal(
-            pl.col(column) != level
-            for column, level in MOST_SPECIFIC_RESOLUTION.items()
-        )
-    ).height
-    backoff_rate = backed_off / frame.height if frame.height else 0.0
     return [
-        MetricResult(
-            name="sparse_cell_backoff_rate",
-            passed=backoff_rate <= maximum_backoff_rate,
-            value=backoff_rate,
-            threshold=maximum_backoff_rate,
-            details=(
-                f"{backed_off} of {frame.height} records were drawn from a "
-                "coarser cell than the most specific one."
-            ),
-        ),
+        *_backoff_metrics(frame=frame, maximum_rate=maximum_backoff_rate),
         MetricResult(
             name="row_count",
             passed=frame.height == manifest.rows,
@@ -415,6 +399,44 @@ def _structural_metrics(
             details="The disclosed RAS209 67+ proxy is labelled for ages 70+ only.",
         ),
     ]
+
+
+def _backoff_metrics(frame: pl.DataFrame, maximum_rate: float) -> list[MetricResult]:
+    """Report how often each ladder fell back to a coarser cell.
+
+    The ladders are independent and of different depths, so each reports its
+    own rate; a single combined figure could not say which draw is sparse.
+
+    Args:
+        frame:
+            Generated records.
+        maximum_rate:
+            Largest share of records permitted to come from a coarser cell.
+
+    Returns:
+        One metric per resolution column.
+    """
+    metrics: list[MetricResult] = []
+    for column, most_specific in MOST_SPECIFIC_RESOLUTION.items():
+        counts = frame.get_column(column).value_counts().sort(column)
+        backed_off = int(
+            counts.filter(pl.col(column) != most_specific).get_column("count").sum()
+        )
+        rate = backed_off / frame.height if frame.height else 0.0
+        breakdown = ", ".join(
+            f"{row[column]}: {row['count'] / frame.height:.4%}"
+            for row in counts.iter_rows(named=True)
+        )
+        metrics.append(
+            MetricResult(
+                name=f"{column}_backoff_rate",
+                passed=rate <= maximum_rate,
+                value=rate,
+                threshold=maximum_rate,
+                details=f"Levels used: {breakdown}.",
+            )
+        )
+    return metrics
 
 
 def _write_reports(directory: Path, report: ValidationReport) -> None:

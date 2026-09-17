@@ -10,7 +10,8 @@ import polars as pl
 from pydantic import BaseModel
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
-from ..models import MOST_SPECIFIC_RESOLUTION, RunManifest, ValidationReport
+from ..ladders import MOST_SPECIFIC_RESOLUTION
+from ..models import RunManifest, ValidationReport
 from .client import OpenAIClient, RequestBudgetExceeded
 from .models import (
     AttributeCheckpoint,
