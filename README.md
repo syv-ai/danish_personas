@@ -92,14 +92,17 @@ before the next validation boundary when a report fails:
 
 ```bash
 uv run danish-personas workflow deterministic --target smoke
-uv run danish-personas workflow deterministic --target statistical \\
-  --sample-rows 1000
+uv run danish-personas workflow deterministic --target statistical \
+  --sample-rows 1000 \
+  --raw-parent data
 ```
 
 The default statistical workflow runs the configured smoke and statistical row counts,
 then freezes a 1,000-row sample. Change that development sample size with
-`--sample-rows`; source paths, configuration paths, and output paths are also
-configurable. It is offline and makes no LLM calls. Source `resolve` and `fetch` need
+`--sample-rows`. `--raw-parent` defaults to `data`; the workflow always restores and
+prepares `data/raw-hardened-20260917` (or the same fixed child below a custom parent).
+Configuration and output paths are also configurable. It is offline and makes no LLM
+calls. Source `resolve` and `fetch` need
 explicit `--network`, while persona shards are dry runs unless `--live` is supplied and
 pilots always require `--live`. See [`docs/cli.md`](docs/cli.md) for the command tree.
 

@@ -234,7 +234,7 @@ def test_restore_rejects_unsafe_members(
     assert result.exit_code != 0
     assert not (tmp_path / "escape.txt").exists()
     assert not Path("/tmp/danish-personas-absolute.txt").exists()
-    assert not (output_dir / RAW_DIRECTORY).exists()
+    assert not output_dir.exists()
 
 
 def _write_archive(path: Path, name: str, member_type: bytes) -> None:

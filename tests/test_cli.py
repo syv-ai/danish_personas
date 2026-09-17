@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from danish_personas import cli
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SamplingConfig
+from danish_personas.sources.archive import RAW_DIRECTORY
 
 RUNNER = CliRunner()
 
@@ -35,6 +36,8 @@ def test_cli_hierarchy_and_help() -> None:
     result = RUNNER.invoke(cli.main, ["workflow", "deterministic", "--help"])
     assert result.exit_code == 0
     assert "--force-restore" in result.output
+    assert "--raw-parent" in result.output
+    assert "--raw-dir" not in result.output
     assert "--sample-rows" in result.output
 
 
@@ -86,6 +89,93 @@ def test_deterministic_workflow_hands_off_paths_and_stops_at_smoke(
         "generate:data/runs/smoke",
         "demographics:returned-smoke",
     ]
+
+
+def test_deterministic_workflow_rejects_restore_conflict_before_services(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The skip/force conflict fails before the workflow can touch the filesystem."""
+    called = False
+
+    def restore(**_: object) -> int:
+        nonlocal called
+        called = True
+        return 1
+
+    monkeypatch.setattr(cli, "restore_raw_sources", restore)
+    raw_parent = tmp_path / "custom-parent"
+    result = RUNNER.invoke(
+        cli.main,
+        [
+            "workflow",
+            "deterministic",
+            "--target",
+            "smoke",
+            "--raw-parent",
+            str(raw_parent),
+            "--skip-restore",
+            "--force-restore",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be used with" in result.output
+    assert not called
+    assert not raw_parent.exists()
+
+
+def test_deterministic_workflow_uses_only_fixed_custom_raw_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Custom parents reach both services without exposing a raw child path."""
+    sampling = load_yaml_model(path=Path("config/sampling.yaml"), model=SamplingConfig)
+    raw_parent = tmp_path / "custom-parent"
+    sibling = tmp_path / "sibling"
+    calls: dict[str, dict[str, object]] = {}
+    monkeypatch.setattr(cli, "load_yaml_model", lambda **_: sampling)
+
+    def restore(**kwargs: object) -> int:
+        calls["restore"] = kwargs
+        return 1
+
+    def prepare(**kwargs: object) -> Path:
+        calls["prepare"] = kwargs
+        return Path("bundle")
+
+    monkeypatch.setattr(cli, "restore_raw_sources", restore)
+    monkeypatch.setattr(cli, "prepare_bundle", prepare)
+    monkeypatch.setattr(
+        cli, "validate_sources", lambda **_: SimpleNamespace(passed=True)
+    )
+    monkeypatch.setattr(cli, "generate_records", lambda **_: Path("smoke"))
+    monkeypatch.setattr(
+        cli, "validate_demographics", lambda **_: SimpleNamespace(passed=True)
+    )
+
+    result = RUNNER.invoke(
+        cli.main,
+        [
+            "workflow",
+            "deterministic",
+            "--target",
+            "smoke",
+            "--raw-parent",
+            str(raw_parent),
+            "--force-restore",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["restore"] == {
+        "archive_path": cli.DEFAULT_ARCHIVE,
+        "output_dir": raw_parent,
+        "force": True,
+    }
+    raw_dir = raw_parent / RAW_DIRECTORY
+    assert calls["prepare"]["raw_dir"] == raw_dir
+    assert str(raw_dir) in result.output
+    assert calls["prepare"]["raw_dir"] != sibling
+    assert calls["prepare"]["raw_dir"] != raw_parent
 
 
 def test_persona_live_gates(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,7 +25,8 @@ from .sources.prepare import prepare_bundle
 from .validation.checks import validate_demographics, validate_sources
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_RAW_DIR = Path("data") / RAW_DIRECTORY
+DEFAULT_RAW_PARENT = Path("data")
+DEFAULT_RAW_DIR = DEFAULT_RAW_PARENT / RAW_DIRECTORY
 DEFAULT_SAMPLING = Path("config/sampling.yaml")
 DEFAULT_VALIDATION = Path("config/validation.yaml")
 DEFAULT_CATEGORIES = Path("config/categories.yaml")
@@ -469,10 +470,11 @@ def workflow() -> None:
     show_default=True,
 )
 @click.option(
-    "--raw-dir",
+    "--raw-parent",
     type=click.Path(path_type=Path),
-    default=DEFAULT_RAW_DIR,
+    default=DEFAULT_RAW_PARENT,
     show_default=True,
+    help="Parent directory for the fixed restored raw snapshot directory.",
 )
 @click.option(
     "--processed-dir",
@@ -517,7 +519,7 @@ def deterministic(
     categories_path: Path,
     sampling_config_path: Path,
     validation_config_path: Path,
-    raw_dir: Path,
+    raw_parent: Path,
     processed_dir: Path,
     smoke_run_dir: Path,
     statistical_run_dir: Path,
@@ -533,12 +535,11 @@ def deterministic(
     """
     if force_restore and skip_restore:
         raise click.ClickException("--force-restore cannot be used with --skip-restore")
+    raw_dir = raw_parent / RAW_DIRECTORY
     try:
         if not skip_restore:
             restored = restore_raw_sources(
-                archive_path=archive_path,
-                output_dir=raw_dir.parent,
-                force=force_restore,
+                archive_path=archive_path, output_dir=raw_parent, force=force_restore
             )
             _report_path(raw_dir, f"Restored {restored} files")
         bundle_dir = prepare_bundle(
