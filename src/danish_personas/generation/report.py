@@ -1,6 +1,7 @@
 """Validation report for completed LLM persona smoke runs."""
 
 import math
+import typing as t
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import MetricResult, ValidationReport
+from .identity import generation_run_id, persona_pilot_id
 from .models import (
     GeneratedAttributes,
     GenerationConfig,
@@ -15,6 +17,7 @@ from .models import (
     PersonaCheckpoint,
     PersonaDescriptions,
     PilotManifest,
+    RequestLedger,
 )
 from .pipeline import generation_context_sha256, models_match, validate_upstream_sample
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
@@ -28,6 +31,26 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             Completed pilot directory.
 
     Returns:
+        Machine-readable validation report, including for malformed artefacts.
+    """
+    try:
+        report = _build_persona_pilot_report(pilot_dir=pilot_dir)
+    except (OSError, UnicodeError, ValueError, pl.exceptions.PolarsError) as error:
+        report = _failed_report(
+            kind="persona_pilot", subject_id=pilot_dir.name, error=error
+        )
+    write_json(path=pilot_dir / "pilot-validation-report.json", payload=report)
+    return report
+
+
+def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
+    """Build a merged-pilot report and freshly validate every shard.
+
+    Args:
+        pilot_dir:
+            Completed pilot directory.
+
+    Returns:
         Machine-readable validation report.
     """
     manifest = PilotManifest.model_validate_json(
@@ -35,13 +58,13 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
     )
     try:
         output = pl.read_parquet(pilot_dir / manifest.output_file)
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         output = pl.DataFrame()
     try:
         expected = (
             pl.read_parquet(manifest.input_file).sort("persona_id").head(manifest.rows)
         )
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         expected = pl.DataFrame()
     batch_outputs: list[pl.DataFrame] = []
     batch_manifests: list[GenerationManifest] = []
@@ -82,35 +105,28 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             batch_outputs.append(pl.read_parquet(batch_output_path))
             batch_manifests.append(batch_manifest)
             offsets.append(reference.offset)
-        except Exception:
+        except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             batch_errors += 1
-    expected_offsets = list(range(0, manifest.rows, manifest.batch_size))
+    expected_ranges = [
+        (offset, min(manifest.batch_size, manifest.rows - offset))
+        for offset in range(0, manifest.rows, manifest.batch_size)
+    ]
+    expected_offsets = [offset for offset, _ in expected_ranges]
+    references_match = [
+        (reference.offset, reference.rows) for reference in manifest.batch_runs
+    ] == expected_ranges
     try:
         merged_batches = (
             pl.concat(batch_outputs).sort("persona_id")
             if batch_outputs
             else pl.DataFrame()
         )
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         merged_batches = pl.DataFrame()
     content_errors = _count_content_errors(output=output)
-    try:
-        upstream = validate_upstream_sample(
-            input_path=manifest.input_file,
-            sample_manifest_path=manifest.sample_manifest_file,
-        )
-        provenance_passed = (
-            _checksum_matches(manifest.input_file, manifest.input_sha256)
-            and _checksum_matches(
-                manifest.sample_manifest_file, manifest.sample_manifest_sha256
-            )
-            and _checksum_matches(
-                manifest.generation_config_file, manifest.generation_config_sha256
-            )
-            and upstream.run_id == manifest.upstream_run_id
-        )
-    except Exception:
-        provenance_passed = False
+    provenance_passed = _pilot_provenance_matches(
+        pilot_dir=pilot_dir, manifest=manifest
+    )
     checks = [
         _metric(
             name="output_checksum",
@@ -129,7 +145,8 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             passed=(
                 batch_errors == 0
                 and len(manifest.batch_runs) == manifest.batches
-                and sorted(offsets) == expected_offsets
+                and references_match
+                and offsets == expected_offsets
                 and merged_batches.equals(output)
             ),
             value=batch_errors,
@@ -160,7 +177,6 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
         subject_id=manifest.pilot_id,
         metrics=checks,
     )
-    write_json(path=pilot_dir / "pilot-validation-report.json", payload=report)
     return report
 
 
@@ -176,7 +192,7 @@ def _build_persona_run_report(run_dir: Path) -> ValidationReport:
     output_path = run_dir / manifest.output_file
     try:
         output = pl.read_parquet(output_path)
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         output = pl.DataFrame()
     try:
         upstream = (
@@ -184,11 +200,11 @@ def _build_persona_run_report(run_dir: Path) -> ValidationReport:
             .sort("persona_id")
             .slice(manifest.offset, manifest.rows)
         )
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         upstream = pl.DataFrame()
     try:
         ids = output.get_column("persona_id").to_list()
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         ids = []
     provenance_passed = _persona_provenance_matches(manifest=manifest)
     checks: list[MetricResult] = [
@@ -249,7 +265,7 @@ def _checksum_matches(path: Path | None, expected: str) -> bool:
     """Return whether a file exists and has the expected checksum."""
     try:
         return path is not None and sha256_file(path) == expected
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
 
 
@@ -260,28 +276,41 @@ def _count_checkpoint_errors(
     upstream_columns: list[str],
     manifest: GenerationManifest,
 ) -> int:
-    """Count missing, extra, malformed, and mismatched checkpoints.
+    """Count checkpoint, response-sequence, ledger, and accounting errors.
 
     Returns:
         Number of checkpoint integrity errors.
     """
     errors = 0
     output_ids: set[str] = set()
+    checkpoints: list[PersonaCheckpoint] = []
+    required_columns = {
+        "persona_id",
+        *upstream_columns,
+        *GeneratedAttributes.model_fields,
+        *PersonaDescriptions.model_fields,
+    }
+    if not required_columns.issubset(output.columns):
+        return 1
     for row in output.iter_rows(named=True):
         try:
-            persona_id = row["persona_id"]
+            persona_id = str(row["persona_id"])
             output_ids.add(persona_id)
             checkpoint = PersonaCheckpoint.model_validate_json(
                 (run_dir / "checkpoints" / f"{persona_id}.json").read_text(
                     encoding="utf-8"
                 )
             )
+            checkpoints.append(checkpoint)
             checkpoint_input = {name: row[name] for name in upstream_columns}
             checkpoint_values = {
                 **checkpoint.attributes.model_dump(),
                 **checkpoint.descriptions.model_dump(),
             }
             output_values = {name: row[name] for name in checkpoint_values}
+            replay_valid, stage_attempts = _responses_match_checkpoint(
+                checkpoint=checkpoint
+            )
             if (
                 checkpoint.persona_id != persona_id
                 or checkpoint.input_sha256
@@ -291,25 +320,162 @@ def _count_checkpoint_errors(
                 or checkpoint.validator_version != VALIDATOR_VERSION
                 or checkpoint.validator_version != manifest.validator_version
                 or checkpoint_values != output_values
+                or checkpoint.attempts != len(checkpoint.responses)
+                or checkpoint.http_requests
+                < sum(response.request_attempts for response in checkpoint.responses)
                 or any(
                     not models_match(configured=manifest.model, returned=response.model)
+                    or response.total_tokens
+                    != response.prompt_tokens + response.completion_tokens
                     for response in checkpoint.responses
+                )
+                or not replay_valid
+                or not _stage_attempts_within_config(
+                    manifest=manifest, stage_attempts=stage_attempts
                 )
             ):
                 errors += 1
-        except Exception:
+        except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             errors += 1
     try:
+        checkpoint_paths = list((run_dir / "checkpoints").glob("*.json"))
         checkpoint_ids = {
-            path.stem for path in (run_dir / "checkpoints").glob("*.json")
+            path.stem for path in checkpoint_paths if ".attributes" not in path.stem
         }
-    except Exception:
-        checkpoint_ids = set()
-    return errors + len(checkpoint_ids - output_ids)
+        errors += len(checkpoint_ids - output_ids)
+        errors += sum(
+            path.name.endswith(".attributes.json") for path in checkpoint_paths
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        errors += 1
+    if not _checkpoint_accounting_matches(
+        run_dir=run_dir, manifest=manifest, checkpoints=checkpoints
+    ):
+        errors += 1
+    return errors
+
+
+def _checkpoint_accounting_matches(
+    *, run_dir: Path, manifest: GenerationManifest, checkpoints: list[PersonaCheckpoint]
+) -> bool:
+    """Bind checkpoint usage and the request ledger to the generation manifest.
+
+    Returns:
+        Whether all request and response accounting matches exactly.
+    """
+    if manifest.generation_config_file is None or len(checkpoints) != manifest.rows:
+        return False
+    try:
+        config = load_yaml_model(
+            path=manifest.generation_config_file, model=GenerationConfig
+        )
+        ledger = RequestLedger.model_validate_json(
+            (run_dir / "request-ledger.json").read_text(encoding="utf-8")
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return False
+    responses = [
+        response for checkpoint in checkpoints for response in checkpoint.responses
+    ]
+    costs = [response.estimated_cost_usd for response in responses]
+    estimated_cost = (
+        sum(cost for cost in costs if cost is not None)
+        if costs and all(cost is not None for cost in costs)
+        else None
+    )
+    providers = sorted(
+        {
+            response.inference_provider
+            for response in responses
+            if response.inference_provider is not None
+        }
+    )
+    http_requests = sum(checkpoint.http_requests for checkpoint in checkpoints)
+    return (
+        manifest.requests == http_requests
+        and ledger.attempts == http_requests
+        and ledger.generation_context_sha256 == manifest.generation_context_sha256
+        and ledger.maximum_attempts == config.maximum_total_requests
+        and ledger.attempts <= ledger.maximum_attempts
+        and manifest.requests >= manifest.rows * 2
+        and manifest.retries == manifest.requests - manifest.rows * 2
+        and manifest.prompt_tokens
+        == sum(response.prompt_tokens for response in responses)
+        and manifest.completion_tokens
+        == sum(response.completion_tokens for response in responses)
+        and manifest.total_tokens
+        == sum(response.total_tokens for response in responses)
+        and manifest.estimated_cost_usd == estimated_cost
+        and manifest.inference_providers == providers
+    )
+
+
+def _responses_match_checkpoint(
+    *, checkpoint: PersonaCheckpoint
+) -> tuple[bool, tuple[int, int]]:
+    """Replay the two response stages and bind accepted content to the checkpoint.
+
+    Returns:
+        Whether the sequence is valid and the number of responses for each stage.
+    """
+    parsers = (parse_attributes, parse_descriptions)
+    expected = (checkpoint.attributes, checkpoint.descriptions)
+    response_index = 0
+    stage_attempts: list[int] = []
+    for parser, expected_value in zip(parsers, expected, strict=True):
+        attempts = 0
+        accepted = False
+        while response_index < len(checkpoint.responses):
+            response = checkpoint.responses[response_index]
+            response_index += 1
+            attempts += 1
+            try:
+                parsed = parser(response.content)
+            except ValueError:
+                continue
+            if parsed != expected_value:
+                return False, (0, 0)
+            accepted = True
+            break
+        if not accepted:
+            return False, (0, 0)
+        stage_attempts.append(attempts)
+    return response_index == len(checkpoint.responses), (
+        stage_attempts[0],
+        stage_attempts[1],
+    )
+
+
+def _stage_attempts_within_config(
+    *, manifest: GenerationManifest, stage_attempts: tuple[int, int]
+) -> bool:
+    """Check response attempts against the persisted generation configuration.
+
+    Returns:
+        Whether each stage stayed within its validation-attempt limit.
+    """
+    if manifest.generation_config_file is None:
+        return False
+    try:
+        config = load_yaml_model(
+            path=manifest.generation_config_file, model=GenerationConfig
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return False
+    return all(
+        1 <= attempts <= config.maximum_validation_attempts
+        for attempts in stage_attempts
+    )
 
 
 def _count_content_errors(output: pl.DataFrame) -> int:
     errors = 0
+    required_columns = {
+        *GeneratedAttributes.model_fields,
+        *PersonaDescriptions.model_fields,
+    }
+    if not required_columns.issubset(output.columns):
+        return max(1, output.height)
     for row in output.iter_rows(named=True):
         try:
             attributes = GeneratedAttributes.model_validate(
@@ -320,7 +486,7 @@ def _count_content_errors(output: pl.DataFrame) -> int:
             )
             parse_attributes(attributes.model_dump_json())
             parse_descriptions(descriptions.model_dump_json())
-        except Exception:
+        except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             errors += 1
     return errors
 
@@ -333,7 +499,7 @@ def _frames_equal(*, output: pl.DataFrame, expected: pl.DataFrame) -> bool:
     """
     try:
         return output.select(expected.columns).equals(expected)
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
 
 
@@ -353,14 +519,10 @@ def _metric(
 
 
 def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
-    """Recompute the run's upstream and generation-context bindings.
+    """Recompute the run's identity, range, and generation-context bindings.
 
     Returns:
-        Whether all upstream and generation-context bindings match.
-
-    Raises:
-        ValueError:
-            If the generation configuration is missing.
+        Whether all derivable provenance bindings match.
     """
     try:
         validated_upstream = validate_upstream_sample(
@@ -368,30 +530,52 @@ def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
             sample_manifest_path=manifest.sample_manifest_file,
         )
         if manifest.generation_config_file is None:
-            raise ValueError("Generation configuration is missing")
+            return False
         config = load_yaml_model(
             path=manifest.generation_config_file, model=GenerationConfig
         )
         attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
         personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+        sample = pl.read_parquet(manifest.input_file).sort("persona_id")
+        if manifest.offset + manifest.rows > sample.height:
+            return False
+        selected_ids = (
+            sample.slice(manifest.offset, manifest.rows)
+            .get_column("persona_id")
+            .to_list()
+        )
+        ordered_ids_sha256 = sha256_text(canonical_json(selected_ids))
+        context_sha256 = generation_context_sha256(
+            config=config,
+            attributes_prompt=attributes_prompt,
+            personas_prompt=personas_prompt,
+        )
+        input_sha256 = sha256_file(manifest.input_file)
         return (
-            _checksum_matches(manifest.input_file, manifest.input_sha256)
+            manifest.llm_generation
+            and manifest.validator_version == VALIDATOR_VERSION
+            and config.llm_generation_enabled
+            and input_sha256 == manifest.input_sha256
             and _checksum_matches(
                 manifest.generation_config_file, manifest.generation_config_sha256
             )
             and validated_upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model
             and config.base_url == manifest.base_url
+            and manifest.rows <= config.maximum_smoke_rows
+            and manifest.requests <= config.maximum_total_requests
+            and ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
             and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
             and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
-            and generation_context_sha256(
-                config=config,
-                attributes_prompt=attributes_prompt,
-                personas_prompt=personas_prompt,
+            and context_sha256 == manifest.generation_context_sha256
+            and manifest.run_id
+            == generation_run_id(
+                input_sha256=input_sha256,
+                generation_context_sha256=context_sha256,
+                ordered_persona_ids_sha256=ordered_ids_sha256,
             )
-            == manifest.generation_context_sha256
         )
-    except Exception:
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
 
 
@@ -416,20 +600,23 @@ def _pilot_aggregates_match(
         {provider for item in batch_manifests for provider in item.inference_providers}
     )
     return (
-        manifest.rows == sum(item.rows for item in batch_manifests)
+        manifest.llm_generation
+        and manifest.validator_version == VALIDATOR_VERSION
+        and manifest.rows == sum(item.rows for item in batch_manifests)
         and manifest.batches == len(batch_manifests)
+        and manifest.batches == len(manifest.batch_runs)
         and manifest.requests == sum(item.requests for item in batch_manifests)
+        and manifest.retries == manifest.requests - manifest.rows * 2
         and manifest.retries == sum(item.retries for item in batch_manifests)
         and manifest.prompt_tokens == prompt_tokens
         and manifest.completion_tokens == completion_tokens
         and manifest.total_tokens == sum(item.total_tokens for item in batch_manifests)
-        and math.isclose(
-            manifest.list_price_estimated_cost_usd, list_price_cost, rel_tol=1e-12
-        )
+        and manifest.list_price_estimated_cost_usd == list_price_cost
         and manifest.provider_estimated_cost_usd == provider_cost
         and manifest.inference_providers == providers
         and all(
-            item.upstream_run_id == manifest.upstream_run_id
+            item.llm_generation
+            and item.upstream_run_id == manifest.upstream_run_id
             and item.input_file == manifest.input_file
             and item.input_sha256 == manifest.input_sha256
             and item.sample_manifest_file == manifest.sample_manifest_file
@@ -446,6 +633,103 @@ def _pilot_aggregates_match(
     )
 
 
+def _pilot_provenance_matches(*, pilot_dir: Path, manifest: PilotManifest) -> bool:
+    """Recompute the pilot identity and all derivable provenance bindings.
+
+    Returns:
+        Whether all pilot provenance and identity invariants hold.
+    """
+    try:
+        upstream = validate_upstream_sample(
+            input_path=manifest.input_file,
+            sample_manifest_path=manifest.sample_manifest_file,
+        )
+        config = load_yaml_model(
+            path=manifest.generation_config_file, model=GenerationConfig
+        )
+        attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
+        personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+        input_sha256 = sha256_file(manifest.input_file)
+        config_sha256 = sha256_file(manifest.generation_config_file)
+        context_sha256 = generation_context_sha256(
+            config=config,
+            attributes_prompt=attributes_prompt,
+            personas_prompt=personas_prompt,
+        )
+        sample_rows = pl.read_parquet(manifest.input_file).height
+        expected_batches = math.ceil(manifest.rows / manifest.batch_size)
+        expected_pilot_ids = {
+            persona_pilot_id(
+                input_sha256=input_sha256,
+                generation_config_sha256=config_sha256,
+                generation_context_sha256=context_sha256,
+                rows=manifest.rows,
+                batch_size=identity_batch_size,
+            )
+            for identity_batch_size in range(
+                manifest.batch_size, config.maximum_smoke_rows + 1
+            )
+            if list(range(0, manifest.rows, identity_batch_size))
+            == [reference.offset for reference in manifest.batch_runs]
+        }
+        return (
+            manifest.llm_generation
+            and manifest.validator_version == VALIDATOR_VERSION
+            and config.llm_generation_enabled
+            and manifest.pilot_id in expected_pilot_ids
+            and pilot_dir.name == manifest.pilot_id
+            and manifest.rows <= sample_rows
+            and manifest.batches == expected_batches
+            and len(manifest.batch_runs) == expected_batches
+            and manifest.batch_size
+            == max(reference.rows for reference in manifest.batch_runs)
+            and manifest.batch_size <= config.maximum_smoke_rows
+            and manifest.maximum_shard_requests == config.maximum_total_requests
+            and expected_batches * manifest.maximum_shard_requests
+            <= manifest.maximum_total_requests
+            and input_sha256 == manifest.input_sha256
+            and _checksum_matches(
+                manifest.sample_manifest_file, manifest.sample_manifest_sha256
+            )
+            and config_sha256 == manifest.generation_config_sha256
+            and upstream.run_id == manifest.upstream_run_id
+            and config.model == manifest.model
+            and config.base_url == manifest.base_url
+            and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
+            and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
+            and context_sha256 == manifest.generation_context_sha256
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return False
+
+
+def _failed_report(
+    *,
+    kind: t.Literal["personas", "persona_pilot"],
+    subject_id: str,
+    error: BaseException,
+) -> ValidationReport:
+    """Build a deterministic failed report for an unreadable required artefact.
+
+    Returns:
+        Failed validation report describing the artefact error type.
+    """
+    metric = MetricResult(
+        name="artefact_integrity",
+        passed=False,
+        value=1,
+        threshold=0,
+        details=f"Required artefact is missing or malformed ({type(error).__name__}).",
+    )
+    return ValidationReport(
+        kind=kind,
+        passed=False,
+        created_at=datetime.now(tz=UTC).isoformat(),
+        subject_id=subject_id,
+        metrics=[metric],
+    )
+
+
 def validate_persona_run(run_dir: Path) -> ValidationReport:
     """Validate output integrity, safety, and upstream preservation.
 
@@ -454,8 +738,11 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
             Completed persona generation run.
 
     Returns:
-        Machine-readable validation report.
+        Machine-readable validation report, including for malformed artefacts.
     """
-    report = _build_persona_run_report(run_dir=run_dir)
+    try:
+        report = _build_persona_run_report(run_dir=run_dir)
+    except (OSError, UnicodeError, ValueError, pl.exceptions.PolarsError) as error:
+        report = _failed_report(kind="personas", subject_id=run_dir.name, error=error)
     write_json(path=run_dir / "validation-report.json", payload=report)
     return report

@@ -16,6 +16,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
+from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.pipeline import (
     generate_personas,
     models_match,
@@ -325,6 +326,93 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     }
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "missing_checkpoint",
+        "malformed_checkpoint",
+        "accounting",
+        "accepted_content",
+        "trailing_response",
+        "attempts",
+        "ledger_context",
+        "llm_flag",
+        "run_id",
+        "offset",
+    ],
+)
+def test_persona_validation_rejects_independent_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    """Each checkpoint, accounting, and identity tamper fails from a valid run."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    assert validate_persona_run(run_dir=run_dir).passed
+    manifest_path = run_dir / "generation-manifest.json"
+    checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
+    ledger_path = run_dir / "request-ledger.json"
+
+    if tamper == "missing_checkpoint":
+        checkpoint_path.unlink()
+    elif tamper == "malformed_checkpoint":
+        checkpoint_path.write_text("{")
+    elif tamper == "accounting":
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["prompt_tokens"] += 1
+        write_json(path=manifest_path, payload=manifest)
+    elif tamper in {"accepted_content", "trailing_response", "attempts"}:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        if tamper == "accepted_content":
+            accepted = json.loads(checkpoint["responses"][0]["content"])
+            accepted["cultural_context"] = (
+                "Personen har en anden dansk hverdag og deltager i lokale fællesskaber."
+            )
+            checkpoint["responses"][0]["content"] = json.dumps(
+                accepted, ensure_ascii=False
+            )
+        elif tamper == "trailing_response":
+            checkpoint["responses"].append(checkpoint["responses"][-1])
+            checkpoint["attempts"] += 1
+        else:
+            checkpoint["attempts"] += 1
+        write_json(path=checkpoint_path, payload=checkpoint)
+    elif tamper == "ledger_context":
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["generation_context_sha256"] = "f" * 64
+        write_json(path=ledger_path, payload=ledger)
+    else:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if tamper == "llm_flag":
+            manifest["llm_generation"] = False
+        elif tamper == "run_id":
+            manifest["run_id"] = "forged-run-id"
+        else:
+            manifest["offset"] = 1
+        write_json(path=manifest_path, payload=manifest)
+
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
+def test_persona_validation_reports_missing_manifest(tmp_path: Path) -> None:
+    """A missing required manifest produces a failed report rather than an error."""
+    run_dir = tmp_path / "missing-manifest"
+    run_dir.mkdir()
+
+    report = validate_persona_run(run_dir=run_dir)
+
+    assert not report.passed
+    assert report.subject_id == run_dir.name
+
+
 def test_pilot_identity_changes_when_prompt_context_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -371,6 +459,31 @@ def test_pilot_identity_changes_when_prompt_context_changes(
     assert len({manifest["generation_context_sha256"] for manifest in manifests}) == 2
 
 
+def test_pilot_identity_supports_a_batch_larger_than_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pilot identity retains the requested batch size without a new manifest field."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+
+    pilot_dir = run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "pilot",
+        rows=1,
+        batch_size=2,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=5,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
+    )
+
+    assert validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+
 def test_pilot_merges_validated_shards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -410,39 +523,6 @@ def test_pilot_merges_validated_shards(
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
     assert "visual_persona" in output.columns
     assert _MockClient.requests == 4
-
-    pilot_dir = output_path.parent
-    manifest_path = pilot_dir / "pilot-manifest.json"
-    original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-    tampered_manifest = {**original_manifest, "requests": 0}
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    alternate_config = tmp_path / "same-generation.yaml"
-    alternate_config.write_bytes(paths["config"].read_bytes())
-    tampered_manifest = {
-        **original_manifest,
-        "generation_config_file": str(alternate_config),
-    }
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    batch_reference = original_manifest["batch_runs"][1]
-    batch_manifest_path = pilot_dir / batch_reference["manifest_file"]
-    original_batch_manifest = batch_manifest_path.read_bytes()
-    tampered_batch_manifest = json.loads(original_batch_manifest)
-    tampered_batch_manifest["upstream_run_id"] = "different-upstream"
-    write_json(path=batch_manifest_path, payload=tampered_batch_manifest)
-    tampered_manifest = json.loads(json.dumps(original_manifest))
-    tampered_manifest["batch_runs"][1]["manifest_sha256"] = sha256_file(
-        batch_manifest_path
-    )
-    write_json(path=manifest_path, payload=tampered_manifest)
-    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
-
-    batch_manifest_path.write_bytes(original_batch_manifest)
-    write_json(path=manifest_path, payload=original_manifest)
 
 
 def test_pilot_revalidates_shards_without_rewriting_reports(
@@ -487,7 +567,8 @@ def test_pilot_revalidates_shards_without_rewriting_reports(
     report_bytes = report_path.read_bytes()
     report_sha256 = sha256_file(report_path)
     checkpoint_path = next((pilot_dir / "batches").glob("*/checkpoints/*.json"))
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint_bytes = checkpoint_path.read_bytes()
+    checkpoint = json.loads(checkpoint_bytes)
     checkpoint["generation_context_sha256"] = "f" * 64
     checkpoint_path.write_text(json.dumps(checkpoint))
 
@@ -495,13 +576,81 @@ def test_pilot_revalidates_shards_without_rewriting_reports(
     assert report_path.read_bytes() == report_bytes
     assert sha256_file(report_path) == report_sha256
 
-    stored_report = json.loads(report_bytes)
-    stored_report["kind"] = "demographics"
-    write_json(path=report_path, payload=stored_report)
-    pilot_manifest["batch_runs"][0]["validation_report_sha256"] = sha256_file(
-        report_path
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "missing_manifest",
+        "malformed_manifest",
+        "accounting",
+        "llm_flag",
+        "pilot_id",
+        "rows",
+        "batch_reference",
+        "config_path",
+        "batch_upstream",
+        "stored_report",
+    ],
+)
+def test_pilot_validation_rejects_independent_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    """Each pilot identity, aggregate, and artefact tamper starts from validity."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    pilot_dir = run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "pilot",
+        rows=1,
+        batch_size=1,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=5,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
     )
-    write_json(path=pilot_manifest_path, payload=pilot_manifest)
+    assert validate_persona_pilot(pilot_dir=pilot_dir).passed
+    manifest_path = pilot_dir / "pilot-manifest.json"
+
+    if tamper == "missing_manifest":
+        manifest_path.unlink()
+    elif tamper == "malformed_manifest":
+        manifest_path.write_text("{")
+    else:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if tamper == "accounting":
+            manifest["requests"] += 1
+        elif tamper == "llm_flag":
+            manifest["llm_generation"] = False
+        elif tamper == "pilot_id":
+            manifest["pilot_id"] = "forged-pilot-id"
+        elif tamper == "rows":
+            manifest["rows"] += 1
+        elif tamper == "batch_reference":
+            manifest["batch_runs"][0]["rows"] += 1
+        elif tamper == "config_path":
+            alternate_config = tmp_path / "same-generation.yaml"
+            alternate_config.write_bytes(paths["config"].read_bytes())
+            manifest["generation_config_file"] = str(alternate_config)
+        elif tamper == "batch_upstream":
+            reference = manifest["batch_runs"][0]
+            batch_manifest_path = pilot_dir / reference["manifest_file"]
+            batch_manifest = json.loads(batch_manifest_path.read_text(encoding="utf-8"))
+            batch_manifest["upstream_run_id"] = "different-upstream"
+            write_json(path=batch_manifest_path, payload=batch_manifest)
+            reference["manifest_sha256"] = sha256_file(batch_manifest_path)
+        else:
+            reference = manifest["batch_runs"][0]
+            report_path = pilot_dir / reference["validation_report_file"]
+            stored_report = json.loads(report_path.read_text(encoding="utf-8"))
+            stored_report["kind"] = "demographics"
+            write_json(path=report_path, payload=stored_report)
+            reference["validation_report_sha256"] = sha256_file(report_path)
+        write_json(path=manifest_path, payload=manifest)
+
     assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
 
 

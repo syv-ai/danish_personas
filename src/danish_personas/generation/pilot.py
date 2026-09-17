@@ -8,7 +8,8 @@ from pathlib import Path
 
 import polars as pl
 
-from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
+from ..io import load_yaml_model, sha256_file, write_json
+from .identity import persona_pilot_id
 from .models import (
     GenerationConfig,
     GenerationManifest,
@@ -112,17 +113,13 @@ def run_pilot(
             f"({maximum_total_requests})"
         )
         raise ValueError(message)
-    pilot_id = sha256_text(
-        canonical_json(
-            {
-                "input_sha256": sha256_file(input_path),
-                "config_sha256": sha256_file(config_path),
-                "generation_context_sha256": generation_context_sha,
-                "rows": rows,
-                "batch_size": batch_size,
-            }
-        )
-    )[:16]
+    pilot_id = persona_pilot_id(
+        input_sha256=sha256_file(input_path),
+        generation_config_sha256=sha256_file(config_path),
+        generation_context_sha256=generation_context_sha,
+        rows=rows,
+        batch_size=batch_size,
+    )
     pilot_dir = output_dir / pilot_id
     batch_root = pilot_dir / "batches"
     run_dirs = _run_batches(
