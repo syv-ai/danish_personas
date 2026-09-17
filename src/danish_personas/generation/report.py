@@ -5,23 +5,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
-from pydantic import ValidationError
 
-from ..io import canonical_json, sha256_file, sha256_text, write_json
+from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import MetricResult, ValidationReport
 from .models import (
     GeneratedAttributes,
+    GenerationConfig,
     GenerationManifest,
     PersonaCheckpoint,
     PersonaDescriptions,
     PilotManifest,
 )
-from .pipeline import models_match, validate_upstream_sample
+from .pipeline import generation_context_sha256, models_match, validate_upstream_sample
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 
 def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
-    """Validate a merged pilot and every checksummed shard.
+    """Validate a merged pilot and freshly validate every shard.
 
     Args:
         pilot_dir:
@@ -33,11 +33,16 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
     manifest = PilotManifest.model_validate_json(
         (pilot_dir / "pilot-manifest.json").read_text(encoding="utf-8")
     )
-    output_path = pilot_dir / manifest.output_file
-    output = pl.read_parquet(output_path)
-    expected = (
-        pl.read_parquet(manifest.input_file).sort("persona_id").head(manifest.rows)
-    )
+    try:
+        output = pl.read_parquet(pilot_dir / manifest.output_file)
+    except Exception:
+        output = pl.DataFrame()
+    try:
+        expected = (
+            pl.read_parquet(manifest.input_file).sort("persona_id").head(manifest.rows)
+        )
+    except Exception:
+        expected = pl.DataFrame()
     batch_outputs: list[pl.DataFrame] = []
     batch_manifests: list[GenerationManifest] = []
     batch_errors = 0
@@ -52,9 +57,12 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             batch_report = ValidationReport.model_validate_json(
                 report_path.read_text(encoding="utf-8")
             )
+            fresh_report = _build_persona_run_report(manifest_path.parent)
             if (
-                sha256_file(manifest_path) != reference.manifest_sha256
-                or sha256_file(report_path) != reference.validation_report_sha256
+                not _checksum_matches(manifest_path, reference.manifest_sha256)
+                or not _checksum_matches(
+                    report_path, reference.validation_report_sha256
+                )
                 or batch_manifest.run_id != reference.run_id
                 or batch_manifest.offset != reference.offset
                 or batch_manifest.rows != reference.rows
@@ -63,24 +71,28 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
                 or batch_manifest.generation_context_sha256
                 != manifest.generation_context_sha256
                 or batch_manifest.requests > manifest.maximum_shard_requests
+                or batch_report.kind != "personas"
                 or not batch_report.passed
                 or batch_report.subject_id != batch_manifest.run_id
+                or not fresh_report.passed
             ):
                 batch_errors += 1
                 continue
             batch_output_path = manifest_path.parent / batch_manifest.output_file
-            if sha256_file(batch_output_path) != batch_manifest.output_sha256:
-                batch_errors += 1
-                continue
             batch_outputs.append(pl.read_parquet(batch_output_path))
             batch_manifests.append(batch_manifest)
             offsets.append(reference.offset)
-        except OSError, ValidationError, ValueError:
+        except Exception:
             batch_errors += 1
     expected_offsets = list(range(0, manifest.rows, manifest.batch_size))
-    merged_batches = (
-        pl.concat(batch_outputs).sort("persona_id") if batch_outputs else pl.DataFrame()
-    )
+    try:
+        merged_batches = (
+            pl.concat(batch_outputs).sort("persona_id")
+            if batch_outputs
+            else pl.DataFrame()
+        )
+    except Exception:
+        merged_batches = pl.DataFrame()
     content_errors = _count_content_errors(output=output)
     try:
         upstream = validate_upstream_sample(
@@ -88,25 +100,29 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
             sample_manifest_path=manifest.sample_manifest_file,
         )
         provenance_passed = (
-            sha256_file(manifest.input_file) == manifest.input_sha256
-            and sha256_file(manifest.sample_manifest_file)
-            == manifest.sample_manifest_sha256
-            and sha256_file(manifest.generation_config_file)
-            == manifest.generation_config_sha256
+            _checksum_matches(manifest.input_file, manifest.input_sha256)
+            and _checksum_matches(
+                manifest.sample_manifest_file, manifest.sample_manifest_sha256
+            )
+            and _checksum_matches(
+                manifest.generation_config_file, manifest.generation_config_sha256
+            )
             and upstream.run_id == manifest.upstream_run_id
         )
-    except OSError, ValidationError, ValueError:
+    except Exception:
         provenance_passed = False
     checks = [
         _metric(
             name="output_checksum",
-            passed=sha256_file(output_path) == manifest.output_sha256,
+            passed=_checksum_matches(
+                pilot_dir / manifest.output_file, manifest.output_sha256
+            ),
         ),
         _metric(name="row_count", passed=output.height == manifest.rows),
         _metric(name="upstream_provenance", passed=provenance_passed),
         _metric(
             name="upstream_preservation",
-            passed=output.select(expected.columns).equals(expected),
+            passed=_frames_equal(output=output, expected=expected),
         ),
         _metric(
             name="batch_provenance",
@@ -148,6 +164,150 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
     return report
 
 
+def _build_persona_run_report(run_dir: Path) -> ValidationReport:
+    """Build a persona-run report without writing it to disk.
+
+    Returns:
+        Validation report for the run.
+    """
+    manifest = GenerationManifest.model_validate_json(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
+    output_path = run_dir / manifest.output_file
+    try:
+        output = pl.read_parquet(output_path)
+    except Exception:
+        output = pl.DataFrame()
+    try:
+        upstream = (
+            pl.read_parquet(manifest.input_file)
+            .sort("persona_id")
+            .slice(manifest.offset, manifest.rows)
+        )
+    except Exception:
+        upstream = pl.DataFrame()
+    try:
+        ids = output.get_column("persona_id").to_list()
+    except Exception:
+        ids = []
+    provenance_passed = _persona_provenance_matches(manifest=manifest)
+    checks: list[MetricResult] = [
+        _metric(
+            name="output_checksum",
+            passed=_checksum_matches(output_path, manifest.output_sha256),
+        ),
+        _metric(name="row_count", passed=output.height == manifest.rows),
+        _metric(name="upstream_provenance", passed=provenance_passed),
+        _metric(
+            name="ordered_persona_ids",
+            passed=sha256_text(canonical_json(ids))
+            == manifest.ordered_persona_ids_sha256,
+        ),
+        _metric(
+            name="upstream_preservation",
+            passed=_frames_equal(output=output, expected=upstream),
+        ),
+    ]
+    validation_errors = _count_content_errors(output=output)
+    checkpoint_errors = _count_checkpoint_errors(
+        run_dir=run_dir,
+        output=output,
+        upstream_columns=upstream.columns,
+        manifest=manifest,
+    )
+    checks.append(
+        MetricResult(
+            name="generated_content_errors",
+            passed=validation_errors == 0,
+            value=validation_errors,
+            threshold=0,
+            details=(
+                "All generated fields satisfy schema, Danish, safety, and "
+                "duplication gates."
+            ),
+        )
+    )
+    checks.append(
+        MetricResult(
+            name="checkpoint_provenance_errors",
+            passed=checkpoint_errors == 0,
+            value=checkpoint_errors,
+            threshold=0,
+            details="Checkpoints match their input, model, prompts, and validator.",
+        )
+    )
+    return ValidationReport(
+        kind="personas",
+        passed=all(metric.passed for metric in checks),
+        created_at=datetime.now(tz=UTC).isoformat(),
+        subject_id=manifest.run_id,
+        metrics=checks,
+    )
+
+
+def _checksum_matches(path: Path | None, expected: str) -> bool:
+    """Return whether a file exists and has the expected checksum."""
+    try:
+        return path is not None and sha256_file(path) == expected
+    except Exception:
+        return False
+
+
+def _count_checkpoint_errors(
+    *,
+    run_dir: Path,
+    output: pl.DataFrame,
+    upstream_columns: list[str],
+    manifest: GenerationManifest,
+) -> int:
+    """Count missing, extra, malformed, and mismatched checkpoints.
+
+    Returns:
+        Number of checkpoint integrity errors.
+    """
+    errors = 0
+    output_ids: set[str] = set()
+    for row in output.iter_rows(named=True):
+        try:
+            persona_id = row["persona_id"]
+            output_ids.add(persona_id)
+            checkpoint = PersonaCheckpoint.model_validate_json(
+                (run_dir / "checkpoints" / f"{persona_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            checkpoint_input = {name: row[name] for name in upstream_columns}
+            checkpoint_values = {
+                **checkpoint.attributes.model_dump(),
+                **checkpoint.descriptions.model_dump(),
+            }
+            output_values = {name: row[name] for name in checkpoint_values}
+            if (
+                checkpoint.persona_id != persona_id
+                or checkpoint.input_sha256
+                != sha256_text(canonical_json(checkpoint_input))
+                or checkpoint.generation_context_sha256
+                != manifest.generation_context_sha256
+                or checkpoint.validator_version != VALIDATOR_VERSION
+                or checkpoint.validator_version != manifest.validator_version
+                or checkpoint_values != output_values
+                or any(
+                    not models_match(configured=manifest.model, returned=response.model)
+                    for response in checkpoint.responses
+                )
+            ):
+                errors += 1
+        except Exception:
+            errors += 1
+    try:
+        checkpoint_ids = {
+            path.stem for path in (run_dir / "checkpoints").glob("*.json")
+        }
+    except Exception:
+        checkpoint_ids = set()
+    return errors + len(checkpoint_ids - output_ids)
+
+
 def _count_content_errors(output: pl.DataFrame) -> int:
     errors = 0
     for row in output.iter_rows(named=True):
@@ -160,9 +320,21 @@ def _count_content_errors(output: pl.DataFrame) -> int:
             )
             parse_attributes(attributes.model_dump_json())
             parse_descriptions(descriptions.model_dump_json())
-        except ValidationError, ValueError:
+        except Exception:
             errors += 1
     return errors
+
+
+def _frames_equal(*, output: pl.DataFrame, expected: pl.DataFrame) -> bool:
+    """Compare frames without allowing a malformed schema to raise.
+
+    Returns:
+        Whether the output preserves the expected frame.
+    """
+    try:
+        return output.select(expected.columns).equals(expected)
+    except Exception:
+        return False
 
 
 def _metric(
@@ -178,6 +350,49 @@ def _metric(
         threshold=threshold if threshold is not None else "pass",
         details="Mandatory persona generation integrity gate.",
     )
+
+
+def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
+    """Recompute the run's upstream and generation-context bindings.
+
+    Returns:
+        Whether all upstream and generation-context bindings match.
+
+    Raises:
+        ValueError:
+            If the generation configuration is missing.
+    """
+    try:
+        validated_upstream = validate_upstream_sample(
+            input_path=manifest.input_file,
+            sample_manifest_path=manifest.sample_manifest_file,
+        )
+        if manifest.generation_config_file is None:
+            raise ValueError("Generation configuration is missing")
+        config = load_yaml_model(
+            path=manifest.generation_config_file, model=GenerationConfig
+        )
+        attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
+        personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+        return (
+            _checksum_matches(manifest.input_file, manifest.input_sha256)
+            and _checksum_matches(
+                manifest.generation_config_file, manifest.generation_config_sha256
+            )
+            and validated_upstream.run_id == manifest.upstream_run_id
+            and config.model == manifest.model
+            and config.base_url == manifest.base_url
+            and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
+            and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
+            and generation_context_sha256(
+                config=config,
+                attributes_prompt=attributes_prompt,
+                personas_prompt=personas_prompt,
+            )
+            == manifest.generation_context_sha256
+        )
+    except Exception:
+        return False
 
 
 def _pilot_aggregates_match(
@@ -241,104 +456,6 @@ def validate_persona_run(run_dir: Path) -> ValidationReport:
     Returns:
         Machine-readable validation report.
     """
-    manifest = GenerationManifest.model_validate_json(
-        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
-    )
-    output_path = run_dir / manifest.output_file
-    output = pl.read_parquet(output_path)
-    upstream = (
-        pl.read_parquet(manifest.input_file)
-        .sort("persona_id")
-        .slice(manifest.offset, manifest.rows)
-    )
-    upstream_columns = upstream.columns
-    ids = output.get_column("persona_id").to_list()
-    try:
-        validated_upstream = validate_upstream_sample(
-            input_path=manifest.input_file,
-            sample_manifest_path=manifest.sample_manifest_file,
-        )
-        provenance_passed = validated_upstream.run_id == manifest.upstream_run_id
-    except OSError, ValueError, ValidationError:
-        provenance_passed = False
-    checks: list[MetricResult] = [
-        _metric(
-            name="output_checksum",
-            passed=sha256_file(output_path) == manifest.output_sha256,
-        ),
-        _metric(name="row_count", passed=output.height == manifest.rows),
-        _metric(name="upstream_provenance", passed=provenance_passed),
-        _metric(
-            name="ordered_persona_ids",
-            passed=sha256_text(canonical_json(ids))
-            == manifest.ordered_persona_ids_sha256,
-        ),
-        _metric(
-            name="upstream_preservation",
-            passed=output.select(upstream_columns).equals(upstream),
-        ),
-    ]
-    validation_errors = 0
-    checkpoint_errors = 0
-    for row in output.iter_rows(named=True):
-        try:
-            attributes = GeneratedAttributes.model_validate(
-                {name: row[name] for name in GeneratedAttributes.model_fields}
-            )
-            descriptions = PersonaDescriptions.model_validate(
-                {name: row[name] for name in PersonaDescriptions.model_fields}
-            )
-            parse_attributes(attributes.model_dump_json())
-            parse_descriptions(descriptions.model_dump_json())
-        except ValidationError, ValueError:
-            validation_errors += 1
-        checkpoint_path = run_dir / "checkpoints" / f"{row['persona_id']}.json"
-        try:
-            checkpoint = PersonaCheckpoint.model_validate_json(
-                checkpoint_path.read_text(encoding="utf-8")
-            )
-            checkpoint_input = {name: row[name] for name in upstream_columns}
-            if (
-                checkpoint.input_sha256 != sha256_text(canonical_json(checkpoint_input))
-                or checkpoint.generation_context_sha256
-                != manifest.generation_context_sha256
-                or checkpoint.validator_version != VALIDATOR_VERSION
-                or checkpoint.validator_version != manifest.validator_version
-                or any(
-                    not models_match(configured=manifest.model, returned=response.model)
-                    for response in checkpoint.responses
-                )
-            ):
-                checkpoint_errors += 1
-        except OSError, ValidationError:
-            checkpoint_errors += 1
-    checks.append(
-        MetricResult(
-            name="generated_content_errors",
-            passed=validation_errors == 0,
-            value=validation_errors,
-            threshold=0,
-            details=(
-                "All generated fields satisfy schema, Danish, safety, and "
-                "duplication gates."
-            ),
-        )
-    )
-    checks.append(
-        MetricResult(
-            name="checkpoint_provenance_errors",
-            passed=checkpoint_errors == 0,
-            value=checkpoint_errors,
-            threshold=0,
-            details="Checkpoints match their input, model, prompts, and validator.",
-        )
-    )
-    report = ValidationReport(
-        kind="personas",
-        passed=all(metric.passed for metric in checks),
-        created_at=datetime.now(tz=UTC).isoformat(),
-        subject_id=manifest.run_id,
-        metrics=checks,
-    )
+    report = _build_persona_run_report(run_dir=run_dir)
     write_json(path=run_dir / "validation-report.json", payload=report)
     return report
