@@ -379,8 +379,8 @@ def _validate_pilot_arguments(
         raise ValueError("Pilot rows must be at least 1")
     if batch_size < 1 or batch_size > 5:
         raise ValueError("Pilot batch size must be between 1 and 5")
-    if concurrency < 1:
-        raise ValueError("Pilot concurrency must be at least 1")
+    if not 1 <= concurrency <= 8:
+        raise ValueError("Pilot concurrency must be between 1 and 8")
     if delay_between_batches < 0:
         raise ValueError("Pilot batch delay must not be negative")
     if maximum_total_requests < 1:

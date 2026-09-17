@@ -6,12 +6,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 from click.testing import CliRunner
+from test_pipeline import _MockClient, _write_inputs
 
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.io import sha256_file, write_json
 from danish_personas.sampling.freeze import SampleSizeError, freeze_sample
 from scripts.freeze_demographic_sample import main as freeze_main
-from test_pipeline import _MockClient, _write_inputs
 
 
 def test_freeze_service_is_deterministic_and_bounds_size(tmp_path: Path) -> None:
@@ -39,14 +39,7 @@ def test_legacy_freeze_script_remains_compatible(tmp_path: Path) -> None:
 
     result = CliRunner().invoke(
         freeze_main,
-        [
-            "--run",
-            str(paths["sample"].parent),
-            "--rows",
-            "2",
-            "--output",
-            str(output),
-        ],
+        ["--run", str(paths["sample"].parent), "--rows", "2", "--output", str(output)],
     )
 
     assert result.exit_code == 0, result.output
@@ -91,6 +84,35 @@ def test_pilot_service_preserves_order_enforces_budget_and_resumes(
     write_json(path=paths["sample_manifest"], payload=tampered)
     with pytest.raises(ValueError, match="different upstream run"):
         run_pilot(**{**pilot_kwargs, "output_dir": tmp_path / "provenance-pilot"})
+
+
+@pytest.mark.parametrize("concurrency", [0, 9])
+def test_pilot_service_rejects_invalid_concurrency_before_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, concurrency: int
+) -> None:
+    """Invalid concurrency limits make no provider calls or output files."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    output_dir = tmp_path / f"invalid-concurrency-{concurrency}"
+
+    with pytest.raises(ValueError, match="between 1 and 8"):
+        run_pilot(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=output_dir,
+            rows=1,
+            batch_size=1,
+            concurrency=concurrency,
+            delay_between_batches=0.0,
+            maximum_total_requests=10,
+            input_price_per_million=0.3,
+            output_price_per_million=1.2,
+        )
+
+    assert _MockClient.requests == 0
+    assert not output_dir.exists()
 
 
 def test_pilot_service_stops_after_early_shard_failure(
