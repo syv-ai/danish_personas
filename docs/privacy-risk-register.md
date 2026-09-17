@@ -27,10 +27,10 @@ individual-level Statistics Denmark records.
   identifying traits.
 
 FOLK2's official IELAND categories are sampled as a national independent marginal and
-retained verbatim, including Stateless and Not stated. They are not treated as ethnicity,
-citizenship, or residence. Origin cannot drive language, culture, religion, occupation,
-personality, or visual appearance. The two origin fields are withheld from both LLM stages,
-while remaining in upstream outputs and input/checkpoint hashes.
+retained verbatim, including Stateless and Not stated. They are not treated as
+ethnicity, citizenship, or residence. Origin cannot drive language, culture, religion,
+occupation, personality, or visual appearance. The two origin fields are withheld from
+both LLM stages, while remaining in upstream outputs and input/checkpoint hashes.
 
 Municipality aggregates are used only to construct official regional source counts.
 Municipality fields are absent from generated Phase-2 records. A later release must pass

@@ -425,7 +425,7 @@ errors in a restricted intermediate area, not in the release artifact.
 Use a second structured generation call for the seven persona fields. Separating
 attribute and prose generation makes failures easier to detect and permits regeneration
 of text without changing the demographic sample. `visual_persona` is textual portrait
- guidance only, not image generation, and must remain non-identifying and independent
+guidance only, not image generation, and must remain non-identifying and independent
 of any demographic, OCEAN, generated-attribute, or origin-country field.
 
 Evaluate at least two Danish-capable models on the same stratified development set. Pick

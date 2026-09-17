@@ -181,10 +181,11 @@ uv run src/scripts/freeze_demographic_sample.py \
 ```
 
 The source preparation stage uses FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210.
-FOLK2 is an independent national marginal of official IELAND country-of-origin categories
-for adults. It preserves categories such as Stateless and Not stated, but is not ethnicity,
-citizenship, or residence. Each Phase 2 record receives an independently quota-sampled
-`origin_country_code` and `origin_country`; the fields are withheld from both LLM payloads.
+FOLK2 is an independent national marginal of official IELAND country-of-origin
+categories for adults. It preserves categories such as Stateless and Not stated, but is
+not ethnicity, citizenship, or residence. Each Phase 2 record receives an independently
+quota-sampled `origin_country_code` and `origin_country`; the fields are withheld from
+both LLM payloads.
 They cannot drive language, culture, religion, occupation, personality, or visual
 appearance. FOLK1A, RAS209, and RAS202 ground the distributions;
 BEFOLK3 and RAS210 are held-out aggregate diagnostics.
