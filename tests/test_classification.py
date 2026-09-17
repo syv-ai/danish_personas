@@ -25,14 +25,12 @@ def test_cross_check_fails_when_statbank_disagrees(tmp_path: Path) -> None:
     geography = read_geography_classification(csv_path=csv_path)
 
     agreeing = _geography_metrics(
-        geography=geography,
-        statbank_region_map={"101": ("084", "Region Hovedstaden")},
+        geography=geography, statbank_region_map={"101": ("084", "Region Hovedstaden")}
     )
     assert agreeing["passed"]
 
     disagreeing = _geography_metrics(
-        geography=geography,
-        statbank_region_map={"101": ("085", "Region Sjælland")},
+        geography=geography, statbank_region_map={"101": ("085", "Region Sjælland")}
     )
     assert not disagreeing["passed"]
     assert disagreeing["statbank_disagreements"] == ["101"]
@@ -54,9 +52,7 @@ def _write_classification(tmp_path: Path, body: str) -> Path:
     return csv_path
 
 
-def test_reader_rejects_a_classification_without_municipalities(
-    tmp_path: Path,
-) -> None:
+def test_reader_rejects_a_classification_without_municipalities(tmp_path: Path) -> None:
     """A truncated attachment must not produce an empty hierarchy."""
     csv_path = _write_classification(
         tmp_path=tmp_path, body='1;"084";1;Region Hovedstaden;\n'

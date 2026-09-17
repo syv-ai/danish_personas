@@ -8,7 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
-from ..io import load_yaml_model, sha256_file, sha256_text, write_json
+from ..io import load_yaml_model, sha256_file, sha256_text, verify_checksums, write_json
 from ..models import (
     BundleManifest,
     CategoryConfig,
@@ -89,28 +89,27 @@ def prepare_bundle(
         )
 
     classification_snapshots: list[ClassificationManifest] = []
-    geography = pl.DataFrame()
+    geography_csv_path: Path | None = None
     for classification in lock.classifications:
-        snapshot_dir = classification_snapshot_dir(
+        classification_dir = classification_snapshot_dir(
             classification=classification, raw_dir=raw_dir
         )
         classification_snapshot = ClassificationManifest.model_validate_json(
-            (snapshot_dir / "snapshot-manifest.json").read_text()
+            (classification_dir / "snapshot-manifest.json").read_text()
         )
         verify_classification_snapshot(
-            snapshot_dir=snapshot_dir,
+            snapshot_dir=classification_dir,
             snapshot=classification_snapshot,
             classification=classification,
         )
         classification_snapshots.append(classification_snapshot)
         if classification.role == "geography_hierarchy":
-            geography = read_geography_classification(
-                csv_path=snapshot_dir / "data.csv"
-            )
-    if geography.is_empty():
+            geography_csv_path = classification_dir / "data.csv"
+    if geography_csv_path is None:
         message = "The source lock has no geography_hierarchy classification"
         raise ValueError(message)
 
+    geography = read_geography_classification(csv_path=geography_csv_path)
     region_map = _region_map_from_geography(geography=geography)
     frames = _normalise_frames(
         raw_frames=source_frames,
@@ -132,11 +131,11 @@ def prepare_bundle(
     geography.sort(sorted(geography.columns)).write_parquet(geography_path)
     files[str(geography_path.relative_to(bundle_dir))] = sha256_file(geography_path)
 
-    source_metrics = _source_metrics(
-        frames=frames,
+    geography_metrics = _geography_metrics(
         geography=geography,
         statbank_region_map=_build_region_map(metadata=metadata_by_table["FOLK1A"]),
     )
+    source_metrics = _source_metrics(frames=frames, geography_metrics=geography_metrics)
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
     files[str(source_report_path.relative_to(bundle_dir))] = sha256_file(
@@ -191,6 +190,36 @@ def _build_region_map(metadata: StatBankMetadata) -> dict[str, tuple[str, str]]:
                 raise ValueError(message)
             mapping[value.id] = (region_code, region_name)
     return mapping
+
+
+def _geography_metrics(
+    geography: pl.DataFrame, statbank_region_map: dict[str, tuple[str, str]]
+) -> dict[str, object]:
+    classification_codes = dict(
+        zip(
+            geography.get_column("municipality_code"),
+            geography.get_column("region_code"),
+            strict=True,
+        )
+    )
+    statbank_codes = {code: region[0] for code, region in statbank_region_map.items()}
+    disagreements = sorted(
+        code
+        for code in classification_codes.keys() & statbank_codes.keys()
+        if classification_codes[code] != statbank_codes[code]
+    )
+    missing = sorted(statbank_codes.keys() - classification_codes.keys())
+    complete = geography.null_count().sum_horizontal().item() == 0
+    passed = not disagreements and not missing and complete
+    return {
+        "municipalities": geography.height,
+        "regions": geography.get_column("region_code").n_unique(),
+        "landsdele": geography.get_column("landsdel_code").n_unique(),
+        "statbank_disagreements": disagreements,
+        "missing_from_classification": missing,
+        "complete": complete,
+        "passed": passed,
+    }
 
 
 def _normalise_frames(
@@ -568,9 +597,7 @@ def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, 
 
 
 def _source_metrics(
-    frames: dict[str, pl.DataFrame],
-    geography: pl.DataFrame,
-    statbank_region_map: dict[str, tuple[str, str]],
+    frames: dict[str, pl.DataFrame], geography_metrics: dict[str, object]
 ) -> dict[str, object]:
     table_metrics: dict[str, object] = {}
     passed = True
@@ -585,41 +612,11 @@ def _source_metrics(
             "suppressed_cells": suppressed,
             "passed": valid,
         }
-    geography_metrics = _geography_metrics(
-        geography=geography, statbank_region_map=statbank_region_map
-    )
     passed = passed and bool(geography_metrics["passed"])
     return {
         "passed": passed,
         "tables": table_metrics,
         "geography_hierarchy": geography_metrics,
-    }
-
-
-def _geography_metrics(
-    geography: pl.DataFrame, statbank_region_map: dict[str, tuple[str, str]]
-) -> dict[str, object]:
-    classification_codes = {
-        code: region[0]
-        for code, region in _region_map_from_geography(geography=geography).items()
-    }
-    statbank_codes = {code: region[0] for code, region in statbank_region_map.items()}
-    disagreements = sorted(
-        code
-        for code in classification_codes.keys() & statbank_codes.keys()
-        if classification_codes[code] != statbank_codes[code]
-    )
-    missing = sorted(statbank_codes.keys() - classification_codes.keys())
-    complete = geography.null_count().sum_horizontal().item() == 0
-    passed = not disagreements and not missing and complete
-    return {
-        "municipalities": geography.height,
-        "regions": geography.get_column("region_code").n_unique(),
-        "landsdele": geography.get_column("landsdel_code").n_unique(),
-        "statbank_disagreements": disagreements,
-        "missing_from_classification": missing,
-        "complete": complete,
-        "passed": passed,
     }
 
 
@@ -675,11 +672,11 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
     manifest = BundleManifest.model_validate_json(manifest_path.read_text())
-    for relative_path, expected_checksum in manifest.files.items():
-        path = bundle_dir / relative_path
-        if not path.exists() or sha256_file(path) != expected_checksum:
-            message = f"Prepared bundle verification failed: {path}"
-            raise ValueError(message)
+    verify_checksums(
+        base_dir=bundle_dir,
+        expected=manifest.files,
+        message="Prepared bundle verification failed",
+    )
 
 
 def read_geography_classification(csv_path: Path) -> pl.DataFrame:
@@ -774,11 +771,11 @@ def verify_raw_snapshot(
         "data.csv": snapshot.data_sha256,
         "response-headers.json": snapshot.response_headers_sha256,
     }
-    for name, checksum in expected.items():
-        path = snapshot_dir / name
-        if not path.exists() or sha256_file(path) != checksum:
-            message = f"Raw snapshot checksum mismatch: {path}"
-            raise ValueError(message)
+    verify_checksums(
+        base_dir=snapshot_dir,
+        expected=expected,
+        message="Raw snapshot checksum mismatch",
+    )
     query_path = snapshot_dir / "query.json"
     if snapshot.query_sha256 != sha256_text(expected_query):
         message = f"Raw snapshot query does not match source lock: {query_path}"

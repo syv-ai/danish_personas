@@ -67,7 +67,7 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
 
 def test_packing_is_byte_stable(tmp_path: Path) -> None:
     """Repacking unchanged snapshots reproduces identical archive bytes."""
-    raw_dir = tmp_path / "raw-hardened-20260917"
+    raw_dir = tmp_path / RAW_DIRECTORY
     (raw_dir / "folk1a" / "abc").mkdir(parents=True)
     (raw_dir / "folk1a" / "abc" / "data.csv").write_text("a;b\n1;2\n", encoding="utf-8")
     (raw_dir / "classifications").mkdir()

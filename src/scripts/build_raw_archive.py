@@ -7,9 +7,8 @@ from pathlib import Path
 
 import click
 
-from scripts.restore_raw_sources import RAW_DIRECTORY
+from scripts.restore_raw_sources import DEFAULT_ARCHIVE, RAW_DIRECTORY
 
-DEFAULT_ARCHIVE = Path("data") / f"{RAW_DIRECTORY}.tar.zst"
 FILE_MODE = 0o644
 # Pinned so the committed archive does not change size with library defaults.
 COMPRESSION_OPTIONS: dict[int, int] = {CompressionParameter.compression_level: 19}

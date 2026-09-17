@@ -3,7 +3,6 @@
 import json
 import logging
 import math
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from ..io import (
     load_yaml_model,
     sha256_file,
     sha256_text,
+    verify_checksums,
     write_json,
     write_new_bytes,
     write_yaml,
@@ -28,6 +28,7 @@ from ..models import (
     StatBankMetadata,
     StatBankValue,
 )
+from .http import request_with_retries, response_headers_content
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://api.statbank.dk/v1"
@@ -76,7 +77,7 @@ def _fetch_source(
     _, metadata_da_bytes = _get_metadata(
         client=client, table_id=source.table_id, language="da"
     )
-    response = _request_with_retries(
+    response = request_with_retries(
         client=client, method="POST", url=source.data_url, json_payload=query
     )
     retrieved_at = _now()
@@ -85,9 +86,7 @@ def _fetch_source(
         "metadata-da.json": metadata_da_bytes,
         "query.json": query_content.encode(),
         "data.csv": response.content,
-        "response-headers.json": (
-            json.dumps(dict(response.headers), indent=2, sort_keys=True) + "\n"
-        ).encode(),
+        "response-headers.json": response_headers_content(response),
     }
     for name, content in files.items():
         write_new_bytes(path=snapshot_dir / name, content=content)
@@ -116,33 +115,13 @@ def _fetch_source(
 def _get_metadata(
     client: httpx.Client, table_id: str, language: str
 ) -> tuple[StatBankMetadata, bytes]:
-    response = _request_with_retries(
+    response = request_with_retries(
         client=client,
         method="GET",
         url=f"{BASE_URL}/tableinfo/{table_id}?lang={language}",
         json_payload=None,
     )
     return StatBankMetadata.model_validate(response.json()), response.content
-
-
-def _request_with_retries(
-    client: httpx.Client, method: str, url: str, json_payload: dict[str, object] | None
-) -> httpx.Response:
-    last_error: httpx.HTTPError | None = None
-    for attempt in range(4):
-        try:
-            response = client.request(method=method, url=url, json=json_payload)
-            response.raise_for_status()
-            return response
-        except httpx.HTTPError as error:
-            last_error = error
-            if attempt == 3:
-                break
-            time.sleep(2**attempt)
-    if last_error is None:
-        message = "Request failed without an HTTP error"
-        raise RuntimeError(message)
-    raise last_error
 
 
 def _now() -> str:
@@ -180,11 +159,11 @@ def _verify_snapshot(
         "data.csv": manifest.data_sha256,
         "response-headers.json": manifest.response_headers_sha256,
     }
-    for name, checksum in expected.items():
-        path = snapshot_dir / name
-        if not path.exists() or sha256_file(path) != checksum:
-            message = f"Immutable snapshot verification failed: {path}"
-            raise ValueError(message)
+    verify_checksums(
+        base_dir=snapshot_dir,
+        expected=expected,
+        message="Immutable snapshot verification failed",
+    )
     expected_query = source_query_content(source=source)
     if (snapshot_dir / "query.json").read_text() != expected_query:
         message = f"Snapshot query does not match lock: {snapshot_dir}"

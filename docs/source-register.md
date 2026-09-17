@@ -53,10 +53,12 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
 - The municipality-to-region map comes from the `NUTS_V1_2007_DK` classification rather
   than from positional inference over FOLK1A's StatBank metadata value list. The
   classification's codes are byte-identical to StatBank's `OMRÅDE` dimension ids, and it
-  contributes 5 regions, 11 landsdele, and 99 municipalities.
+  contributes 5 regions, 11 landsdele, and 99 level-3 areas: Denmark's 98 municipalities
+  plus Christiansø (`411`), which the classification lists beside them but which FOLK1A
+  does not report, so it never receives sampled population.
 - Source preparation cross-checks the classification against the map derived from
   FOLK1A's metadata and fails the bundle on any disagreement, missing municipality, or
-  null value. On the committed snapshots the check reports 99 municipalities, 11
+  null value. On the committed snapshots the check reports 99 level-3 areas, 11
   landsdele, 5 regions, and zero disagreements, so the previous heuristic was correct;
   the classification gives it an official source and a permanent regression check.
 - The hierarchy is written to `normalized/geography_hierarchy.parquet` in the prepared

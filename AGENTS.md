@@ -34,6 +34,7 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sampling/__init__.py` | Sampling package marker. |
 | `danish_personas/sampling/generator.py` | Deterministic demographics and OCEAN. |
 | `danish_personas/sources/__init__.py` | Source-acquisition package marker. |
+| `danish_personas/sources/http.py` | Retrying requests and header serialisation. |
 | `danish_personas/sources/statbank.py` | StatBank selectors and immutable snapshots. |
 | `danish_personas/sources/classification.py` | dst.dk classification attachment snapshots. |
 | `danish_personas/sources/prepare.py` | Aggregate normalisation and calibration. |
@@ -70,8 +71,8 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 | `tests/test_llm_guard.py` | Default LLM-disabled guard. |
 | `tests/test_non_llm_pipeline.py` | Deterministic fixture pipeline. |
 | `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
-| `tests/test_raw_archive.py` | Committed archive integrity and safe restoration. |
-| `tests/test_classification.py` | Geography parsing, cross-check, byte-stable packing. |
+| `tests/test_raw_archive.py` | Archive integrity, safe restoration, byte-stable packing. |
+| `tests/test_classification.py` | Geography parsing and the StatBank cross-check. |
 | `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
 | `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
 | `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |

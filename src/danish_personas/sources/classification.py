@@ -5,15 +5,15 @@ They are semicolon-delimited CSV documents served from ``dst.dk`` behind a
 redirect, so they need their own adapter rather than a StatBank selector.
 """
 
-import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 
-from ..io import sha256_file, sha256_text, write_json, write_new_bytes
+from ..io import sha256_file, sha256_text, verify_checksums, write_json, write_new_bytes
 from ..models import ClassificationDefinition, ClassificationManifest
+from .http import request_with_retries, response_headers_content
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,13 +59,15 @@ def _fetch_classification(
         return manifest
 
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    response = client.get(classification.attachment_url)
-    response.raise_for_status()
+    response = request_with_retries(
+        client=client,
+        method="GET",
+        url=classification.attachment_url,
+        json_payload=None,
+    )
     files = {
         "data.csv": response.content,
-        "response-headers.json": (
-            json.dumps(dict(response.headers), indent=2, sort_keys=True) + "\n"
-        ).encode(),
+        "response-headers.json": response_headers_content(response),
     }
     for name, content in files.items():
         write_new_bytes(path=snapshot_dir / name, content=content)
@@ -162,8 +164,8 @@ def verify_classification_snapshot(
         "data.csv": snapshot.data_sha256,
         "response-headers.json": snapshot.response_headers_sha256,
     }
-    for name, checksum in expected.items():
-        path = snapshot_dir / name
-        if not path.exists() or sha256_file(path) != checksum:
-            message = f"Immutable classification verification failed: {path}"
-            raise ValueError(message)
+    verify_checksums(
+        base_dir=snapshot_dir,
+        expected=expected,
+        message="Immutable classification verification failed",
+    )
