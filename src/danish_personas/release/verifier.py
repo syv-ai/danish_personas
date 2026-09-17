@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hmac
-import json
 import os
 import re
 import typing as t
@@ -11,9 +10,13 @@ from pathlib import Path
 
 import polars as pl
 
-from ..generation.models import GeneratedAttributes, PersonaDescriptions
+from ..generation.models import (
+    GeneratedAttributes,
+    GenerationConfig,
+    PersonaDescriptions,
+)
 from ..io import load_yaml_model, sha256_file
-from ..models import StrictModel, ValidationReport
+from ..models import DemographicRecord, StrictModel, ValidationReport
 from .common import release_id, role
 from .models import ReleaseEvidence, ReleaseManifest, ReleasePolicy, ReviewAttestation
 from .policy import validate_release_approval
@@ -35,6 +38,7 @@ _PUBLIC_FILES = {
     "provenance/pilot-validation-report.json",
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
+    "provenance/config/generation.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -349,13 +353,36 @@ def _check_output(
     """
     if output.height != manifest.rows:
         raise ReleaseVerificationError("Output row count does not match manifest")
-    required_columns = {
-        "persona_id",
+    expected_columns = (
+        *DemographicRecord.model_fields,
         *GeneratedAttributes.model_fields,
         *PersonaDescriptions.model_fields,
+    )
+    if set(output.columns) != set(expected_columns) or len(output.columns) != len(
+        expected_columns
+    ):
+        raise ReleaseVerificationError("Persona output schema must match exactly")
+    expected_dtypes: dict[str, object] = {
+        name: (
+            pl.Int64
+            if name == "age"
+            else pl.Float64
+            if name.endswith("_score")
+            else pl.String
+        )
+        for name in expected_columns
+        if name not in {"skills_and_expertise", "hobbies_and_interests"}
     }
-    if not required_columns.issubset(output.columns):
-        raise ReleaseVerificationError("Persona output schema is incomplete")
+    expected_dtypes["skills_and_expertise"] = pl.List(pl.String)
+    expected_dtypes["hobbies_and_interests"] = pl.List(pl.String)
+    if any(
+        not (name == "age" and output.schema[name] in {pl.Int32, pl.Int64})
+        and output.schema[name] != dtype
+        for name, dtype in expected_dtypes.items()
+    ):
+        raise ReleaseVerificationError(
+            "Persona output contains an invalid logical dtype"
+        )
     if not report.passed or report.kind != "persona_pilot":
         raise ReleaseVerificationError("Pilot validation report is not passing")
     if report.subject_id != manifest.pilot_id:
@@ -410,6 +437,7 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
             If a configuration hash does not match.
     """
     expected_names = {
+        "generation.yaml",
         "sources.lock.yaml",
         "categories.yaml",
         "sampling.yaml",
@@ -421,6 +449,17 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
         path = f"provenance/config/{name}"
         if path not in _PUBLIC_FILES or sha256_file(release_dir / path) != expected:
             raise ReleaseVerificationError("Configuration checksum mismatch")
+    config = _load_yaml(
+        release_dir / "provenance/config/generation.yaml", GenerationConfig
+    )
+    if evidence.generation_config_sha256 != sha256_file(
+        release_dir / "provenance/config/generation.yaml"
+    ):
+        raise ReleaseVerificationError("Generation config checksum binding failed")
+    if config.attributes_prompt != Path("config/prompts/attributes-da.md"):
+        raise ReleaseVerificationError("Generation attributes prompt binding failed")
+    if config.personas_prompt != Path("config/prompts/personas-da.md"):
+        raise ReleaseVerificationError("Generation personas prompt binding failed")
 
 
 def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:
@@ -463,16 +502,15 @@ def _scan_release_text(*, release_dir: Path) -> None:
     ]
     for path in text_files:
         try:
-            _scan_text(path.read_bytes())
+            content = path.read_bytes()
+            content.decode("utf-8")
+            _scan_text(content)
         except UnicodeDecodeError as error:
             raise ReleaseVerificationError("Public text is not UTF-8") from error
     output = _read_output(release_dir / "data/personas.parquet")
     for column in output.columns:
-        if output[column].dtype == pl.String or output[column].dtype == pl.List(
-            pl.String
-        ):
-            for value in output[column].to_list():
-                _scan_text(json.dumps(value, ensure_ascii=False).encode())
+        for value in output[column].to_list():
+            _scan_value(value)
 
 
 def _scan_text(content: bytes) -> None:
@@ -485,8 +523,30 @@ def _scan_text(content: bytes) -> None:
         rb"(?i)(?:https?://[^\s]+[?&](?:token|api[_-]?key|secret|password|access[_-]?token)=)",
         rb"(?i)(?:https?://[^\s]+#[^\s]*(?:token|secret|key))",
         rb"(?i)authorization\s+(?:basic|bearer)\s+",
+        rb"(?i)\b(?:api[_-]?key|token|secret|password)(?![_-]?env)\s*[:=]\s*\S+",
         rb"(?:^|[^A-Za-z0-9_])(?:hf_|ghp_|github_pat_|sk-)",
     )
     scan_bytes = content.replace(b"hf_xet", b"hf-xet")
     if any(re.search(pattern, scan_bytes) for pattern in patterns):
         raise ReleaseVerificationError("Public release contains a path or secret")
+
+
+def _scan_value(value: object) -> None:
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ReleaseVerificationError(
+                "Public binary value is not UTF-8"
+            ) from error
+    if isinstance(value, str):
+        _scan_text(value.encode("utf-8"))
+    elif isinstance(value, dict):
+        for key, nested in value.items():
+            _scan_value(key)
+            _scan_value(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _scan_value(nested)
+    elif value is not None:
+        _scan_text(str(value).encode("utf-8"))

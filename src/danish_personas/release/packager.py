@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import typing as t
 from dataclasses import dataclass
@@ -26,7 +28,7 @@ from ..generation.models import (
 )
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
-from ..models import RunManifest, StrictModel, ValidationReport
+from ..models import DemographicRecord, RunManifest, StrictModel, ValidationReport
 from .common import release_id, role
 from .models import (
     Accounting,
@@ -53,6 +55,7 @@ class _InventoryItem:
     sha256: str
     device: int
     inode: int
+    content: bytes
 
 
 _PUBLIC_FILES = (
@@ -65,6 +68,7 @@ _PUBLIC_FILES = (
     "provenance/pilot-validation-report.json",
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
+    "provenance/config/generation.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -99,15 +103,25 @@ def package_release(
         ReleasePackagingError:
             If any release gate or source-integrity check fails.
     """
+    _require_directory(pilot_dir)
+    _require_directory(repository_root)
     pilot_dir = pilot_dir.resolve()
     repository_root = repository_root.resolve()
     output_parent = output_parent.resolve()
     _require_clean_git(repository_root)
     git_head, origin_url = _git_provenance(repository_root)
     pilot_manifest = _load_json_model(pilot_dir / "pilot-manifest.json", PilotManifest)
+    _require_regular_file(policy_path)
     policy = load_yaml_model(path=policy_path, model=ReleasePolicy)
     attestation = _load_json_model(attestation_path, ReviewAttestation)
-    config_path = _manifest_path(pilot_dir, pilot_manifest.generation_config_file)
+    config_path = _repository_path(repository_root, Path("config/generation.yaml"))
+    manifest_config_path = _repository_path(
+        repository_root, pilot_manifest.generation_config_file
+    )
+    if manifest_config_path != config_path:
+        raise ReleasePackagingError(
+            "Generation config must be the repository config/generation.yaml"
+        )
     config = load_yaml_model(path=config_path, model=GenerationConfig)
     attributes_path = _repository_path(repository_root, config.attributes_prompt)
     personas_path = _repository_path(repository_root, config.personas_prompt)
@@ -123,7 +137,10 @@ def package_release(
     if not card_bytes.strip():
         raise ReleasePackagingError("Dataset card must be non-empty")
 
-    consumed = _derive_consumed_files(pilot_dir=pilot_dir, manifest=pilot_manifest)
+    output_path = _output_path(pilot_dir, pilot_manifest.output_file)
+    consumed = _derive_consumed_files(
+        pilot_dir=pilot_dir, repository_root=repository_root, manifest=pilot_manifest
+    )
     consumed.extend(
         _inventory_inputs(
             paths=[
@@ -133,6 +150,8 @@ def package_release(
                 licence_path,
                 attributes_path,
                 personas_path,
+                output_path,
+                config_path,
                 repository_root / "uv.lock",
                 repository_root / "LICENSE",
                 *[
@@ -152,7 +171,6 @@ def package_release(
     )
     inventory = _snapshot_inventory(consumed)
 
-    output_path = _manifest_path(pilot_dir, pilot_manifest.output_file)
     report, evidence, output = _validate_pilot_for_release(
         pilot_dir=pilot_dir,
         pilot_manifest=pilot_manifest,
@@ -209,6 +227,9 @@ def package_release(
             attributes_path=attributes_path,
             personas_path=personas_path,
             repository_root=repository_root,
+            inventory=inventory,
+            card_path=dataset_card_path,
+            licence_path=licence_path,
         )
         artifacts = tuple(
             Artifact(
@@ -254,29 +275,41 @@ def package_release(
             lock_path.unlink(missing_ok=True)
 
 
-def _derive_consumed_files(*, pilot_dir: Path, manifest: PilotManifest) -> list[Path]:
+def _derive_consumed_files(
+    *, pilot_dir: Path, repository_root: Path, manifest: PilotManifest
+) -> list[Path]:
     """Derive the strict input inventory from pilot and shard manifests.
 
     Returns:
         Paths consumed by validation and evidence derivation.
     """
     paths = [pilot_dir / "pilot-manifest.json"]
-    paths.append(_manifest_path(pilot_dir, manifest.output_file))
-    paths.append(_manifest_path(pilot_dir, manifest.input_file))
-    paths.append(_manifest_path(pilot_dir, manifest.sample_manifest_file))
-    paths.append(_manifest_path(pilot_dir, manifest.generation_config_file))
-    sample_path = _manifest_path(pilot_dir, manifest.input_file)
+    paths.append(_output_path(pilot_dir, manifest.output_file))
+    paths.append(_repository_path(repository_root, manifest.input_file))
+    paths.append(_repository_path(repository_root, manifest.sample_manifest_file))
+    paths.append(_repository_path(repository_root, manifest.generation_config_file))
+    sample_path = _repository_path(repository_root, manifest.input_file)
     upstream_manifest_path = sample_path.parent / "run-manifest.json"
     upstream_report_path = sample_path.parent / "validation-report.json"
     paths.extend((upstream_manifest_path, upstream_report_path))
     upstream = _load_json_model(upstream_manifest_path, RunManifest)
-    paths.append(_manifest_path(sample_path.parent, upstream.data_file))
+    paths.append(_output_path(sample_path.parent, upstream.data_file))
     for reference in manifest.batch_runs:
         manifest_path = _pilot_path(pilot_dir, reference.manifest_file)
         report_path = _pilot_path(pilot_dir, reference.validation_report_file)
         shard = _load_json_model(manifest_path, GenerationManifest)
         paths.extend((manifest_path, report_path))
-        paths.append(_pilot_path(manifest_path.parent, shard.output_file))
+        paths.append(_output_path(manifest_path.parent, shard.output_file))
+        paths.extend(
+            (
+                _repository_path(repository_root, shard.input_file),
+                _repository_path(repository_root, shard.sample_manifest_file),
+            )
+        )
+        if shard.generation_config_file is not None:
+            paths.append(
+                _repository_path(repository_root, shard.generation_config_file)
+            )
         checkpoint_dir = manifest_path.parent / "checkpoints"
         if checkpoint_dir.is_dir():
             paths.extend(sorted(checkpoint_dir.glob("*.json")))
@@ -288,8 +321,6 @@ def _derive_consumed_files(*, pilot_dir: Path, manifest: PilotManifest) -> list[
 
 def _install_files(**kwargs: object) -> None:
     stage = t.cast(Path, kwargs["stage"])
-    card = t.cast(bytes, kwargs["card"])
-    licence = t.cast(bytes, kwargs["licence"])
     output_path = t.cast(Path, kwargs["output_path"])
     attestation_path = t.cast(Path, kwargs["attestation_path"])
     policy_path = t.cast(Path, kwargs["policy_path"])
@@ -298,12 +329,13 @@ def _install_files(**kwargs: object) -> None:
     attributes_path = t.cast(Path, kwargs["attributes_path"])
     personas_path = t.cast(Path, kwargs["personas_path"])
     repository_root = t.cast(Path, kwargs["repository_root"])
+    inventory = t.cast(list[_InventoryItem], kwargs["inventory"])
     payloads: dict[str, bytes] = {
-        "README.md": card,
-        "LICENSE.txt": licence,
-        "data/personas.parquet": output_path.read_bytes(),
-        "attestations/human-review.json": attestation_path.read_bytes(),
-        "provenance/release-policy.yaml": policy_path.read_bytes(),
+        "README.md": _captured_bytes(inventory, t.cast(Path, kwargs["card_path"])),
+        "LICENSE.txt": _captured_bytes(inventory, t.cast(Path, kwargs["licence_path"])),
+        "data/personas.parquet": _captured_bytes(inventory, output_path),
+        "attestations/human-review.json": _captured_bytes(inventory, attestation_path),
+        "provenance/release-policy.yaml": _captured_bytes(inventory, policy_path),
         "provenance/evidence.json": (
             json.dumps(
                 evidence.model_dump(mode="json"),
@@ -322,32 +354,47 @@ def _install_files(**kwargs: object) -> None:
             )
             + "\n"
         ).encode(),
-        "provenance/prompts/attributes-da.md": attributes_path.read_bytes(),
-        "provenance/prompts/personas-da.md": personas_path.read_bytes(),
+        "provenance/prompts/attributes-da.md": _captured_bytes(
+            inventory, attributes_path
+        ),
+        "provenance/prompts/personas-da.md": _captured_bytes(inventory, personas_path),
     }
     for name in (
+        "generation.yaml",
         "sources.lock.yaml",
         "categories.yaml",
         "sampling.yaml",
         "validation.yaml",
     ):
-        payloads[f"provenance/config/{name}"] = (
-            repository_root / "config" / name
-        ).read_bytes()
+        payloads[f"provenance/config/{name}"] = _captured_bytes(
+            inventory, repository_root / "config" / name
+        )
     for name in (
         "source-register.md",
         "privacy-risk-register.md",
         "acceptance-criteria.md",
     ):
-        payloads[f"provenance/docs/{name}"] = (
-            repository_root / "docs" / name
-        ).read_bytes()
-    payloads["provenance/code/uv.lock"] = (repository_root / "uv.lock").read_bytes()
-    payloads["provenance/code/LICENSE"] = (repository_root / "LICENSE").read_bytes()
+        payloads[f"provenance/docs/{name}"] = _captured_bytes(
+            inventory, repository_root / "docs" / name
+        )
+    payloads["provenance/code/uv.lock"] = _captured_bytes(
+        inventory, repository_root / "uv.lock"
+    )
+    payloads["provenance/code/LICENSE"] = _captured_bytes(
+        inventory, repository_root / "LICENSE"
+    )
     for relative, content in payloads.items():
         target = stage / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+
+
+def _captured_bytes(inventory: list[_InventoryItem], path: Path) -> bytes:
+    key = path.absolute()
+    for item in inventory:
+        if item.path.absolute() == key:
+            return item.content
+    raise ReleasePackagingError(f"Source was not captured: {path}")
 
 
 def _inventory_inputs(*, paths: list[Path]) -> list[Path]:
@@ -368,18 +415,29 @@ def _recheck_inventory(items: list[_InventoryItem]) -> None:
 
 
 def _snapshot_inventory(paths: list[Path]) -> list[_InventoryItem]:
+    """Capture each source once, before validation can observe a replacement.
+
+    Returns:
+        Immutable source records containing the captured bytes.
+    """
     result: list[_InventoryItem] = []
     seen: set[Path] = set()
     for path in paths:
-        path = path.resolve()
-        if path in seen:
-            continue
-        seen.add(path)
         _require_regular_file(path)
+        key = path.absolute()
+        if key in seen:
+            continue
+        seen.add(key)
         stat = path.stat()
+        content = path.read_bytes()
         result.append(
             _InventoryItem(
-                path, stat.st_size, sha256_file(path), stat.st_dev, stat.st_ino
+                path=path,
+                size=stat.st_size,
+                sha256=hashlib.sha256(content).hexdigest(),
+                device=stat.st_dev,
+                inode=stat.st_ino,
+                content=content,
             )
         )
     return result
@@ -412,25 +470,48 @@ def _validate_pilot_for_release(
         ReleasePackagingError:
             If pilot validation or release eligibility fails.
     """
-    report = validate_persona_pilot(pilot_dir=pilot_dir)
+    report = validate_persona_pilot(
+        pilot_dir=pilot_dir, repository_root=repository_root
+    )
     if not report.passed or report.kind != "persona_pilot":
         raise ReleasePackagingError("Fresh pilot validation did not pass")
     if report.subject_id != pilot_manifest.pilot_id:
         raise ReleasePackagingError("Pilot validation subject does not match")
-    output_path = _manifest_path(pilot_dir, pilot_manifest.output_file)
+    output_path = _output_path(pilot_dir, pilot_manifest.output_file)
     output = _read_output(output_path)
     if (
         output.height != pilot_manifest.rows
         or sha256_file(output_path) != pilot_manifest.output_sha256
     ):
         raise ReleasePackagingError("Pilot output does not match its manifest")
-    required_columns = {
-        "persona_id",
+    expected_columns = (
+        *DemographicRecord.model_fields,
         *GeneratedAttributes.model_fields,
         *PersonaDescriptions.model_fields,
+    )
+    if set(output.columns) != set(expected_columns) or len(output.columns) != len(
+        expected_columns
+    ):
+        raise ReleasePackagingError("Persona output schema must match exactly")
+    expected_dtypes: dict[str, object] = {
+        name: (
+            pl.Int64
+            if name == "age"
+            else pl.Float64
+            if name.endswith("_score")
+            else pl.String
+        )
+        for name in expected_columns
+        if name not in {"skills_and_expertise", "hobbies_and_interests"}
     }
-    if not required_columns.issubset(output.columns):
-        raise ReleasePackagingError("Persona output schema is incomplete")
+    expected_dtypes["skills_and_expertise"] = pl.List(pl.String)
+    expected_dtypes["hobbies_and_interests"] = pl.List(pl.String)
+    if any(
+        not (name == "age" and output.schema[name] in {pl.Int32, pl.Int64})
+        and output.schema[name] != dtype
+        for name, dtype in expected_dtypes.items()
+    ):
+        raise ReleasePackagingError("Persona output contains an invalid logical dtype")
     validate_release_approval(
         policy=policy,
         attestation=attestation,
@@ -488,6 +569,12 @@ def _assert_manifest_bindings(
 ) -> None:
     if manifest.llm_generation is not True or not config.llm_generation_enabled:
         raise ReleasePackagingError("Release requires enabled LLM generation")
+    if config_path.name != "generation.yaml":
+        raise ReleasePackagingError("Generation config path binding failed")
+    if attributes_path != config_path.parent / "prompts/attributes-da.md":
+        raise ReleasePackagingError("Generation attributes prompt path binding failed")
+    if personas_path != config_path.parent / "prompts/personas-da.md":
+        raise ReleasePackagingError("Generation personas prompt path binding failed")
     if sha256_file(config_path) != manifest.generation_config_sha256:
         raise ReleasePackagingError("Generation config binding failed")
     if sha256_file(attributes_path) != manifest.attributes_prompt_sha256:
@@ -520,7 +607,7 @@ def _derive_evidence(
     for reference in manifest.batch_runs:
         manifest_path = _pilot_path(pilot_dir, reference.manifest_file)
         shard = _load_json_model(manifest_path, GenerationManifest)
-        output_path = _pilot_path(manifest_path.parent, shard.output_file)
+        output_path = _output_path(manifest_path.parent, shard.output_file)
         rejected = 0
         checkpoint_dir = manifest_path.parent / "checkpoints"
         for checkpoint_path in sorted(checkpoint_dir.glob("*.json")):
@@ -561,7 +648,7 @@ def _derive_evidence(
     }
     if any(getattr(manifest, name) != value for name, value in sums.items()):
         raise ReleasePackagingError("Shard accounting does not match pilot manifest")
-    output = _read_output(_manifest_path(pilot_dir, manifest.output_file))
+    output = _read_output(_output_path(pilot_dir, manifest.output_file))
     dropped_rows = manifest.rows - output.height
     provider_costs = [item.provider_cost_usd for item in shards]
     provider_cost = (
@@ -587,7 +674,7 @@ def _derive_evidence(
     )
     sample_source_run_id = None
     source_bundle_id = None
-    sample_path = _manifest_path(pilot_dir, manifest.sample_manifest_file)
+    sample_path = _repository_path(repository_root, manifest.sample_manifest_file)
     try:
         sample_source_run_id = json.loads(sample_path.read_text(encoding="utf-8"))[
             "source_run_id"
@@ -604,6 +691,7 @@ def _derive_evidence(
     config_hashes = {
         name: sha256_file(repository_root / "config" / name)
         for name in (
+            "generation.yaml",
             "sources.lock.yaml",
             "categories.yaml",
             "sampling.yaml",
@@ -693,37 +781,76 @@ def _git(repository_root: Path, *args: str) -> str:
 
 def _load_json_model(path: Path, model: type[ModelType]) -> ModelType:
     try:
+        _require_regular_file(path)
         return model.model_validate_json(path.read_text(encoding="utf-8"))
     except Exception as error:
         raise ReleasePackagingError(f"Invalid contract: {path}") from error
 
 
-def _pilot_path(base: Path, value: Path) -> Path:
-    """Resolve a shard path while refusing traversal outside its pilot root.
+def _require_regular_file(path: Path) -> None:
+    _require_no_symlink_components(path)
+    try:
+        stat = path.lstat()
+    except OSError as error:
+        raise ReleasePackagingError(f"Missing input file: {path}") from error
+    if path.is_symlink() or not os.path.isfile(path) or stat.st_nlink != 1:
+        raise ReleasePackagingError(f"Input must be a regular non-linked file: {path}")
+
+
+def _require_no_symlink_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        try:
+            if current.is_symlink():
+                raise ReleasePackagingError(
+                    f"Input must be a regular non-linked file; path contains a "
+                    f"symlink component: {path}"
+                )
+        except OSError as error:
+            raise ReleasePackagingError(f"Cannot inspect input path: {path}") from error
+
+
+def _output_path(owner_dir: Path, value: Path) -> Path:
+    """Resolve an output path relative to its owning run or pilot directory.
 
     Returns:
-        The validated path.
+        The resolved output path.
 
     Raises:
         ReleasePackagingError:
-            If the path escapes its containing directory.
+            If the source is not a regular file or escapes its owner.
     """
-    path = _manifest_path(base, value)
+    candidate = value if value.is_absolute() else owner_dir / value
+    _require_regular_file(candidate)
+    resolved = candidate.resolve()
     try:
-        path.resolve().relative_to(base.resolve())
+        resolved.relative_to(owner_dir.resolve())
+    except ValueError as error:
+        raise ReleasePackagingError("Output path escapes its owning run") from error
+    return resolved
+
+
+def _pilot_path(pilot_dir: Path, value: Path) -> Path:
+    """Resolve a batch reference relative to the pilot directory.
+
+    Returns:
+        The resolved pilot path.
+
+    Raises:
+        ReleasePackagingError:
+            If the source is not a regular file or escapes the pilot.
+    """
+    candidate = value if value.is_absolute() else pilot_dir / value
+    _require_regular_file(candidate)
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(pilot_dir.resolve())
     except ValueError as error:
         raise ReleasePackagingError(
-            "Pilot manifest path escapes its directory"
+            "Pilot batch path escapes pilot directory"
         ) from error
-    return path
-
-
-def _manifest_path(base: Path, value: Path) -> Path:
-    if value.is_absolute():
-        path = value
-    else:
-        path = base / value
-    return path
+    return resolved
 
 
 def _regular_bytes(path: Path) -> bytes:
@@ -731,56 +858,93 @@ def _regular_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def _require_regular_file(path: Path) -> None:
-    try:
-        stat = path.lstat()
-    except OSError as error:
-        raise ReleasePackagingError(f"Missing input file: {path}") from error
-    if not os.path.isfile(path) or stat.st_nlink != 1 or path.is_symlink():
-        raise ReleasePackagingError(f"Input must be a regular non-linked file: {path}")
-
-
 def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Install without replacing a destination, failing closed if unsupported.
+
+    Raises:
+        ReleasePackagingError:
+            If no atomic no-replace primitive is available or installation fails.
+    """
     if destination.exists() or destination.is_symlink():
         raise ReleasePackagingError("Release destination already exists")
-    if os.name == "posix":
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = getattr(libc, "renameat2", None)
-        if renameat2 is not None:
-            result = renameat2(
-                -100, str(source).encode(), -100, str(destination).encode(), 1
-            )
-            if result == 0:
-                return
-            if ctypes.get_errno() == 17:
-                raise ReleasePackagingError("Release destination already exists")
-        renameatx_np = getattr(libc, "renameatx_np", None)
-        if renameatx_np is not None:
-            result = renameatx_np(
-                -2, str(source).encode(), -2, str(destination).encode(), 4
-            )
-            if result == 0:
-                return
-            if ctypes.get_errno() == 17:
-                raise ReleasePackagingError("Release destination already exists")
+    if os.name != "posix":
+        _rename_windows(source, destination)
+        return
+    _rename_posix(source, destination)
+
+
+def _rename_posix(source: Path, destination: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        operation = getattr(libc, "renameat2", None)
+        flags = 1
+        directory_fd = -100
+    elif sys.platform == "darwin":
+        operation = getattr(libc, "renameatx_np", None)
+        flags = 4
+        directory_fd = -2
+    else:
+        raise ReleasePackagingError("Atomic no-replace install is unsupported")
+    if operation is None:
+        raise ReleasePackagingError("Atomic no-replace install is unavailable")
+    result = operation(
+        directory_fd,
+        str(source).encode(),
+        directory_fd,
+        str(destination).encode(),
+        flags,
+    )
+    if result == 0:
+        return
+    if ctypes.get_errno() == errno.EEXIST:
+        raise ReleasePackagingError("Release destination already exists")
+    raise ReleasePackagingError("Atomic no-replace install failed")
+
+
+def _rename_windows(source: Path, destination: Path) -> None:
     try:
         os.rename(source, destination)
     except FileExistsError as error:
         raise ReleasePackagingError("Release destination already exists") from error
+    except OSError as error:
+        raise ReleasePackagingError("Atomic no-replace install failed") from error
 
 
-def _repository_path(root: Path, value: Path) -> Path:
-    path = value if value.is_absolute() else root / value
+def _repository_path(repository_root: Path, value: Path) -> Path:
+    """Resolve a manifest path inside the repository.
+
+    Returns:
+        The resolved repository path.
+
+    Raises:
+        ReleasePackagingError:
+            If the source is not a regular file or escapes the repository.
+    """
+    candidate = value if value.is_absolute() else repository_root / value
+    _require_regular_file(candidate)
+    resolved_root = repository_root.resolve()
+    resolved = candidate.resolve()
     try:
-        path.resolve().relative_to(root)
+        resolved.relative_to(resolved_root)
     except ValueError as error:
-        raise ReleasePackagingError("Prompt is outside repository root") from error
-    return path
+        raise ReleasePackagingError(
+            "Repository manifest path escapes repository root"
+        ) from error
+    return resolved
 
 
 def _require_clean_git(root: Path) -> None:
     if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise ReleasePackagingError("Git checkout must be clean")
+
+
+def _require_directory(path: Path) -> None:
+    try:
+        path.lstat()
+    except OSError as error:
+        raise ReleasePackagingError(f"Missing directory: {path}") from error
+    if path.is_symlink() or not os.path.isdir(path):
+        raise ReleasePackagingError(f"Input must be a regular directory: {path}")
 
 
 def _require_public_prompt(path: Path, expected: str) -> None:
@@ -790,15 +954,29 @@ def _require_public_prompt(path: Path, expected: str) -> None:
 
 
 def _scan_dataframe(output: pl.DataFrame) -> None:
-    """Scan portable string values before they enter the public package."""
+    """Recursively scan every scalar in every public Parquet column."""
     for column in output.columns:
-        if output[column].dtype == pl.String or output[column].dtype == pl.List(
-            pl.String
-        ):
-            for value in output[column].to_list():
-                _scan_public_values(
-                    [json.dumps(value, ensure_ascii=False).encode("utf-8")]
-                )
+        for value in output[column].to_list():
+            _scan_public_value(value)
+
+
+def _scan_public_value(value: object) -> None:
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ReleasePackagingError("Public binary value is not UTF-8") from error
+    if isinstance(value, str):
+        _scan_public_values([value.encode("utf-8")])
+    elif isinstance(value, dict):
+        for key, nested in value.items():
+            _scan_public_value(key)
+            _scan_public_value(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _scan_public_value(nested)
+    elif value is not None:
+        _scan_public_values([str(value).encode("utf-8")])
 
 
 def _scan_public_values(values: list[bytes]) -> None:
@@ -817,6 +995,7 @@ def _scan_public_values(values: list[bytes]) -> None:
         rb"(?i)(?:https?://[^\s]+[?&](?:token|api[_-]?key|secret|password|access[_-]?token)=)",
         rb"(?i)(?:https?://[^\s]+#[^\s]*(?:token|secret|key))",
         rb"(?i)authorization\s+(?:basic|bearer)\s+",
+        rb"(?i)\b(?:api[_-]?key|token|secret|password)(?![_-]?env)\s*[:=]\s*\S+",
         rb"(?:^|[^A-Za-z0-9_])(?:hf_|ghp_|github_pat_|sk-)",
     )
     for content in values:

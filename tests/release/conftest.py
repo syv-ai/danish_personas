@@ -14,9 +14,14 @@ import polars as pl
 import pytest
 import yaml
 
-from danish_personas.generation.models import GenerationConfig, PilotManifest
+from danish_personas.generation.models import (
+    GeneratedAttributes,
+    GenerationConfig,
+    PersonaDescriptions,
+    PilotManifest,
+)
 from danish_personas.io import sha256_file
-from danish_personas.models import ValidationReport
+from danish_personas.models import DemographicRecord, ValidationReport
 from danish_personas.release import packager
 from danish_personas.release.models import (
     Accounting,
@@ -61,12 +66,16 @@ def packaged_release(
     """
     calls: list[Path] = []
 
-    def validate(*, pilot_dir: Path) -> ValidationReport:
+    def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
+        assert repository_root == release_case.repository
         calls.append(pilot_dir)
         return release_case.report
 
-    def no_inventory(*, pilot_dir: Path, manifest: PilotManifest) -> list[Path]:
+    def no_inventory(
+        *, pilot_dir: Path, repository_root: Path, manifest: PilotManifest
+    ) -> list[Path]:
         assert pilot_dir == release_case.pilot
+        assert repository_root == release_case.repository
         assert manifest.pilot_id == PILOT_ID
         return []
 
@@ -117,6 +126,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
     config_hashes = {
         name: sha256_file(case.repository / "config" / name)
         for name in (
+            "generation.yaml",
             "sources.lock.yaml",
             "categories.yaml",
             "sampling.yaml",
@@ -214,14 +224,14 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     )
     pilot = tmp_path / "pilot"
     pilot.mkdir()
-    config_path = pilot / "generation.yaml"
+    config_path = repository / "config/generation.yaml"
     config_path.write_text(
         yaml.safe_dump(generation_config.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",
     )
-    sample = pilot / "sample.parquet"
+    sample = repository / "sample.parquet"
     sample.write_bytes(b"sample")
-    sample_manifest = pilot / "sample-manifest.json"
+    sample_manifest = repository / "sample-manifest.json"
     sample_manifest.write_text('{"source_run_id":"source-run"}\n', encoding="utf-8")
     output = pilot / "generated-personas.parquet"
     ids = [f"persona-{index:05d}" for index in range(10_000)]
@@ -248,6 +258,19 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             * 10_000,
         }
     )
+    for name in DemographicRecord.model_fields:
+        if name not in output_frame.columns:
+            value: object = (
+                35 if name == "age" else 50.0 if name.endswith("_score") else "Danmark"
+            )
+            output_frame = output_frame.with_columns(pl.lit(value).alias(name))
+    output_frame = output_frame.select(
+        [
+            *DemographicRecord.model_fields,
+            *GeneratedAttributes.model_fields,
+            *PersonaDescriptions.model_fields,
+        ]
+    )
     output_frame.write_parquet(output)
 
     input_hash = hashlib.sha256(b"input").hexdigest()
@@ -271,7 +294,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         input_sha256=input_hash,
         sample_manifest_file=Path("sample-manifest.json"),
         sample_manifest_sha256=sha256_file(sample_manifest),
-        generation_config_file=Path("generation.yaml"),
+        generation_config_file=Path("config/generation.yaml"),
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=zero_hash,
         validator_version="validator-1",
