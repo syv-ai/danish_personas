@@ -9,7 +9,7 @@ from tldextract import TLDExtract
 
 from .models import GeneratedAttributes, PersonaDescriptions
 
-VALIDATOR_VERSION = "persona-safety-v2"
+VALIDATOR_VERSION = "persona-safety-v3"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -32,6 +32,71 @@ LANGUAGE_DETECTOR = LanguageDetectorBuilder.from_languages(
     Language.NYNORSK,
     Language.SWEDISH,
 ).build()
+VISUAL_PROHIBITED_TERMS = {
+    "afrikansk",
+    "asiatisk",
+    "attraktiv",
+    "arbejdsgiver",
+    "arbejdsplads",
+    "arabisk",
+    "afstamning",
+    "dansk",
+    "danmark",
+    "etnicitet",
+    "etnisk",
+    "forfædre",
+    "firma",
+    "flot",
+    "gade",
+    "hud",
+    "hudfarve",
+    "hudtone",
+    "hospital",
+    "høj",
+    "højde",
+    "højden",
+    "institution",
+    "kristen",
+    "københavn",
+    "kørestol",
+    "kultur",
+    "kropsbygning",
+    "kropsmål",
+    "lav",
+    "mellemøstlig",
+    "modersmål",
+    "muslim",
+    "nationalitet",
+    "nordisk",
+    "nørrebro",
+    "odense",
+    "oprindelse",
+    "protese",
+    "proteser",
+    "religion",
+    "roma",
+    "sexet",
+    "skole",
+    "skandinavisk",
+    "slank",
+    "smuk",
+    "sød",
+    "sprog",
+    "synshandicap",
+    "tynd",
+    "udseende",
+    "universitet",
+    "virksomhed",
+    "vesterbro",
+    "vægt",
+    "aarhus",
+    "aalborg",
+    "europæisk",
+    "japansk",
+    "latinamerikansk",
+    "muskuløs",
+    "skøn",
+}
 SENSITIVE_TERMS = {
     "adhd",
     "angst",
@@ -157,8 +222,35 @@ def parse_descriptions(content: str) -> PersonaDescriptions:
         raise ValueError(str(error)) from error
     texts = list(descriptions.model_dump().values())
     _validate_texts(texts=texts, require_each_danish=True)
+    _validate_visual_persona(text=descriptions.visual_persona)
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
         message = "Persona descriptions must not be exact duplicates"
         raise ValueError(message)
     return descriptions
+
+
+def _validate_visual_persona(text: str) -> None:
+    """Reject visual claims that could encode sensitive or identifying traits.
+
+    Args:
+        text:
+            Validated Danish visual guidance.
+
+    Raises:
+        ValueError:
+            If the guidance contains a prohibited visual claim or sentence count.
+    """
+    normalized = _normalize(text=text)
+    found_sensitive = sorted(
+        term
+        for term in VISUAL_PROHIBITED_TERMS
+        if re.search(rf"(?<!\\w){re.escape(term)}(?!\\w)", normalized)
+    )
+    if found_sensitive:
+        message = f"Visual persona contains prohibited terms: {found_sensitive}"
+        raise ValueError(message)
+    sentences = [part.strip() for part in re.split(r"[.!?]+", text) if part.strip()]
+    if not 2 <= len(sentences) <= 4:
+        message = "Visual persona must contain 2-4 sentences"
+        raise ValueError(message)

@@ -4,7 +4,9 @@
 
 This report covers a three-record integration smoke test only. It does not approve the
 frozen 1,000-row development sample, the 10,000-row pilot, or any release-scale persona
-generation.
+generation. It is a historical report from before the required `visual_persona` field
+was added; its six-description results are not evidence for the current
+seven-description schema or validation gates.
 
 The run used the first three persona identifiers from the checksum-locked, stratified
 Phase-3 seed file. Generation preserved the existing demographic and independently
@@ -15,7 +17,8 @@ sampled OCEAN fields.
 - Endpoint: local `pi-openai-api` OpenAI-compatible proxy.
 - Model: `gpt-5.6-sol` through provider `openai-codex`.
 - Response mode: strict JSON Schema.
-- Stages per record: structured attributes, then six persona descriptions.
+- Stages per record in this historical run: structured attributes, then six persona
+  descriptions; current runs require seven, including `visual_persona`.
 - Sampling parameters: none; the proxy rejects temperature, seed, and token-limit
   parameters.
 
@@ -54,8 +57,9 @@ and cooking. The prompts were tightened before the final run to:
 - use the persona identifier only as a hidden variation key;
 - discourage repeated default interest combinations.
 
-Manual review of all 18 final descriptions found natural Danish, no identifying details,
-no sensitive-attribute inference, no demographic changes, and more varied interests.
+Manual review of all 18 final historical descriptions found natural Danish,
+no identifying details, no sensitive-attribute inference, no demographic changes, and
+more varied interests.
 The text remains deliberately conservative when a specialised domain is unsupported.
 Some phrases still sound statistical, particularly translations of detailed labour
 status, and the sample is too small to assess systematic stereotyping, diversity,

@@ -25,7 +25,8 @@ The initial release should:
 - defer a statistically representative occupation field until a suitable Danish count
   source is available;
 - sample personality independently of demographic and protected attributes;
-- produce Danish structured attributes and six persona descriptions;
+- produce Danish structured attributes and seven persona descriptions, including
+  mutable, non-identifying visual portrait guidance;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
 - include reproducible source snapshots, prompts, model versions, validation reports,
@@ -43,8 +44,10 @@ its generation model from `mistralai/Mixtral-8x22B-v0.1` to
 `openai/gpt-oss-120b` for v1.1. The repository contains 11 Parquet shards and occupies
 approximately 2.83 GB on Hugging Face.
 
-The dataset card describes 22 content fields: six persona fields and 16 contextual
-fields. The physical Parquet schema also contains a UUID, giving 23 physical columns:
+The NVIDIA dataset card describes 22 historical content fields: six persona fields
+and 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
+physical columns. The current Danish design adds a seventh `visual_persona` field; the
+historical NVIDIA comparison must not be read as current Danish validation:
 
 - `professional_persona`
 - `sports_persona`
@@ -212,6 +215,9 @@ identity claims.
 - `travel_persona`
 - `culinary_persona`
 - `persona`
+- `visual_persona`: two to four Danish sentences of mutable visual presentation
+  and generic portrait-environment guidance; it must not encode sensitive or
+  identifying traits.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -407,9 +413,11 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for the six persona fields. Separating attribute
-and prose generation makes failures easier to detect and permits regeneration of text
-without changing the demographic sample.
+Use a second structured generation call for the seven persona fields. Separating
+attribute and prose generation makes failures easier to detect and permits regeneration
+of text without changing the demographic sample. `visual_persona` is textual portrait
+guidance only, not image generation, and must remain non-identifying and independent
+of any demographic, OCEAN, generated-attribute, or future origin-country field.
 
 Evaluate at least two Danish-capable models on the same stratified development set. Pick
 the model using blinded human ratings for fluency, consistency, specificity, stereotype
@@ -611,8 +619,8 @@ complete. Full development-sample generation and evaluation remain pending.
 
 - Finalize Danish prompts, validators, and safety rules against the already defined
   typed schemas.
-- Generate attributes and persona text for the frozen, stratified 1,000-row development
-  sample using candidate models.
+- Generate attributes and the seven persona text fields for the frozen, stratified
+  1,000-row development sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
 
@@ -625,7 +633,8 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by the six persona text fields.
+- Generate structured attributes, followed by the seven persona text fields,
+  including generic visual portrait guidance.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 
@@ -721,7 +730,8 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    personas aged 70 and over; no unsupported detailed attainment for those ages.
 6. No occupation, household, income, ancestry, citizenship, full name, or sensitive
    fields in v1.
-7. Six persona text fields for comparability with NVIDIA.
+7. Seven persona text fields, with the six historical NVIDIA fields retained for
+   comparability and `visual_persona` added as current Danish guidance.
 8. Native list columns and explicit provenance fields, even where this differs from the
    NVIDIA schema.
 9. Open generation code, prompts, source manifests, and validation results.

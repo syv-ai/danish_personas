@@ -237,11 +237,14 @@ test -n "$PERSONA_RUN" || exit 1
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
-Each record uses two model stages: structured attributes, then six Danish descriptions.
-A repeated live command resumes valid per-record checkpoints and does not repeat
-completed calls. Each `generate_personas.py` invocation is one shard capped at five
-rows, while a pilot can span multiple such shards. The default HTTP-attempt budget is 15
-per shard.
+Each record uses two model stages: structured attributes, then seven Danish
+presentations: five domain descriptions, a general persona, and a required
+`visual_persona` for generic portrait guidance. The visual guidance is not image
+generation and may only describe mutable style choices and a generic environment; it
+must not encode sensitive or identifying traits. A repeated live command resumes valid
+per-record checkpoints and does not repeat completed calls. Each
+`generate_personas.py` invocation is one shard capped at five rows, while a pilot can
+span multiple such shards. The default HTTP-attempt budget is 15 per shard.
 
 For a multi-shard pilot, use `generate_persona_pilot.py`. It requires `--live`, limits
 each shard to five rows, validates each shard, merges them, records token/cost
@@ -322,8 +325,9 @@ criminal history, or free text.
 LLM prompts prohibit identifying and sensitive details, stereotypes, and deterministic
 claims about demographics or personality. Validators check strict schemas, Danish text,
 contact and identifying-number patterns, configured sensitive terms, duplicate
-descriptions, upstream preservation, checksums, and checkpoint provenance. These are
-finite automated checks, not a guarantee of anonymity or safe use. Treat regional
+descriptions (including visual guidance), upstream preservation, checksums, and
+checkpoint provenance. These are finite automated checks, not a guarantee of anonymity
+or safe use. Treat regional
 combinations, accepted text, checkpoints, tokens, and provider telemetry as restricted.
 Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting and
 [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing outputs.

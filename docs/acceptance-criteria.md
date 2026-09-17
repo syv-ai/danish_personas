@@ -50,12 +50,15 @@ content-addressed run identity, so a legacy run cannot be silently reused.
   `--live` explicitly.
 - The input checksum and successful Phase-2 validation report match the upstream run.
 - No invocation can request more than five rows.
-- Generated attributes and all six persona descriptions satisfy strict schemas.
+- Generated attributes and all seven persona descriptions satisfy strict schemas,
+  including required 2-4 sentence `visual_persona` guidance.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
-  patterns, and does not contain the configured sensitive terms.
-- Exact duplicate persona descriptions are rejected.
+  patterns, and does not contain the configured sensitive terms. Visual guidance is
+  limited to mutable style choices and a generic environment, with no sensitive or
+  identifying visual claims.
+- Exact duplicate persona descriptions, including visual guidance, are rejected.
 - Per-record checkpoints support resume without repeating completed model calls.
 - The manifest records model, selected inference provider, endpoint, prompt and input
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
