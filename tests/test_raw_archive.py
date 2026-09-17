@@ -9,6 +9,7 @@ from click.testing import CliRunner, Result
 
 from danish_personas.sources.prepare import prepare_bundle
 from danish_personas.validation.checks import validate_sources
+from scripts.build_raw_archive import main as pack
 from scripts.restore_raw_sources import RAW_DIRECTORY, main
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -20,7 +21,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
     output_dir = tmp_path / "data"
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert result.exit_code == 0, result.output
-    assert len(_restored_files(output_dir=output_dir)) == 30
+    assert len(_restored_files(output_dir=output_dir)) == 33
 
     bundle_dir = prepare_bundle(
         lock_path=PROJECT_ROOT / "config" / "sources.lock.yaml",
@@ -28,7 +29,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "e7757f736ef5652f"
+    assert bundle_dir.name == "9b6e4e232aaf0778"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
@@ -64,6 +65,43 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
     assert marker.read_text(encoding="utf-8") == "untouched"
 
 
+def test_packing_is_byte_stable(tmp_path: Path) -> None:
+    """Repacking unchanged snapshots reproduces identical archive bytes."""
+    raw_dir = tmp_path / RAW_DIRECTORY
+    (raw_dir / "folk1a" / "abc").mkdir(parents=True)
+    (raw_dir / "folk1a" / "abc" / "data.csv").write_text("a;b\n1;2\n", encoding="utf-8")
+    (raw_dir / "classifications").mkdir()
+    (raw_dir / "classifications" / "data.csv").write_text("x;y\n", encoding="utf-8")
+
+    first = tmp_path / "first.tar.zst"
+    second = tmp_path / "second.tar.zst"
+    for archive in (first, second):
+        result = CliRunner().invoke(
+            pack, ["--raw-dir", str(raw_dir), "--archive", str(archive)]
+        )
+        assert result.exit_code == 0, result.output
+
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_packing_rejects_symlink_to_content_outside_raw_tree(tmp_path: Path) -> None:
+    """A symlink cannot make the archive include content outside the raw tree."""
+    raw_dir = tmp_path / RAW_DIRECTORY
+    raw_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    (raw_dir / "escaped.txt").symlink_to(outside)
+    archive_path = tmp_path / "archive.tar.zst"
+
+    result = CliRunner().invoke(
+        pack, ["--raw-dir", str(raw_dir), "--archive", str(archive_path)]
+    )
+
+    assert result.exit_code != 0
+    assert "non-regular" in result.output
+    assert not archive_path.exists()
+
+
 def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     """Restoration cannot silently merge with stale source files."""
     output_dir = tmp_path / "data"
@@ -79,7 +117,7 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert result.exit_code == 0, result.output
     assert not stale.exists()
-    assert len(_restored_files(output_dir=output_dir)) == 30
+    assert len(_restored_files(output_dir=output_dir)) == 33
 
 
 @pytest.mark.parametrize(

@@ -24,6 +24,11 @@ the reports before making statistical or quality claims:
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
 
+Adding the official geography classification changed the prepared bundle identifier, so
+the Phase 2 validation report describes a superseded bundle and run. Those runs will be
+regenerated on a separate branch; until then, treat the report's identifiers and measured
+numbers as historical.
+
 ## Developer setup guide
 
 This guide takes a developer from a fresh clone to validated demographic data and the
@@ -84,10 +89,10 @@ tokens, or generated data artefacts.
 
 ### Regenerate development data
 
-The following commands restore the five exact Statistics Denmark aggregate snapshots,
-prepare a local source bundle, generate 1,000 deterministic records, and validate every
-stage without network access. The archive and attribution are documented in
-[`data/README.md`](data/README.md).
+The following commands restore the five exact Statistics Denmark aggregate snapshots and
+the official geography classification snapshot, prepare a local source bundle, generate
+1,000 deterministic records, and validate every stage without network access. The archive
+and attribution are documented in [`data/README.md`](data/README.md).
 
 ```bash
 set -o pipefail
@@ -98,7 +103,7 @@ BUNDLE=$( \
   uv run src/scripts/build_distributions.py \
     --lock config/sources.lock.yaml \
     --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260914 \
+    --raw-dir data/raw-hardened-20260917 \
     --output-dir data/processed \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
 )
@@ -141,7 +146,7 @@ BUNDLE=$( \
   uv run src/scripts/build_distributions.py \
     --lock config/sources.lock.yaml \
     --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260914 \
+    --raw-dir data/raw-hardened-20260917 \
     --output-dir data/processed \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
 )
@@ -179,7 +184,9 @@ uv run src/scripts/freeze_demographic_sample.py \
 The source preparation stage uses FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210. The first
 three ground the distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics.
 Municipality aggregates are used to construct regional counts, but municipality fields
-are not emitted in generated records.
+are not emitted in generated records. The municipality, landsdel, and region hierarchy
+comes from the official Statistics Denmark classification snapshot, and preparation fails
+if it disagrees with the map derived from FOLK1A's StatBank metadata.
 
 ## Optional LLM workflow
 
@@ -274,16 +281,18 @@ provider reachability, and live commands can consume paid requests.
 
 ## Outputs and data handling
 
-The repository includes the 609 KB compressed raw StatBank snapshot archive and its
-attribution. The source archive, lock, category mappings, sampling parameters,
+The repository includes the 613 KB compressed raw Statistics Denmark snapshot archive and
+its attribution. The source archive, lock, category mappings, sampling parameters,
 validation thresholds, and code are version controlled. Restored and derived artefacts
 remain ignored and reproducible.
 
 All generated artefacts belong under the ignored `data/` directory. Important outputs
 are:
 
-- `data/raw-hardened-20260914/<table>/<query-hash>/`: restored immutable `data.csv`,
+- `data/raw-hardened-20260917/<table>/<query-hash>/`: restored immutable `data.csv`,
   metadata, query, response headers, and `snapshot-manifest.json` files;
+- `data/raw-hardened-20260917/classifications/<classification-id>/<url-hash>/`: restored
+  immutable `data.csv`, `response-headers.json`, and `snapshot-manifest.json` files;
 - `data/processed/<bundle-id>/`: normalised Parquet distributions,
   `bundle-manifest.json`, and source preparation reports;
 - `data/runs/<name>/<run-id>/`: `structured-records.parquet`, `run-manifest.json`, and

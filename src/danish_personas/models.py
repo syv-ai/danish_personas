@@ -49,6 +49,31 @@ class CategoryConfig(StrictModel):
     labour_market_status: dict[str, list[str]]
 
 
+class ClassificationDefinition(StrictModel):
+    """Configured Statistics Denmark classification attachment."""
+
+    classification_id: str
+    role: str
+    title: str
+    valid_from: str
+    page_url: str
+    attachment_url: str
+
+
+class ClassificationManifest(StrictModel):
+    """Checksums and provenance for one raw classification snapshot."""
+
+    classification_id: str
+    role: str
+    valid_from: str
+    attachment_url: str
+    resolved_url: str
+    data_sha256: str
+    response_headers_sha256: str
+    retrieved_at: str
+    data_bytes: int = Field(gt=0)
+
+
 class LockedSource(StrictModel):
     """Resolved source query with explicit values."""
 
@@ -173,6 +198,7 @@ class BundleManifest(StrictModel):
     source_lock_sha256: str
     categories_sha256: str
     source_snapshots: list[SnapshotManifest]
+    classification_snapshots: list[ClassificationManifest]
     files: dict[str, str]
     reference_periods: dict[str, str]
     assumptions: list[str]
@@ -188,6 +214,7 @@ class SourceLock(StrictModel):
     minimum_expected_release_count: int = Field(ge=0)
     resolved_at: str
     sources: list[LockedSource]
+    classifications: list[ClassificationDefinition]
 
 
 class SourceSelection(StrictModel):
@@ -231,6 +258,7 @@ class SourcesConfig(StrictModel):
     minimum_source_count: int = Field(ge=0)
     minimum_expected_release_count: int = Field(ge=0)
     sources: list[SourceDefinition]
+    classifications: list[ClassificationDefinition]
 
 
 class ValidationConfig(StrictModel):

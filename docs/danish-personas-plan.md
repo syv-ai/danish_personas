@@ -248,7 +248,8 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Occupation research only | LONS20 `ANTAL`, DISCO-08 | Wage-statistics marginal only |
 | Household extensions | FAM55N, FAM122N, FAM44N | Defer to a later release |
 | Names | Statistics Denmark name statistics | First first-name/final surname limits |
-| Geography codes | DAGI | Use codes, boundaries, and hierarchy |
+| Geography codes | DST classification `NUTS_V1_2007_DK` | Region, landsdel, and municipality hierarchy |
+| Geography boundaries | DAGI | Needs Datafordeler credentials; not used |
 | Housing extensions | BOL103, BOL104, BBR aggregates | Do not link addresses to people |
 
 Use RAS209 as the primary joint calibration table for region, broad education,
@@ -306,9 +307,14 @@ generation independently testable and restartable.
 ### Implementation status
 
 Phases 0-2 were implemented and validated on 14 September 2026. The local source bundle
-is `e7757f736ef5652f`; the passing 100,000-row non-LLM run is
+was `e7757f736ef5652f`; the passing 100,000-row non-LLM run was
 `f5f37949670df476`. See the [Phase 2 validation report][phase-2-report]. LLM generation
 remains disabled in configuration and guarded by an executable failure.
+
+Adding the official Statistics Denmark geography classification changed the prepared
+bundle identifier, so that report now describes a superseded bundle and run. The
+regeneration is deliberately deferred to a separate branch; the measured numbers are
+retained as a historical record and not restated here.
 
 ## Generation architecture
 

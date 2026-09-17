@@ -7,6 +7,7 @@ import click
 
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SourceLock, SourcesConfig
+from danish_personas.sources.classification import fetch_classifications
 from danish_personas.sources.statbank import fetch_sources, resolve_sources
 
 
@@ -23,7 +24,14 @@ def fetch(lock_path: Path, raw_dir: Path) -> None:
     """Fetch every locked source without overwriting snapshots."""
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     manifests = fetch_sources(lock=lock, raw_dir=raw_dir)
-    logging.info("Verified %s immutable source snapshots", len(manifests))
+    classifications = fetch_classifications(
+        classifications=lock.classifications, raw_dir=raw_dir
+    )
+    logging.info(
+        "Verified %s table and %s classification snapshots",
+        len(manifests),
+        len(classifications),
+    )
 
 
 @main.command()
@@ -33,7 +41,12 @@ def resolve(config_path: Path, lock_path: Path) -> None:
     """Resolve dynamic table selectors into explicit source queries."""
     config = load_yaml_model(path=config_path, model=SourcesConfig)
     lock = resolve_sources(config=config, lock_path=lock_path)
-    logging.info("Resolved %s source tables to %s", len(lock.sources), lock_path)
+    logging.info(
+        "Resolved %s source tables and %s classifications to %s",
+        len(lock.sources),
+        len(lock.classifications),
+        lock_path,
+    )
 
 
 if __name__ == "__main__":

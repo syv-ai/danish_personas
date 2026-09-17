@@ -142,6 +142,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
         source_snapshots=[],
+        classification_snapshots=[],
         files=files,
         reference_periods={},
         assumptions=[],

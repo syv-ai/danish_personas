@@ -2,6 +2,11 @@
 
 Run completed on 14 September 2026 without any LLM calls.
 
+> **Superseded.** Adding the official Statistics Denmark geography classification to the
+> source bundle changed the prepared bundle identifier, so the bundle and run identifiers
+> and measured numbers below describe a superseded bundle. They are retained unchanged as
+> a historical record; the run will be regenerated on a separate branch.
+
 ## Artefacts
 
 - Source bundle: `e7757f736ef5652f`

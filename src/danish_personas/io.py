@@ -67,6 +67,41 @@ def load_yaml_model(path: Path, model: type[ModelType]) -> ModelType:
     return model.model_validate(payload)
 
 
+def sha256_text(content: str) -> str:
+    """Calculate a UTF-8 text SHA-256 checksum.
+
+    Args:
+        content:
+            Text to hash.
+
+    Returns:
+        Lower-case hexadecimal digest.
+    """
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def verify_checksums(base_dir: Path, expected: dict[str, str], message: str) -> None:
+    """Verify that files under a directory still match recorded checksums.
+
+    Args:
+        base_dir:
+            Directory the expected paths are relative to.
+        expected:
+            Mapping of relative path to expected SHA-256 digest.
+        message:
+            Prefix describing which verification failed.
+
+    Raises:
+        ValueError:
+            If a file is missing or its digest differs.
+    """
+    for relative_path, checksum in expected.items():
+        path = base_dir / relative_path
+        if not path.exists() or sha256_file(path) != checksum:
+            detail = f"{message}: {path}"
+            raise ValueError(detail)
+
+
 def sha256_file(path: Path) -> str:
     """Calculate a file SHA-256 checksum.
 
@@ -82,19 +117,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def sha256_text(content: str) -> str:
-    """Calculate a UTF-8 text SHA-256 checksum.
-
-    Args:
-        content:
-            Text to hash.
-
-    Returns:
-        Lower-case hexadecimal digest.
-    """
-    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def write_json(path: Path, payload: BaseModel | dict[str, object]) -> None:
@@ -118,6 +140,25 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     temporary.write_text(content, encoding="utf-8", newline="\n")
     temporary.replace(path)
+
+
+def write_new_bytes(path: Path, content: bytes) -> None:
+    """Write bytes, refusing to overwrite an existing immutable file.
+
+    Args:
+        path:
+            Destination path.
+        content:
+            Bytes to write.
+
+    Raises:
+        FileExistsError:
+            If the destination already exists.
+    """
+    if path.exists():
+        message = f"Refusing to overwrite immutable source file: {path}"
+        raise FileExistsError(message)
+    path.write_bytes(content)
 
 
 def write_yaml(path: Path, payload: BaseModel | dict[str, object]) -> None:

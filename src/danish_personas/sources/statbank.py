@@ -3,18 +3,20 @@
 import json
 import logging
 import math
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from ..io import (
     canonical_json,
     load_yaml_model,
     sha256_file,
     sha256_text,
+    verify_checksums,
     write_json,
+    write_new_bytes,
     write_yaml,
 )
 from ..models import (
@@ -26,6 +28,7 @@ from ..models import (
     StatBankMetadata,
     StatBankValue,
 )
+from .http import request_with_retries, response_headers_content
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://api.statbank.dk/v1"
@@ -76,7 +79,7 @@ def _fetch_source(
     _, metadata_da_bytes = _get_metadata(
         client=client, table_id=source.table_id, language="da"
     )
-    response = _request_with_retries(
+    response = request_with_retries(
         client=client, method="POST", url=source.data_url, json_payload=query
     )
     retrieved_at = _now()
@@ -85,21 +88,21 @@ def _fetch_source(
         "metadata-da.json": metadata_da_bytes,
         "query.json": query_content.encode(),
         "data.csv": response.content,
-        "response-headers.json": (
-            json.dumps(dict(response.headers), indent=2, sort_keys=True) + "\n"
-        ).encode(),
+        "response-headers.json": response_headers_content(response=response),
     }
     for name, content in files.items():
-        _write_new_bytes(path=snapshot_dir / name, content=content)
+        write_new_bytes(path=snapshot_dir / name, content=content)
     manifest = SnapshotManifest(
         table_id=source.table_id,
         role=source.role,
         period=source.period,
-        metadata_sha256=sha256_file(snapshot_dir / "metadata-en.json"),
-        metadata_da_sha256=sha256_file(snapshot_dir / "metadata-da.json"),
-        query_sha256=sha256_text(query_content),
-        data_sha256=sha256_file(snapshot_dir / "data.csv"),
-        response_headers_sha256=sha256_file(snapshot_dir / "response-headers.json"),
+        metadata_sha256=sha256_file(path=snapshot_dir / "metadata-en.json"),
+        metadata_da_sha256=sha256_file(path=snapshot_dir / "metadata-da.json"),
+        query_sha256=sha256_text(content=query_content),
+        data_sha256=sha256_file(path=snapshot_dir / "data.csv"),
+        response_headers_sha256=sha256_file(
+            path=snapshot_dir / "response-headers.json"
+        ),
         retrieved_at=retrieved_at,
         data_bytes=len(response.content),
     )
@@ -116,33 +119,13 @@ def _fetch_source(
 def _get_metadata(
     client: httpx.Client, table_id: str, language: str
 ) -> tuple[StatBankMetadata, bytes]:
-    response = _request_with_retries(
+    response = request_with_retries(
         client=client,
         method="GET",
         url=f"{BASE_URL}/tableinfo/{table_id}?lang={language}",
         json_payload=None,
     )
     return StatBankMetadata.model_validate(response.json()), response.content
-
-
-def _request_with_retries(
-    client: httpx.Client, method: str, url: str, json_payload: dict[str, object] | None
-) -> httpx.Response:
-    last_error: httpx.HTTPError | None = None
-    for attempt in range(4):
-        try:
-            response = client.request(method=method, url=url, json=json_payload)
-            response.raise_for_status()
-            return response
-        except httpx.HTTPError as error:
-            last_error = error
-            if attempt == 3:
-                break
-            time.sleep(2**attempt)
-    if last_error is None:
-        message = "Request failed without an HTTP error"
-        raise RuntimeError(message)
-    raise last_error
 
 
 def _now() -> str:
@@ -180,11 +163,11 @@ def _verify_snapshot(
         "data.csv": manifest.data_sha256,
         "response-headers.json": manifest.response_headers_sha256,
     }
-    for name, checksum in expected.items():
-        path = snapshot_dir / name
-        if not path.exists() or sha256_file(path) != checksum:
-            message = f"Immutable snapshot verification failed: {path}"
-            raise ValueError(message)
+    verify_checksums(
+        base_dir=snapshot_dir,
+        expected=expected,
+        message="Immutable snapshot verification failed",
+    )
     expected_query = source_query_content(source=source)
     if (snapshot_dir / "query.json").read_text(encoding="utf-8") != expected_query:
         message = f"Snapshot query does not match lock: {snapshot_dir}"
@@ -204,13 +187,6 @@ def source_query_content(source: LockedSource) -> str:
     return json.dumps(_source_query(source=source), ensure_ascii=False, indent=2) + "\n"
 
 
-def _write_new_bytes(path: Path, content: bytes) -> None:
-    if path.exists():
-        message = f"Refusing to overwrite immutable source file: {path}"
-        raise FileExistsError(message)
-    path.write_bytes(content)
-
-
 def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
     """Return the content-addressed directory for a locked source query.
 
@@ -223,7 +199,7 @@ def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
     Returns:
         Query-specific snapshot directory.
     """
-    query_checksum = sha256_text(source_query_content(source=source))
+    query_checksum = sha256_text(content=source_query_content(source=source))
     return raw_dir / source.table_id.lower() / query_checksum[:16]
 
 
@@ -282,12 +258,14 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
         minimum_expected_release_count=config.minimum_expected_release_count,
         resolved_at=resolved_at,
         sources=locked_sources,
+        classifications=config.classifications,
     )
-    if lock_path.exists():
-        existing = load_yaml_model(path=lock_path, model=SourceLock)
-        if _lock_identity(lock=existing) == _lock_identity(lock=lock):
-            LOGGER.info("Source metadata is unchanged; retaining %s", lock_path)
-            return existing
+    existing = _readable_lock(lock_path=lock_path)
+    if existing is not None and _lock_identity(lock=existing) == _lock_identity(
+        lock=lock
+    ):
+        LOGGER.info("Source metadata is unchanged; retaining %s", lock_path)
+        return existing
     write_yaml(path=lock_path, payload=lock)
     return lock
 
@@ -305,6 +283,28 @@ def _lock_identity(lock: SourceLock) -> str:
             raise TypeError(message)
         source.pop("retrieved_metadata_at")
     return canonical_json(payload)
+
+
+def _readable_lock(lock_path: Path) -> SourceLock | None:
+    """Load an existing lock when it matches the current schema.
+
+    Args:
+        lock_path:
+            Existing lock path.
+
+    Returns:
+        The parsed lock, or None when absent or schema-incompatible.
+    """
+    if not lock_path.exists():
+        return None
+    try:
+        return load_yaml_model(path=lock_path, model=SourceLock)
+    except ValidationError:
+        LOGGER.warning(
+            "Existing lock %s does not match the current schema; rewriting it",
+            lock_path,
+        )
+        return None
 
 
 def _resolve_dimensions(
