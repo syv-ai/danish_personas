@@ -136,8 +136,8 @@ def _descriptions_json() -> str:
                 "og venner. Nye opgaver mødes med nysgerrighed og samarbejde."
             ),
             "visual_persona": (
-                "Personen vælger en blå skjorte og et enkelt armbånd. "
-                "Et lyst atelier med en neutral baggrund passer til portrættet."
+                "Personen vælger en blå skjorte og et grønt armbånd. "
+                "Baggrunden er en neutral flade."
             ),
         },
         ensure_ascii=False,

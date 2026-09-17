@@ -55,10 +55,14 @@ content-addressed run identity, so a legacy run cannot be silently reused.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
-  patterns, and does not contain the configured sensitive terms. Visual guidance is
-  limited to mutable style choices and a generic environment, with no sensitive or
-  identifying visual claims.
-- Exact duplicate persona descriptions, including visual guidance, are rejected.
+  patterns, and does not contain the configured sensitive terms. Visual guidance uses
+  only the closed Danish grammar and vocabulary in
+  [the visual-persona format](visual-persona-format.md): mutable clothing,
+  accessories, colours, and a generic background. No other visual claims are
+  accepted.
+- Exact duplicate persona descriptions, including visual guidance, are rejected. The
+  visual vocabulary provides many clothing, accessory, colour, background, and
+  lighting combinations, so diversity does not depend on accepting free-form prose.
 - Per-record checkpoints support resume without repeating completed model calls.
 - The manifest records model, selected inference provider, endpoint, prompt and input
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and

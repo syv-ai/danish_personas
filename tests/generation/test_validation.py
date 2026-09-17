@@ -62,8 +62,8 @@ def _safe_descriptions() -> dict[str, str]:
             "nyt sammen med andre."
         ),
         "visual_persona": (
-            "Personen kan vælge en blød blå trøje og et enkelt tørklæde. "
-            "Et roligt atelier med diffust lys giver en neutral portrætramme."
+            "Personen vælger en blå trøje og et grønt tørklæde. "
+            "Baggrunden er et roligt atelier."
         ),
     }
 
@@ -144,12 +144,12 @@ def test_unsafe_visual_claim_fails() -> None:
         parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
 
-def test_visual_persona_allows_safe_compounds_and_colour_context() -> None:
-    """Word-boundary checks do not reject safe compounds or colour guidance."""
+def test_visual_persona_accepts_controlled_vocabulary() -> None:
+    """Controlled clothing, accessory, colour, and background choices pass."""
     descriptions = _safe_descriptions()
     descriptions["visual_persona"] = (
-        "Personen vælger en lavendelfarvet skjorte og et enkelt tørklæde. "
-        "Et lyst atelier med høj kontrast og et klaver giver en neutral ramme."
+        "Personen vælger en rød kjole og en sort taske. "
+        "Baggrunden er en neutral flade. Lyset er diffust. Rammen er neutral."
     )
     parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
@@ -193,6 +193,30 @@ def test_visual_persona_is_required() -> None:
             "Personen har høj åbenhed og en blå trøje. "
             "Et lyst atelier giver en neutral portrætramme."
         ),
+        (
+            "Personen er amerikansk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er spansk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er midaldrende og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er rødhåret og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen har fregner og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er jødisk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
     ],
 )
 def test_visual_persona_rejects_demographic_and_physical_claims(visual: str) -> None:
@@ -200,6 +224,32 @@ def test_visual_persona_rejects_demographic_and_physical_claims(visual: str) -> 
     descriptions = _safe_descriptions()
     descriptions["visual_persona"] = visual
     with pytest.raises(ValueError, match="Visual persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_rejects_free_form_visual_text() -> None:
+    """Words outside the closed visual grammar are rejected."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en blå skjorte og et grønt tørklæde. "
+        "Et lyst atelier med høj kontrast giver en neutral portrætramme."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize(
+    "unsafe_word",
+    ["amerikansk", "spansk", "midaldrende", "rødhåret", "fregner", "jødisk"],
+)
+def test_visual_persona_rejects_reviewer_examples(unsafe_word: str) -> None:
+    """Reviewer examples cannot be smuggled into a controlled sentence."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger en {unsafe_word} skjorte og et grønt armbånd. "
+        "Baggrunden er en neutral flade."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
         parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
 

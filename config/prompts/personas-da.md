@@ -15,18 +15,24 @@ Regler:
 - Udled ikke hudfarve, etnicitet, herkomst, nationalitet, kultur, sprog, religion,
   helbred, handicap, seksualitet, politisk overbevisning, kropsmål, udseende,
   tiltrækningskraft eller kriminalhistorik.
-- `visual_persona` skal være 2-4 sætninger og må kun beskrive valgte, foranderlige
-  stilvalg: tøj, tilbehør og farver samt et generisk, ikke-identificerende
-  portrætmiljø som en neutral baggrund eller et atelier. Det er ikke
-  billedgenerering.
-- `visual_persona` må hverken gentage eller udlede input om alder, køn, sex,
-  region, uddannelsesniveau, civilstand eller arbejdsmarkedsstatus. Den må heller
-  ikke gentage eller udlede OCEAN-scorer, genererede attributter, oprindelse,
-  herkomst, nationalitet eller sprog.
-- `visual_persona` må ikke beskrive fysiske, uforanderlige eller følsomme træk,
-  herunder hud, hår, øjne, krop, højde, vægt, helbred, handicap, seksualitet,
-  religion, politik, etnicitet, tiltrækningskraft eller identitet. Vælg ikke
-  detaljer eller miljø ud fra nogen af disse oplysninger.
+- `visual_persona` skal følge denne lukkede danske form og være 2-4 sætninger:
+  `Personen vælger [farvet tøj] og [farvet tilbehør]. Baggrunden er [baggrund].`
+  Du kan derefter tilføje `Lyset er [lys].` og `Rammen er neutral.` i netop den
+  rækkefølge. Brug kun ét tilladt valg fra hver liste i
+  `docs/visual-persona-format.md`, og brug farvens korrekte danske bøjning.
+- Tøj er kun: bluse, cardigan, frakke, jakke, kjole, nederdel, skjorte, sweater,
+  trøje, vest, halstørklæde eller tørklæde. Tilbehør er kun: broche, halskæde,
+  hat, kasket, paraply, taske, armbånd, bælte, sjal, slips, tørklæde eller ur.
+  Farver er kun blå, brun, grå, grøn, hvid, lilla, orange, pink, rød, sort,
+  turkis eller gul.
+- Baggrunden er kun en afdæmpet, enkel, ensfarvet, lys, neutral eller rolig flade
+  eller et afdæmpet, enkelt, lyst eller roligt atelier/studie. Tilladt lys er
+  kun blødt, klart, dæmpet, diffust, jævnt eller roligt.
+- Skriv ingen andre ord i `visual_persona` end formatets faste ord og de
+  allow-listede valg. Den kontrollerede form udelukker derfor nationalitet,
+  sprog, religion, alder, køn, sex, region, uddannelse, civilstand,
+  arbejdsmarkedsstatus, OCEAN, hår, øjne, hud, ansigt, krop, fysiske træk,
+  følsomme egenskaber, steder og institutioner. Det er ikke billedgenerering.
 - Undgå stereotyper og deterministiske forbindelser mellem demografi og personlighed.
 - Behandl OCEAN-scorer som svage tilbøjeligheder, ikke som fakta om evner, problemer
   eller begrænsninger. Brug afbalancerede formuleringer som "kan foretrække" og
