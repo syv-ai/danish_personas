@@ -135,6 +135,10 @@ def _descriptions_json() -> str:
                 "Personen har en rolig dansk hverdag med plads til læsning, musik "
                 "og venner. Nye opgaver mødes med nysgerrighed og samarbejde."
             ),
+            "visual_persona": (
+                "Personen vælger en blå skjorte og et enkelt armbånd. "
+                "Et lyst atelier med en neutral baggrund passer til portrættet."
+            ),
         },
         ensure_ascii=False,
     )
@@ -197,6 +201,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
+    assert "visual_persona" in output.columns
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
         sample.head(1).select(list(resolution_columns))
@@ -325,6 +330,7 @@ def test_pilot_merges_validated_shards(
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
+    assert "visual_persona" in output.columns
     assert _MockClient.requests == 4
 
     pilot_dir = output_path.parent

@@ -93,7 +93,7 @@ client when testing LLM paths.
 | `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
 | `config/generation.local.yaml` | Ignored local LLM override and provider settings. |
 | `config/prompts/attributes-da.md` | Danish attributes schema and safety rules. |
-| `config/prompts/personas-da.md` | Danish six-description schema and safety rules. |
+| `config/prompts/personas-da.md` | Danish seven-description schema and safety rules. |
 
 `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level `classifications:`
 list beside `sources:`, and their `version` is `2` to signal that lock schema. Statistics
@@ -256,8 +256,8 @@ must fail loudly, not be repaired by overwriting files.
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
 - LLM output must remain strict JSON, Danish, non-identifying, free of configured
-  sensitive terms, and free of exact duplicate descriptions. Automated validation is not
-  a substitute for blinded human review.
+  sensitive terms, and free of exact duplicate descriptions, including visual guidance.
+  Automated validation is not a substitute for blinded human review.
 - The sampler backs off through ordered ladders when a conditional cell is missing,
   and each record records the level that produced it. A ladder stops at the most
   general cell that is still structurally valid, never a national one, so an age

@@ -61,6 +61,10 @@ def _safe_descriptions() -> dict[str, str]:
             "Personen trives med en rolig hverdag, men er også åben for at lære "
             "nyt sammen med andre."
         ),
+        "visual_persona": (
+            "Personen kan vælge en blød blå trøje og et enkelt tørklæde. "
+            "Et roligt atelier med diffust lys giver en neutral portrætramme."
+        ),
     }
 
 
@@ -127,3 +131,41 @@ def test_safe_danish_content_passes() -> None:
     }
     assert parse_attributes(json.dumps(attributes, ensure_ascii=False))
     assert parse_descriptions(json.dumps(_safe_descriptions(), ensure_ascii=False))
+
+
+def test_unsafe_visual_claim_fails() -> None:
+    """Visual guidance cannot encode sensitive or identifying traits."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen har mørk hud og en slank kropsbygning. "
+        "Portrættet kan placeres i København."
+    )
+    with pytest.raises(ValueError, match="Visual persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_duplicates_are_rejected() -> None:
+    """Visual guidance participates in the generic duplicate gate."""
+    descriptions = _safe_descriptions()
+    descriptions["persona"] = descriptions["visual_persona"]
+    with pytest.raises(ValueError, match="exact duplicates"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_is_required() -> None:
+    """The second-stage schema requires visual portrait guidance."""
+    descriptions = _safe_descriptions()
+    del descriptions["visual_persona"]
+    with pytest.raises(ValueError, match="visual_persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_sentence_count_is_checked() -> None:
+    """Visual guidance has the requested two-to-four sentence form."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en blå trøje og et enkelt tørklæde uden at knytte det "
+        "til andre egenskaber."
+    )
+    with pytest.raises(ValueError, match="2-4 sentences"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))

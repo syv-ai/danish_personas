@@ -43,7 +43,7 @@ def generate_personas(
     live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and six persona descriptions.
+    """Generate structured attributes and seven persona descriptions.
 
     Args:
         input_path:
