@@ -86,7 +86,7 @@ def _fetch_source(
         "metadata-da.json": metadata_da_bytes,
         "query.json": query_content.encode(),
         "data.csv": response.content,
-        "response-headers.json": response_headers_content(response),
+        "response-headers.json": response_headers_content(response=response),
     }
     for name, content in files.items():
         write_new_bytes(path=snapshot_dir / name, content=content)
@@ -94,11 +94,13 @@ def _fetch_source(
         table_id=source.table_id,
         role=source.role,
         period=source.period,
-        metadata_sha256=sha256_file(snapshot_dir / "metadata-en.json"),
-        metadata_da_sha256=sha256_file(snapshot_dir / "metadata-da.json"),
-        query_sha256=sha256_text(query_content),
-        data_sha256=sha256_file(snapshot_dir / "data.csv"),
-        response_headers_sha256=sha256_file(snapshot_dir / "response-headers.json"),
+        metadata_sha256=sha256_file(path=snapshot_dir / "metadata-en.json"),
+        metadata_da_sha256=sha256_file(path=snapshot_dir / "metadata-da.json"),
+        query_sha256=sha256_text(content=query_content),
+        data_sha256=sha256_file(path=snapshot_dir / "data.csv"),
+        response_headers_sha256=sha256_file(
+            path=snapshot_dir / "response-headers.json"
+        ),
         retrieved_at=retrieved_at,
         data_bytes=len(response.content),
     )
@@ -195,7 +197,7 @@ def source_snapshot_dir(source: LockedSource, raw_dir: Path) -> Path:
     Returns:
         Query-specific snapshot directory.
     """
-    query_checksum = sha256_text(source_query_content(source=source))
+    query_checksum = sha256_text(content=source_query_content(source=source))
     return raw_dir / source.table_id.lower() / query_checksum[:16]
 
 

@@ -46,6 +46,19 @@ def fetch_classifications(
 def _fetch_classification(
     client: httpx.Client, classification: ClassificationDefinition, raw_dir: Path
 ) -> ClassificationManifest:
+    """Fetch one classification unless a verified snapshot already exists.
+
+    Args:
+        client:
+            Open HTTP client.
+        classification:
+            Configured classification attachment.
+        raw_dir:
+            Root destination for immutable snapshots.
+
+    Returns:
+        The reused or newly written snapshot manifest.
+    """
     snapshot_dir = classification_snapshot_dir(
         classification=classification, raw_dir=raw_dir
     )
@@ -67,7 +80,7 @@ def _fetch_classification(
     )
     files = {
         "data.csv": response.content,
-        "response-headers.json": response_headers_content(response),
+        "response-headers.json": response_headers_content(response=response),
     }
     for name, content in files.items():
         write_new_bytes(path=snapshot_dir / name, content=content)
@@ -77,8 +90,10 @@ def _fetch_classification(
         valid_from=classification.valid_from,
         attachment_url=classification.attachment_url,
         resolved_url=str(response.url),
-        data_sha256=sha256_file(snapshot_dir / "data.csv"),
-        response_headers_sha256=sha256_file(snapshot_dir / "response-headers.json"),
+        data_sha256=sha256_file(path=snapshot_dir / "data.csv"),
+        response_headers_sha256=sha256_file(
+            path=snapshot_dir / "response-headers.json"
+        ),
         retrieved_at=_now(),
         data_bytes=len(response.content),
     )
@@ -92,6 +107,11 @@ def _fetch_classification(
 
 
 def _now() -> str:
+    """Return the current UTC time.
+
+    Returns:
+        ISO 8601 timestamp used as snapshot retrieval provenance.
+    """
     return datetime.now(tz=UTC).isoformat()
 
 
@@ -124,7 +144,7 @@ def classification_snapshot_dir(
         ... ).parts[:2]
         ('raw', 'classifications')
     """
-    url_checksum = sha256_text(classification.attachment_url)
+    url_checksum = sha256_text(content=classification.attachment_url)
     return (
         raw_dir
         / "classifications"

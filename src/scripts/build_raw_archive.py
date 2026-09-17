@@ -37,9 +37,10 @@ def main(raw_dir: Path, archive_path: Path) -> None:
 
     Args:
         raw_dir:
-            Directory holding the immutable raw snapshots.
+            Optional directory holding the immutable raw snapshots. Defaults to
+            ``data/<RAW_DIRECTORY>``.
         archive_path:
-            Destination archive.
+            Optional destination archive. Defaults to ``DEFAULT_ARCHIVE``.
 
     Raises:
         click.ClickException:
@@ -69,6 +70,20 @@ def main(raw_dir: Path, archive_path: Path) -> None:
 
 
 def _stable_member(name: str, size: int) -> tarfile.TarInfo:
+    """Build a tar member whose metadata does not vary between runs.
+
+    Ownership, mode, and timestamp are fixed so that repacking unchanged
+    snapshots reproduces identical archive bytes.
+
+    Args:
+        name:
+            Path recorded inside the archive.
+        size:
+            Member size in bytes.
+
+    Returns:
+        Member header ready to write.
+    """
     member = tarfile.TarInfo(name=name)
     member.size = size
     member.mode = FILE_MODE

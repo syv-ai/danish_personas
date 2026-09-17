@@ -47,6 +47,17 @@ def test_cross_check_fails_when_statbank_disagrees(tmp_path: Path) -> None:
 
 
 def _write_classification(tmp_path: Path, body: str) -> Path:
+    """Write a classification attachment fixture with the official header.
+
+    Args:
+        tmp_path:
+            Temporary directory for the fixture.
+        body:
+            Semicolon-delimited rows following the header.
+
+    Returns:
+        Path to the written attachment.
+    """
     csv_path = tmp_path / "data.csv"
     csv_path.write_text(HEADER + body, encoding="utf-8")
     return csv_path

@@ -195,6 +195,17 @@ def _build_region_map(metadata: StatBankMetadata) -> dict[str, tuple[str, str]]:
 def _geography_metrics(
     geography: pl.DataFrame, statbank_region_map: dict[str, tuple[str, str]]
 ) -> dict[str, object]:
+    """Cross-check the official hierarchy against StatBank table metadata.
+
+    Args:
+        geography:
+            Hierarchy read from the official classification.
+        statbank_region_map:
+            Municipality-to-region map inferred from FOLK1A's metadata.
+
+    Returns:
+        Counts, disagreements, and the overall pass flag for the report.
+    """
     classification_codes = dict(
         zip(
             geography.get_column("municipality_code"),
@@ -590,6 +601,15 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
 
 
 def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, str]]:
+    """Map each municipality to its region code and label.
+
+    Args:
+        geography:
+            Hierarchy read from the official classification.
+
+    Returns:
+        Municipality code mapped to its region code and region name.
+    """
     return {
         row["municipality_code"]: (row["region_code"], row["region"])
         for row in geography.iter_rows(named=True)
@@ -599,6 +619,17 @@ def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, 
 def _source_metrics(
     frames: dict[str, pl.DataFrame], geography_metrics: dict[str, object]
 ) -> dict[str, object]:
+    """Summarise prepared tables and the geography cross-check.
+
+    Args:
+        frames:
+            Normalised tables keyed by output name.
+        geography_metrics:
+            Result of the geography hierarchy cross-check.
+
+    Returns:
+        Report payload whose ``passed`` flag gates the prepared bundle.
+    """
     table_metrics: dict[str, object] = {}
     passed = True
     for name, frame in frames.items():
