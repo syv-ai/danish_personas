@@ -27,9 +27,10 @@ from .models import (
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
-# Sampler back-off provenance, withheld from prompts: it records how a value was
-# obtained, not anything about the person.
-AUDIT_FIELDS = frozenset(MOST_SPECIFIC_RESOLUTION)
+# Sampler back-off and proxy provenance are withheld from prompts: they record how
+# a value was obtained, not anything about the person. Keep non-ladder resolution
+# fields listed here explicitly so they cannot be omitted when ladders change.
+AUDIT_FIELDS = frozenset((*MOST_SPECIFIC_RESOLUTION, "education_resolution"))
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
