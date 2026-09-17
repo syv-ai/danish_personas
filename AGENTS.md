@@ -35,6 +35,7 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sampling/generator.py` | Deterministic demographics and OCEAN. |
 | `danish_personas/sources/__init__.py` | Source-acquisition package marker. |
 | `danish_personas/sources/statbank.py` | StatBank selectors and immutable snapshots. |
+| `danish_personas/sources/classification.py` | dst.dk classification attachment snapshots. |
 | `danish_personas/sources/prepare.py` | Aggregate normalisation and calibration. |
 | `danish_personas/validation/__init__.py` | Validation package marker. |
 | `danish_personas/validation/checks.py` | Source, structure, distribution, OCEAN. |
@@ -47,6 +48,7 @@ prompts are interpreted relative to that working directory.
 | Script | Responsibility and invocation |
 | --- | --- |
 | `restore_raw_sources.py` | Safely restores the archive after validating its members. |
+| `build_raw_archive.py` | Packs restored raw snapshots into a byte-stable archive. |
 | `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
 | `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
 | `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |
@@ -69,6 +71,7 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 | `tests/test_non_llm_pipeline.py` | Deterministic fixture pipeline. |
 | `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
 | `tests/test_raw_archive.py` | Committed archive integrity and safe restoration. |
+| `tests/test_classification.py` | Geography parsing, cross-check, byte-stable packing. |
 | `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
 | `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
 | `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |
@@ -80,15 +83,29 @@ client when testing LLM paths.
 
 | Path | Responsibility |
 | --- | --- |
-| `config/sources.yaml` | Dynamic StatBank selectors and source-count thresholds. |
+| `config/sources.yaml` | Dynamic StatBank selectors, classifications, thresholds. |
 | `config/sources.lock.yaml` | Resolved codes, queries, URLs, periods, and timestamps. |
-| `config/categories.yaml` | Canonical demographic and labour-status mappings. |
+| `config/categories.yaml` | Canonical mappings plus RAS209 `education_labels`. |
 | `config/sampling.yaml` | Seed, rows, adult age range, region, OCEAN settings. |
 | `config/validation.yaml` | Distribution, expected-count, and OCEAN thresholds. |
 | `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
 | `config/generation.local.yaml` | Ignored local LLM override and provider settings. |
 | `config/prompts/attributes-da.md` | Danish attributes schema and safety rules. |
 | `config/prompts/personas-da.md` | Danish six-description schema and safety rules. |
+
+`config/sources.yaml` and `config/sources.lock.yaml` carry a top-level `classifications:`
+list beside `sources:`, and their `version` is `2` to signal that lock schema. Statistics
+Denmark publishes classifications as attachments on dst.dk rather than through the
+StatBank data API, so they use `classification.py` instead of a StatBank selector.
+`download_sources.py resolve` warns and rewrites a lock that predates the current schema,
+and `download_sources.py fetch` fetches classifications as well as tables.
+
+`config/categories.yaml` also holds `education_labels`: the official Danish and English
+labels for each RAS209 `UDDANNELSE` code H10-H90, taken verbatim from that table's own
+StatBank metadata, plus a `local_isced_assertion`. H10-H90 are a StatBank presentation
+grouping of HFUDD, not a published Statistics Denmark nomenclature; DISCED-15 does not
+contain these codes and no official crosswalk exists. Treat `local_isced_assertion` as
+this repository's editorial judgement and never document it as an official mapping.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
 or validator changes provenance and can change content-addressed run IDs. Do not adjust
@@ -166,7 +183,7 @@ The normal non-LLM stages are:
 uv run src/scripts/restore_raw_sources.py
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml --categories config/categories.yaml \
-  --raw-dir data/raw-hardened-20260914 --output-dir data/processed
+  --raw-dir data/raw-hardened-20260917 --output-dir data/processed
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 uv run src/scripts/generate_demographics.py \
   --bundle "$BUNDLE" --rows 1000 --seed 20260914 \
@@ -177,21 +194,32 @@ uv run src/scripts/validate_dataset.py demographics \
 
 Use the full copy-pasteable workflows in `README.md` to capture exact bundle/run paths,
 produce the 100,000-row run, and freeze a sample. Run `download_sources.py resolve` and
-`fetch` only for an intentional source refresh: both require StatBank network access,
-and refreshed responses create a new provenance chain. Review changes to the lock and
-source register before accepting refreshed snapshots.
+`fetch` only for an intentional source refresh: both require network access to
+Statistics Denmark, and refreshed responses create a new provenance chain. Review changes
+to the lock and source register before accepting refreshed snapshots.
 
 ## Outputs and provenance
 
-`data/raw-hardened-20260914.tar.zst` and `data/README.md` are tracked. The restore
+`data/raw-hardened-20260917.tar.zst` and `data/README.md` are tracked. The restore
 script rejects empty archives and unsafe members, permits only regular files under the
 expected root, and stages extraction before installing the ignored, immutable snapshots
-into `data/raw-hardened-20260914/`. It does not compare the archive's top-level SHA-256
+into `data/raw-hardened-20260917/`. It does not compare the archive's top-level SHA-256
 or validate snapshot manifests and checksums; bundle preparation validates each locked
 snapshot's manifest, provenance, query, and file checksums.
 
+Table snapshots sit under `<table>/<query-hash>/`. Classification snapshots sit under
+`classifications/<classification-id>/<url-hash>/` and hold three files: `data.csv`,
+`response-headers.json`, and `snapshot-manifest.json`. `build_raw_archive.py` repacks the
+restored snapshots byte-stably, sorting members by archive path and fixing mode, owner,
+and timestamp, so an unchanged snapshot tree always produces identical archive bytes.
+
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
-preparation reports. Deterministic runs contain `structured-records.parquet`,
+preparation reports. `normalized/geography_hierarchy.parquet` holds the official
+region, landsdel, and municipality hierarchy read from the `geography_hierarchy`
+classification. Preparation cross-checks it against the map derived from FOLK1A's
+StatBank metadata and fails the bundle on any disagreement, missing municipality, or
+null value. Landsdel stays inside the prepared bundle and is not emitted in generated
+records. Deterministic runs contain `structured-records.parquet`,
 `run-manifest.json`, and JSON/Markdown validation reports. Frozen samples have an
 adjacent `.manifest.json`. Persona runs contain `generated-personas.parquet`,
 `generation-manifest.json`, `request-ledger.json`, per-person attribute/final

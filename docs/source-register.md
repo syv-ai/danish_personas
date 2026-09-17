@@ -2,10 +2,10 @@
 
 Retrieved through the official Statistics Denmark StatBank API on 14 September 2026.
 The exact dimension selections are frozen in `config/sources.lock.yaml`. The immutable
-snapshots are committed as `data/raw-hardened-20260914.tar.zst` under CC BY 4.0; its
-SHA-256 is `0d00761c284c616d66a5871d3418cc565b1bfe9879f24665119fdf7dcc4c014f`.
+snapshots are committed as `data/raw-hardened-20260917.tar.zst` under CC BY 4.0; its
+SHA-256 is `48ae0befbcfe78474162c343b5926b882e86ce3cc109db658675e7da42199a00`.
 Restoration creates content-addressed query subdirectories under
-`data/raw-hardened-20260914/`.
+`data/raw-hardened-20260917/`.
 
 | Table | Period | Pipeline role | Raw bytes | CSV SHA-256 |
 | --- | --- | --- | ---: | --- |
@@ -17,6 +17,21 @@ Restoration creates content-addressed query subdirectories under
 
 For each table, the snapshot also contains English and Danish metadata, the exact POST
 query, response headers, and a machine-readable checksum manifest.
+
+## Classifications
+
+Statistics Denmark publishes its classifications as attachments on `dst.dk` rather than
+through the StatBank data API, so they have no reference period or POST query and are
+acquired by a separate adapter. The attachment below is a semicolon-delimited CSV served
+behind a redirect, retrieved on 17 September 2026 and frozen in
+`config/sources.lock.yaml` alongside the tables.
+
+| Classification | Valid from | Pipeline role | Raw bytes | CSV SHA-256 |
+| --- | --- | --- | ---: | --- |
+| [Regioner, landsdele og kommuner][nuts] (`NUTS_V1_2007_DK`) | 2007-01-01 | Official region, landsdel, and municipality hierarchy | 5,748 | `67a193164777e61552daae0d52cb59bc4b589d16cc696365fc6c51a31f92f55f` |
+
+Statistics Denmark marks this classification as still valid. The snapshot contains the
+attachment CSV, the response headers, and a machine-readable checksum manifest.
 
 ## Harmonisation decisions
 
@@ -35,17 +50,38 @@ query, response headers, and a machine-readable checksum manifest.
   sampled.
 - BEFOLK3 and RAS210 remain held-out aggregate diagnostics. They are never treated as
   linked observations or personal microdata.
+- The municipality-to-region map comes from the `NUTS_V1_2007_DK` classification rather
+  than from positional inference over FOLK1A's StatBank metadata value list. The
+  classification's codes are byte-identical to StatBank's `OMRÅDE` dimension ids, and it
+  contributes 5 regions, 11 landsdele, and 99 municipalities.
+- Source preparation cross-checks the classification against the map derived from
+  FOLK1A's metadata and fails the bundle on any disagreement, missing municipality, or
+  null value. On the committed snapshots the check reports 99 municipalities, 11
+  landsdele, 5 regions, and zero disagreements, so the previous heuristic was correct;
+  the classification gives it an official source and a permanent regression check.
+- The hierarchy is written to `normalized/geography_hierarchy.parquet` in the prepared
+  bundle with `municipality_code`, `municipality`, `landsdel_code`, `landsdel`,
+  `region_code`, and `region`. Landsdel is carried in the prepared bundle only; it is
+  not added to generated records.
+- `config/categories.yaml` records, for each RAS209 `UDDANNELSE` code H10-H90, the
+  official Danish and English labels taken verbatim from that table's own StatBank
+  metadata. H10-H90 are a StatBank presentation grouping of HFUDD, not a published
+  Statistics Denmark nomenclature: DISCED-15 does not contain these codes and Statistics
+  Denmark publishes no crosswalk for them. The accompanying `local_isced_assertion` is
+  therefore this repository's own editorial judgement and must never be cited as an
+  official Statistics Denmark mapping.
 
 ## Terms
 
 Statistics Denmark's public StatBank API is free to access. Its open data may be freely
-reused commercially and non-commercially under CC BY 4.0 with source attribution. This
-project further processes the data. See [Statistics Denmark's source-attribution
-guidance][terms].
+reused commercially and non-commercially under CC BY 4.0 with source attribution. The
+same terms apply to the published classification attachment. This project further
+processes the data. See [Statistics Denmark's source-attribution guidance][terms].
 
 [folk1a]: https://www.statbank.dk/FOLK1A
 [ras209]: https://www.statbank.dk/RAS209
 [ras202]: https://www.statbank.dk/RAS202
 [befolk3]: https://www.statbank.dk/BEFOLK3
 [ras210]: https://www.statbank.dk/RAS210
+[nuts]: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
 [terms]: https://www.dst.dk/en/presse/kildeangivelse
