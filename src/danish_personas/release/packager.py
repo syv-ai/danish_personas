@@ -817,7 +817,7 @@ def _scan_public_values(values: list[bytes]) -> None:
         rb"(?i)(?:https?://[^\s]+[?&](?:token|api[_-]?key|secret|password|access[_-]?token)=)",
         rb"(?i)(?:https?://[^\s]+#[^\s]*(?:token|secret|key))",
         rb"(?i)authorization\s+(?:basic|bearer)\s+",
-        rb"(?:hf_|ghp_|github_pat_|sk-)",
+        rb"(?:^|[^A-Za-z0-9_])(?:hf_|ghp_|github_pat_|sk-)",
     )
     for content in values:
         text = content.decode("utf-8", errors="strict")

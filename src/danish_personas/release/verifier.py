@@ -101,10 +101,13 @@ def _verify_release(
     manifest = _load_json(manifest_path, ReleaseManifest)
     _check_layout(release_dir, manifest)
     sidecar = release_dir / "release-manifest.sha256"
-    if (
-        sidecar.read_text(encoding="ascii")
-        != f"{actual_digest}  release-manifest.json\n"
-    ):
+    try:
+        sidecar_content = sidecar.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as error:
+        raise ReleaseVerificationError(
+            "Manifest sidecar is missing or invalid"
+        ) from error
+    if sidecar_content != f"{actual_digest}  release-manifest.json\n":
         raise ReleaseVerificationError("Manifest sidecar mismatch")
     if not allow_staging and manifest.release_id != release_dir.name:
         raise ReleaseVerificationError("Release directory does not match release ID")
@@ -482,7 +485,7 @@ def _scan_text(content: bytes) -> None:
         rb"(?i)(?:https?://[^\s]+[?&](?:token|api[_-]?key|secret|password|access[_-]?token)=)",
         rb"(?i)(?:https?://[^\s]+#[^\s]*(?:token|secret|key))",
         rb"(?i)authorization\s+(?:basic|bearer)\s+",
-        rb"(?:hf_|ghp_|github_pat_|sk-)",
+        rb"(?:^|[^A-Za-z0-9_])(?:hf_|ghp_|github_pat_|sk-)",
     )
     scan_bytes = content.replace(b"hf_xet", b"hf-xet")
     if any(re.search(pattern, scan_bytes) for pattern in patterns):
