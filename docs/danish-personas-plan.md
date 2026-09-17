@@ -319,19 +319,17 @@ generation independently testable and restartable.
 
 ### Implementation status
 
-Phases 0-2 were implemented and validated on 14 September 2026. The source bundle now
-also prepares the official FOLK2 adult origin marginal. Phase 2 samples this marginal
-independently with deterministic quotas and retains its official code and label; origin
-is withheld from both LLM stages and cannot drive language, culture, religion,
-occupation, personality, or visual appearance. The local source bundle
-was `e7757f736ef5652f`; the passing 100,000-row non-LLM run was
-`f5f37949670df476`. See the [Phase 2 validation report][phase-2-report]. LLM generation
-remains disabled in configuration and guarded by an executable failure.
+Phases 0-2 are implemented and validated. The source bundle prepares the official
+FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
+deterministic quotas and retains its official code and label; origin is withheld from
+both LLM stages and cannot drive language, culture, religion, occupation, personality,
+or visual appearance. Source bundle `fda86665792f7734` produced passing canonical runs
+`0122b894dec6829e` (2,000-row smoke) and `ea321089a79d3650` (100,000-row statistical).
+See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics. LLM
+generation remains disabled in configuration and guarded by an executable failure.
 
-Adding the official Statistics Denmark geography classification changed the prepared
-bundle identifier, so that report now describes a superseded bundle and run. The
-regeneration is deliberately deferred to a separate branch; the measured numbers are
-retained as a historical record and not restated here.
+The frozen text-development input remains a separate, deliberately stratified 1,000-row
+Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
 
 ## Generation architecture
 
@@ -612,8 +610,9 @@ Generation begins here, but this phase remains entirely non-LLM.
 - Instantiate the prepared conditional sampler, structural zeros, smoothing, and
   back-off rules.
 - Generate demographic-only records and independently sample OCEAN traits.
-- Start with a 1,000-row smoke run, then generate 100,000 structured records for
-  inexpensive statistical validation.
+- Start with a 2,000-row smoke run, then generate 100,000 structured records for
+  inexpensive statistical validation. Keep the separate stratified text-development
+  sample at 1,000 rows.
 - Compare records with held-out aggregate tables rather than only fitted marginals.
 - Run structural, statistical, sparse-cell, geographic, and proxy-resolution checks.
 - Freeze a stratified set of validated demographic records for text-generation
