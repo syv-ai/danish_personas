@@ -1,15 +1,15 @@
 """Restore the committed Statistics Denmark source snapshots."""
 
 import logging
-import shutil
-import tarfile
-import tempfile
 from pathlib import Path
 
 import click
 
-RAW_DIRECTORY = "raw-hardened-20260917"
-DEFAULT_ARCHIVE = Path("data") / f"{RAW_DIRECTORY}.tar.zst"
+from danish_personas.sources import archive as _archive
+from danish_personas.sources.archive import DEFAULT_ARCHIVE, restore_raw_sources
+from danish_personas.sources.exceptions import SourceArchiveError
+
+RAW_DIRECTORY = _archive.RAW_DIRECTORY
 
 
 @click.command()
@@ -44,78 +44,17 @@ def main(archive_path: Path, output_dir: Path, force: bool) -> None:
 
     Raises:
         click.ClickException:
-            If the archive is missing, unsafe, corrupt, or the target already exists.
+            If the archive is missing, unsafe, corrupt, or the target already
+            exists.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    target = output_dir / RAW_DIRECTORY
-    if _path_exists(path=target) and not force:
-        message = f"Raw snapshot directory already exists: {target}"
-        raise click.ClickException(message)
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            dir=output_dir, prefix=".raw-restore-"
-        ) as temporary_name:
-            temporary_dir = Path(temporary_name)
-            with tarfile.open(name=archive_path, mode="r:zst") as archive:
-                members = _validated_members(archive=archive)
-                archive.extractall(path=temporary_dir, members=members, filter="data")
-            staged = temporary_dir / RAW_DIRECTORY
-            _install_staged_directory(
-                staged=staged, target=target, temporary_dir=temporary_dir, force=force
-            )
-    except (OSError, tarfile.TarError, ValueError) as error:
+        restored_count = restore_raw_sources(
+            archive_path=archive_path, output_dir=output_dir, force=force
+        )
+    except SourceArchiveError as error:
         raise click.ClickException(str(error)) from error
-    logging.info("Restored %s immutable source files", len(members))
-
-
-def _install_staged_directory(
-    staged: Path, target: Path, temporary_dir: Path, force: bool
-) -> None:
-    if not staged.is_dir():
-        message = f"Raw source archive does not contain {RAW_DIRECTORY}"
-        raise ValueError(message)
-    previous = temporary_dir / "previous"
-    had_previous = _path_exists(path=target)
-    if had_previous:
-        if not force:
-            message = f"Raw snapshot directory already exists: {target}"
-            raise ValueError(message)
-        target.replace(previous)
-    try:
-        staged.replace(target)
-    except OSError:
-        if had_previous and not _path_exists(path=target):
-            previous.replace(target)
-        raise
-    if had_previous:
-        if previous.is_symlink() or previous.is_file():
-            previous.unlink()
-        else:
-            shutil.rmtree(previous)
-
-
-def _path_exists(path: Path) -> bool:
-    return path.exists() or path.is_symlink()
-
-
-def _validated_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
-    members = archive.getmembers()
-    if not members:
-        message = "Raw source archive is empty"
-        raise ValueError(message)
-    for member in members:
-        path = Path(member.name)
-        if (
-            path.is_absolute()
-            or ".." in path.parts
-            or not path.parts
-            or path.parts[0] != RAW_DIRECTORY
-            or not member.isfile()
-        ):
-            message = f"Unsafe raw source archive member: {member.name}"
-            raise ValueError(message)
-    return members
+    logging.info("Restored %s immutable source files", restored_count)
 
 
 if __name__ == "__main__":
