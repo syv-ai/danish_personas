@@ -64,7 +64,9 @@ def _fetch_classification(
     )
     manifest_path = snapshot_dir / "snapshot-manifest.json"
     if manifest_path.exists():
-        manifest = ClassificationManifest.model_validate_json(manifest_path.read_text())
+        manifest = ClassificationManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
         verify_classification_snapshot(
             snapshot_dir=snapshot_dir, snapshot=manifest, classification=classification
         )

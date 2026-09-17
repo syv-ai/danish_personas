@@ -95,7 +95,7 @@ def prepare_bundle(
             classification=classification, raw_dir=raw_dir
         )
         classification_snapshot = ClassificationManifest.model_validate_json(
-            (classification_dir / "snapshot-manifest.json").read_text()
+            (classification_dir / "snapshot-manifest.json").read_text(encoding="utf-8")
         )
         verify_classification_snapshot(
             snapshot_dir=classification_dir,
