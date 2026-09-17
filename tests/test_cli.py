@@ -86,7 +86,7 @@ def test_deterministic_workflow_hands_off_paths_and_stops_at_smoke(
         "restore",
         "prepare",
         "sources:returned-bundle",
-        "generate:data/runs/smoke",
+        f"generate:{Path('data/runs/smoke')}",
         "demographics:returned-smoke",
     ]
 
