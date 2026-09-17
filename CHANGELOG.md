@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- UTF-8 source verification and deterministic text output now behave consistently on
+  Windows and Unix.
+
 ### Added
 
 - Reproducible acquisition and immutable snapshots for five Statistics Denmark tables

@@ -38,11 +38,13 @@ def fix_dot_env_file(non_interactive: bool) -> None:
 
     # Extract all the lines in the files
     env_file_lines = [
-        line for line in env_path.read_text().splitlines(keepends=False) if line.strip()
+        line
+        for line in env_path.read_text(encoding="utf-8").splitlines(keepends=False)
+        if line.strip()
     ]
-    name_and_email_file_lines = name_and_email_path.read_text().splitlines(
-        keepends=False
-    )
+    name_and_email_file_lines = name_and_email_path.read_text(
+        encoding="utf-8"
+    ).splitlines(keepends=False)
 
     # Extract all the environment variables in the files
     env_vars = {
