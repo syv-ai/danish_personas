@@ -15,7 +15,9 @@ These gates apply before any LLM integration may be enabled.
 - FOLK2's prepared national origin marginal has a positive total, unique official
   IELAND codes and labels, an exact selected code-to-label mapping from official
   metadata, zero suppression, no unhandled values, and the expected official raw
-  partition.
+  partition. The reviewed expected-zero-code set is bound into the source config and
+  lock; only those omitted all-zero codes may be materialised, and unexpected missing
+  selected codes fail preparation and source validation.
 - FOLK2 retains official categories such as Stateless and Not stated explicitly; it
   does not create continents, regions, or inferred correlations.
 - Municipality codes map to one of the five regions, and that mapping agrees with

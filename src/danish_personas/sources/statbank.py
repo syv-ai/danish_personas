@@ -265,6 +265,7 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
                     table_updated_at=metadata.updated,
                     unit=metadata.unit,
                     dimensions=dimensions,
+                    expected_zero_codes=source.expected_zero_codes,
                     estimated_cells=estimated_cells,
                 )
             )

@@ -19,6 +19,39 @@ sources:
     # BULK is StatBank's streaming format and is exempt from the one-million-cell
     # limit applied to non-streaming formats.
     format: BULK
+    # Reviewed all-zero IELAND partitions omitted by the archived BULK response.
+    expected_zero_codes:
+      - "5111"
+      - "5176"
+      - "5184"
+      - "5248"
+      - "5253"
+      - "5256"
+      - "5264"
+      - "5286"
+      - "5301"
+      - "5307"
+      - "5325"
+      - "5336"
+      - "5346"
+      - "5353"
+      - "5394"
+      - "5397"
+      - "5428"
+      - "5473"
+      - "5480"
+      - "5493"
+      - "5494"
+      - "5498"
+      - "5506"
+      - "5516"
+      - "5527"
+      - "5528"
+      - "5529"
+      - "5530"
+      - "5531"
+      - "5533"
+      - "5535"
     dimensions:
       ALDER:
         selector: adult_exact_ages

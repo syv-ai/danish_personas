@@ -131,6 +131,22 @@ def test_query_cells_include_returned_dimension_and_value_columns() -> None:
     assert estimate_query_cells(dimensions={"age": ["18", "19"], "Tid": ["2025"]}) == 6
 
 
+def test_resolved_lock_carries_expected_zero_codes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolution copies the reviewed omission set into the lock."""
+    source = _source(format="BULK", value_count=1).model_copy(
+        update={"expected_zero_codes": ["0"]}
+    )
+    _stub_metadata(monkeypatch=monkeypatch, source=source)
+
+    lock = resolve_sources(
+        config=_config(source=source), lock_path=tmp_path / "sources.lock.yaml"
+    )
+
+    assert lock.sources[0].expected_zero_codes == ["0"]
+
+
 def test_under_limit_csv_query_is_accepted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

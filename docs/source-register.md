@@ -23,8 +23,10 @@ are the product of selected values; API cells multiply that count by every selec
 dimension plus the observation-value column. FOLK2 uses StatBank's BULK streaming
 response because its 2,186,352 actual cells exceed the one-million limit for non-streaming
 formats. BULK is explicitly exempt from that limit. StatBank omits zero-count BULK rows;
-preparation materialises the absent selected IELAND categories as explicit unsuppressed
-zeroes before the marginal integrity checks. The stored CSV is canonical UTF-8 with LF
+the 31 omitted IELAND partitions in this snapshot are recorded explicitly as reviewed
+`expected_zero_codes` in `config/sources.yaml` and its resolved lock. Preparation
+materialises only those approved omissions as explicit unsuppressed zeroes; any other
+missing selected code fails the source gate. The stored CSV is canonical UTF-8 with LF
 line endings.
 
 ## Classifications
@@ -50,8 +52,10 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   citizenship into a national marginal.
 - FOLK2 preserves unequal official weights and the complete selected official
   code-to-label mapping, including Stateless and Not stated. Preparation requires unique
-  codes and labels and rejects mapping changes. This marginal is not ethnicity or
-  citizenship, and no country groups, correlations, or joint associations are inferred.
+  codes and labels and rejects mapping changes. The raw BULK partition remains available
+  to provenance checks before approved zero omissions are materialised. This marginal is
+  not ethnicity or citizenship, and no country groups, correlations, or joint
+  associations are inferred.
 - FOLK2 is prepared for audit and future work only. It is not emitted in Phase 2 records,
   sampled, or sent to LLMs; a later sampling/privacy review is required.
 - FOLK1A 2025Q1 is the closest demographic snapshot to the November 2024 RAS data.
