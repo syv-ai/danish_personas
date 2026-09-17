@@ -194,6 +194,8 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert isinstance(descriptions_payload, dict)
     assert set(resolution_columns).isdisjoint(attributes_payload)
     assert set(resolution_columns).isdisjoint(descriptions_payload)
+    assert attributes_payload["education_level"] == "masters"
+    assert descriptions_payload["education_level"] == "masters"
     assert "generated_attributes" in _MockClient.payloads[1]
 
     generation_manifest = json.loads(
@@ -215,6 +217,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         {
             "persona_id": ["persona-1", "persona-2"],
             "value": [1, 2],
+            "education_level": ["masters", "vocational"],
             "age_resolution": ["age_band_sex", "age_band"],
             "marital_resolution": ["region_age_band_sex", "age_band"],
             "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
@@ -290,7 +293,54 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "sample": sample_path,
         "sample_manifest": sample_manifest_path,
         "config": config_path,
+        "personas_prompt": personas_prompt,
     }
+
+
+def test_pilot_identity_changes_when_prompt_context_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing an effective prompt creates a new pilot artefact directory."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    arguments = [
+        "--input",
+        str(paths["sample"]),
+        "--sample-manifest",
+        str(paths["sample_manifest"]),
+        "--config",
+        str(paths["config"]),
+        "--output-dir",
+        str(tmp_path / "pilot"),
+        "--rows",
+        "1",
+        "--batch-size",
+        "1",
+        "--concurrency",
+        "1",
+        "--maximum-total-requests",
+        "5",
+        "--input-price-per-million",
+        "0.3",
+        "--output-price-per-million",
+        "1.2",
+        "--live",
+    ]
+    first = CliRunner().invoke(pilot_main, arguments)
+    assert first.exit_code == 0, first.output
+    paths["personas_prompt"].write_text("En ændret dansk prompt", encoding="utf-8")
+    second = CliRunner().invoke(pilot_main, arguments)
+    assert second.exit_code == 0, second.output
+
+    pilot_dirs = list((tmp_path / "pilot").iterdir())
+    assert len(pilot_dirs) == 2
+    manifests = [
+        json.loads((pilot_dir / "pilot-manifest.json").read_text(encoding="utf-8"))
+        for pilot_dir in pilot_dirs
+    ]
+    assert manifests[0]["pilot_id"] != manifests[1]["pilot_id"]
+    assert len({manifest["generation_context_sha256"] for manifest in manifests}) == 2
 
 
 def test_pilot_merges_validated_shards(

@@ -8,21 +8,25 @@ Returnér kun data, som passer til det krævede JSON-skema. Hver tekst skal vær
 
 Regler:
 
-- Bevar demografi, personlighed og de allerede godkendte attributter.
+- Bevar demografi, personlighed og de allerede godkendte attributter i de
+  relevante beskrivelser, men gengiv dem ikke i `visual_persona`.
 - Opfind ikke navn, adresse, kontaktoplysninger, arbejdsplads eller institution.
 - Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
 - Udled ikke hudfarve, etnicitet, herkomst, nationalitet, kultur, sprog, religion,
   helbred, handicap, seksualitet, politisk overbevisning, kropsmål, udseende,
   tiltrækningskraft eller kriminalhistorik.
-- `visual_persona` skal være 2-4 sætninger med generisk portrætvejledning om
-  selvvalgt, foranderlig visuel fremtoning, eksempelvis tøj, tilbehør, farver eller
-  pleje. Beskriv også et generisk miljø, der passer til et portræt. Det er ikke
-  billedgenerering. Vælg ikke detaljer eller miljø ud fra demografi, OCEAN,
-  genererede attributter eller et eventuelt fremtidigt felt om oprindelsesland.
-- `visual_persona` må ikke nævne eller antyde hudfarve, etnicitet, herkomst,
-  nationalitet, kultur, sprog, religion, helbred, handicap, seksualitet, politik,
-  kropsmål, tiltrækningskraft, præcis placering, arbejdsgiver, institution eller
-  andre følsomme eller identificerende egenskaber.
+- `visual_persona` skal være 2-4 sætninger og må kun beskrive valgte, foranderlige
+  stilvalg: tøj, tilbehør og farver samt et generisk, ikke-identificerende
+  portrætmiljø som en neutral baggrund eller et atelier. Det er ikke
+  billedgenerering.
+- `visual_persona` må hverken gentage eller udlede input om alder, køn, sex,
+  region, uddannelsesniveau, civilstand eller arbejdsmarkedsstatus. Den må heller
+  ikke gentage eller udlede OCEAN-scorer, genererede attributter, oprindelse,
+  herkomst, nationalitet eller sprog.
+- `visual_persona` må ikke beskrive fysiske, uforanderlige eller følsomme træk,
+  herunder hud, hår, øjne, krop, højde, vægt, helbred, handicap, seksualitet,
+  religion, politik, etnicitet, tiltrækningskraft eller identitet. Vælg ikke
+  detaljer eller miljø ud fra nogen af disse oplysninger.
 - Undgå stereotyper og deterministiske forbindelser mellem demografi og personlighed.
 - Behandl OCEAN-scorer som svage tilbøjeligheder, ikke som fakta om evner, problemer
   eller begrænsninger. Brug afbalancerede formuleringer som "kan foretrække" og
@@ -34,7 +38,8 @@ Regler:
   ikke fyldes med kunstinteresser.
 - Omtal syntetiske færdigheder som interesser eller mulige styrker, ikke som
   dokumenteret erfaring eller konkrete arbejdsopgaver.
-- Gengiv højst den angivne region; opfind ikke bystørrelse, lokale tilbud, rejsevaner
-  eller andre stedsegenskaber.
+- Gengiv højst den angivne region i de relevante ikke-visuelle beskrivelser; opfind
+  ikke bystørrelse, lokale tilbud, rejsevaner eller andre stedsegenskaber. Nævn ingen
+  region eller placering i `visual_persona`.
 - Brug naturlige danske ord frem for unødige engelske sammensætninger.
 - `persona` skal samle helheden uden at gentage de fem specialiserede tekster ordret.
