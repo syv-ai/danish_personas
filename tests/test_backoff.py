@@ -106,9 +106,7 @@ def test_draw_uses_the_most_specific_populated_cell() -> None:
         smoothing=0.0,
     )
 
-    _, level = _draw(
-        ladder_index=index, values=VALUES, rng=np.random.default_rng(0)
-    )
+    _, level = _draw(ladder_index=index, values=VALUES, rng=np.random.default_rng(0))
 
     assert level == "region_age_band_sex"
 

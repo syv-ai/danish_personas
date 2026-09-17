@@ -9,7 +9,8 @@ These gates apply before any LLM integration may be enabled.
 - Existing raw snapshots are never overwritten.
 - Every selected table has a positive population total and zero unhandled suppressed
   cells.
-- Municipality codes map to one of the five regions.
+- Municipality codes map to one of the five regions, and that mapping agrees with
+  the official Statistics Denmark geography classification.
 - Prepared-file checksums match the bundle manifest.
 - Sparse-cell pooling retains at least 99% of the relevant source universe.
 
@@ -19,7 +20,10 @@ These gates apply before any LLM integration may be enabled.
 - Every identifier is unique and deterministic.
 - Every record passes the strict Phase-2 Pydantic schema.
 - No generated person is younger than 18.
-- Detailed labour status remains within its sampled broad status.
+- Detailed labour status remains within its sampled broad status, including when a
+  draw backs off to a coarser cell.
+- Every record records the back-off level that produced its age, marital status,
+  and detailed status, and at most 1% of records rely on a coarser cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
   younger than 70.
 - Every fitted marginal cell with expected count of at least five lies within the larger
