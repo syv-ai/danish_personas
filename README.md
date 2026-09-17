@@ -89,7 +89,7 @@ tokens, or generated data artefacts.
 
 ### Regenerate development data
 
-The following commands restore the five exact Statistics Denmark aggregate snapshots and
+The following commands restore the six exact Statistics Denmark aggregate snapshots and
 the official geography classification snapshot, prepare a local source bundle, generate
 1,000 deterministic records, and validate every stage without network access. The archive
 and attribution are documented in [`data/README.md`](data/README.md).
@@ -181,8 +181,12 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
-The source preparation stage uses FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210. The first
-three ground the distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics.
+The source preparation stage uses FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210.
+FOLK2 is an independent national marginal of official IELAND country-of-origin categories
+for adults. It preserves categories such as Stateless and Not stated, but is not ethnicity
+or citizenship. It is not emitted in Phase 2 records, sampled, or sent to LLMs; a later
+sampling/privacy PR is required. FOLK1A, RAS209, and RAS202 ground the distributions;
+BEFOLK3 and RAS210 are held-out aggregate diagnostics.
 Municipality aggregates are used to construct regional counts, but municipality fields
 are not emitted in generated records. The municipality, landsdel, and region hierarchy
 comes from the official Statistics Denmark classification snapshot, and preparation fails
@@ -285,7 +289,7 @@ provider reachability, and live commands can consume paid requests.
 
 ## Outputs and data handling
 
-The repository includes the 613 KB compressed raw Statistics Denmark snapshot archive and
+The repository includes the compressed raw Statistics Denmark snapshot archive and
 its attribution. The source archive, lock, category mappings, sampling parameters,
 validation thresholds, and code are version controlled. Restored and derived artefacts
 remain ignored and reproducible.
@@ -317,9 +321,10 @@ approve any proposed release.
 
 Statistics Denmark inputs are public aggregate tables, not individual-level records. The
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
-aged 18-125 with country, sex, age, marital status, region, broad education, labour
-status, detailed status, and independent OCEAN scores. It does not emit names, exact
-addresses, coordinates, CPR or other administrative identifiers, employers, occupations,
+aged 18-125 with the fixed country value Denmark, sex, age, marital status, region, broad
+education, labour status, detailed status, and independent OCEAN scores. The FOLK2 origin
+marginal is not a Phase-2 field. It does not emit names, exact addresses, coordinates, CPR
+or other administrative identifiers, employers, occupations,
 income, household details, ancestry, citizenship, health, religion, sexuality, politics,
 criminal history, or free text.
 

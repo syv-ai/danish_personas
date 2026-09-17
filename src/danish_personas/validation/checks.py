@@ -519,6 +519,28 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
             details="All selected source tables are populated and unsuppressed.",
         ),
     ]
+    origin_checks = source_payload.get("origin_country_checks")
+    if isinstance(origin_checks, dict):
+        for check_name in (
+            "positive_total",
+            "code_uniqueness",
+            "label_uniqueness",
+            "metadata_mapping",
+            "zero_suppression",
+            "unhandled_values",
+            "expected_partition",
+        ):
+            check = origin_checks.get(check_name)
+            if isinstance(check, dict) and isinstance(check.get("passed"), bool):
+                metrics.append(
+                    MetricResult(
+                        name=f"folk2_{check_name}",
+                        passed=check["passed"],
+                        value="pass" if check["passed"] else "fail",
+                        threshold="pass",
+                        details=f"FOLK2 {check_name.replace('_', ' ')} check.",
+                    )
+                )
     report = ValidationReport(
         kind="sources",
         passed=all(metric.passed for metric in metrics),
