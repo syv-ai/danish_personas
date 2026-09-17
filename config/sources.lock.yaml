@@ -378,7 +378,7 @@ sources:
     - '5999'
     Tid:
     - '2025'
-  estimated_cells: 312336
+  estimated_cells: 2186352
 - table_id: FOLK1A
   role: demographic_base
   period: 2025K1
@@ -610,7 +610,7 @@ sources:
     - F
     Tid:
     - 2025K1
-  estimated_cells: 87120
+  estimated_cells: 522720
 - table_id: RAS209
   role: education_status_joint
   period: '2024'
@@ -691,7 +691,7 @@ sources:
     - K
     Tid:
     - '2024'
-  estimated_cells: 40800
+  estimated_cells: 285600
 - table_id: RAS202
   role: detailed_status_refinement
   period: '2024'
@@ -797,7 +797,7 @@ sources:
     - K
     Tid:
     - '2024'
-  estimated_cells: 3672
+  estimated_cells: 18360
 - table_id: BEFOLK3
   role: population_holdout
   period: '2025'
@@ -1022,7 +1022,7 @@ sources:
     - '125'
     Tid:
     - '2025'
-  estimated_cells: 21384
+  estimated_cells: 106920
 - table_id: RAS210
   role: municipality_status_holdout
   period: '2024'
@@ -1197,7 +1197,7 @@ sources:
     - K
     Tid:
     - '2024'
-  estimated_cells: 32076
+  estimated_cells: 192456
 classifications:
 - classification_id: NUTS_V1_2007_DK
   role: geography_hierarchy

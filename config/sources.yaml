@@ -16,6 +16,8 @@ sources:
   - table_id: FOLK2
     role: origin_country_marginal
     period: "2025"
+    # BULK is StatBank's streaming format and is exempt from the one-million-cell
+    # limit applied to non-streaming formats.
     format: BULK
     dimensions:
       ALDER:

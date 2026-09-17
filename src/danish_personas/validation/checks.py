@@ -524,6 +524,8 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         for check_name in (
             "positive_total",
             "code_uniqueness",
+            "label_uniqueness",
+            "metadata_mapping",
             "zero_suppression",
             "unhandled_values",
             "expected_partition",

@@ -19,7 +19,7 @@ def test_folk2_lock_freezes_the_adult_official_partition() -> None:
 
     assert source.period == "2025"
     assert source.format == "BULK"
-    assert source.estimated_cells == 312336
+    assert source.estimated_cells == 2186352
     assert source.dimensions["ALDER"] == [str(age) for age in range(18, 126)]
     assert source.dimensions["KØN"] == ["M", "K"]
     assert source.dimensions["HERKOMST"] == ["5", "4", "3"]
@@ -48,8 +48,82 @@ def test_origin_marginal_preserves_official_labels_and_weights() -> None:
     ]
 
 
+def test_origin_metrics_fail_when_a_selected_code_is_missing_raw() -> None:
+    """The selected raw partition must contain every selected origin code."""
+    raw = _origin_raw(codes=["5100"], suppressed=[False])
+    labels = {"5100": "Denmark", "5103": "Stateless"}
+    marginal = _origin_country_marginal(raw_frame=raw, official_labels=labels)
+
+    metrics = _origin_country_metrics(
+        raw_frame=raw,
+        prepared_frame=marginal,
+        official_labels=labels,
+        selected_codes=["5100", "5103"],
+    )
+
+    assert not metrics["passed"]
+    partition = _nested_metric(metrics=metrics, name="expected_partition")
+    assert not partition["passed"]
+    assert partition["missing_raw"] == ["5103"]
+
+
+def _nested_metric(metrics: dict[str, object], name: str) -> dict[str, object]:
+    metric = metrics[name]
+    assert isinstance(metric, dict)
+    return metric
+
+
+def _origin_raw(codes: list[str], suppressed: list[bool]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {"IELAND": codes, "count": [100] * len(codes), "suppressed": suppressed}
+    )
+
+
+def test_origin_metrics_reject_changed_official_label() -> None:
+    """The prepared mapping must retain every official label verbatim."""
+    raw = _origin_raw(codes=["5100", "5103"], suppressed=[False, False])
+    labels = {"5100": "Denmark", "5103": "Stateless"}
+    marginal = _origin_country_marginal(raw_frame=raw, official_labels=labels)
+    marginal = marginal.with_columns(
+        pl.when(pl.col("origin_country_code") == "5103")
+        .then(pl.lit("Changed"))
+        .otherwise(pl.col("origin_country"))
+        .alias("origin_country")
+    )
+
+    metrics = _origin_country_metrics(
+        raw_frame=raw,
+        prepared_frame=marginal,
+        official_labels=labels,
+        selected_codes=["5100", "5103"],
+    )
+
+    assert not metrics["passed"]
+    mapping = _nested_metric(metrics=metrics, name="metadata_mapping")
+    assert not mapping["passed"]
+    assert mapping["mismatches"] == ["5103"]
+
+
+def test_origin_metrics_reject_suppressed_cells() -> None:
+    """A suppressed raw FOLK2 cell fails the origin integrity gate."""
+    raw = _origin_raw(codes=["5100", "5103"], suppressed=[False, True])
+    labels = {"5100": "Denmark", "5103": "Stateless"}
+    marginal = _origin_country_marginal(raw_frame=raw, official_labels=labels)
+
+    metrics = _origin_country_metrics(
+        raw_frame=raw,
+        prepared_frame=marginal,
+        official_labels=labels,
+        selected_codes=["5100", "5103"],
+    )
+
+    assert not metrics["passed"]
+    suppression = _nested_metric(metrics=metrics, name="zero_suppression")
+    assert not suppression["passed"]
+
+
 def test_origin_metrics_require_the_expected_partition() -> None:
-    """The source checks reject an unhandled selected origin code."""
+    """The source checks reject an unhandled origin code."""
     raw = pl.DataFrame(
         {"IELAND": ["5100", "9999"], "count": [100, 3], "suppressed": [False, False]}
     )
@@ -67,3 +141,27 @@ def test_origin_metrics_require_the_expected_partition() -> None:
     unhandled_values = metrics["unhandled_values"]
     assert isinstance(unhandled_values, dict)
     assert unhandled_values["values"] == ["9999"]
+
+
+def test_origin_metrics_require_unique_labels() -> None:
+    """Two origin codes cannot share a prepared label."""
+    raw = _origin_raw(codes=["5100", "5103"], suppressed=[False, False])
+    labels = {"5100": "Denmark", "5103": "Stateless"}
+    marginal = _origin_country_marginal(raw_frame=raw, official_labels=labels)
+    marginal = marginal.with_columns(
+        pl.when(pl.col("origin_country_code") == "5103")
+        .then(pl.lit("Denmark"))
+        .otherwise(pl.col("origin_country"))
+        .alias("origin_country")
+    )
+
+    metrics = _origin_country_metrics(
+        raw_frame=raw,
+        prepared_frame=marginal,
+        official_labels=labels,
+        selected_codes=["5100", "5103"],
+    )
+
+    assert not metrics["passed"]
+    labels_metric = _nested_metric(metrics=metrics, name="label_uniqueness")
+    assert not labels_metric["passed"]

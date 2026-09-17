@@ -287,10 +287,11 @@ Important source limitations to carry into the dataset card include:
 - RAS register employment status is not interchangeable with survey employment;
 - FOLK1B measures citizenship, FOLK1E measures ancestry, and BEFOLK3 contains neither.
 - FOLK2 combines age, sex, HERKOMST, STATSB, and official IELAND counts only as an
-  independent national marginal for adults in 2025. It is not ethnicity or citizenship;
-  official labels such as Stateless and Not stated are retained without custom country
-  groups or inferred correlations. It is not yet sampled or emitted, and a later sampling
-  and privacy review is required.
+  independent national marginal for adults in 2025. Its 312,336 selected observations
+  produce 2,186,352 API cells, so the locked query uses the BULK exemption. It is not
+  ethnicity or citizenship; official labels such as Stateless and Not stated are retained
+  without custom country groups or inferred correlations. It is not yet sampled or
+  emitted, and a later sampling and privacy review is required.
 
 ## Required execution order
 
@@ -569,7 +570,10 @@ generation.
   periods, including FOLK2's exact ages 18-125, both sexes, all HERKOMST and STATSB
   values, all official IELAND values, and 2025.
 - Download every selected aggregate table, metadata response, codebook, classification,
-  and geographic mapping through the implemented source adapters.
+  and geographic mapping through the implemented source adapters. Calculate StatBank's
+  query size as selected observations (the product of selected values) multiplied by all
+  returned columns, including time dimensions and the observation value; reject
+  over-limit non-streaming queries and use BULK only as its documented exemption.
 - Record canonical URLs, queries, retrieval times, licences, attribution, and SHA-256
   checksums in the source manifest.
 - Normalize categories and create versioned mappings while retaining original codes and

@@ -4,14 +4,18 @@ These gates apply before any LLM integration may be enabled.
 
 ## Source bundle
 
-- Every query is explicit and remains below StatBank's one-million-cell limit.
+- Every non-BULK query is explicit and remains below StatBank's one-million-cell
+  limit, calculated as selected observations multiplied by returned columns (all
+  selected dimensions, including time, plus the observation value). BULK is the
+  explicitly documented streaming-format exemption.
 - Raw metadata, query, CSV, headers, and SHA-256 manifest exist for every source.
 - Existing raw snapshots are never overwritten.
 - Every selected table has a positive population total and zero unhandled suppressed
   cells.
 - FOLK2's prepared national origin marginal has a positive total, unique official
-  IELAND codes and labels, zero suppression, no unhandled values, and the expected
-  official partition.
+  IELAND codes and labels, an exact selected code-to-label mapping from official
+  metadata, zero suppression, no unhandled values, and the expected official raw
+  partition.
 - FOLK2 retains official categories such as Stateless and Not stated explicitly; it
   does not create continents, regions, or inferred correlations.
 - Municipality codes map to one of the five regions, and that mapping agrees with
