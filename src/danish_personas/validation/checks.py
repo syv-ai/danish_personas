@@ -11,7 +11,9 @@ import polars as pl
 from pydantic import ValidationError
 
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
+from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
+    SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
     DemographicRecord,
@@ -61,7 +63,12 @@ def validate_demographics(
         frame=frame, manifest=manifest, data_path=data_path, bundle_dir=bundle_dir
     )
     metrics.extend(
-        _structural_metrics(frame=frame, manifest=manifest, categories=categories)
+        _structural_metrics(
+            frame=frame,
+            manifest=manifest,
+            categories=categories,
+            maximum_backoff_rate=config.maximum_backoff_rate,
+        )
     )
     metrics.extend(
         _distribution_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
@@ -289,6 +296,9 @@ def _provenance_metrics(
             _logical_checksum(frame=frame) == manifest.logical_content_sha256
         ),
         "bundle_identity": bundle.bundle_id == manifest.bundle_id,
+        "sampler_schema_version": (
+            manifest.sampler_schema_version == SAMPLER_SCHEMA_VERSION
+        ),
         "bundle_manifest_checksum": (
             sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
         ),
@@ -314,8 +324,26 @@ def _logical_checksum(frame: pl.DataFrame) -> str:
 
 
 def _structural_metrics(
-    frame: pl.DataFrame, manifest: RunManifest, categories: CategoryConfig
+    frame: pl.DataFrame,
+    manifest: RunManifest,
+    categories: CategoryConfig,
+    maximum_backoff_rate: float,
 ) -> list[MetricResult]:
+    """Check row counts, identifiers, schema, and sampling provenance.
+
+    Args:
+        frame:
+            Generated records.
+        manifest:
+            Manifest the run must agree with.
+        categories:
+            Canonical category mappings.
+        maximum_backoff_rate:
+            Largest share of records permitted to come from a coarser cell.
+
+    Returns:
+        One metric per structural check.
+    """
     invalid_schema = 0
     for row in frame.iter_rows(named=True):
         try:
@@ -342,6 +370,7 @@ def _structural_metrics(
     ).height
     unique_ids = frame.get_column("persona_id").n_unique()
     return [
+        *_backoff_metrics(frame=frame, maximum_rate=maximum_backoff_rate),
         MetricResult(
             name="row_count",
             passed=frame.height == manifest.rows,
@@ -378,6 +407,44 @@ def _structural_metrics(
             details="The disclosed RAS209 67+ proxy is labelled for ages 70+ only.",
         ),
     ]
+
+
+def _backoff_metrics(frame: pl.DataFrame, maximum_rate: float) -> list[MetricResult]:
+    """Report how often each ladder fell back to a coarser cell.
+
+    The ladders are independent and of different depths, so each reports its
+    own rate; a single combined figure could not say which draw is sparse.
+
+    Args:
+        frame:
+            Generated records.
+        maximum_rate:
+            Largest share of records permitted to come from a coarser cell.
+
+    Returns:
+        One metric per resolution column.
+    """
+    metrics: list[MetricResult] = []
+    for column, most_specific in MOST_SPECIFIC_RESOLUTION.items():
+        counts = frame.get_column(column).value_counts().sort(column)
+        backed_off = int(
+            counts.filter(pl.col(column) != most_specific).get_column("count").sum()
+        )
+        rate = backed_off / frame.height if frame.height else 0.0
+        breakdown = ", ".join(
+            f"{row[column]}: {row['count'] / frame.height:.4%}"
+            for row in counts.iter_rows(named=True)
+        )
+        metrics.append(
+            MetricResult(
+                name=f"{column}_backoff_rate",
+                passed=rate <= maximum_rate,
+                value=rate,
+                threshold=maximum_rate,
+                details=f"Levels used: {breakdown}.",
+            )
+        )
+    return metrics
 
 
 def _write_reports(directory: Path, report: ValidationReport) -> None:

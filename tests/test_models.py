@@ -1,9 +1,12 @@
 """Tests for strict pipeline contracts."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from danish_personas.models import SourceSelection
+from danish_personas.io import load_yaml_model
+from danish_personas.models import SourceSelection, ValidationConfig
 
 
 def test_source_selection_accepts_explicit_values() -> None:
@@ -18,3 +21,14 @@ def test_source_selection_requires_one_mechanism() -> None:
         SourceSelection()
     with pytest.raises(ValidationError):
         SourceSelection(selector="all", values=["x"])
+
+
+def test_validation_config_rejects_unsupported_schema_version() -> None:
+    """Validation thresholds reject versions outside the supported schema."""
+    config = load_yaml_model(
+        path=Path("config/validation.yaml"), model=ValidationConfig
+    )
+
+    assert config.version == 2
+    with pytest.raises(ValidationError, match="Unsupported validation config version"):
+        ValidationConfig.model_validate(config.model_dump(mode="json") | {"version": 1})

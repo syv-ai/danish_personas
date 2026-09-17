@@ -32,7 +32,7 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/generation/report.py` | Persona-run and pilot integrity gates. |
 | `danish_personas/generation/validation.py` | JSON, Danish, safety, duplicate gates. |
 | `danish_personas/sampling/__init__.py` | Sampling package marker. |
-| `danish_personas/sampling/generator.py` | Deterministic demographics and OCEAN. |
+| `danish_personas/sampling/generator.py` | Deterministic demographics, back-off, OCEAN. |
 | `danish_personas/sources/__init__.py` | Source-acquisition package marker. |
 | `danish_personas/sources/http.py` | Retrying requests and header serialisation. |
 | `danish_personas/sources/statbank.py` | StatBank selectors and immutable snapshots. |
@@ -73,6 +73,7 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 | `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
 | `tests/test_raw_archive.py` | Archive integrity, safe restoration, byte-stable packing. |
 | `tests/test_classification.py` | Geography parsing and the StatBank cross-check. |
+| `tests/test_backoff.py` | Sparse-cell back-off, ladders, and smoothing. |
 | `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
 | `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
 | `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |
@@ -88,7 +89,7 @@ client when testing LLM paths.
 | `config/sources.lock.yaml` | Resolved codes, queries, URLs, periods, and timestamps. |
 | `config/categories.yaml` | Canonical demographic and labour-status mappings. |
 | `config/sampling.yaml` | Seed, rows, adult age range, region, OCEAN settings. |
-| `config/validation.yaml` | Distribution, expected-count, and OCEAN thresholds. |
+| `config/validation.yaml` | Distribution, expected-count, back-off, OCEAN thresholds. |
 | `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
 | `config/generation.local.yaml` | Ignored local LLM override and provider settings. |
 | `config/prompts/attributes-da.md` | Danish attributes schema and safety rules. |
@@ -257,6 +258,21 @@ must fail loudly, not be repaired by overwriting files.
 - LLM output must remain strict JSON, Danish, non-identifying, free of configured
   sensitive terms, and free of exact duplicate descriptions. Automated validation is not
   a substitute for blinded human review.
+- The sampler backs off through ordered ladders when a conditional cell is missing,
+  and each record records the level that produced it. A ladder stops at the most
+  general cell that is still structurally valid, never a national one, so an age
+  cannot leave its band and a detailed status cannot leave its broad RAS209 status.
+  A cell missing at a ladder's final level is a structural zero and must keep failing
+  loudly. Back-off consumes one random draw at any level, so reordering the draws or
+  adding a ladder step changes every record for a given seed.
+- Of the four back-off steps in the plan, the ladders implement step 1 and, for
+  geography, step 2 in the form the schema allows: municipality never reaches Phase 2
+  output, so coarsening the region key is the whole of it. Step 3 coarsens the outcome
+  rather than the key and has no draw site here, because education and broad status
+  arrive together from the RAS209 joint sample instead of from a ladder. Step 4 is
+  refused: a national distribution could place an age outside its own band. Do not add
+  a step that emits a broad status in `detailed_status`; an unreconciled RAS209/RAS202
+  cell should fail loudly rather than silently widen that field's meaning.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
   individual records. Municipality data is used for regional calibration and is absent
   from Phase 2 output. Do not add names, addresses, occupations, employers, income,

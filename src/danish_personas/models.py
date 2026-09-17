@@ -5,6 +5,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Increment when deterministic sampling semantics or generated record columns change.
+# The run identity includes this value so incompatible historical outputs cannot be
+# silently reused.
+SAMPLER_SCHEMA_VERSION: int = 2
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
+
 
 class StatBankValue(BaseModel):
     """One code and label from StatBank metadata."""
@@ -131,9 +137,11 @@ class DemographicRecord(OceanTraits):
     persona_id: str
     country: t.Literal["Danmark"]
     age: int = Field(ge=18, le=125)
+    age_resolution: t.Literal["age_band_sex", "age_band"]
     age_band: str
     sex: t.Literal["male", "female"]
     marital_status: str
+    marital_resolution: t.Literal["region_age_band_sex", "age_band_sex", "age_band"]
     region_code: str
     region: str
     education_level: str
@@ -142,12 +150,14 @@ class DemographicRecord(OceanTraits):
     labour_market_status: str
     detailed_status_code: str
     detailed_status: str
+    detailed_status_resolution: t.Literal["age_band_sex_status", "sex_status", "status"]
 
 
 class RunManifest(StrictModel):
     """Manifest for one deterministic generation run."""
 
     run_id: str
+    sampler_schema_version: int = Field(ge=1)
     created_at: str
     bundle_id: str
     bundle_manifest_sha256: str
@@ -269,10 +279,27 @@ class ValidationConfig(StrictModel):
     standard_error_multiplier: float = Field(gt=0.0)
     minimum_expected_count: float = Field(ge=0.0)
     maximum_ocean_pairwise_correlation: float = Field(ge=0.0)
+    maximum_backoff_rate: float = Field(ge=0.0, le=1.0)
     maximum_total_variation: dict[str, float]
     smoke_maximum_total_variation: float = Field(gt=0.0)
     smoke_holdout_maximum_total_variation: float = Field(gt=0.0)
     mandatory_marginals: list[str]
+
+    @model_validator(mode="after")
+    def validate_version(self) -> "ValidationConfig":
+        """Reject validation files with an unsupported schema version.
+
+        Returns:
+            The validated configuration.
+
+        Raises:
+            ValueError:
+                If the configuration version is not supported.
+        """
+        if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
+            message = f"Unsupported validation config version: {self.version}"
+            raise ValueError(message)
+        return self
 
 
 class ValidationReport(StrictModel):

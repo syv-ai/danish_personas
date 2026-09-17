@@ -2,6 +2,7 @@
 
 import collections.abc as c
 import json
+import typing as t
 from pathlib import Path
 
 import polars as pl
@@ -21,12 +22,13 @@ from danish_personas.generation.report import (
     validate_persona_run,
 )
 from danish_personas.io import sha256_file, write_json
-from danish_personas.models import RunManifest, ValidationReport
+from danish_personas.models import SAMPLER_SCHEMA_VERSION, RunManifest, ValidationReport
 from scripts.generate_persona_pilot import main as pilot_main
 
 
 class _MockClient:
     requests = 0
+    payloads: list[dict[str, object]] = []
 
     def __init__(
         self,
@@ -42,7 +44,10 @@ class _MockClient:
     def close(self) -> None:
         return None
 
-    def complete(self, schema_name: str, **_: object) -> LLMResponse:
+    def complete(self, schema_name: str, **kwargs: object) -> LLMResponse:
+        payload = kwargs["user_payload"]
+        assert isinstance(payload, dict)
+        type(self).payloads.append(t.cast(dict[str, object], payload))
         type(self).requests += 1
         self._requests_made += 1
         if self._record_request is not None:
@@ -152,6 +157,137 @@ class _RejectingClient(_MockClient):
         return response
 
 
+def test_generation_withholds_resolution_provenance_from_both_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both LLM stages receive values without sampler resolution metadata."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    _MockClient.payloads = []
+
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+
+    resolution_columns = (
+        "age_resolution",
+        "marital_resolution",
+        "education_resolution",
+        "detailed_status_resolution",
+    )
+    sample = pl.read_parquet(paths["sample"])
+    assert set(resolution_columns) <= set(sample.columns)
+    assert len(_MockClient.payloads) == 2
+    attributes_payload = _MockClient.payloads[0]["demographics_and_personality"]
+    descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
+    assert isinstance(attributes_payload, dict)
+    assert isinstance(descriptions_payload, dict)
+    assert set(resolution_columns).isdisjoint(attributes_payload)
+    assert set(resolution_columns).isdisjoint(descriptions_payload)
+    assert "generated_attributes" in _MockClient.payloads[1]
+
+    generation_manifest = json.loads(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
+    assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
+    output = pl.read_parquet(run_dir / "generated-personas.parquet")
+    assert set(resolution_columns) <= set(output.columns)
+    assert output.select(list(resolution_columns)).equals(
+        sample.head(1).select(list(resolution_columns))
+    )
+
+
+def _write_inputs(root: Path) -> dict[str, Path]:
+    run_dir = root / "upstream"
+    run_dir.mkdir()
+    source = pl.DataFrame(
+        {
+            "persona_id": ["persona-1", "persona-2"],
+            "value": [1, 2],
+            "age_resolution": ["age_band_sex", "age_band"],
+            "marital_resolution": ["region_age_band_sex", "age_band"],
+            "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
+            "detailed_status_resolution": ["status", "sex_status"],
+        }
+    )
+    source_path = run_dir / "structured-records.parquet"
+    sample_path = run_dir / "text-development-seeds.parquet"
+    source.write_parquet(source_path)
+    source.write_parquet(sample_path)
+    run_manifest = RunManifest(
+        run_id="upstream-run",
+        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
+        created_at="2026-01-01T00:00:00+00:00",
+        bundle_id="bundle",
+        bundle_manifest_sha256="0" * 64,
+        sampling_config_sha256="1" * 64,
+        rows=2,
+        seed=1,
+        data_file=Path(source_path.name),
+        data_sha256=sha256_file(source_path),
+        logical_content_sha256="2" * 64,
+        llm_calls=0,
+    )
+    write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
+    write_json(
+        path=run_dir / "validation-report.json",
+        payload=ValidationReport(
+            kind="demographics",
+            passed=True,
+            created_at="2026-01-01T00:00:00+00:00",
+            subject_id=run_manifest.run_id,
+            metrics=[],
+        ),
+    )
+    sample_manifest = FrozenSampleManifest(
+        source_run_id=run_manifest.run_id,
+        rows=2,
+        strata=[],
+        method="test",
+        data_file=Path(sample_path.name),
+        sha256=sha256_file(sample_path),
+        llm_calls=0,
+    )
+    sample_manifest_path = sample_path.with_suffix(".manifest.json")
+    write_json(path=sample_manifest_path, payload=sample_manifest)
+    attributes_prompt = root / "attributes.md"
+    personas_prompt = root / "personas.md"
+    attributes_prompt.write_text("Danske attributter")
+    personas_prompt.write_text("Danske personaer")
+    config_path = root / "generation.yaml"
+    config = {
+        "version": 1,
+        "llm_generation_enabled": True,
+        "base_url": "http://test/v1",
+        "model": "test-model",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 2,
+        "maximum_validation_attempts": 2,
+        "maximum_total_requests": 5,
+        "retry_backoff_seconds": 0.0,
+        "maximum_smoke_rows": 2,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": None,
+        "response_format": "json_schema",
+        "attributes_prompt": str(attributes_prompt),
+        "personas_prompt": str(personas_prompt),
+    }
+    config_path.write_text(yaml.safe_dump(config))
+    return {
+        "sample": sample_path,
+        "sample_manifest": sample_manifest_path,
+        "config": config_path,
+    }
+
+
 def test_pilot_merges_validated_shards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,81 +359,6 @@ def test_pilot_merges_validated_shards(
 
     batch_manifest_path.write_bytes(original_batch_manifest)
     write_json(path=manifest_path, payload=original_manifest)
-
-
-def _write_inputs(root: Path) -> dict[str, Path]:
-    run_dir = root / "upstream"
-    run_dir.mkdir()
-    source = pl.DataFrame({"persona_id": ["persona-1", "persona-2"], "value": [1, 2]})
-    source_path = run_dir / "structured-records.parquet"
-    sample_path = run_dir / "text-development-seeds.parquet"
-    source.write_parquet(source_path)
-    source.write_parquet(sample_path)
-    run_manifest = RunManifest(
-        run_id="upstream-run",
-        created_at="2026-01-01T00:00:00+00:00",
-        bundle_id="bundle",
-        bundle_manifest_sha256="0" * 64,
-        sampling_config_sha256="1" * 64,
-        rows=2,
-        seed=1,
-        data_file=Path(source_path.name),
-        data_sha256=sha256_file(source_path),
-        logical_content_sha256="2" * 64,
-        llm_calls=0,
-    )
-    write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
-    write_json(
-        path=run_dir / "validation-report.json",
-        payload=ValidationReport(
-            kind="demographics",
-            passed=True,
-            created_at="2026-01-01T00:00:00+00:00",
-            subject_id=run_manifest.run_id,
-            metrics=[],
-        ),
-    )
-    sample_manifest = FrozenSampleManifest(
-        source_run_id=run_manifest.run_id,
-        rows=2,
-        strata=[],
-        method="test",
-        data_file=Path(sample_path.name),
-        sha256=sha256_file(sample_path),
-        llm_calls=0,
-    )
-    sample_manifest_path = sample_path.with_suffix(".manifest.json")
-    write_json(path=sample_manifest_path, payload=sample_manifest)
-    attributes_prompt = root / "attributes.md"
-    personas_prompt = root / "personas.md"
-    attributes_prompt.write_text("Danske attributter")
-    personas_prompt.write_text("Danske personaer")
-    config_path = root / "generation.yaml"
-    config = {
-        "version": 1,
-        "llm_generation_enabled": True,
-        "base_url": "http://test/v1",
-        "model": "test-model",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 2,
-        "maximum_validation_attempts": 2,
-        "maximum_total_requests": 5,
-        "retry_backoff_seconds": 0.0,
-        "maximum_smoke_rows": 2,
-        "max_tokens": None,
-        "enable_thinking": None,
-        "reasoning_effort": None,
-        "response_format": "json_schema",
-        "attributes_prompt": str(attributes_prompt),
-        "personas_prompt": str(personas_prompt),
-    }
-    config_path.write_text(yaml.safe_dump(config))
-    return {
-        "sample": sample_path,
-        "sample_manifest": sample_manifest_path,
-        "config": config_path,
-    }
 
 
 def test_pipeline_rejects_tampering_and_resumes(

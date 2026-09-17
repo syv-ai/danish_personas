@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,7 +11,8 @@ import numpy as np
 import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
-from ..models import BundleManifest, RunManifest, SamplingConfig
+from ..ladders import SAMPLED_ATTRIBUTES, Ladder
+from ..models import SAMPLER_SCHEMA_VERSION, BundleManifest, RunManifest, SamplingConfig
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -21,6 +23,18 @@ TRAITS = (
     "neuroticism",
 )
 Distribution = tuple[list[dict[str, object]], np.ndarray]
+
+
+@dataclass(frozen=True)
+class LadderLevel:
+    """One built back-off level and the key columns that address it."""
+
+    name: str
+    key_columns: tuple[str, ...]
+    distributions: dict[tuple[str, ...], Distribution]
+
+
+LadderIndex = list[LadderLevel]
 
 
 def generate_records(
@@ -53,7 +67,8 @@ def generate_records(
         bundle_manifest_path.read_text(encoding="utf-8")
     )
     run_id = sha256_text(
-        f"{bundle.bundle_id}:{sha256_file(sampling_config_path)}:{rows}:{seed}"
+        f"{SAMPLER_SCHEMA_VERSION}:{bundle.bundle_id}:"
+        f"{sha256_file(sampling_config_path)}:{rows}:{seed}"
     )[:16]
     run_dir = output_dir / run_id
     manifest_path = run_dir / "run-manifest.json"
@@ -61,6 +76,9 @@ def generate_records(
         manifest = RunManifest.model_validate_json(
             manifest_path.read_text(encoding="utf-8")
         )
+        if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
+            message = "Generated run uses an unsupported sampler schema version"
+            raise ValueError(message)
         data_path = run_dir / manifest.data_file
         if sha256_file(data_path) != manifest.data_sha256:
             message = f"Generated run checksum mismatch: {data_path}"
@@ -69,33 +87,24 @@ def generate_records(
         return run_dir
 
     source_dir = bundle_dir / "normalized"
-    age_frame = pl.read_parquet(source_dir / "folk_age_sampling.parquet")
-    marital_frame = pl.read_parquet(source_dir / "folk_marital_sampling.parquet")
     joint_frame = pl.read_parquet(source_dir / "ras209_sampling.parquet")
-    detail_frame = pl.read_parquet(source_dir / "ras202_sampling.parquet")
     demographic_seed, ocean_seed = np.random.SeedSequence(seed).spawn(2)
     demographic_rng = np.random.default_rng(demographic_seed)
     ocean_rng = np.random.default_rng(ocean_seed)
 
     sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
-    age_distributions = _distribution_index(
-        frame=age_frame, key_columns=["age_band", "sex"], payload_columns=["age"]
-    )
-    marital_distributions = _distribution_index(
-        frame=marital_frame,
-        key_columns=["region_code", "age_band", "sex"],
-        payload_columns=["marital_status"],
-    )
-    detail_distributions = _distribution_index(
-        frame=detail_frame,
-        key_columns=["age_band", "sex", "labour_market_status"],
-        payload_columns=["detailed_status_code", "detailed_status"],
-    )
+    ladders = {
+        attribute.resolution_column: _ladder_index(
+            frame=pl.read_parquet(source_dir / attribute.prepared_file),
+            ladder=attribute.ladder,
+            payload_columns=list(attribute.payload_columns),
+            smoothing=config.smoothing,
+        )
+        for attribute in SAMPLED_ATTRIBUTES
+    }
     records = _build_records(
         sampled_joint=sampled_joint,
-        age_distributions=age_distributions,
-        marital_distributions=marital_distributions,
-        detail_distributions=detail_distributions,
+        ladders=ladders,
         rng=demographic_rng,
         country=config.country,
         seed=seed,
@@ -108,6 +117,7 @@ def generate_records(
     frame.write_parquet(data_path, compression="zstd")
     manifest = RunManifest(
         run_id=run_id,
+        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
         created_at=_now(),
         bundle_id=bundle.bundle_id,
         bundle_manifest_sha256=sha256_file(bundle_manifest_path),
@@ -143,36 +153,40 @@ def _add_ocean(
 
 def _build_records(
     sampled_joint: pl.DataFrame,
-    age_distributions: dict[tuple[str, ...], Distribution],
-    marital_distributions: dict[tuple[str, ...], Distribution],
-    detail_distributions: dict[tuple[str, ...], Distribution],
+    ladders: dict[str, LadderIndex],
     rng: np.random.Generator,
     country: str,
     seed: int,
 ) -> list[dict[str, object]]:
+    """Draw the remaining fields for every quota-sampled joint row.
+
+    Args:
+        sampled_joint:
+            One row per record from the RAS209 joint backbone.
+        ladders:
+            Built ladder per resolution column.
+        rng:
+            Random generator, consumed once per drawn field.
+        country:
+            Fixed country label for every record.
+        seed:
+            Seed the deterministic identifiers derive from.
+
+    Returns:
+        One mapping per record, before OCEAN traits are attached.
+    """
     records: list[dict[str, object]] = []
     for index, joint in enumerate(sampled_joint.iter_rows(named=True)):
-        region_code = str(joint["region_code"])
-        age_band = str(joint["age_band"])
-        sex = str(joint["sex"])
-        labour_status = str(joint["labour_market_status"])
-        age = _as_int(
-            value=_draw(distributions=age_distributions, key=(age_band, sex), rng=rng)[
-                "age"
-            ]
-        )
-        marital_status = str(
-            _draw(
-                distributions=marital_distributions,
-                key=(region_code, age_band, sex),
-                rng=rng,
-            )["marital_status"]
-        )
-        detail = _draw(
-            distributions=detail_distributions,
-            key=(age_band, sex, labour_status),
-            rng=rng,
-        )
+        values = {
+            column: str(joint[column])
+            for column in ("age_band", "sex", "region_code", "labour_market_status")
+        }
+        drawn: dict[str, object] = {}
+        for column, ladder_index in ladders.items():
+            payload, level = _draw(ladder_index=ladder_index, values=values, rng=rng)
+            drawn.update(payload)
+            drawn[column] = level
+        age = _as_int(value=drawn["age"])
         records.append(
             {
                 "persona_id": str(
@@ -180,19 +194,22 @@ def _build_records(
                 ),
                 "country": country,
                 "age": age,
-                "age_band": age_band,
-                "sex": sex,
-                "marital_status": marital_status,
-                "region_code": region_code,
+                "age_resolution": drawn["age_resolution"],
+                "age_band": values["age_band"],
+                "sex": values["sex"],
+                "marital_status": drawn["marital_status"],
+                "marital_resolution": drawn["marital_resolution"],
+                "region_code": values["region_code"],
                 "region": joint["region"],
                 "education_level": joint["education_level"],
                 "education_source_code": joint["education_source_code"],
                 "education_resolution": (
                     "ras209_67_plus_proxy" if age >= 70 else "ras209_age_band"
                 ),
-                "labour_market_status": labour_status,
-                "detailed_status_code": detail["detailed_status_code"],
-                "detailed_status": detail["detailed_status"],
+                "labour_market_status": values["labour_market_status"],
+                "detailed_status_code": drawn["detailed_status_code"],
+                "detailed_status": drawn["detailed_status"],
+                "detailed_status_resolution": drawn["detailed_status_resolution"],
             }
         )
     return records
@@ -206,34 +223,130 @@ def _as_int(value: object) -> int:
 
 
 def _draw(
-    distributions: dict[tuple[str, ...], Distribution],
-    key: tuple[str, ...],
-    rng: np.random.Generator,
-) -> dict[str, object]:
-    if key not in distributions:
-        message = f"No prepared distribution for {key}"
-        raise ValueError(message)
-    payloads, probabilities = distributions[key]
-    index = int(rng.choice(len(payloads), p=probabilities))
-    return payloads[index]
+    ladder_index: LadderIndex, values: dict[str, str], rng: np.random.Generator
+) -> tuple[dict[str, object], str]:
+    """Draw from the most specific populated cell, reporting its level.
+
+    Exactly one random draw is consumed regardless of how far the ladder backs
+    off, so the random stream does not depend on cell sparsity.
+
+    Args:
+        ladder_index:
+            Per-level distributions, most specific first.
+        values:
+            Current record values available as key components.
+        rng:
+            Random generator.
+
+    Returns:
+        The drawn payload and the name of the level that produced it.
+
+    Raises:
+        ValueError:
+            If no level of the ladder has a populated cell.
+    """
+    for level in ladder_index:
+        key = tuple(values[column] for column in level.key_columns)
+        distribution = level.distributions.get(key)
+        if distribution is None:
+            continue
+        payloads, probabilities = distribution
+        index = int(rng.choice(len(payloads), p=probabilities))
+        return payloads[index], level.name
+    message = f"No prepared distribution at any back-off level for {values}"
+    raise ValueError(message)
+
+
+def _ladder_index(
+    frame: pl.DataFrame, ladder: Ladder, payload_columns: list[str], smoothing: float
+) -> LadderIndex:
+    """Build one distribution index per level of a back-off ladder.
+
+    Structurally impossible cells are dropped once here rather than per level,
+    so smoothing can only reweight categories the sources actually support.
+
+    Args:
+        frame:
+            Prepared source counts for one sampled attribute.
+        ladder:
+            Ordered levels, most specific first.
+        payload_columns:
+            Columns making up the drawn value.
+        smoothing:
+            Additive pseudo-count applied to surviving cells.
+
+    Returns:
+        Built levels in ladder order.
+    """
+    eligible = _eligible(frame=frame)
+    return [
+        LadderLevel(
+            name=level,
+            key_columns=key_columns,
+            distributions=_distribution_index(
+                frame=eligible,
+                key_columns=list(key_columns),
+                payload_columns=payload_columns,
+                smoothing=smoothing,
+            ),
+        )
+        for level, key_columns in ladder
+    ]
 
 
 def _distribution_index(
-    frame: pl.DataFrame, key_columns: list[str], payload_columns: list[str]
+    frame: pl.DataFrame,
+    key_columns: list[str],
+    payload_columns: list[str],
+    smoothing: float,
 ) -> dict[tuple[str, ...], Distribution]:
+    """Index one conditional distribution per key cell.
+
+    A coarser level drops key columns, so several source rows can collapse onto
+    the same payload; counts are summed once over the whole frame rather than
+    per cell. Sorting after that aggregation keeps payload order deterministic.
+
+    Args:
+        frame:
+            Structurally eligible source counts.
+        key_columns:
+            Columns addressing a cell.
+        payload_columns:
+            Columns making up the drawn value.
+        smoothing:
+            Additive pseudo-count applied to surviving cells.
+
+    Returns:
+        Payloads and probabilities for every populated cell.
+    """
     distributions: dict[tuple[str, ...], Distribution] = {}
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
-        [*key_columns, *payload_columns]
+    aggregated = (
+        frame.group_by([*key_columns, *payload_columns])
+        .agg(pl.col("count").sum())
+        .sort([*key_columns, *payload_columns])
     )
-    for raw_key, group in eligible.group_by(key_columns, maintain_order=True):
+    for raw_key, group in aggregated.group_by(key_columns, maintain_order=True):
         key = tuple(str(value) for value in raw_key)
         payloads = [
             dict(zip(payload_columns, row, strict=True))
             for row in group.select(payload_columns).iter_rows()
         ]
-        counts = group.get_column("count").to_numpy().astype(np.float64)
+        counts = group.get_column("count").to_numpy().astype(np.float64) + smoothing
         distributions[key] = (payloads, counts / counts.sum())
     return distributions
+
+
+def _eligible(frame: pl.DataFrame) -> pl.DataFrame:
+    """Drop structurally impossible source cells.
+
+    Args:
+        frame:
+            Prepared source counts.
+
+    Returns:
+        Rows with a positive, unsuppressed count.
+    """
+    return frame.filter((pl.col("count") > 0) & ~pl.col("suppressed"))
 
 
 def _logical_checksum(frame: pl.DataFrame) -> str:
@@ -251,9 +364,7 @@ def _now() -> str:
 def _quota_sample(
     frame: pl.DataFrame, rows: int, rng: np.random.Generator
 ) -> pl.DataFrame:
-    eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
-        sorted(frame.columns)
-    )
+    eligible = _eligible(frame=frame).sort(sorted(frame.columns))
     weights = eligible.get_column("count").to_numpy().astype(np.float64)
     expected = weights / weights.sum() * rows
     allocations = np.floor(expected).astype(np.int64)
