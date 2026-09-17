@@ -1,0 +1,26 @@
+# Unified CLI
+
+The installed `danish-personas` command exposes the package services without shelling
+out to legacy scripts:
+
+```text
+sources restore | pack | prepare | resolve | fetch
+validate sources | demographics | personas | pilot
+demographics run
+sample freeze
+personas shard | pilot
+workflow deterministic --target smoke|statistical
+```
+
+The deterministic workflow defaults to the committed raw archive and versioned
+configuration. It restores, prepares, validates, generates, and validates in order,
+passing each service's returned path to the next boundary. `statistical` runs the smoke
+stage first, then generates the configured statistical row count and freezes 1,000 rows
+by default. Use `--sample-rows` to change that development sample size.
+
+Source `resolve` and `fetch` refuse to run without explicit `--network`. Persona shards
+are dry runs unless `--live` is supplied; pilots always require `--live`. The command
+never loads `.env`, and deterministic workflows make no network or LLM requests.
+
+The existing `uv run src/scripts/*.py` commands remain supported for compatibility.
+Run `uv run danish-personas --help` or append `--help` to any group for all options.
