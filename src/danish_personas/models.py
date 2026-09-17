@@ -5,6 +5,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Increment when deterministic sampling semantics or generated record columns change.
+# The run identity includes this value so incompatible historical outputs cannot be
+# silently reused.
+SAMPLER_SCHEMA_VERSION: int = 2
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
+
 
 class StatBankValue(BaseModel):
     """One code and label from StatBank metadata."""
@@ -151,6 +157,7 @@ class RunManifest(StrictModel):
     """Manifest for one deterministic generation run."""
 
     run_id: str
+    sampler_schema_version: int = Field(ge=1)
     created_at: str
     bundle_id: str
     bundle_manifest_sha256: str
@@ -277,6 +284,22 @@ class ValidationConfig(StrictModel):
     smoke_maximum_total_variation: float = Field(gt=0.0)
     smoke_holdout_maximum_total_variation: float = Field(gt=0.0)
     mandatory_marginals: list[str]
+
+    @model_validator(mode="after")
+    def validate_version(self) -> "ValidationConfig":
+        """Reject validation files with an unsupported schema version.
+
+        Returns:
+            The validated configuration.
+
+        Raises:
+            ValueError:
+                If the configuration version is not supported.
+        """
+        if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
+            message = f"Unsupported validation config version: {self.version}"
+            raise ValueError(message)
+        return self
 
 
 class ValidationReport(StrictModel):

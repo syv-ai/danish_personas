@@ -12,7 +12,7 @@ import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import SAMPLED_ATTRIBUTES, Ladder
-from ..models import BundleManifest, RunManifest, SamplingConfig
+from ..models import SAMPLER_SCHEMA_VERSION, BundleManifest, RunManifest, SamplingConfig
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -67,7 +67,8 @@ def generate_records(
         bundle_manifest_path.read_text(encoding="utf-8")
     )
     run_id = sha256_text(
-        f"{bundle.bundle_id}:{sha256_file(sampling_config_path)}:{rows}:{seed}"
+        f"{SAMPLER_SCHEMA_VERSION}:{bundle.bundle_id}:"
+        f"{sha256_file(sampling_config_path)}:{rows}:{seed}"
     )[:16]
     run_dir = output_dir / run_id
     manifest_path = run_dir / "run-manifest.json"
@@ -75,6 +76,9 @@ def generate_records(
         manifest = RunManifest.model_validate_json(
             manifest_path.read_text(encoding="utf-8")
         )
+        if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
+            message = "Generated run uses an unsupported sampler schema version"
+            raise ValueError(message)
         data_path = run_dir / manifest.data_file
         if sha256_file(data_path) != manifest.data_sha256:
             message = f"Generated run checksum mismatch: {data_path}"
@@ -113,6 +117,7 @@ def generate_records(
     frame.write_parquet(data_path, compression="zstd")
     manifest = RunManifest(
         run_id=run_id,
+        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
         created_at=_now(),
         bundle_id=bundle.bundle_id,
         bundle_manifest_sha256=sha256_file(bundle_manifest_path),

@@ -24,7 +24,8 @@ These gates apply before any LLM integration may be enabled.
   draw backs off to a coarser cell.
 - Every record records the back-off level that produced its age, marital status,
   and detailed status, and each of those ladders independently keeps at most 1% of
-  records on a coarser cell.
+  records on a coarser cell. The validation configuration is schema version 2 and
+  explicitly requires `maximum_backoff_rate`.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
@@ -37,7 +38,11 @@ These gates apply before any LLM integration may be enabled.
   at most 5%.
 - OCEAN scores lie in `[20, 80]`.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
-- The run manifest records exactly zero LLM calls.
+- The run manifest records exactly zero LLM calls and the sampler schema version.
+
+`SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling
+semantics or generated record columns change incompatibly. It is part of the
+content-addressed run identity, so a legacy run cannot be silently reused.
 
 ## Persona smoke runs
 

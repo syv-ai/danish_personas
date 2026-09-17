@@ -6,6 +6,8 @@
 
 - UTF-8 source verification and deterministic text output now behave consistently on
   Windows and Unix.
+- Deterministic runs now fingerprint the sampler schema, preventing legacy outputs
+  from being silently reused after an incompatible sampler change.
 
 ### Added
 
@@ -41,6 +43,8 @@
 
 ### Changed
 
+- The validation configuration is now schema version 2 and requires the per-ladder
+  `maximum_backoff_rate` threshold.
 - The municipality-to-region map now comes from the official classification rather than
   from positional inference over FOLK1A's StatBank metadata. Preparation cross-checks the
   two and fails the bundle on any disagreement, missing municipality, or null value; on
