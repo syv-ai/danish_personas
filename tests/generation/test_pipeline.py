@@ -445,6 +445,66 @@ def test_pilot_merges_validated_shards(
     write_json(path=manifest_path, payload=original_manifest)
 
 
+def test_pilot_revalidates_shards_without_rewriting_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh shard validation rejects stale reports and preserves their bytes."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    result = CliRunner().invoke(
+        pilot_main,
+        [
+            "--input",
+            str(paths["sample"]),
+            "--sample-manifest",
+            str(paths["sample_manifest"]),
+            "--config",
+            str(paths["config"]),
+            "--output-dir",
+            str(tmp_path / "pilot"),
+            "--rows",
+            "1",
+            "--batch-size",
+            "1",
+            "--concurrency",
+            "1",
+            "--maximum-total-requests",
+            "10",
+            "--input-price-per-million",
+            "0.3",
+            "--output-price-per-million",
+            "1.2",
+            "--live",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    pilot_dir = next((tmp_path / "pilot").iterdir())
+    pilot_manifest_path = pilot_dir / "pilot-manifest.json"
+    pilot_manifest = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    reference = pilot_manifest["batch_runs"][0]
+    report_path = pilot_dir / reference["validation_report_file"]
+    report_bytes = report_path.read_bytes()
+    report_sha256 = sha256_file(report_path)
+    checkpoint_path = next((pilot_dir / "batches").glob("*/checkpoints/*.json"))
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["generation_context_sha256"] = "f" * 64
+    checkpoint_path.write_text(json.dumps(checkpoint))
+
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+    assert report_path.read_bytes() == report_bytes
+    assert sha256_file(report_path) == report_sha256
+
+    stored_report = json.loads(report_bytes)
+    stored_report["kind"] = "demographics"
+    write_json(path=report_path, payload=stored_report)
+    pilot_manifest["batch_runs"][0]["validation_report_sha256"] = sha256_file(
+        report_path
+    )
+    write_json(path=pilot_manifest_path, payload=pilot_manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+
 def test_pipeline_rejects_tampering_and_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
