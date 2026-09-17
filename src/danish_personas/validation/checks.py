@@ -75,6 +75,7 @@ def validate_demographics(
     )
     metrics.extend(_heldout_metrics(frame=frame, bundle_dir=bundle_dir, config=config))
     metrics.extend(_ocean_metrics(frame=frame, config=config))
+    metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.append(
         MetricResult(
             name="llm_calls",
@@ -110,6 +111,10 @@ def _distribution_metrics(
         "age_band": (folk, ["age_band"]),
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
+        "origin_country": (
+            pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet"),
+            ["origin_country_code", "origin_country"],
+        ),
     }
     metrics: list[MetricResult] = []
     for name in config.mandatory_marginals:
@@ -279,6 +284,53 @@ def _ocean_metrics(frame: pl.DataFrame, config: ValidationConfig) -> list[Metric
             value=maximum_correlation,
             threshold=threshold if correlation_required else "informational below 100k",
             details="OCEAN traits are sampled independently of one another.",
+        ),
+    ]
+
+
+def _origin_mapping_metrics(
+    frame: pl.DataFrame, bundle_dir: Path
+) -> list[MetricResult]:
+    """Check that generated origin labels exactly match official FOLK2 codes.
+
+    Returns:
+        Mapping and positive-weight validation metrics.
+    """
+    target = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    )
+    expected = dict(
+        zip(
+            target.get_column("origin_country_code").to_list(),
+            target.get_column("origin_country").to_list(),
+            strict=True,
+        )
+    )
+    observed = {
+        row["origin_country_code"]: row["origin_country"]
+        for row in frame.select("origin_country_code", "origin_country")
+        .unique()
+        .iter_rows(named=True)
+    }
+    mismatches = sum(expected.get(code) != label for code, label in observed.items())
+    zero_weight_codes = set(
+        target.filter(pl.col("count") <= 0).get_column("origin_country_code").to_list()
+    )
+    emitted_zero_weight = len(zero_weight_codes & set(observed))
+    return [
+        MetricResult(
+            name="origin_country_mapping",
+            passed=mismatches == 0,
+            value=mismatches,
+            threshold=0,
+            details="Generated origin labels must use the official code mapping.",
+        ),
+        MetricResult(
+            name="origin_country_positive_weights",
+            passed=emitted_zero_weight == 0,
+            value=emitted_zero_weight,
+            threshold=0,
+            details="Categories with zero official weight must never be emitted.",
         ),
     ]
 

@@ -1,4 +1,4 @@
-version: 2
+version: 3
 absolute_proportion_tolerance: 0.005
 standard_error_multiplier: 3.0
 minimum_expected_count: 5.0
@@ -16,3 +16,4 @@ mandatory_marginals:
   - age_band
   - education_level
   - labour_market_status
+  - origin_country

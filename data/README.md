@@ -4,8 +4,11 @@
 to build the Danish persona demographic distributions. It holds the six Statistics
 Denmark StatBank table snapshots and the official Statistics Denmark classification
 snapshot that supplies the region, landsdel, and municipality hierarchy. FOLK2 supplies
-an audit-only national marginal of official country-of-origin categories for adults; it
-is not yet sampled or emitted. The archive contains only public aggregate data; it
+an official national marginal of country-of-origin categories for adults. It is sampled
+independently into `origin_country_code` and `origin_country` in generated records; the
+fields are withheld from LLM payloads. Origin is not ethnicity, citizenship, or residence
+and cannot drive language, culture, religion, occupation, personality, or appearance.
+The archive contains only public aggregate data; it
 contains no personal microdata. It contains 39 files: six table snapshots and one
 classification snapshot. Restore the snapshots with Python 3.14:
 

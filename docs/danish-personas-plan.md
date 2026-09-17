@@ -244,7 +244,7 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Variable | Candidate official sources | Notes |
 | --- | --- | --- |
 | Age, sex, geography | FOLK1A, BEFOLK3 | Select compatible reference dates |
-| Adult origin marginal | FOLK2 | National official IELAND categories; audit only |
+| Adult origin marginal | FOLK2 | National official IELAND categories; independent Phase 2 marginal |
 | Marital status | FOLK1A | Preserve official definitions |
 | Citizenship validation | FOLK1B | Uses broad age bands |
 | Ancestry validation | FOLK1E | Do not interpret as ethnicity |
@@ -295,9 +295,9 @@ Important source limitations to carry into the dataset card include:
 - FOLK2 combines age, sex, HERKOMST, STATSB, and official IELAND counts only as an
   independent national marginal for adults in 2025. Its 312,336 selected observations
   produce 2,186,352 API cells, so the locked query uses the BULK exemption. It is not
-  ethnicity or citizenship; official labels such as Stateless and Not stated are retained
-  without custom country groups or inferred correlations. It is not yet sampled or
-  emitted, and a later sampling and privacy review is required.
+  ethnicity, citizenship, or residence; official labels such as Stateless and Not stated
+  are retained without custom country groups or inferred correlations. It is sampled
+  independently into Phase 2 origin fields and withheld from both LLM stages.
 
 ## Required execution order
 
@@ -320,8 +320,10 @@ generation independently testable and restartable.
 ### Implementation status
 
 Phases 0-2 were implemented and validated on 14 September 2026. The source bundle now
-also prepares the audit-only FOLK2 adult origin marginal without changing the Phase-2
-schema or sampler. The local source bundle
+also prepares the official FOLK2 adult origin marginal. Phase 2 samples this marginal
+independently with deterministic quotas and retains its official code and label; origin
+is withheld from both LLM stages and cannot drive language, culture, religion,
+occupation, personality, or visual appearance. The local source bundle
 was `e7757f736ef5652f`; the passing 100,000-row non-LLM run was
 `f5f37949670df476`. See the [Phase 2 validation report][phase-2-report]. LLM generation
 remains disabled in configuration and guarded by an executable failure.
@@ -425,8 +427,8 @@ errors in a restricted intermediate area, not in the release artifact.
 Use a second structured generation call for the seven persona fields. Separating
 attribute and prose generation makes failures easier to detect and permits regeneration
 of text without changing the demographic sample. `visual_persona` is textual portrait
-guidance only, not image generation, and must remain non-identifying and independent
-of any demographic, OCEAN, generated-attribute, or future origin-country field.
+ guidance only, not image generation, and must remain non-identifying and independent
+of any demographic, OCEAN, generated-attribute, or origin-country field.
 
 Evaluate at least two Danish-capable models on the same stratified development set. Pick
 the model using blinded human ratings for fluency, consistency, specificity, stereotype
