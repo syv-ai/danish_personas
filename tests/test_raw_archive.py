@@ -29,7 +29,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "da7ed7cb7c5eb50a"
+    assert bundle_dir.name == "9b6e4e232aaf0778"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
@@ -62,7 +62,7 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
     restored = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert restored.exit_code == 0, restored.output
     assert target.is_dir() and not target.is_symlink()
-    assert marker.read_text() == "untouched"
+    assert marker.read_text(encoding="utf-8") == "untouched"
 
 
 def test_packing_is_byte_stable(tmp_path: Path) -> None:
@@ -84,6 +84,24 @@ def test_packing_is_byte_stable(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_packing_rejects_symlink_to_content_outside_raw_tree(tmp_path: Path) -> None:
+    """A symlink cannot make the archive include content outside the raw tree."""
+    raw_dir = tmp_path / RAW_DIRECTORY
+    raw_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    (raw_dir / "escaped.txt").symlink_to(outside)
+    archive_path = tmp_path / "archive.tar.zst"
+
+    result = CliRunner().invoke(
+        pack, ["--raw-dir", str(raw_dir), "--archive", str(archive_path)]
+    )
+
+    assert result.exit_code != 0
+    assert "non-regular" in result.output
+    assert not archive_path.exists()
+
+
 def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     """Restoration cannot silently merge with stale source files."""
     output_dir = tmp_path / "data"
@@ -94,7 +112,7 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
 
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert result.exit_code != 0
-    assert stale.read_text() == "preserve on refusal"
+    assert stale.read_text(encoding="utf-8") == "preserve on refusal"
 
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert result.exit_code == 0, result.output

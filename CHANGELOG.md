@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- UTF-8 source verification and deterministic text output now behave consistently on
+  Windows and Unix.
+
 ### Added
 
 - Reproducible acquisition and immutable snapshots for five Statistics Denmark tables
@@ -43,11 +48,6 @@
 - `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
   `classifications:` list and are `version: 2`. A lock predating that schema is warned
   about and rewritten.
-- RAS209's H10-H90 education codes are no longer documented as mapped to DISCED-15. They
-  are a StatBank presentation grouping of HFUDD, DISCED-15 does not contain them, and
-  Statistics Denmark publishes no crosswalk. `config/categories.yaml` now records the
-  official Danish and English labels verbatim, with any ISCED level flagged as this
-  repository's own editorial assertion.
 - `config/sampling.yaml`'s `smoothing` setting is now applied. It reweights the cells
   that survived the structural filter, so it cannot resurrect an absent category, and
   remains a no-op at its configured `0.0`.

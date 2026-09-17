@@ -43,7 +43,7 @@ def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:
         "response-headers.json": "{}\n",
     }
     for name, content in contents.items():
-        (tmp_path / name).write_text(content)
+        (tmp_path / name).write_text(content, encoding="utf-8", newline="\n")
     snapshot = SnapshotManifest(
         table_id="TEST",
         role="test_role",

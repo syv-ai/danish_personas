@@ -69,7 +69,7 @@ def prepare_bundle(
     for source in lock.sources:
         snapshot_dir = source_snapshot_dir(source=source, raw_dir=raw_dir)
         snapshot = SnapshotManifest.model_validate_json(
-            (snapshot_dir / "snapshot-manifest.json").read_text()
+            (snapshot_dir / "snapshot-manifest.json").read_text(encoding="utf-8")
         )
         verify_raw_snapshot(
             snapshot_dir=snapshot_dir,
@@ -81,7 +81,7 @@ def prepare_bundle(
         )
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
-            (snapshot_dir / "metadata-en.json").read_text()
+            (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
         )
         metadata_by_table[source.table_id] = metadata
         source_frames[source.table_id] = _read_source(
@@ -95,7 +95,7 @@ def prepare_bundle(
             classification=classification, raw_dir=raw_dir
         )
         classification_snapshot = ClassificationManifest.model_validate_json(
-            (classification_dir / "snapshot-manifest.json").read_text()
+            (classification_dir / "snapshot-manifest.json").read_text(encoding="utf-8")
         )
         verify_classification_snapshot(
             snapshot_dir=classification_dir,
@@ -702,7 +702,9 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
-    manifest = BundleManifest.model_validate_json(manifest_path.read_text())
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
     verify_checksums(
         base_dir=bundle_dir,
         expected=manifest.files,
@@ -811,6 +813,6 @@ def verify_raw_snapshot(
     if snapshot.query_sha256 != sha256_text(expected_query):
         message = f"Raw snapshot query does not match source lock: {query_path}"
         raise ValueError(message)
-    if query_path.read_text() != expected_query:
+    if query_path.read_text(encoding="utf-8") != expected_query:
         message = f"Raw snapshot query content is not canonical: {query_path}"
         raise ValueError(message)

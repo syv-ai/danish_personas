@@ -31,10 +31,10 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
         seed=42,
     )
     first_manifest = RunManifest.model_validate_json(
-        (first / "run-manifest.json").read_text()
+        (first / "run-manifest.json").read_text(encoding="utf-8")
     )
     second_manifest = RunManifest.model_validate_json(
-        (second / "run-manifest.json").read_text()
+        (second / "run-manifest.json").read_text(encoding="utf-8")
     )
     assert first_manifest.logical_content_sha256 == (
         second_manifest.logical_content_sha256
@@ -210,13 +210,6 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "F": "divorced",
             },
             "education": {"H70": "masters"},
-            "education_labels": {
-                "H70": {
-                    "danish": "H70 Lange videreg\u00e5ende uddannelser, LVU",
-                    "english": "H70 Masters programs",
-                    "local_isced_assertion": "7",
-                }
-            },
             "education_pooling": {"masters": "higher_education"},
             "labour_market_status": {
                 "employed": ["30"],

@@ -45,7 +45,6 @@ class CategoryConfig(StrictModel):
     sex: dict[str, str]
     marital_status: dict[str, str]
     education: dict[str, str]
-    education_labels: dict[str, "EducationLabel"]
     education_pooling: dict[str, str]
     labour_market_status: dict[str, list[str]]
 
@@ -73,14 +72,6 @@ class ClassificationManifest(StrictModel):
     response_headers_sha256: str
     retrieved_at: str
     data_bytes: int = Field(gt=0)
-
-
-class EducationLabel(StrictModel):
-    """Official DST labels and a flagged local level assertion for one code."""
-
-    danish: str
-    english: str
-    local_isced_assertion: str
 
 
 class LockedSource(StrictModel):

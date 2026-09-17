@@ -54,8 +54,8 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   than from positional inference over FOLK1A's StatBank metadata value list. The
   classification's codes are byte-identical to StatBank's `OMRÅDE` dimension ids, and it
   contributes 5 regions, 11 landsdele, and 99 level-3 areas: Denmark's 98 municipalities
-  plus Christiansø (`411`), which the classification lists beside them but which FOLK1A
-  does not report, so it never receives sampled population.
+  plus Christiansø (`411`). FOLK1A also includes code `411`, so Christiansø contributes
+  to regional calibration even though municipality is not emitted in generated records.
 - Source preparation cross-checks the classification against the map derived from
   FOLK1A's metadata and fails the bundle on any disagreement, missing municipality, or
   null value. On the committed snapshots the check reports 99 level-3 areas, 11
@@ -65,13 +65,6 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   bundle with `municipality_code`, `municipality`, `landsdel_code`, `landsdel`,
   `region_code`, and `region`. Landsdel is carried in the prepared bundle only; it is
   not added to generated records.
-- `config/categories.yaml` records, for each RAS209 `UDDANNELSE` code H10-H90, the
-  official Danish and English labels taken verbatim from that table's own StatBank
-  metadata. H10-H90 are a StatBank presentation grouping of HFUDD, not a published
-  Statistics Denmark nomenclature: DISCED-15 does not contain these codes and Statistics
-  Denmark publishes no crosswalk for them. The accompanying `local_isced_assertion` is
-  therefore this repository's own editorial judgement and must never be cited as an
-  official Statistics Denmark mapping.
 
 ## Terms
 
