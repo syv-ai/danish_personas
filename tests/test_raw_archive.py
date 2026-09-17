@@ -21,7 +21,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
     output_dir = tmp_path / "data"
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert result.exit_code == 0, result.output
-    assert len(_restored_files(output_dir=output_dir)) == 33
+    assert len(_restored_files(output_dir=output_dir)) == 39
 
     bundle_dir = prepare_bundle(
         lock_path=PROJECT_ROOT / "config" / "sources.lock.yaml",
@@ -29,7 +29,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "9b6e4e232aaf0778"
+    assert bundle_dir.name == "a637a48f35aa2fad"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
@@ -117,7 +117,7 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert result.exit_code == 0, result.output
     assert not stale.exists()
-    assert len(_restored_files(output_dir=output_dir)) == 33
+    assert len(_restored_files(output_dir=output_dir)) == 39
 
 
 @pytest.mark.parametrize(

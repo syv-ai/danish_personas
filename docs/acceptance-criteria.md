@@ -9,6 +9,11 @@ These gates apply before any LLM integration may be enabled.
 - Existing raw snapshots are never overwritten.
 - Every selected table has a positive population total and zero unhandled suppressed
   cells.
+- FOLK2's prepared national origin marginal has a positive total, unique official
+  IELAND codes and labels, zero suppression, no unhandled values, and the expected
+  official partition.
+- FOLK2 retains official categories such as Stateless and Not stated explicitly; it
+  does not create continents, regions, or inferred correlations.
 - Municipality codes map to one of the five regions, and that mapping agrees with
   the official Statistics Denmark geography classification.
 - Prepared-file checksums match the bundle manifest.
@@ -39,6 +44,8 @@ These gates apply before any LLM integration may be enabled.
 - OCEAN scores lie in `[20, 80]`.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
 - The run manifest records exactly zero LLM calls and the sampler schema version.
+- The FOLK2 marginal is not emitted in Phase 2 records and is not sent to LLMs;
+  adding origin sampling requires a later sampling and privacy review.
 
 `SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. It is part of the

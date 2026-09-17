@@ -13,6 +13,23 @@ classifications:
     page_url: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
     attachment_url: https://www.dst.dk/klassifikationsbilag/5d18d1e0-400b-4505-92ad-6782915980a3csv_da
 sources:
+  - table_id: FOLK2
+    role: origin_country_marginal
+    period: "2025"
+    format: BULK
+    dimensions:
+      ALDER:
+        selector: adult_exact_ages
+      KØN:
+        values: [M, K]
+      HERKOMST:
+        selector: all
+      STATSB:
+        selector: all
+      IELAND:
+        selector: all
+      Tid:
+        values: ["2025"]
   - table_id: FOLK1A
     role: demographic_base
     period: 2025K1
