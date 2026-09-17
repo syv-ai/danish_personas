@@ -18,6 +18,7 @@ from ..models import (
     ValidationReport,
 )
 from .client import OpenAIClient, RequestBudgetExceeded
+from .identity import generation_run_id
 from .models import (
     AttributeCheckpoint,
     FrozenSampleManifest,
@@ -99,9 +100,11 @@ def generate_personas(
         attributes_prompt=attributes_prompt,
         personas_prompt=personas_prompt,
     )
-    run_id = sha256_text(
-        ":".join([sha256_file(input_path), generation_context_sha, ordered_ids_sha])
-    )[:16]
+    run_id = generation_run_id(
+        input_sha256=sha256_file(input_path),
+        generation_context_sha256=generation_context_sha,
+        ordered_persona_ids_sha256=ordered_ids_sha,
+    )
     run_dir = output_dir / run_id
     if not live:
         LOGGER.info(

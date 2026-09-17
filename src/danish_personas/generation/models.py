@@ -110,8 +110,8 @@ class GenerationManifest(StrictModel):
 class LLMResponse(StrictModel):
     """Parsed completion plus auditable response metadata."""
 
-    response_id: str
-    model: str
+    response_id: str = Field(min_length=1, pattern=r"\S")
+    model: str = Field(min_length=1, pattern=r"\S")
     content: str
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
@@ -119,8 +119,8 @@ class LLMResponse(StrictModel):
     request_attempts: int = Field(default=1, ge=1)
     latency_seconds: float = Field(ge=0.0)
     estimated_cost_usd: float | None = Field(default=None, ge=0.0)
-    inference_provider: str | None = None
-    raw_response_sha256: str
+    inference_provider: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    raw_response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class AttributeCheckpoint(StrictModel):
