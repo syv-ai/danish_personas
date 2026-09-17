@@ -3,10 +3,12 @@
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SourceLock
 from danish_personas.sources.prepare import (
+    _materialise_origin_zero_codes,
     _origin_country_marginal,
     _origin_country_metrics,
 )
@@ -25,6 +27,39 @@ def test_folk2_lock_freezes_the_adult_official_partition() -> None:
     assert source.dimensions["HERKOMST"] == ["5", "4", "3"]
     assert source.dimensions["STATSB"] == ["DANSK", "UDLAND"]
     assert len(source.dimensions["IELAND"]) == 241
+    assert source.expected_zero_codes == [
+        "5111",
+        "5176",
+        "5184",
+        "5248",
+        "5253",
+        "5256",
+        "5264",
+        "5286",
+        "5301",
+        "5307",
+        "5325",
+        "5336",
+        "5346",
+        "5353",
+        "5394",
+        "5397",
+        "5428",
+        "5473",
+        "5480",
+        "5493",
+        "5494",
+        "5498",
+        "5506",
+        "5516",
+        "5527",
+        "5528",
+        "5529",
+        "5530",
+        "5531",
+        "5533",
+        "5535",
+    ]
     assert source.dimensions["Tid"] == ["2025"]
 
 
@@ -48,6 +83,54 @@ def test_origin_marginal_preserves_official_labels_and_weights() -> None:
     ]
 
 
+def test_origin_materialisation_rejects_unexpected_missing_codes() -> None:
+    """An omitted selected code without approval fails before preparation."""
+    raw = _origin_raw(codes=["5100"], suppressed=[False])
+
+    with pytest.raises(ValueError, match="Unexpected missing FOLK2 IELAND codes"):
+        _materialise_origin_zero_codes(
+            raw_frame=raw, selected_codes=["5100", "5103"], expected_zero_codes=[]
+        )
+
+
+def _origin_raw(codes: list[str], suppressed: list[bool]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {"IELAND": codes, "count": [100] * len(codes), "suppressed": suppressed}
+    )
+
+
+def test_origin_materialises_only_approved_zero_codes() -> None:
+    """An approved omitted code becomes an explicit zero in the marginal."""
+    raw = _origin_raw(codes=["5100"], suppressed=[False])
+    labels = {"5100": "Denmark", "5103": "Stateless"}
+    materialised = _materialise_origin_zero_codes(
+        raw_frame=raw, selected_codes=["5100", "5103"], expected_zero_codes=["5103"]
+    )
+    marginal = _origin_country_marginal(raw_frame=materialised, official_labels=labels)
+
+    metrics = _origin_country_metrics(
+        raw_frame=raw,
+        prepared_frame=marginal,
+        official_labels=labels,
+        selected_codes=["5100", "5103"],
+        expected_zero_codes=["5103"],
+    )
+
+    assert (
+        marginal.filter(pl.col("origin_country_code") == "5103").item(0, "count") == 0
+    )
+    assert metrics["passed"]
+    partition = _nested_metric(metrics=metrics, name="expected_partition")
+    assert partition["missing_raw"] == ["5103"]
+    assert partition["unexpected_missing"] == []
+
+
+def _nested_metric(metrics: dict[str, object], name: str) -> dict[str, object]:
+    metric = metrics[name]
+    assert isinstance(metric, dict)
+    return metric
+
+
 def test_origin_metrics_fail_when_a_selected_code_is_missing_raw() -> None:
     """The selected raw partition must contain every selected origin code."""
     raw = _origin_raw(codes=["5100"], suppressed=[False])
@@ -65,18 +148,6 @@ def test_origin_metrics_fail_when_a_selected_code_is_missing_raw() -> None:
     partition = _nested_metric(metrics=metrics, name="expected_partition")
     assert not partition["passed"]
     assert partition["missing_raw"] == ["5103"]
-
-
-def _nested_metric(metrics: dict[str, object], name: str) -> dict[str, object]:
-    metric = metrics[name]
-    assert isinstance(metric, dict)
-    return metric
-
-
-def _origin_raw(codes: list[str], suppressed: list[bool]) -> pl.DataFrame:
-    return pl.DataFrame(
-        {"IELAND": codes, "count": [100] * len(codes), "suppressed": suppressed}
-    )
 
 
 def test_origin_metrics_reject_changed_official_label() -> None:

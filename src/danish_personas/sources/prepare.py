@@ -62,7 +62,6 @@ def prepare_bundle(
         return bundle_dir
 
     normalized_dir = bundle_dir / "normalized"
-    normalized_dir.mkdir(parents=True, exist_ok=True)
     snapshots: list[SnapshotManifest] = []
     source_frames: dict[str, pl.DataFrame] = {}
     metadata_by_table: dict[str, StatBankMetadata] = {}
@@ -84,14 +83,19 @@ def prepare_bundle(
             (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
         )
         metadata_by_table[source.table_id] = metadata
-        source_frame = _read_source(
+        source_frames[source.table_id] = _read_source(
             csv_path=snapshot_dir / "data.csv", dimension_codes=list(source.dimensions)
         )
-        if source.table_id == "FOLK2":
-            source_frame = _materialise_origin_zero_codes(
-                raw_frame=source_frame, selected_codes=source.dimensions["IELAND"]
-            )
-        source_frames[source.table_id] = source_frame
+
+    origin_source = next(
+        source for source in lock.sources if source.table_id == "FOLK2"
+    )
+    prepared_source_frames = dict(source_frames)
+    prepared_source_frames["FOLK2"] = _materialise_origin_zero_codes(
+        raw_frame=source_frames["FOLK2"],
+        selected_codes=origin_source.dimensions["IELAND"],
+        expected_zero_codes=origin_source.expected_zero_codes,
+    )
 
     classification_snapshots: list[ClassificationManifest] = []
     geography_csv_path: Path | None = None
@@ -116,8 +120,9 @@ def prepare_bundle(
 
     geography = read_geography_classification(csv_path=geography_csv_path)
     region_map = _region_map_from_geography(geography=geography)
+    normalized_dir.mkdir(parents=True, exist_ok=True)
     frames = _normalise_frames(
-        raw_frames=source_frames,
+        raw_frames=prepared_source_frames,
         metadata_by_table=metadata_by_table,
         categories=categories,
         region_map=region_map,
@@ -140,14 +145,12 @@ def prepare_bundle(
         geography=geography,
         statbank_region_map=_build_region_map(metadata=metadata_by_table["FOLK1A"]),
     )
-    origin_source = next(
-        source for source in lock.sources if source.table_id == "FOLK2"
-    )
     origin_metrics = _origin_country_metrics(
         raw_frame=source_frames["FOLK2"],
         prepared_frame=frames["folk2_origin_country_marginal"],
         official_labels=_metadata_labels(metadata_by_table["FOLK2"])["IELAND"],
         selected_codes=origin_source.dimensions["IELAND"],
+        expected_zero_codes=origin_source.expected_zero_codes,
     )
     source_metrics = _source_metrics(
         frames=frames,
@@ -258,30 +261,57 @@ def _geography_metrics(
 
 
 def _materialise_origin_zero_codes(
-    raw_frame: pl.DataFrame, selected_codes: list[str]
+    raw_frame: pl.DataFrame,
+    selected_codes: list[str],
+    expected_zero_codes: list[str] | None = None,
 ) -> pl.DataFrame:
-    """Make BULK's omitted zero-count origin categories explicit.
+    """Materialise only reviewed zero-count omissions from a BULK response.
 
-    StatBank's BULK response omits combinations whose observation is zero. FOLK2's
-    prepared marginal nevertheless needs one row for every selected official category,
-    so absent IELAND codes are added as explicit, unsuppressed zeroes before validation.
+    StatBank's BULK response omits combinations whose observation is zero. The source
+    lock therefore records the selected IELAND codes that are approved omissions. Any
+    other missing selected code is an unexpected source change and fails preparation.
 
     Args:
         raw_frame:
             Parsed FOLK2 response rows.
         selected_codes:
             IELAND values frozen in the source lock.
+        expected_zero_codes (optional):
+            Reviewed selected IELAND values omitted as all-zero BULK partitions.
+            Defaults to an empty set.
 
     Returns:
-        Parsed rows with explicit zero rows for absent selected IELAND codes.
+        Parsed rows with explicit zero rows for approved absent IELAND codes.
+
+    Raises:
+        ValueError:
+            If the expected-zero set is not a subset of the selection, contains an
+            observed code, or does not account for every missing selected code.
     """
+    expected_codes = set(selected_codes)
+    approved_codes = set(expected_zero_codes or [])
     observed_codes = set(raw_frame.get_column("IELAND").to_list())
-    missing_codes = sorted(set(selected_codes) - observed_codes)
+    missing_codes = expected_codes - observed_codes
+    invalid_approved = sorted(approved_codes - expected_codes)
+    if invalid_approved:
+        message = f"Expected-zero IELAND codes are not selected: {invalid_approved}"
+        raise ValueError(message)
+    observed_approved = sorted(approved_codes & observed_codes)
+    if observed_approved:
+        message = (
+            "Expected-zero IELAND codes are present in raw BULK data: "
+            f"{observed_approved}"
+        )
+        raise ValueError(message)
+    unexpected_missing = sorted(missing_codes - approved_codes)
+    if unexpected_missing:
+        message = f"Unexpected missing FOLK2 IELAND codes: {unexpected_missing}"
+        raise ValueError(message)
     if not missing_codes:
         return raw_frame
     zero_rows = pl.DataFrame(
         {
-            "IELAND": missing_codes,
+            "IELAND": sorted(missing_codes),
             "count": [0] * len(missing_codes),
             "suppressed": [False] * len(missing_codes),
         }
@@ -677,6 +707,7 @@ def _origin_country_metrics(
     prepared_frame: pl.DataFrame,
     official_labels: dict[str, str],
     selected_codes: list[str],
+    expected_zero_codes: list[str] | None = None,
 ) -> dict[str, object]:
     """Validate the FOLK2 origin marginal and its official partition.
 
@@ -689,12 +720,20 @@ def _origin_country_metrics(
             Official IELAND code-to-label mapping from table metadata.
         selected_codes:
             IELAND values frozen in the source lock.
+        expected_zero_codes (optional):
+            Reviewed selected IELAND values omitted as all-zero BULK partitions.
+            Defaults to an empty set.
 
     Returns:
         FOLK2-specific validation metrics.
     """
     observed_codes = set(raw_frame.get_column("IELAND").to_list())
     expected_codes = set(selected_codes)
+    approved_zero_codes = set(expected_zero_codes or [])
+    missing_raw = sorted(expected_codes - observed_codes)
+    unexpected_missing = sorted(set(missing_raw) - approved_zero_codes)
+    invalid_approved = sorted(approved_zero_codes - expected_codes)
+    expected_zero_not_missing = sorted(approved_zero_codes & observed_codes)
     prepared_code_values = prepared_frame.get_column("origin_country_code").to_list()
     prepared_label_values = prepared_frame.get_column("origin_country").to_list()
     prepared_codes = set(prepared_code_values)
@@ -706,9 +745,20 @@ def _origin_country_metrics(
     prepared_mapping = dict(
         zip(prepared_code_values, prepared_label_values, strict=True)
     )
+    prepared_counts = dict(
+        zip(
+            prepared_code_values,
+            prepared_frame.get_column("count").to_list(),
+            strict=True,
+        )
+    )
+    nonzero_approved = sorted(
+        code
+        for code in approved_zero_codes
+        if code in prepared_counts and prepared_counts[code] != 0
+    )
     unhandled_values = sorted(observed_codes - set(official_labels))
     missing_metadata = sorted(expected_codes - set(selected_metadata))
-    missing_raw = sorted(expected_codes - observed_codes)
     missing_prepared = sorted(expected_codes - prepared_codes)
     extra_prepared = sorted(prepared_codes - expected_codes)
     mapping_mismatches = sorted(
@@ -724,7 +774,14 @@ def _origin_country_metrics(
         set(selected_metadata.values())
     )
     label_unique = prepared_label_unique and metadata_label_unique
-    expected_partition = not missing_raw and not missing_prepared and not extra_prepared
+    expected_partition = (
+        not invalid_approved
+        and not unexpected_missing
+        and not expected_zero_not_missing
+        and not nonzero_approved
+        and not missing_prepared
+        and not extra_prepared
+    )
     metadata_mapping = (
         not missing_metadata and not mapping_mismatches and metadata_label_unique
     )
@@ -772,6 +829,11 @@ def _origin_country_metrics(
             "expected_codes": len(expected_codes),
             "prepared_codes": len(prepared_codes),
             "missing_raw": missing_raw,
+            "approved_zero_codes": sorted(approved_zero_codes),
+            "invalid_approved": invalid_approved,
+            "unexpected_missing": unexpected_missing,
+            "expected_zero_not_missing": expected_zero_not_missing,
+            "nonzero_approved": nonzero_approved,
             "missing_prepared": missing_prepared,
             "extra_prepared": extra_prepared,
             "passed": expected_partition,

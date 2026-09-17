@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
+from danish_personas.io import sha256_file, write_json
+from danish_personas.models import SnapshotManifest
 from danish_personas.sources.prepare import prepare_bundle
 from danish_personas.validation.checks import validate_sources
 from scripts.build_raw_archive import main as pack
@@ -29,7 +31,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "e4bddc3622dd00fa"
+    assert bundle_dir.name == "fda86665792f7734"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
@@ -100,6 +102,48 @@ def test_packing_rejects_symlink_to_content_outside_raw_tree(tmp_path: Path) -> 
     assert result.exit_code != 0
     assert "non-regular" in result.output
     assert not archive_path.exists()
+
+
+def test_preparation_rejects_unexpected_missing_origin_code(tmp_path: Path) -> None:
+    """Preparation rejects a selected origin code removed from a valid snapshot."""
+    output_dir = tmp_path / "data"
+    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
+    assert result.exit_code == 0, result.output
+
+    snapshot_dir = next((output_dir / RAW_DIRECTORY).glob("folk2/*"))
+    data_path = snapshot_dir / "data.csv"
+    rows = data_path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+    data_path.write_text(
+        rows[0]
+        + "".join(
+            row
+            for row in rows[1:]
+            if row.split(";", maxsplit=5)[4].split(" ", maxsplit=1)[0] != "5100"
+        ),
+        encoding="utf-8",
+        newline="",
+    )
+    manifest_path = snapshot_dir / "snapshot-manifest.json"
+    snapshot = SnapshotManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    write_json(
+        path=manifest_path,
+        payload=snapshot.model_copy(
+            update={
+                "data_sha256": sha256_file(data_path),
+                "data_bytes": data_path.stat().st_size,
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unexpected missing FOLK2 IELAND codes"):
+        prepare_bundle(
+            lock_path=PROJECT_ROOT / "config" / "sources.lock.yaml",
+            categories_path=PROJECT_ROOT / "config" / "categories.yaml",
+            raw_dir=output_dir / RAW_DIRECTORY,
+            output_dir=tmp_path / "prepared",
+        )
 
 
 def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
