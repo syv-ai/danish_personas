@@ -10,6 +10,7 @@ demographics run
 sample freeze
 personas shard | pilot
 workflow deterministic --target smoke|statistical [--raw-parent PATH]
+release package | verify
 ```
 
 The deterministic workflow defaults to the committed raw archive and versioned
@@ -23,6 +24,11 @@ the configured statistical row count and freezes 1,000 rows by default. Use
 Source `resolve` and `fetch` refuse to run without explicit `--network`. Persona shards
 are dry runs unless `--live` is supplied; pilots always require `--live`. The command
 never loads `.env`, and deterministic workflows make no network or LLM requests.
+
+Release packaging is offline and has no upload, authentication, or token options.
+Retain `release-manifest.sha256` (or the printed digest) externally and pass it to
+`release verify` after relocating the package. Uploading is deliberately not implemented
+by Python; a future operator may use `hf upload --create-pr` manually after review.
 
 The existing `uv run src/scripts/*.py` commands remain supported for compatibility.
 Run `uv run danish-personas --help` or append `--help` to any group for all options.

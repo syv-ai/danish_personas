@@ -3,6 +3,7 @@
 import re
 import typing as t
 from datetime import datetime
+from pathlib import Path
 
 from pydantic import (
     AliasChoices,
@@ -231,6 +232,80 @@ class ReleasePolicy(StrictModel):
 ReleaseApprovalResult = ReleaseApproval
 
 
+class Accounting(StrictModel):
+    """Aggregate generation accounting with no provider-identifying metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requests: int = Field(ge=0)
+    retries: int = Field(ge=0)
+    rejected_validation_responses: int = Field(ge=0)
+    dropped_rows: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    input_price_per_million_usd: float = Field(ge=0.0)
+    output_price_per_million_usd: float = Field(ge=0.0)
+    list_price_estimated_cost_usd: float = Field(ge=0.0)
+    provider_estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    providers: tuple[str, ...]
+
+    @field_validator("providers")
+    @classmethod
+    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if tuple(sorted(set(value))) != value:
+            raise ValueError("Provider names must be sorted and unique")
+        return value
+
+
+class Artifact(StrictModel):
+    """One public release file covered by the release manifest."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+
+
+class ReleaseManifest(StrictModel):
+    """Signed-by-hash description of every file in a public release."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: t.Literal[1]
+    release_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    created_at: datetime
+    pilot_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    rows: int = Field(gt=0)
+    git_head: str = Field(pattern=r"^[0-9a-f]{40}$")
+    origin_url: str = Field(min_length=1)
+    uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[Artifact, ...] = Field(
+        min_length=1, validation_alias=AliasChoices("artifacts", "files")
+    )
+
+    @property
+    def files(self) -> tuple[Artifact, ...]:
+        """Return manifest-covered files using the common public terminology."""
+        return self.artifacts
+
+
+Manifest = ReleaseManifest
+
+
+class ReleasePackageResult(StrictModel):
+    """Result returned after an atomic release installation."""
+
+    path: Path
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class ReviewAttestation(StrictModel):
     """Blinded human-review attestation bound to one generated output.
 
@@ -327,3 +402,64 @@ def _require_exact_unique_ids(*, values: tuple[str, ...]) -> None:
         raise ValueError("Reviewed persona IDs must be nonblank and unpadded")
     if len(set(values)) != len(values):
         raise ValueError("Reviewed persona IDs must be unique")
+
+
+class ShardEvidence(StrictModel):
+    """Portable accounting and checksums for one generation shard."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    shard_id: str = Field(min_length=1)
+    offset: int = Field(ge=0)
+    rows: int = Field(gt=0)
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requests: int = Field(ge=0)
+    retries: int = Field(ge=0)
+    rejected_validation_responses: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    provider_cost_usd: float | None = Field(default=None, ge=0.0)
+    providers: tuple[str, ...]
+
+    @field_validator("providers")
+    @classmethod
+    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or item != item.strip() for item in value):
+            raise ValueError("Provider names must be nonblank")
+        if tuple(sorted(set(value))) != value:
+            raise ValueError("Provider names must be sorted and unique")
+        return value
+
+
+class ReleaseEvidence(StrictModel):
+    """Portable provenance and accounting for a release."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: t.Literal[1]
+    pilot_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    rows: int = Field(gt=0)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sample_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validator_version: str = Field(min_length=1)
+    attributes_prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    personas_prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    upstream_run_id: str = Field(min_length=1)
+    sample_source_run_id: str | None = None
+    source_bundle_id: str | None = None
+    policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attestation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    licence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    code_license_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pilot_validation_report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_hashes: dict[str, str] = Field(min_length=4)
+    shards: tuple[ShardEvidence, ...] = Field(min_length=1)
+    accounting: Accounting

@@ -12,6 +12,7 @@ from .generation.pipeline import generate_personas
 from .generation.report import validate_persona_pilot, validate_persona_run
 from .io import load_yaml_model
 from .models import SamplingConfig, SourceLock, SourcesConfig, ValidationReport
+from .release.cli import release
 from .sampling.freeze import freeze_sample
 from .sampling.generator import generate_records
 from .sources.acquisition import fetch_sources, resolve_sources
@@ -598,6 +599,7 @@ def deterministic(
         raise click.ClickException(str(error)) from error
 
 
+cli.add_command(release)
 main = cli
 
 
