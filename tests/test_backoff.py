@@ -4,9 +4,13 @@ import numpy as np
 import polars as pl
 import pytest
 
+from danish_personas.models import MOST_SPECIFIC_RESOLUTION
 from danish_personas.sampling.generator import (
+    AGE_LADDER,
     DETAIL_LADDER,
     MARITAL_LADDER,
+    LadderIndex,
+    _distribution_index,
     _draw,
     _ladder_index,
 )
@@ -17,33 +21,47 @@ VALUES = {
     "region_code": "084",
     "labour_market_status": "employed",
 }
+MARITAL_KEY_COLUMNS = ["region_code", "age_band", "sex"]
 
 
 def test_back_off_consumes_one_draw_regardless_of_level() -> None:
     """Sparsity must not shift the random stream."""
-    exact = _ladder_index(
-        frame=_marital_frame(region_code="084"),
-        ladder=MARITAL_LADDER,
-        payload_columns=["marital_status"],
-        smoothing=0.0,
-    )
-    coarse = _ladder_index(
-        frame=_marital_frame(region_code="999"),
-        ladder=MARITAL_LADDER,
-        payload_columns=["marital_status"],
-        smoothing=0.0,
+    assert _state_after_draw(_marital_index()) == _state_after_draw(
+        _marital_index(region_code="999")
     )
 
-    states = []
-    for index in (exact, coarse):
-        rng = np.random.default_rng(7)
-        _draw(ladder_index=index, values=VALUES, rng=rng)
-        states.append(rng.integers(0, 1_000_000))
 
-    assert states[0] == states[1]
+def _marital_index(region_code: str = "084", smoothing: float = 0.0) -> LadderIndex:
+    """Build a marital ladder index over one region's counts.
+
+    Args:
+        region_code:
+            Region the counts belong to. A region other than the one in
+            `VALUES` leaves the most specific cell unpopulated.
+        smoothing:
+            Additive pseudo-count, defaulting to no smoothing.
+
+    Returns:
+        The built marital ladder.
+    """
+    return _ladder_index(
+        frame=_marital_frame(region_code=region_code),
+        ladder=MARITAL_LADDER,
+        payload_columns=["marital_status"],
+        smoothing=smoothing,
+    )
 
 
 def _marital_frame(region_code: str) -> pl.DataFrame:
+    """Build a two-category marital frame for one region.
+
+    Args:
+        region_code:
+            Region the counts belong to.
+
+    Returns:
+        Source counts with the columns the marital ladder addresses.
+    """
     return pl.DataFrame(
         {
             "region_code": [region_code, region_code],
@@ -54,6 +72,21 @@ def _marital_frame(region_code: str) -> pl.DataFrame:
             "suppressed": [False, False],
         }
     )
+
+
+def _state_after_draw(ladder_index: LadderIndex) -> int:
+    """Draw once and report the generator's subsequent state.
+
+    Args:
+        ladder_index:
+            Ladder to draw from.
+
+    Returns:
+        The next integer the shared generator produces after one draw.
+    """
+    rng = np.random.default_rng(7)
+    _draw(ladder_index=ladder_index, values=VALUES, rng=rng)
+    return int(rng.integers(0, 1_000_000))
 
 
 def test_detailed_status_never_backs_off_past_its_broad_status() -> None:
@@ -82,15 +115,10 @@ def test_detailed_status_never_backs_off_past_its_broad_status() -> None:
 
 def test_draw_backs_off_when_the_exact_cell_is_absent() -> None:
     """A missing region cell falls back to the age-and-sex cell."""
-    index = _ladder_index(
-        frame=_marital_frame(region_code="999"),
-        ladder=MARITAL_LADDER,
-        payload_columns=["marital_status"],
-        smoothing=0.0,
-    )
-
     payload, level = _draw(
-        ladder_index=index, values=VALUES, rng=np.random.default_rng(0)
+        ladder_index=_marital_index(region_code="999"),
+        values=VALUES,
+        rng=np.random.default_rng(0),
     )
 
     assert level == "age_band_sex"
@@ -99,36 +127,41 @@ def test_draw_backs_off_when_the_exact_cell_is_absent() -> None:
 
 def test_draw_uses_the_most_specific_populated_cell() -> None:
     """An exact cell is preferred over any coarser one."""
-    index = _ladder_index(
-        frame=_marital_frame(region_code="084"),
-        ladder=MARITAL_LADDER,
-        payload_columns=["marital_status"],
-        smoothing=0.0,
+    _, level = _draw(
+        ladder_index=_marital_index(), values=VALUES, rng=np.random.default_rng(0)
     )
 
-    _, level = _draw(ladder_index=index, values=VALUES, rng=np.random.default_rng(0))
-
     assert level == "region_age_band_sex"
+
+
+def test_recorded_levels_match_the_ladders() -> None:
+    """Validation and the schema must not drift from the ladder definitions."""
+    heads = {
+        "age_resolution": AGE_LADDER[0][0],
+        "marital_resolution": MARITAL_LADDER[0][0],
+        "detailed_status_resolution": DETAIL_LADDER[0][0],
+    }
+
+    assert heads == MOST_SPECIFIC_RESOLUTION
 
 
 def test_smoothing_only_reweights_surviving_cells() -> None:
     """Smoothing must not resurrect a structurally absent category."""
     frame = _marital_frame(region_code="084")
     key = ("084", "30-49", "female")
-    plain = _ladder_index(
+    plain = _distribution_index(
         frame=frame,
-        ladder=MARITAL_LADDER,
+        key_columns=MARITAL_KEY_COLUMNS,
         payload_columns=["marital_status"],
         smoothing=0.0,
     )
-    smoothed = _ladder_index(
+    smoothed = _distribution_index(
         frame=frame,
-        ladder=MARITAL_LADDER,
+        key_columns=MARITAL_KEY_COLUMNS,
         payload_columns=["marital_status"],
         smoothing=100.0,
     )
-    payloads, probabilities = smoothed[0][2][key]
-    _, unsmoothed = plain[0][2][key]
+    payloads, probabilities = smoothed[key]
 
     # Smoothing reweights the categories that survived the structural filter,
     # pulling them towards uniform without introducing an absent category.
@@ -137,6 +170,5 @@ def test_smoothing_only_reweights_surviving_cells() -> None:
         "never_married",
     }
     assert probabilities.sum() == pytest.approx(1.0)
-    assert unsmoothed.min() == pytest.approx(0.1)
+    assert plain[key][1].min() == pytest.approx(0.1)
     assert probabilities.min() == pytest.approx(200 / 1200)
-    assert probabilities.min() > unsmoothed.min()

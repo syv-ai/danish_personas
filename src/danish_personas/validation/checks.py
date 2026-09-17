@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..models import (
+    MOST_SPECIFIC_RESOLUTION,
     BundleManifest,
     CategoryConfig,
     DemographicRecord,
@@ -320,6 +321,21 @@ def _structural_metrics(
     categories: CategoryConfig,
     maximum_backoff_rate: float,
 ) -> list[MetricResult]:
+    """Check row counts, identifiers, schema, and sampling provenance.
+
+    Args:
+        frame:
+            Generated records.
+        manifest:
+            Manifest the run must agree with.
+        categories:
+            Canonical category mappings.
+        maximum_backoff_rate:
+            Largest share of records permitted to come from a coarser cell.
+
+    Returns:
+        One metric per structural check.
+    """
     invalid_schema = 0
     for row in frame.iter_rows(named=True):
         try:
@@ -346,9 +362,10 @@ def _structural_metrics(
     ).height
     unique_ids = frame.get_column("persona_id").n_unique()
     backed_off = frame.filter(
-        (pl.col("age_resolution") != "age_band_sex")
-        | (pl.col("marital_resolution") != "region_age_band_sex")
-        | (pl.col("detailed_status_resolution") != "age_band_sex_status")
+        pl.any_horizontal(
+            pl.col(column) != level
+            for column, level in MOST_SPECIFIC_RESOLUTION.items()
+        )
     ).height
     backoff_rate = backed_off / frame.height if frame.height else 0.0
     return [

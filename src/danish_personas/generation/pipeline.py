@@ -10,7 +10,7 @@ import polars as pl
 from pydantic import BaseModel
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
-from ..models import RunManifest, ValidationReport
+from ..models import MOST_SPECIFIC_RESOLUTION, RunManifest, ValidationReport
 from .client import OpenAIClient, RequestBudgetExceeded
 from .models import (
     AttributeCheckpoint,
@@ -26,9 +26,9 @@ from .models import (
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
-AUDIT_FIELDS = frozenset(
-    {"age_resolution", "marital_resolution", "detailed_status_resolution"}
-)
+# Sampler back-off provenance, withheld from prompts: it records how a value was
+# obtained, not anything about the person.
+AUDIT_FIELDS = frozenset(MOST_SPECIFIC_RESOLUTION)
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
@@ -89,6 +89,7 @@ def generate_personas(
                 "attributes_schema": GeneratedAttributes.model_json_schema(),
                 "personas_schema": PersonaDescriptions.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
+                "withheld_fields": sorted(AUDIT_FIELDS),
             }
         )
     )

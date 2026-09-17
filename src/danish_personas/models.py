@@ -32,6 +32,17 @@ class StatBankMetadata(BaseModel):
     variables: list[StatBankVariable]
 
 
+# The finest level of each sampler back-off ladder, keyed by the column that
+# records it. The sampler asserts its ladders against this mapping, validation
+# measures back-off against it, and the generation stage withholds these columns
+# from prompts, so the level names are written down exactly once.
+MOST_SPECIFIC_RESOLUTION = {
+    "age_resolution": "age_band_sex",
+    "marital_resolution": "region_age_band_sex",
+    "detailed_status_resolution": "age_band_sex_status",
+}
+
+
 class StrictModel(BaseModel):
     """Base model that rejects undeclared fields."""
 
