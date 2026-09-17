@@ -129,18 +129,21 @@ def restore_raw_sources(
         raise SourceArchiveError(message)
 
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            dir=output_dir, prefix=".raw-restore-"
-        ) as temporary_name:
-            temporary_dir = Path(temporary_name)
-            with tarfile.open(name=archive_path, mode="r:zst") as archive:
-                members = _validated_members(archive=archive)
+        with tarfile.open(name=archive_path, mode="r:zst") as archive:
+            members = _validated_members(archive=archive)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                dir=output_dir, prefix=".raw-restore-"
+            ) as temporary_name:
+                temporary_dir = Path(temporary_name)
                 archive.extractall(path=temporary_dir, members=members, filter="data")
-            staged = temporary_dir / RAW_DIRECTORY
-            _install_staged_directory(
-                staged=staged, target=target, temporary_dir=temporary_dir, force=force
-            )
+                staged = temporary_dir / RAW_DIRECTORY
+                _install_staged_directory(
+                    staged=staged,
+                    target=target,
+                    temporary_dir=temporary_dir,
+                    force=force,
+                )
     except SourceArchiveError:
         raise
     except (OSError, tarfile.TarError, ValueError) as error:
