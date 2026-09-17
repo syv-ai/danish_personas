@@ -30,11 +30,16 @@ from danish_personas.sources.exceptions import SourceArchiveError
 def main(raw_dir: Path, archive_path: Path) -> None:
     """Pack raw snapshots into a byte-stable archive.
 
+    Members are sorted by archive path and given fixed ownership, mode, and
+    timestamp, and the compression level is pinned, so repacking unchanged
+    snapshots reproduces identical bytes.
+
     Args:
         raw_dir:
-            Directory holding the immutable raw snapshots.
+            Optional directory holding the immutable raw snapshots. Defaults to
+            ``data/<RAW_DIRECTORY>``.
         archive_path:
-            Destination archive.
+            Optional destination archive. Defaults to ``DEFAULT_ARCHIVE``.
 
     Raises:
         click.ClickException:

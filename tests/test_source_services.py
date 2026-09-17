@@ -20,9 +20,7 @@ def test_archive_services_round_trip_raw_files(tmp_path: Path) -> None:
 
     assert build_raw_archive(raw_dir=raw_dir, archive_path=archive_path) == 1
     restored_dir = tmp_path / "restored"
-    assert restore_raw_sources(
-        archive_path=archive_path, output_dir=restored_dir
-    ) == 1
+    assert restore_raw_sources(archive_path=archive_path, output_dir=restored_dir) == 1
     restored_file = restored_dir / raw_dir.name / "folk1a" / "query-hash" / "data.csv"
     assert restored_file.read_text(encoding="utf-8", newline="") == "value\n1\n"
 
@@ -64,9 +62,7 @@ def test_fetch_service_orchestrates_tables_and_classifications(
 
     lock_fixture = lock
     monkeypatch.setattr(statbank, "fetch_sources", fetch_tables)
-    monkeypatch.setattr(
-        classification, "fetch_classifications", fetch_classifications
-    )
+    monkeypatch.setattr(classification, "fetch_classifications", fetch_classifications)
 
     result = acquisition.fetch_sources(lock=lock, raw_dir=tmp_path)
 
