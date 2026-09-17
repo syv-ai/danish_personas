@@ -23,7 +23,7 @@ def main(run_dir: Path, rows: int, output: Path) -> None:
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     manifest = RunManifest.model_validate_json(
-        (run_dir / "run-manifest.json").read_text()
+        (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
     frame = pl.read_parquet(run_dir / manifest.data_file)
     if rows > frame.height:

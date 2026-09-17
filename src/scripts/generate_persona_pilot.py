@@ -148,7 +148,7 @@ def _run_pilot(
     )
     manifests = [
         GenerationManifest.model_validate_json(
-            (run_dir / "generation-manifest.json").read_text()
+            (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
         )
         for run_dir in run_dirs
     ]

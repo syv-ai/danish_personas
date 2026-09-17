@@ -92,7 +92,11 @@ def _attributes_json() -> str:
                 "Personen har en dansk hverdag og deltager i lokale fællesskaber."
             ),
             "skills_and_expertise": ["planlægning", "samarbejde", "formidling"],
-            "hobbies_and_interests": ["at læse", "musik", "brætspil med venner"],
+            "hobbies_and_interests": [
+                "at læse danske romaner",
+                "at lytte til musik i fritiden",
+                "at spille brætspil med venner",
+            ],
             "career_goals_and_ambitions": None,
         },
         ensure_ascii=False,
@@ -189,7 +193,7 @@ def test_pilot_merges_validated_shards(
 
     pilot_dir = output_path.parent
     manifest_path = pilot_dir / "pilot-manifest.json"
-    original_manifest = json.loads(manifest_path.read_text())
+    original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     tampered_manifest = {**original_manifest, "requests": 0}
     write_json(path=manifest_path, payload=tampered_manifest)
@@ -326,7 +330,7 @@ def test_pipeline_rejects_tampering_and_resumes(
     assert _MockClient.requests == 2
 
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
-    checkpoint = json.loads(checkpoint_path.read_text())
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     checkpoint["generation_context_sha256"] = "f" * 64
     checkpoint_path.write_text(json.dumps(checkpoint))
     with pytest.raises(ValueError, match="Stale generation context"):
@@ -342,7 +346,7 @@ def test_pipeline_rejects_tampering_and_resumes(
     sample = pl.read_parquet(paths["sample"]).with_columns(pl.lit(99).alias("value"))
     sample.write_parquet(paths["sample"])
     manifest = FrozenSampleManifest.model_validate_json(
-        paths["sample_manifest"].read_text()
+        paths["sample_manifest"].read_text(encoding="utf-8")
     ).model_copy(update={"sha256": sha256_file(paths["sample"])})
     write_json(path=paths["sample_manifest"], payload=manifest)
     with pytest.raises(ValueError, match="absent from validated"):
@@ -408,7 +412,7 @@ def test_rejected_completion_text_is_not_checkpointed(
         live=True,
     )
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
-    responses = json.loads(checkpoint_path.read_text())["responses"]
+    responses = json.loads(checkpoint_path.read_text(encoding="utf-8"))["responses"]
     assert responses[0]["content"] == ""
     assert responses[0]["raw_response_sha256"] == "0" * 64
     assert len(responses) == 3
@@ -447,7 +451,9 @@ def test_stage_checkpoint_avoids_repeating_attributes(
         live=True,
     )
     assert _InterruptingClient.requests == 3
-    manifest = json.loads((run_dir / "generation-manifest.json").read_text())
+    manifest = json.loads(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["requests"] == 3
     assert manifest["retries"] == 1
     assert manifest["estimated_cost_usd"] == 0.002

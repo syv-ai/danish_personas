@@ -61,7 +61,7 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
     restored = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert restored.exit_code == 0, restored.output
     assert target.is_dir() and not target.is_symlink()
-    assert marker.read_text() == "untouched"
+    assert marker.read_text(encoding="utf-8") == "untouched"
 
 
 def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
@@ -74,7 +74,7 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
 
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert result.exit_code != 0
-    assert stale.read_text() == "preserve on refusal"
+    assert stale.read_text(encoding="utf-8") == "preserve on refusal"
 
     result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
     assert result.exit_code == 0, result.output
