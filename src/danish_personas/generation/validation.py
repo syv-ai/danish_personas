@@ -9,7 +9,7 @@ from tldextract import TLDExtract
 
 from .models import GeneratedAttributes, PersonaDescriptions
 
-VALIDATOR_VERSION = "persona-safety-v5"
+VALIDATOR_VERSION = "persona-safety-v6"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -35,7 +35,7 @@ LANGUAGE_DETECTOR = LanguageDetectorBuilder.from_languages(
 # Visual guidance uses a closed vocabulary rather than a blacklist. Colours include
 # the common, neuter, and plural forms needed by the sentence grammar.
 VISUAL_COLOURS: dict[str, tuple[str, str, str]] = {
-    "blå": ("blå", "blå", "blå"),
+    "blå": ("blå", "blåt", "blå"),
     "brun": ("brun", "brunt", "brune"),
     "grå": ("grå", "gråt", "grå"),
     "grøn": ("grøn", "grønt", "grønne"),
@@ -45,7 +45,7 @@ VISUAL_COLOURS: dict[str, tuple[str, str, str]] = {
     "pink": ("pink", "pink", "pink"),
     "rød": ("rød", "rødt", "røde"),
     "sort": ("sort", "sort", "sorte"),
-    "turkis": ("turkis", "turkis", "turkise"),
+    "turkis": ("turkis", "turkist", "turkise"),
     "gul": ("gul", "gult", "gule"),
 }
 VISUAL_CLOTHING: dict[str, tuple[str, ...]] = {
