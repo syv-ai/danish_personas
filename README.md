@@ -84,6 +84,30 @@ Makefile includes `.env` and exports all of its variables to subprocesses and ho
 do not use it as credential loading for direct LLM commands. Never commit `.env`,
 tokens, or generated data artefacts.
 
+### Unified CLI
+
+The installed CLI is the recommended interface for new workflows. It keeps every
+service boundary in one process, passes returned artefact paths directly, and stops
+before the next validation boundary when a report fails:
+
+```bash
+uv run danish-personas workflow deterministic --target smoke
+uv run danish-personas workflow deterministic --target statistical \
+  --sample-rows 1000 \
+  --raw-parent data
+```
+
+The default statistical workflow runs the configured smoke and statistical row counts,
+then freezes a 1,000-row sample. Change that development sample size with
+`--sample-rows`. `--raw-parent` defaults to `data`; the workflow always restores and
+prepares `data/raw-hardened-20260917` (or the same fixed child below a custom parent).
+Configuration and output paths are also configurable. It is offline and makes no LLM
+calls. Source `resolve` and `fetch` need
+explicit `--network`, while persona shards are dry runs unless `--live` is supplied and
+pilots always require `--live`. See [`docs/cli.md`](docs/cli.md) for the command tree.
+
+The legacy script commands below remain supported and compatible.
+
 ### Regenerate development data
 
 The following commands restore the six exact Statistics Denmark aggregate snapshots and
