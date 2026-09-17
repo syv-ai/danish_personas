@@ -48,16 +48,21 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
 
 - FOLK2 selects ages 18-125, both sexes, all three HERKOMST values, both STATSB
   values, all 241 official IELAND values, and 2025. Its 312,336 selected observations
-  produce 2,186,352 API cells and are aggregated across age, sex, ancestry, and
-  citizenship into a national marginal.
+  produce 2,186,352 API cells and are aggregated across the selected age, sex,
+  HERKOMST, and STATSB dimensions into a national marginal; the resulting official
+  IELAND category is not interpreted as ethnicity or citizenship.
 - FOLK2 preserves unequal official weights and the complete selected official
   code-to-label mapping, including Stateless and Not stated. Preparation requires unique
   codes and labels and rejects mapping changes. The raw BULK partition remains available
   to provenance checks before approved zero omissions are materialised. This marginal is
   not ethnicity or citizenship, and no country groups, correlations, or joint
   associations are inferred.
-- FOLK2 is prepared for audit and future work only. It is not emitted in Phase 2 records,
-  sampled, or sent to LLMs; a later sampling/privacy review is required.
+- FOLK2 is sampled independently as a national marginal into the Phase 2
+  `origin_country_code` and `origin_country` fields. Official unequal weights and labels,
+  including Stateless and Not stated, are retained; zero-weight categories are excluded.
+  Origin is withheld from both LLM payloads and cannot drive language, culture, religion,
+  occupation, personality, or visual appearance. It is not ethnicity, citizenship, or
+  residence.
 - FOLK1A 2025Q1 is the closest demographic snapshot to the November 2024 RAS data.
 - FOLK1A ages 16-19 estimate the age-18-and-over share of RAS209's 16-19 band. Ages 16
   and 17 are excluded from generated records.

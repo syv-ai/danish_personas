@@ -16,7 +16,11 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
-from danish_personas.generation.pipeline import generate_personas, models_match
+from danish_personas.generation.pipeline import (
+    generate_personas,
+    models_match,
+    validate_upstream_sample,
+)
 from danish_personas.generation.report import (
     validate_persona_pilot,
     validate_persona_run,
@@ -184,6 +188,8 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "marital_resolution",
         "education_resolution",
         "detailed_status_resolution",
+        "origin_country_code",
+        "origin_country",
     )
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
@@ -216,12 +222,34 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     source = pl.DataFrame(
         {
             "persona_id": ["persona-1", "persona-2"],
-            "value": [1, 2],
-            "education_level": ["masters", "vocational"],
+            "country": ["Danmark", "Danmark"],
+            "age": [35, 72],
             "age_resolution": ["age_band_sex", "age_band"],
+            "age_band": ["30-49", "67+"],
+            "sex": ["female", "male"],
+            "marital_status": ["married_or_separated", "never_married"],
             "marital_resolution": ["region_age_band_sex", "age_band"],
+            "region_code": ["084", "085"],
+            "region": ["Region Hovedstaden", "Region Sjælland"],
+            "education_level": ["masters", "vocational"],
+            "education_source_code": ["H70", "H40"],
             "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
+            "labour_market_status": ["employed", "outside_labour_force"],
+            "detailed_status_code": ["30", "90"],
+            "detailed_status": ["Employees", "Retired"],
             "detailed_status_resolution": ["status", "sex_status"],
+            "openness_score": [50.0, 51.0],
+            "openness_label": ["average", "average"],
+            "conscientiousness_score": [52.0, 53.0],
+            "conscientiousness_label": ["average", "average"],
+            "extraversion_score": [54.0, 55.0],
+            "extraversion_label": ["average", "high"],
+            "agreeableness_score": [56.0, 57.0],
+            "agreeableness_label": ["high", "high"],
+            "neuroticism_score": [48.0, 47.0],
+            "neuroticism_label": ["average", "average"],
+            "origin_country_code": ["5100", "5103"],
+            "origin_country": ["Denmark", "Stateless"],
         }
     )
     source_path = run_dir / "structured-records.parquet"
@@ -460,7 +488,7 @@ def test_pipeline_rejects_tampering_and_resumes(
             live=True,
         )
 
-    sample = pl.read_parquet(paths["sample"]).with_columns(pl.lit(99).alias("value"))
+    sample = pl.read_parquet(paths["sample"]).with_columns(pl.lit(99).alias("age"))
     sample.write_parquet(paths["sample"])
     manifest = FrozenSampleManifest.model_validate_json(
         paths["sample_manifest"].read_text(encoding="utf-8")
@@ -575,3 +603,42 @@ def test_stage_checkpoint_avoids_repeating_attributes(
     assert manifest["retries"] == 1
     assert manifest["estimated_cost_usd"] == 0.002
     assert manifest["inference_providers"] == ["mock-provider"]
+
+
+def test_upstream_sample_rejects_legacy_sampler_schema(tmp_path: Path) -> None:
+    """A validated legacy run cannot cross the current Phase-3 boundary."""
+    paths = _write_inputs(root=tmp_path)
+    manifest_path = paths["sample"].parent / "run-manifest.json"
+    manifest = RunManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    write_json(
+        path=manifest_path,
+        payload=manifest.model_copy(update={"sampler_schema_version": 2}),
+    )
+
+    with pytest.raises(ValueError, match="unsupported sampler schema version"):
+        validate_upstream_sample(
+            input_path=paths["sample"], sample_manifest_path=paths["sample_manifest"]
+        )
+
+
+def test_upstream_sample_rejects_origin_less_legacy_columns(tmp_path: Path) -> None:
+    """Origin-less schema-v2-shaped rows require migration before Phase 3."""
+    paths = _write_inputs(root=tmp_path)
+    sample_path = paths["sample"]
+    pl.read_parquet(sample_path).drop(
+        "origin_country_code", "origin_country"
+    ).write_parquet(sample_path)
+    sample_manifest = FrozenSampleManifest.model_validate_json(
+        paths["sample_manifest"].read_text(encoding="utf-8")
+    )
+    write_json(
+        path=paths["sample_manifest"],
+        payload=sample_manifest.model_copy(update={"sha256": sha256_file(sample_path)}),
+    )
+
+    with pytest.raises(ValueError, match="columns do not match"):
+        validate_upstream_sample(
+            input_path=sample_path, sample_manifest_path=paths["sample_manifest"]
+        )

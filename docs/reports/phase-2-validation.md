@@ -1,22 +1,27 @@
 # Phase 2 validation report
 
-Run completed on 14 September 2026 without any LLM calls.
-
-> **Superseded.** Adding the official Statistics Denmark geography classification to the
-> source bundle changed the prepared bundle identifier, so the bundle and run identifiers
-> and measured numbers below describe a superseded bundle. They are retained unchanged as
-> a historical record; the run will be regenerated on a separate branch.
+The canonical deterministic sampler schema is version 3 and includes the independent
+FOLK2 origin-country marginal. Both runs below were regenerated offline with seed
+`20260914`, without LLM calls and without changing any validation threshold.
 
 ## Artefacts
 
-- Source bundle: `e7757f736ef5652f`
-- Smoke run: `78f2ec8279025a5f` (1,000 rows)
-- Statistical run: `f5f37949670df476` (100,000 rows)
+- Source bundle: `fda86665792f7734`
+- Sampling-config SHA-256:
+  `65619c66c67bfac30fe3c97f94fc590de1022612f95d2354d2fd52e2c1d45868`
+- Smoke run: `0122b894dec6829e` (2,000 rows; **PASS**)
+- Smoke Parquet SHA-256:
+  `d841e37ab0077905badad1aae203eccb6dd709e42dd8dd12b472dad24480dfa2`
+- Smoke logical-content SHA-256:
+  `dd5f0df38a7f6d9ebbf02fe9c35cf9e3998be8f7dc2d5e733ef00ddcac0ae2ce`
+- Statistical run: `ea321089a79d3650` (100,000 rows; **PASS**)
 - Statistical Parquet SHA-256:
-  `5d182c8fa4d35090ff284e095ed7da38ddf04fe996cfda6b6aa249b00c8dd38c`
-- Logical-content SHA-256:
-  `fa2c6e5d3541298c4723200cbd51bda3647960da087cc86bbf4fb4f99d74b1c5`
-- Frozen text-development input: 1,000 stratified rows
+  `b12d9e719b968afe1dd27e43dfe68fdd242791c7bb713b8e8e676901b1f130b4`
+- Statistical logical-content SHA-256:
+  `e19122c398e59dcf235cfe45c5586232f637451b68260002bfd16e0fe2425301`
+- Frozen text-development input: 1,000 stratified rows (ignored local artefact).
+  This deliberate Phase-3 development size is separate from the 2,000-row Phase-2
+  validation smoke size.
 
 The compressed raw snapshots are committed with attribution. Restored and generated
 datasets remain ignored by Git and are reproducible from the source archive, lock,
@@ -24,30 +29,34 @@ mappings, configurations, and code.
 
 ## Source result
 
-- Five official tables fetched and checksummed.
+- Six official tables and one official classification snapshot were checksummed.
 - Adjusted RAS209 adult total: 4,845,759.
 - RAS202 adult total: 4,845,960.
 - Sparse-cell sampling table: 531 cells.
 - Retained RAS209 coverage: 99.6439%.
 - Source validation: **PASS**.
 
-## Statistical run result
+## Deterministic run results
 
-| Metric | Result | Threshold |
-| --- | ---: | ---: |
-| Rows | 100,000 | 100,000 |
-| Schema errors | 0 | 0 |
-| Status mapping errors | 0 | 0 |
-| Education proxy errors | 0 | 0 |
-| Maximum fitted marginal TV | 0.1739% | 2% |
-| Full 531-cell fitted joint TV | 0.0676% | 2% |
-| Held-out population joint TV | 0.1094% | 5% |
-| Held-out status-by-sex TV | 0.0309% | 5% |
-| OCEAN score-bound errors | 0 | 0 |
-| Maximum pairwise OCEAN correlation | 0.004863 | 0.02 |
-| LLM calls | 0 | 0 |
+| Metric | 2,000-row smoke | 100,000-row statistical | Threshold |
+| --- | ---: | ---: | ---: |
+| Rows | 2,000 | 100,000 | exact |
+| Schema errors | 0 | 0 | 0 |
+| Status mapping errors | 0 | 0 | 0 |
+| Education proxy errors | 0 | 0 | 0 |
+| Maximum fitted marginal TV | 1.4587% | 0.1739% | 5% / 2% |
+| FOLK2 origin marginal TV | 0.8430% | 0.0256% | 5% / 2% |
+| Full 531-cell fitted joint TV | 3.5609% | 0.0676% | 5% / 2% |
+| Held-out population joint TV | 0.8651% | 0.1094% | 10% / 5% |
+| Held-out status-by-sex TV | 0.4283% | 0.0309% | 10% / 5% |
+| OCEAN score-bound errors | 0 | 0 | 0 |
+| Maximum pairwise OCEAN correlation | 0.040965 | 0.004863 | info / 0.02 |
+| Origin mapping errors | 0 | 0 | 0 |
+| Unexpected fitted categories | 0 | 0 | 0 |
+| Zero-weight origin categories emitted | 0 | 0 | 0 |
+| LLM calls | 0 | 0 | 0 |
 
-Every mandatory cell-wise confidence check also passed. Overall Phase-2 result:
+Every mandatory cell-wise confidence check passed in both runs. Overall Phase-2 result:
 **PASS**.
 
-The machine-readable reports remain beside the local source bundle and generated run.
+The machine-readable reports remain beside the local source bundle and generated runs.

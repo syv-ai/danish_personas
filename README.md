@@ -16,18 +16,15 @@ smoke-test infrastructure only: each direct generation invocation is capped at f
 rows, while a pilot can span multiple shards. Release-scale generation and human
 approval are not implemented release gates.
 
-The validated local Phase 2 run has 100,000 records. The Phase 3 smoke report
-documents a passed three-record run, but that generated data is not committed. Read
-the reports before making statistical or quality claims:
+The canonical local Phase 2 workflow passes at both 2,000-row smoke and 100,000-row
+statistical sizes. Their run IDs are `0122b894dec6829e` and `ea321089a79d3650` for
+source bundle `fda86665792f7734`. The Phase 3 smoke report documents a passed
+three-record historical run, but that generated data is not committed. Read the reports
+before making statistical or quality claims:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
-
-Adding the official geography classification changed the prepared bundle identifier, so
-the Phase 2 validation report describes a superseded bundle and run. Those runs will be
-regenerated on a separate branch; until then, treat the report's identifiers and measured
-numbers as historical.
 
 ## Developer setup guide
 
@@ -91,8 +88,8 @@ tokens, or generated data artefacts.
 
 The following commands restore the six exact Statistics Denmark aggregate snapshots and
 the official geography classification snapshot, prepare a local source bundle, generate
-1,000 deterministic records, and validate every stage without network access. The archive
-and attribution are documented in [`data/README.md`](data/README.md).
+2,000 deterministic smoke records, and validate every stage without network access. The
+archive and attribution are documented in [`data/README.md`](data/README.md).
 
 ```bash
 set -o pipefail
@@ -113,7 +110,8 @@ uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 RUN=$( \
   uv run src/scripts/generate_demographics.py \
     --bundle "$BUNDLE" \
-    --rows 1000 \
+    --config config/sampling.yaml \
+    --rows 2000 \
     --seed 20260914 \
     --output-dir data/runs/smoke \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
@@ -172,7 +170,8 @@ The assignments capture the exact paths printed by the CLI commands rather than
 selecting an arbitrary newest directory.
 
 Freeze a deterministic 1,000-row input for optional LLM development work only after the
-statistical validation passes:
+statistical validation passes. This is a separate, deliberate Phase-3 development size;
+it does not replace the canonical 2,000-row Phase-2 smoke validation:
 
 ```bash
 uv run src/scripts/freeze_demographic_sample.py \
@@ -182,10 +181,13 @@ uv run src/scripts/freeze_demographic_sample.py \
 ```
 
 The source preparation stage uses FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210.
-FOLK2 is an independent national marginal of official IELAND country-of-origin categories
-for adults. It preserves categories such as Stateless and Not stated, but is not ethnicity
-or citizenship. It is not emitted in Phase 2 records, sampled, or sent to LLMs; a later
-sampling/privacy PR is required. FOLK1A, RAS209, and RAS202 ground the distributions;
+FOLK2 is an independent national marginal of official IELAND country-of-origin
+categories for adults. It preserves categories such as Stateless and Not stated, but is
+not ethnicity, citizenship, or residence. Each Phase 2 record receives an independently
+quota-sampled `origin_country_code` and `origin_country`; the fields are withheld from
+both LLM payloads.
+They cannot drive language, culture, religion, occupation, personality, or visual
+appearance. FOLK1A, RAS209, and RAS202 ground the distributions;
 BEFOLK3 and RAS210 are held-out aggregate diagnostics.
 Municipality aggregates are used to construct regional counts, but municipality fields
 are not emitted in generated records. The municipality, landsdel, and region hierarchy
@@ -321,10 +323,12 @@ approve any proposed release.
 
 Statistics Denmark inputs are public aggregate tables, not individual-level records. The
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
-aged 18-125 with the fixed country value Denmark, sex, age, marital status, region, broad
-education, labour status, detailed status, and independent OCEAN scores. The FOLK2 origin
-marginal is not a Phase-2 field. It does not emit names, exact addresses, coordinates, CPR
-or other administrative identifiers, employers, occupations,
+aged 18-125 with the fixed residence value `Danmark`, independently sampled official
+FOLK2 origin fields, sex, age, marital status, region, broad education, labour status,
+detailed status, and independent OCEAN scores. Origin is not ethnicity, citizenship, or
+residence, and cannot drive language, culture, religion, occupation, personality, or
+visual appearance. It does not emit names, exact addresses, coordinates, CPR or other
+administrative identifiers, employers, occupations,
 income, household details, ancestry, citizenship, health, religion, sexuality, politics,
 criminal history, or free text.
 

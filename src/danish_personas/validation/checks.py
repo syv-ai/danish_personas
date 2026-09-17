@@ -75,6 +75,7 @@ def validate_demographics(
     )
     metrics.extend(_heldout_metrics(frame=frame, bundle_dir=bundle_dir, config=config))
     metrics.extend(_ocean_metrics(frame=frame, config=config))
+    metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.append(
         MetricResult(
             name="llm_calls",
@@ -110,6 +111,10 @@ def _distribution_metrics(
         "age_band": (folk, ["age_band"]),
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
+        "origin_country": (
+            pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet"),
+            ["origin_country_code", "origin_country"],
+        ),
     }
     metrics: list[MetricResult] = []
     for name in config.mandatory_marginals:
@@ -166,11 +171,32 @@ def _compare_distribution(
     maximum_tv: float,
     smoke_maximum_tv: float,
 ) -> list[MetricResult]:
+    """Compare all expected and observed categories in one distribution.
+
+    Args:
+        name:
+            Metric name prefix.
+        generated:
+            Generated records to count.
+        target:
+            Official target counts.
+        columns:
+            Category columns defining each cell.
+        config:
+            Validation thresholds.
+        maximum_tv:
+            Statistical-run total-variation threshold.
+        smoke_maximum_tv:
+            Smoke-run total-variation threshold.
+
+    Returns:
+        Cell-tolerance and total-variation metrics.
+    """
     generated_counts = generated.group_by(columns).len().rename({"len": "observed"})
     target_counts = target.group_by(columns).agg(pl.col("count").sum().alias("target"))
     comparison = target_counts.join(
-        generated_counts, on=columns, how="left"
-    ).with_columns(pl.col("observed").fill_null(0))
+        generated_counts, on=columns, how="full", coalesce=True
+    ).with_columns(pl.col("target").fill_null(0), pl.col("observed").fill_null(0))
     target_total = float(comparison.get_column("target").sum())
     observed_total = float(comparison.get_column("observed").sum())
     comparison = comparison.with_columns(
@@ -187,6 +213,13 @@ def _compare_distribution(
     )
     eligible = comparison.filter(pl.col("expected") >= config.minimum_expected_count)
     violations = eligible.filter(pl.col("error") > pl.col("tolerance")).height
+    unexpected_rows = int(
+        generated_counts.join(
+            target_counts.select(columns), on=columns, how="anti", nulls_equal=True
+        )
+        .get_column("observed")
+        .sum()
+    )
     total_variation = float(comparison.get_column("error").sum()) / 2.0
     maximum_tv = maximum_tv if observed_total >= 100_000 else smoke_maximum_tv
     return [
@@ -199,6 +232,13 @@ def _compare_distribution(
                 f"Compared {eligible.height} cells with expected synthetic count >= "
                 f"{config.minimum_expected_count:g}."
             ),
+        ),
+        MetricResult(
+            name=f"{name}_unexpected_categories",
+            passed=unexpected_rows == 0,
+            value=unexpected_rows,
+            threshold=0,
+            details="Generated rows must belong to categories in the fitted target.",
         ),
         MetricResult(
             name=f"{name}_total_variation",
@@ -279,6 +319,51 @@ def _ocean_metrics(frame: pl.DataFrame, config: ValidationConfig) -> list[Metric
             value=maximum_correlation,
             threshold=threshold if correlation_required else "informational below 100k",
             details="OCEAN traits are sampled independently of one another.",
+        ),
+    ]
+
+
+def _origin_mapping_metrics(
+    frame: pl.DataFrame, bundle_dir: Path
+) -> list[MetricResult]:
+    """Check every generated origin pair against the official FOLK2 mapping.
+
+    Args:
+        frame:
+            Generated records containing origin codes and labels.
+        bundle_dir:
+            Prepared source bundle with the official origin marginal.
+
+    Returns:
+        Mapping and positive-weight validation metrics.
+    """
+    target = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    )
+    columns = ["origin_country_code", "origin_country"]
+    expected_pairs = target.select(columns).unique()
+    observed_pairs = frame.select(columns).unique()
+    mismatches = observed_pairs.join(
+        expected_pairs, on=columns, how="anti", nulls_equal=True
+    ).height
+    zero_weight_pairs = target.filter(pl.col("count") <= 0).select(columns).unique()
+    emitted_zero_weight = observed_pairs.join(
+        zero_weight_pairs, on=columns, how="inner", nulls_equal=True
+    ).height
+    return [
+        MetricResult(
+            name="origin_country_mapping",
+            passed=mismatches == 0,
+            value=mismatches,
+            threshold=0,
+            details="Generated origin labels must use the official code mapping.",
+        ),
+        MetricResult(
+            name="origin_country_positive_weights",
+            passed=emitted_zero_weight == 0,
+            value=emitted_zero_weight,
+            threshold=0,
+            details="Categories with zero official weight must never be emitted.",
         ),
     ]
 

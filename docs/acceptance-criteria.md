@@ -27,7 +27,9 @@ These gates apply before any LLM integration may be enabled.
 
 ## Generated records
 
-- Exactly the requested number of records exists.
+- Exactly the requested number of records exists. The canonical deterministic workflow
+  passes first at the configured 2,000-row smoke size and then at 100,000 rows, without
+  changing thresholds or choosing a different seed.
 - Every identifier is unique and deterministic.
 - Every record passes the strict Phase-2 Pydantic schema.
 - No generated person is younger than 18.
@@ -35,8 +37,8 @@ These gates apply before any LLM integration may be enabled.
   draw backs off to a coarser cell.
 - Every record records the back-off level that produced its age, marital status,
   and detailed status, and each of those ladders independently keeps at most 1% of
-  records on a coarser cell. The validation configuration is schema version 2 and
-  explicitly requires `maximum_backoff_rate`.
+  records on a coarser cell. The validation configuration is schema version 3 and
+  explicitly requires `maximum_backoff_rate` and the origin marginal gate.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
@@ -50,8 +52,21 @@ These gates apply before any LLM integration may be enabled.
 - OCEAN scores lie in `[20, 80]`.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
 - The run manifest records exactly zero LLM calls and the sampler schema version.
-- The FOLK2 marginal is not emitted in Phase 2 records and is not sent to LLMs;
-  adding origin sampling requires a later sampling and privacy review.
+- Every Phase 2 record has the official FOLK2 `origin_country_code` and
+  `origin_country` values, sampled independently from the national marginal with
+  deterministic largest-remainder quotas and a separate RNG child. Equal largest
+  remainders are resolved by sorted official code regardless of input order. Unequal
+  official weights are retained; zero-weight categories are never emitted; malformed
+  code-label-count distributions fail loudly. Every observed code-label pair is checked,
+  including an alternate label beside valid rows; unexpected pairs and all unexpected
+  fitted categories fail explicitly and remain included in distribution accounting.
+  The mapping and origin marginal meet the same statistical gates as other mandatory
+  marginals.
+- `country` remains the residence value `Danmark`, and `education_level` is retained.
+  Origin is not ethnicity, citizenship, or residence and cannot drive language,
+  culture, religion, occupation, personality, or visual appearance.
+- Both origin fields remain in upstream/generated outputs and input/checkpoint hashes,
+  but are withheld from both LLM payloads; all resolution fields are also withheld.
 
 `SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. It is part of the
@@ -62,7 +77,11 @@ content-addressed run identity, so a legacy run cannot be silently reused.
 - The committed configuration remains disabled and every live invocation requires
   `--live` explicitly.
 - The input checksum and successful Phase-2 validation report match the upstream run.
-- No invocation can request more than five rows.
+  The upstream sampler schema version must equal the current version, and every frozen
+  row and column must validate against the current `DemographicRecord`; legacy
+  origin-less samples require migration and cannot cross the Phase-3 boundary.
+- No invocation can request more than five rows. The deliberately stratified 1,000-row
+  text-development input is separate from the 2,000-row Phase-2 smoke run.
 - Generated attributes and all seven persona descriptions satisfy strict schemas,
   including required 2-4 sentence `visual_persona` guidance.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical

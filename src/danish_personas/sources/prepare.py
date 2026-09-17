@@ -191,8 +191,8 @@ def prepare_bundle(
             "code and label; it is neither ethnicity nor citizenship.",
             "FOLK2 origin categories are retained verbatim, including Stateless "
             "and Not stated; no continents, regions, or correlations are inferred.",
-            "FOLK2 is prepared for audit and future sampling only; it is not "
-            "emitted in Phase 2 records or sent to an LLM.",
+            "FOLK2 is sampled independently into Phase 2 origin fields and "
+            "withheld from both LLM stages.",
             "OCEAN traits are a documented design distribution, not official "
             "statistics.",
         ],

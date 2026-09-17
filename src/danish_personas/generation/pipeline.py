@@ -7,11 +7,16 @@ import typing as t
 from pathlib import Path
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
-from ..models import RunManifest, ValidationReport
+from ..models import (
+    SAMPLER_SCHEMA_VERSION,
+    DemographicRecord,
+    RunManifest,
+    ValidationReport,
+)
 from .client import OpenAIClient, RequestBudgetExceeded
 from .models import (
     AttributeCheckpoint,
@@ -30,7 +35,14 @@ LOGGER = logging.getLogger(__name__)
 # Sampler back-off and proxy provenance are withheld from prompts: they record how
 # a value was obtained, not anything about the person. Keep non-ladder resolution
 # fields listed here explicitly so they cannot be omitted when ladders change.
-AUDIT_FIELDS = frozenset((*MOST_SPECIFIC_RESOLUTION, "education_resolution"))
+AUDIT_FIELDS = frozenset(
+    (
+        *MOST_SPECIFIC_RESOLUTION,
+        "education_resolution",
+        "origin_country_code",
+        "origin_country",
+    )
+)
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
@@ -524,6 +536,8 @@ def validate_upstream_sample(
     upstream = RunManifest.model_validate_json(
         (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
+    _validate_current_demographic_sample(sample=sample, upstream=upstream)
+
     report = ValidationReport.model_validate_json(
         (run_dir / "validation-report.json").read_text(encoding="utf-8")
     )
@@ -556,3 +570,35 @@ def validate_upstream_sample(
         message = "Frozen sample contains rows absent from validated Phase-2 data"
         raise ValueError(message)
     return upstream
+
+
+def _validate_current_demographic_sample(
+    sample: pl.DataFrame, upstream: RunManifest
+) -> None:
+    """Validate a frozen sample against the current Phase-2 schema.
+
+    Args:
+        sample:
+            Frozen sample rows and columns.
+        upstream:
+            Manifest for the validated run that supplied the sample.
+
+    Raises:
+        ValueError:
+            If the sampler version, columns, or any row are incompatible.
+    """
+    if upstream.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
+        message = "Frozen sample uses an unsupported sampler schema version"
+        raise ValueError(message)
+    expected_columns = set(DemographicRecord.model_fields)
+    if set(sample.columns) != expected_columns or len(sample.columns) != len(
+        expected_columns
+    ):
+        message = "Frozen sample columns do not match the current demographic schema"
+        raise ValueError(message)
+    try:
+        for row in sample.iter_rows(named=True):
+            DemographicRecord.model_validate(row)
+    except ValidationError as error:
+        message = "Frozen sample rows do not match the current demographic schema"
+        raise ValueError(message) from error

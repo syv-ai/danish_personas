@@ -46,6 +46,8 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
     )
     assert first_manifest.llm_calls == 0
     frame = pl.read_parquet(first / first_manifest.data_file)
+    assert {"origin_country_code", "origin_country"} <= set(frame.columns)
+    assert "Not stated" not in frame.get_column("origin_country").unique().to_list()
     DemographicRecord.model_validate(frame.row(0, named=True))
     report = validate_demographics(
         run_dir=first,
@@ -54,6 +56,30 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
         categories_path=categories_path,
     )
     assert report.passed
+
+    corrupted_origin = (
+        frame.with_row_index()
+        .with_columns(
+            pl.when(pl.col("index") == 0)
+            .then(pl.lit("Corrupted label"))
+            .otherwise(pl.col("origin_country"))
+            .alias("origin_country")
+        )
+        .drop("index")
+    )
+    corrupted_origin.write_parquet(first / first_manifest.data_file)
+    corrupted_report = validate_demographics(
+        run_dir=first,
+        bundle_dir=bundle_dir,
+        validation_config_path=validation_path,
+        categories_path=categories_path,
+    )
+    corrupted_metrics = {metric.name: metric for metric in corrupted_report.metrics}
+    assert corrupted_metrics["origin_country_mapping"].value == 1
+    assert not corrupted_metrics["origin_country_mapping"].passed
+    assert corrupted_metrics["origin_country_unexpected_categories"].value == 1
+    assert not corrupted_metrics["origin_country_unexpected_categories"].passed
+
     frame.with_columns((pl.col("age") + 1).alias("age")).write_parquet(
         first / first_manifest.data_file
     )
@@ -67,6 +93,7 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
 
 
 def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
+    root.mkdir(parents=True, exist_ok=True)
     bundle_dir = root / "bundle"
     normalized = bundle_dir / "normalized"
     normalized.mkdir(parents=True)
@@ -110,15 +137,22 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     befolk = folk.drop("marital_status")
     ras210 = pl.DataFrame(
         {
-            "municipality_code": ["101"],
-            "status_group_code": ["00"],
-            "age_key": ["30"],
-            "sex": ["male"],
-            "count": [100],
-            "suppressed": [False],
-            "municipality": ["Copenhagen"],
-            "region_code": ["084"],
-            "region": ["Region Hovedstaden"],
+            "municipality_code": ["101", "101"],
+            "status_group_code": ["00", "00"],
+            "age_key": ["30", "30"],
+            "sex": ["male", "female"],
+            "count": [100, 100],
+            "suppressed": [False, False],
+            "municipality": ["Copenhagen", "Copenhagen"],
+            "region_code": ["084", "084"],
+            "region": ["Region Hovedstaden", "Region Hovedstaden"],
+        }
+    )
+    origin = pl.DataFrame(
+        {
+            "origin_country_code": ["5100", "5103", "5999"],
+            "origin_country": ["Denmark", "Stateless", "Not stated"],
+            "count": [107, 2, 0],
         }
     )
     age_sampling = folk.select("sex", "age", "count", "suppressed").with_columns(
@@ -129,6 +163,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     ).with_columns(pl.lit("30-49").alias("age_band"))
     frames = {
         "folk1a_base_unpooled": folk,
+        "folk2_origin_country_marginal": origin,
         "folk_age_sampling": age_sampling,
         "folk_marital_sampling": marital_sampling,
         "ras209_sampling": ras209,
@@ -181,7 +216,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=validation_path,
         payload={
-            "version": 2,
+            "version": 3,
             "absolute_proportion_tolerance": 0.2,
             "standard_error_multiplier": 5.0,
             "minimum_expected_count": 1.0,
@@ -200,6 +235,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "age_band",
                 "education_level",
                 "labour_market_status",
+                "origin_country",
             ],
         },
     )
@@ -259,6 +295,44 @@ def test_new_sampler_schema_does_not_reuse_legacy_run(tmp_path: Path) -> None:
         "marital_resolution",
         "detailed_status_resolution",
     } <= set(frame.columns)
+
+
+def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
+    """Changing only FOLK2 weights leaves all pre-existing fields unchanged."""
+    first_paths = _write_bundle(root=tmp_path / "first")
+    second_paths = _write_bundle(root=tmp_path / "second")
+    origin_path = (
+        second_paths[0] / "normalized" / "folk2_origin_country_marginal.parquet"
+    )
+    pl.DataFrame(
+        {
+            "origin_country_code": ["5100", "5103", "5999"],
+            "origin_country": ["Denmark", "Stateless", "Not stated"],
+            "count": [2, 107, 0],
+        }
+    ).write_parquet(origin_path)
+    first = generate_records(
+        bundle_dir=first_paths[0],
+        sampling_config_path=first_paths[1],
+        output_dir=tmp_path / "runs-first",
+        rows=200,
+        seed=42,
+    )
+    second = generate_records(
+        bundle_dir=second_paths[0],
+        sampling_config_path=second_paths[1],
+        output_dir=tmp_path / "runs-second",
+        rows=200,
+        seed=42,
+    )
+    first_frame = pl.read_parquet(first / "structured-records.parquet")
+    second_frame = pl.read_parquet(second / "structured-records.parquet")
+    old_fields = [
+        field
+        for field in first_frame.columns
+        if field not in {"origin_country_code", "origin_country"}
+    ]
+    assert first_frame.select(old_fields).equals(second_frame.select(old_fields))
 
 
 def test_terminal_backoff_reaches_records_and_each_ceiling_is_enforced(

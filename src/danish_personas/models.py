@@ -8,8 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 2
-SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
+SAMPLER_SCHEMA_VERSION: int = 3
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
 
 
 class StatBankValue(BaseModel):
@@ -138,6 +138,8 @@ class DemographicRecord(OceanTraits):
 
     persona_id: str
     country: t.Literal["Danmark"]
+    origin_country_code: str
+    origin_country: str
     age: int = Field(ge=18, le=125)
     age_resolution: t.Literal["age_band_sex", "age_band"]
     age_band: str
@@ -302,6 +304,9 @@ class ValidationConfig(StrictModel):
         """
         if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
             message = f"Unsupported validation config version: {self.version}"
+            raise ValueError(message)
+        if "origin_country" not in self.mandatory_marginals:
+            message = "Validation config must include the origin_country marginal"
             raise ValueError(message)
         return self
 
