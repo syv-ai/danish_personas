@@ -154,6 +154,17 @@ def test_visual_persona_accepts_controlled_vocabulary() -> None:
     parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
 
+@pytest.mark.parametrize("colour", ["blåt", "turkist"])
+def test_visual_persona_accepts_neuter_colour_forms(colour: str) -> None:
+    """Neuter clothing and accessories use the correct colour forms."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
+        "Baggrunden er en neutral flade."
+    )
+    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
 def test_visual_persona_duplicates_are_rejected() -> None:
     """Visual guidance participates in the generic duplicate gate."""
     descriptions = _safe_descriptions()
@@ -233,6 +244,18 @@ def test_visual_persona_rejects_free_form_visual_text() -> None:
     descriptions["visual_persona"] = (
         "Personen vælger en blå skjorte og et grønt tørklæde. "
         "Et lyst atelier med høj kontrast giver en neutral portrætramme."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("colour", ["blå", "turkis"])
+def test_visual_persona_rejects_malformed_neuter_colour_forms(colour: str) -> None:
+    """Common-gender colour forms are rejected before neuter nouns."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
+        "Baggrunden er en neutral flade."
     )
     with pytest.raises(ValueError, match="controlled Danish format"):
         parse_descriptions(json.dumps(descriptions, ensure_ascii=False))

@@ -24,7 +24,8 @@ Regler:
   trøje, vest, halstørklæde eller tørklæde. Tilbehør er kun: broche, halskæde,
   hat, kasket, paraply, taske, armbånd, bælte, sjal, slips, tørklæde eller ur.
   Farver er kun blå, brun, grå, grøn, hvid, lilla, orange, pink, rød, sort,
-  turkis eller gul.
+  turkis eller gul. For intetkønsord skal `blå` bøjes til `blåt` og `turkis` til
+  `turkist`.
 - Baggrunden er kun en afdæmpet, enkel, ensfarvet, lys, neutral eller rolig flade
   eller et afdæmpet, enkelt, lyst eller roligt atelier/studie. Tilladt lys er
   kun blødt, klart, dæmpet, diffust, jævnt eller roligt.

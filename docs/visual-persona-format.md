@@ -17,14 +17,16 @@ Feltet indeholder 2-4 sætninger i denne rækkefølge:
 De to sidste sætninger må kun bruges i den viste rækkefølge. Alle punktummer,
 kommaer og faste ord skal følge formen. Der må ikke tilføjes andre beskrivelser,
 adjektiver eller forklaringer. Farver bøjes efter det valgte navneords køn, for
-eksempel `en grøn skjorte` og `et grønt tørklæde`.
+eksempel `en grøn skjorte`, `et grønt tørklæde`, `et blåt tørklæde` og
+`et turkist armbånd`.
 
 ## Tilladte valg
 
 ### Farver
 
 `blå`, `brun`, `grå`, `grøn`, `hvid`, `lilla`, `orange`, `pink`, `rød`, `sort`,
-`turkis` og `gul`, med de nødvendige danske bøjningsformer.
+`turkis` og `gul`, med de nødvendige danske bøjningsformer. Før intetkønsord
+hedder `blå` `blåt`, og `turkis` hedder `turkist`.
 
 ### Tøj
 
@@ -47,12 +49,16 @@ Tilladte lysord er `blødt`, `klart`, `dæmpet`, `diffust`, `jævnt` og `roligt`
 
 ## Eksempler
 
-Godkendt:
+Godkendte eksempler:
+
+**Fælleskøn:**
 
 > Personen vælger en blå skjorte og et grønt armbånd. Baggrunden er en neutral
 > flade.
 
-> Personen vælger en rød kjole og en sort taske. Baggrunden er
+**Intetkøn:**
+
+> Personen vælger et blåt tørklæde og et turkist armbånd. Baggrunden er
 > et lyst atelier. Lyset er diffust. Rammen er neutral.
 
 Afvist er enhver tekst, der ikke passer til formen, også selv om den ellers kun
