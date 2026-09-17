@@ -86,12 +86,14 @@ class LockedSource(StrictModel):
     table_id: str
     role: str
     period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
     metadata_url: str
     data_url: str
     retrieved_metadata_at: str
     table_updated_at: str
     unit: str
     dimensions: dict[str, list[str]]
+    expected_zero_codes: list[str] = Field(default_factory=list)
     estimated_cells: int = Field(gt=0)
 
 
@@ -256,7 +258,9 @@ class SourceDefinition(StrictModel):
     table_id: str
     role: str
     period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
     dimensions: dict[str, SourceSelection]
+    expected_zero_codes: list[str] = Field(default_factory=list)
 
 
 class SourcesConfig(StrictModel):

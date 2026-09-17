@@ -13,6 +13,58 @@ classifications:
     page_url: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
     attachment_url: https://www.dst.dk/klassifikationsbilag/5d18d1e0-400b-4505-92ad-6782915980a3csv_da
 sources:
+  - table_id: FOLK2
+    role: origin_country_marginal
+    period: "2025"
+    # BULK is StatBank's streaming format and is exempt from the one-million-cell
+    # limit applied to non-streaming formats.
+    format: BULK
+    # Reviewed all-zero IELAND partitions omitted by the archived BULK response.
+    expected_zero_codes:
+      - "5111"
+      - "5176"
+      - "5184"
+      - "5248"
+      - "5253"
+      - "5256"
+      - "5264"
+      - "5286"
+      - "5301"
+      - "5307"
+      - "5325"
+      - "5336"
+      - "5346"
+      - "5353"
+      - "5394"
+      - "5397"
+      - "5428"
+      - "5473"
+      - "5480"
+      - "5493"
+      - "5494"
+      - "5498"
+      - "5506"
+      - "5516"
+      - "5527"
+      - "5528"
+      - "5529"
+      - "5530"
+      - "5531"
+      - "5533"
+      - "5535"
+    dimensions:
+      ALDER:
+        selector: adult_exact_ages
+      KØN:
+        values: [M, K]
+      HERKOMST:
+        selector: all
+      STATSB:
+        selector: all
+      IELAND:
+        selector: all
+      Tid:
+        values: ["2025"]
   - table_id: FOLK1A
     role: demographic_base
     period: 2025K1
