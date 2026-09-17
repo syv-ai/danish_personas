@@ -7,8 +7,8 @@ import click
 
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SourceLock, SourcesConfig
-from danish_personas.sources.classification import fetch_classifications
-from danish_personas.sources.statbank import fetch_sources, resolve_sources
+from danish_personas.sources.acquisition import fetch_sources, resolve_sources
+from danish_personas.sources.exceptions import SourceAcquisitionError
 
 
 @click.group()
@@ -21,16 +21,21 @@ def main() -> None:
 @click.option("--lock", "lock_path", type=click.Path(path_type=Path), required=True)
 @click.option("--raw-dir", type=click.Path(path_type=Path), required=True)
 def fetch(lock_path: Path, raw_dir: Path) -> None:
-    """Fetch every locked source without overwriting snapshots."""
+    """Fetch every locked source without overwriting snapshots.
+
+    Raises:
+        click.ClickException:
+            If source acquisition fails.
+    """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
-    manifests = fetch_sources(lock=lock, raw_dir=raw_dir)
-    classifications = fetch_classifications(
-        classifications=lock.classifications, raw_dir=raw_dir
-    )
+    try:
+        result = fetch_sources(lock=lock, raw_dir=raw_dir)
+    except SourceAcquisitionError as error:
+        raise click.ClickException(str(error)) from error
     logging.info(
         "Verified %s table and %s classification snapshots",
-        len(manifests),
-        len(classifications),
+        len(result.table_manifests),
+        len(result.classification_manifests),
     )
 
 
@@ -38,9 +43,17 @@ def fetch(lock_path: Path, raw_dir: Path) -> None:
 @click.option("--config", "config_path", type=click.Path(path_type=Path), required=True)
 @click.option("--lock", "lock_path", type=click.Path(path_type=Path), required=True)
 def resolve(config_path: Path, lock_path: Path) -> None:
-    """Resolve dynamic table selectors into explicit source queries."""
+    """Resolve dynamic table selectors into explicit source queries.
+
+    Raises:
+        click.ClickException:
+            If source resolution fails.
+    """
     config = load_yaml_model(path=config_path, model=SourcesConfig)
-    lock = resolve_sources(config=config, lock_path=lock_path)
+    try:
+        lock = resolve_sources(config=config, lock_path=lock_path)
+    except SourceAcquisitionError as error:
+        raise click.ClickException(str(error)) from error
     logging.info(
         "Resolved %s source tables and %s classifications to %s",
         len(lock.sources),
