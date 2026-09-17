@@ -144,6 +144,16 @@ def test_unsafe_visual_claim_fails() -> None:
         parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
 
+def test_visual_persona_allows_safe_compounds_and_colour_context() -> None:
+    """Word-boundary checks do not reject safe compounds or colour guidance."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en lavendelfarvet skjorte og et enkelt tørklæde. "
+        "Et lyst atelier med høj kontrast og et klaver giver en neutral ramme."
+    )
+    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
 def test_visual_persona_duplicates_are_rejected() -> None:
     """Visual guidance participates in the generic duplicate gate."""
     descriptions = _safe_descriptions()
@@ -157,6 +167,39 @@ def test_visual_persona_is_required() -> None:
     descriptions = _safe_descriptions()
     del descriptions["visual_persona"]
     with pytest.raises(ValueError, match="visual_persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize(
+    "visual",
+    [
+        (
+            "Personen er 72 år og vælger en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen er en ældre kvinde med en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen er svensk og taler svensk. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen har blå øjne og naturligt blondt hår. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen har høj åbenhed og en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+    ],
+)
+def test_visual_persona_rejects_demographic_and_physical_claims(visual: str) -> None:
+    """Visual guidance cannot repeat demographic or immutable input."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = visual
+    with pytest.raises(ValueError, match="Visual persona"):
         parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
 
 
