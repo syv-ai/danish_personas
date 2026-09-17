@@ -1,6 +1,7 @@
 """Pack the immutable Statistics Denmark source snapshots reproducibly."""
 
 import logging
+import stat
 import tarfile
 from compression.zstd import CompressionParameter
 from pathlib import Path
@@ -47,10 +48,8 @@ def main(raw_dir: Path, archive_path: Path) -> None:
             If the snapshot directory is missing or contains no regular files.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    if not raw_dir.is_dir():
-        message = f"Raw snapshot directory does not exist: {raw_dir}"
-        raise click.ClickException(message)
-    paths = sorted(path for path in raw_dir.rglob("*") if path.is_file())
+    _validate_directory(path=raw_dir, description="Raw snapshot directory")
+    paths = _regular_files(raw_dir=raw_dir)
     if not paths:
         message = f"Raw snapshot directory contains no files: {raw_dir}"
         raise click.ClickException(message)
@@ -67,6 +66,33 @@ def main(raw_dir: Path, archive_path: Path) -> None:
             with path.open("rb") as file:
                 archive.addfile(member, fileobj=file)
     logging.info("Packed %s files into %s", len(paths), archive_path)
+
+
+def _regular_files(raw_dir: Path) -> list[Path]:
+    """Return regular files and reject unsafe entries in a raw snapshot tree.
+
+    Args:
+        raw_dir:
+            Root directory to inspect.
+
+    Returns:
+        Paths to regular files, sorted by their relative archive paths.
+
+    Raises:
+        click.ClickException:
+            If the tree contains a symlink or another non-regular, non-directory
+            entry.
+    """
+    paths: list[Path] = []
+    for path in sorted(raw_dir.rglob("*")):
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            message = f"Raw snapshot tree contains a non-regular entry: {path}"
+            raise click.ClickException(message)
+        paths.append(path)
+    return paths
 
 
 def _stable_member(name: str, size: int) -> tarfile.TarInfo:
@@ -94,6 +120,29 @@ def _stable_member(name: str, size: int) -> tarfile.TarInfo:
     member.uname = ""
     member.gname = ""
     return member
+
+
+def _validate_directory(path: Path, description: str) -> None:
+    """Require a real directory without following a symbolic link.
+
+    Args:
+        path:
+            Directory to validate.
+        description:
+            Human-readable description used in the error message.
+
+    Raises:
+        click.ClickException:
+            If ``path`` is missing or is not a directory entry.
+    """
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        message = f"{description} does not exist: {path}"
+        raise click.ClickException(message) from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        message = f"{description} is not a directory: {path}"
+        raise click.ClickException(message)
 
 
 if __name__ == "__main__":

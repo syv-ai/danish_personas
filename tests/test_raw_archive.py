@@ -29,7 +29,7 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "da7ed7cb7c5eb50a"
+    assert bundle_dir.name == "9b6e4e232aaf0778"
     assert validate_sources(bundle_dir=bundle_dir).passed
 
 
@@ -82,6 +82,24 @@ def test_packing_is_byte_stable(tmp_path: Path) -> None:
         assert result.exit_code == 0, result.output
 
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_packing_rejects_symlink_to_content_outside_raw_tree(tmp_path: Path) -> None:
+    """A symlink cannot make the archive include content outside the raw tree."""
+    raw_dir = tmp_path / RAW_DIRECTORY
+    raw_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    (raw_dir / "escaped.txt").symlink_to(outside)
+    archive_path = tmp_path / "archive.tar.zst"
+
+    result = CliRunner().invoke(
+        pack, ["--raw-dir", str(raw_dir), "--archive", str(archive_path)]
+    )
+
+    assert result.exit_code != 0
+    assert "non-regular" in result.output
+    assert not archive_path.exists()
 
 
 def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:

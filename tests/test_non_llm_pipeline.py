@@ -209,13 +209,6 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "F": "divorced",
             },
             "education": {"H70": "masters"},
-            "education_labels": {
-                "H70": {
-                    "danish": "H70 Lange videreg\u00e5ende uddannelser, LVU",
-                    "english": "H70 Masters programs",
-                    "local_isced_assertion": "7",
-                }
-            },
             "education_pooling": {"masters": "higher_education"},
             "labour_market_status": {
                 "employed": ["30"],
