@@ -9,7 +9,7 @@ from tldextract import TLDExtract
 
 from .models import GeneratedAttributes, PersonaDescriptions
 
-VALIDATOR_VERSION = "persona-safety-v2"
+VALIDATOR_VERSION = "persona-safety-v6"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -32,6 +32,95 @@ LANGUAGE_DETECTOR = LanguageDetectorBuilder.from_languages(
     Language.NYNORSK,
     Language.SWEDISH,
 ).build()
+# Visual guidance uses a closed vocabulary rather than a blacklist. Colours include
+# the common, neuter, and plural forms needed by the sentence grammar.
+VISUAL_COLOURS: dict[str, tuple[str, str, str]] = {
+    "blå": ("blå", "blåt", "blå"),
+    "brun": ("brun", "brunt", "brune"),
+    "grå": ("grå", "gråt", "grå"),
+    "grøn": ("grøn", "grønt", "grønne"),
+    "hvid": ("hvid", "hvidt", "hvide"),
+    "lilla": ("lilla", "lilla", "lilla"),
+    "orange": ("orange", "orange", "orange"),
+    "pink": ("pink", "pink", "pink"),
+    "rød": ("rød", "rødt", "røde"),
+    "sort": ("sort", "sort", "sorte"),
+    "turkis": ("turkis", "turkist", "turkise"),
+    "gul": ("gul", "gult", "gule"),
+}
+VISUAL_CLOTHING: dict[str, tuple[str, ...]] = {
+    "en": (
+        "bluse",
+        "cardigan",
+        "frakke",
+        "jakke",
+        "kjole",
+        "nederdel",
+        "skjorte",
+        "sweater",
+        "trøje",
+        "vest",
+    ),
+    "et": ("halstørklæde", "tørklæde"),
+}
+VISUAL_ACCESSORIES: dict[str, tuple[str, ...]] = {
+    "en": ("broche", "halskæde", "hat", "kasket", "paraply", "taske"),
+    "et": ("armbånd", "bælte", "sjal", "slips", "tørklæde", "ur"),
+}
+VISUAL_BACKGROUNDS = (
+    "en afdæmpet flade",
+    "en enkel flade",
+    "en ensfarvet flade",
+    "en lys flade",
+    "en neutral flade",
+    "en rolig flade",
+    "et afdæmpet studie",
+    "et enkelt studie",
+    "et lyst atelier",
+    "et roligt atelier",
+)
+VISUAL_LIGHTING = ("blødt", "klart", "dæmpet", "diffust", "jævnt", "roligt")
+
+
+def _visual_alternation(values: tuple[str, ...]) -> str:
+    """Build an escaped, longest-first regular-expression alternation.
+
+    Args:
+        values:
+            Allowed phrases to include in the alternation.
+
+    Returns:
+        An escaped regular-expression alternation.
+    """
+    ordered = sorted(values, key=len, reverse=True)
+    return "(?:" + "|".join(re.escape(value) for value in ordered) + ")"
+
+
+def _visual_item_phrases(items: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """Return all allowed colour-and-item phrases for a Danish noun group."""
+    phrases: list[str] = []
+    for article, nouns in items.items():
+        form_index = 0 if article == "en" else 1
+        for colour_forms in VISUAL_COLOURS.values():
+            for noun in nouns:
+                phrases.append(f"{article} {colour_forms[form_index]} {noun}")
+    return tuple(phrases)
+
+
+_VISUAL_CLOTHING_PHRASES = _visual_item_phrases(items=VISUAL_CLOTHING)
+_VISUAL_ACCESSORY_PHRASES = _visual_item_phrases(items=VISUAL_ACCESSORIES)
+_VISUAL_FIRST_SENTENCE = re.compile(
+    rf"personen vælger {_visual_alternation(_VISUAL_CLOTHING_PHRASES)} og "
+    rf"{_visual_alternation(_VISUAL_ACCESSORY_PHRASES)}"
+)
+_VISUAL_BACKGROUND_SENTENCE = re.compile(
+    rf"baggrunden er {_visual_alternation(VISUAL_BACKGROUNDS)}"
+)
+_VISUAL_LIGHTING_SENTENCE = re.compile(
+    rf"lyset er {_visual_alternation(VISUAL_LIGHTING)}"
+)
+_VISUAL_FRAME_SENTENCE = re.compile(r"rammen er neutral")
+
 SENSITIVE_TERMS = {
     "adhd",
     "angst",
@@ -157,8 +246,47 @@ def parse_descriptions(content: str) -> PersonaDescriptions:
         raise ValueError(str(error)) from error
     texts = list(descriptions.model_dump().values())
     _validate_texts(texts=texts, require_each_danish=True)
+    _validate_visual_persona(text=descriptions.visual_persona)
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
         message = "Persona descriptions must not be exact duplicates"
         raise ValueError(message)
     return descriptions
+
+
+def _validate_visual_persona(text: str) -> None:
+    """Require the closed Danish visual-persona grammar.
+
+    Args:
+        text:
+            Validated Danish visual guidance.
+
+    Raises:
+        ValueError:
+            If the guidance does not use 2-4 controlled sentences.
+    """
+    normalized = _normalize(text=text)
+    sentences = [part.strip() for part in normalized.split(".") if part.strip()]
+    if not 2 <= len(sentences) <= 4:
+        message = "Visual persona must contain 2-4 sentences"
+        raise ValueError(message)
+
+    if (
+        not normalized.endswith(".")
+        or any(mark in normalized for mark in "!?")
+        or ".." in normalized
+    ):
+        message = "Visual persona must use the controlled Danish format and vocabulary"
+        raise ValueError(message)
+
+    patterns = [_VISUAL_FIRST_SENTENCE, _VISUAL_BACKGROUND_SENTENCE]
+    if len(sentences) >= 3:
+        patterns.append(_VISUAL_LIGHTING_SENTENCE)
+    if len(sentences) == 4:
+        patterns.append(_VISUAL_FRAME_SENTENCE)
+    if any(
+        not pattern.fullmatch(sentence)
+        for pattern, sentence in zip(patterns, sentences)
+    ):
+        message = "Visual persona must use the controlled Danish format and vocabulary"
+        raise ValueError(message)

@@ -61,6 +61,10 @@ def _safe_descriptions() -> dict[str, str]:
             "Personen trives med en rolig hverdag, men er også åben for at lære "
             "nyt sammen med andre."
         ),
+        "visual_persona": (
+            "Personen vælger en blå trøje og et grønt tørklæde. "
+            "Baggrunden er et roligt atelier."
+        ),
     }
 
 
@@ -127,3 +131,157 @@ def test_safe_danish_content_passes() -> None:
     }
     assert parse_attributes(json.dumps(attributes, ensure_ascii=False))
     assert parse_descriptions(json.dumps(_safe_descriptions(), ensure_ascii=False))
+
+
+def test_unsafe_visual_claim_fails() -> None:
+    """Visual guidance cannot encode sensitive or identifying traits."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen har mørk hud og en slank kropsbygning. "
+        "Portrættet kan placeres i København."
+    )
+    with pytest.raises(ValueError, match="Visual persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_accepts_controlled_vocabulary() -> None:
+    """Controlled clothing, accessory, colour, and background choices pass."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en rød kjole og en sort taske. "
+        "Baggrunden er en neutral flade. Lyset er diffust. Rammen er neutral."
+    )
+    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("colour", ["blåt", "turkist"])
+def test_visual_persona_accepts_neuter_colour_forms(colour: str) -> None:
+    """Neuter clothing and accessories use the correct colour forms."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
+        "Baggrunden er en neutral flade."
+    )
+    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_duplicates_are_rejected() -> None:
+    """Visual guidance participates in the generic duplicate gate."""
+    descriptions = _safe_descriptions()
+    descriptions["persona"] = descriptions["visual_persona"]
+    with pytest.raises(ValueError, match="exact duplicates"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_is_required() -> None:
+    """The second-stage schema requires visual portrait guidance."""
+    descriptions = _safe_descriptions()
+    del descriptions["visual_persona"]
+    with pytest.raises(ValueError, match="visual_persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize(
+    "visual",
+    [
+        (
+            "Personen er 72 år og vælger en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen er en ældre kvinde med en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen er svensk og taler svensk. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen har blå øjne og naturligt blondt hår. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen har høj åbenhed og en blå trøje. "
+            "Et lyst atelier giver en neutral portrætramme."
+        ),
+        (
+            "Personen er amerikansk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er spansk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er midaldrende og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er rødhåret og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen har fregner og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+        (
+            "Personen er jødisk og vælger en blå skjorte. "
+            "Baggrunden er en neutral flade."
+        ),
+    ],
+)
+def test_visual_persona_rejects_demographic_and_physical_claims(visual: str) -> None:
+    """Visual guidance cannot repeat demographic or immutable input."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = visual
+    with pytest.raises(ValueError, match="Visual persona"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_rejects_free_form_visual_text() -> None:
+    """Words outside the closed visual grammar are rejected."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en blå skjorte og et grønt tørklæde. "
+        "Et lyst atelier med høj kontrast giver en neutral portrætramme."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("colour", ["blå", "turkis"])
+def test_visual_persona_rejects_malformed_neuter_colour_forms(colour: str) -> None:
+    """Common-gender colour forms are rejected before neuter nouns."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
+        "Baggrunden er en neutral flade."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+@pytest.mark.parametrize(
+    "unsafe_word",
+    ["amerikansk", "spansk", "midaldrende", "rødhåret", "fregner", "jødisk"],
+)
+def test_visual_persona_rejects_reviewer_examples(unsafe_word: str) -> None:
+    """Reviewer examples cannot be smuggled into a controlled sentence."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        f"Personen vælger en {unsafe_word} skjorte og et grønt armbånd. "
+        "Baggrunden er en neutral flade."
+    )
+    with pytest.raises(ValueError, match="controlled Danish format"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+
+def test_visual_persona_sentence_count_is_checked() -> None:
+    """Visual guidance has the requested two-to-four sentence form."""
+    descriptions = _safe_descriptions()
+    descriptions["visual_persona"] = (
+        "Personen vælger en blå trøje og et enkelt tørklæde uden at knytte det "
+        "til andre egenskaber."
+    )
+    with pytest.raises(ValueError, match="2-4 sentences"):
+        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))

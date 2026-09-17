@@ -43,7 +43,7 @@ def generate_personas(
     live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and six persona descriptions.
+    """Generate structured attributes and seven persona descriptions.
 
     Args:
         input_path:
@@ -82,18 +82,10 @@ def generate_personas(
     ordered_ids_sha = sha256_text(canonical_json(selected_ids))
     attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
     personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
-    generation_context_sha = sha256_text(
-        canonical_json(
-            {
-                "config": config.model_dump(mode="json"),
-                "attributes_prompt_sha256": sha256_text(attributes_prompt),
-                "personas_prompt_sha256": sha256_text(personas_prompt),
-                "attributes_schema": GeneratedAttributes.model_json_schema(),
-                "personas_schema": PersonaDescriptions.model_json_schema(),
-                "validator_version": VALIDATOR_VERSION,
-                "withheld_fields": sorted(AUDIT_FIELDS),
-            }
-        )
+    generation_context_sha = generation_context_sha256(
+        config=config,
+        attributes_prompt=attributes_prompt,
+        personas_prompt=personas_prompt,
     )
     run_id = sha256_text(
         ":".join([sha256_file(input_path), generation_context_sha, ordered_ids_sha])
@@ -458,6 +450,37 @@ def _write_output(
     run_dir.mkdir(parents=True, exist_ok=True)
     output.write_parquet(output_path, compression="zstd")
     return output_path
+
+
+def generation_context_sha256(
+    *, config: GenerationConfig, attributes_prompt: str, personas_prompt: str
+) -> str:
+    """Hash every effective input that controls LLM generation.
+
+    Args:
+        config:
+            Validated generation configuration.
+        attributes_prompt:
+            Prompt used for the structured attributes stage.
+        personas_prompt:
+            Prompt used for the persona descriptions stage.
+
+    Returns:
+        SHA-256 digest for the prompts, schemas, validator, and configuration.
+    """
+    return sha256_text(
+        canonical_json(
+            {
+                "config": config.model_dump(mode="json"),
+                "attributes_prompt_sha256": sha256_text(attributes_prompt),
+                "personas_prompt_sha256": sha256_text(personas_prompt),
+                "attributes_schema": GeneratedAttributes.model_json_schema(),
+                "personas_schema": PersonaDescriptions.model_json_schema(),
+                "validator_version": VALIDATOR_VERSION,
+                "withheld_fields": sorted(AUDIT_FIELDS),
+            }
+        )
+    )
 
 
 def validate_upstream_sample(

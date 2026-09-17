@@ -17,6 +17,7 @@ from danish_personas.generation.models import (
 )
 from danish_personas.generation.pipeline import (
     generate_personas,
+    generation_context_sha256,
     validate_upstream_sample,
 )
 from danish_personas.generation.report import (
@@ -116,6 +117,13 @@ def _run_pilot(
         message = "Pilot batch size exceeds the per-invocation row limit"
         raise ValueError(message)
     offsets = list(range(0, rows, batch_size))
+    attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
+    personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+    generation_context_sha = generation_context_sha256(
+        config=config,
+        attributes_prompt=attributes_prompt,
+        personas_prompt=personas_prompt,
+    )
     worst_case_requests = len(offsets) * config.maximum_total_requests
     if worst_case_requests > maximum_total_requests:
         message = (
@@ -128,6 +136,7 @@ def _run_pilot(
             {
                 "input_sha256": sha256_file(input_path),
                 "config_sha256": sha256_file(config_path),
+                "generation_context_sha256": generation_context_sha,
                 "rows": rows,
                 "batch_size": batch_size,
             }
