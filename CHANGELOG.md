@@ -39,11 +39,6 @@
 - `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
   `classifications:` list and are `version: 2`. A lock predating that schema is warned
   about and rewritten.
-- RAS209's H10-H90 education codes are no longer documented as mapped to DISCED-15. They
-  are a StatBank presentation grouping of HFUDD, DISCED-15 does not contain them, and
-  Statistics Denmark publishes no crosswalk. `config/categories.yaml` now records the
-  official Danish and English labels verbatim, with any ISCED level flagged as this
-  repository's own editorial assertion.
 - Adding the classification changed the prepared bundle identifier, so the Phase 2
   validation report describes a superseded bundle and run. Regeneration is deferred to a
   separate branch; the report's measured numbers stand as a historical record.

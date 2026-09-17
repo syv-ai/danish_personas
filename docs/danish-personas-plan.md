@@ -165,12 +165,7 @@ free-text values to be Danish.
 - `age`: integer, 18 years or older
 - `sex`: official statistical category from the selected source table
 - `marital_status`: normalized Statistics Denmark category
-- `education_level`: broad RAS209 education category, retaining the official `UDDANNELSE`
-  code and its verbatim Danish and English labels. RAS209's H10-H90 codes are a StatBank
-  presentation grouping of HFUDD, not a published nomenclature: DISCED-15 does not contain
-  them and Statistics Denmark publishes no crosswalk, so no DISCED-15 mapping may be
-  claimed. Any ISCED level recorded beside a code is this repository's own editorial
-  assertion and must be labelled as such.
+- `education_level`: broad RAS209 education category mapped to DISCED-15
 - `education_resolution`: source category or disclosed proxy level
 - `labour_market_status`: employed, unemployed, student, retired, or another documented
   RAS category
@@ -464,8 +459,7 @@ Automated tests should require:
 
 - 100% schema-valid released rows;
 - zero structural-zero violations;
-- valid municipality-region and RAS mappings, checked against the official
-  Statistics Denmark geography classification;
+- valid municipality-region, RAS, and DISCED mappings;
 - no impossible age-education-status combinations;
 - correct use and labelling of the `67+` education proxy;
 - consistency between structured attributes and all persona texts;

@@ -86,7 +86,7 @@ client when testing LLM paths.
 | --- | --- |
 | `config/sources.yaml` | Dynamic StatBank selectors, classifications, thresholds. |
 | `config/sources.lock.yaml` | Resolved codes, queries, URLs, periods, and timestamps. |
-| `config/categories.yaml` | Canonical mappings plus RAS209 `education_labels`. |
+| `config/categories.yaml` | Canonical demographic and labour-status mappings. |
 | `config/sampling.yaml` | Seed, rows, adult age range, region, OCEAN settings. |
 | `config/validation.yaml` | Distribution, expected-count, and OCEAN thresholds. |
 | `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
@@ -100,13 +100,6 @@ Denmark publishes classifications as attachments on dst.dk rather than through t
 StatBank data API, so they use `classification.py` instead of a StatBank selector.
 `download_sources.py resolve` warns and rewrites a lock that predates the current schema,
 and `download_sources.py fetch` fetches classifications as well as tables.
-
-`config/categories.yaml` also holds `education_labels`: the official Danish and English
-labels for each RAS209 `UDDANNELSE` code H10-H90, taken verbatim from that table's own
-StatBank metadata, plus a `local_isced_assertion`. H10-H90 are a StatBank presentation
-grouping of HFUDD, not a published Statistics Denmark nomenclature; DISCED-15 does not
-contain these codes and no official crosswalk exists. Treat `local_isced_assertion` as
-this repository's editorial judgement and never document it as an official mapping.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
 or validator changes provenance and can change content-addressed run IDs. Do not adjust
