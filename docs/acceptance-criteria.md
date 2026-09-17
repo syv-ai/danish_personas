@@ -102,5 +102,22 @@ content-addressed run identity, so a legacy run cannot be silently reused.
 - Automated validation is necessary but not sufficient: a blinded human review remains
   mandatory before any development-sample or release-scale generation.
 
+## Release eligibility contract
+
+- The committed release policy is disabled by default. An enabled policy must name an
+  exact model allowlist, a nonblank SPDX-like dataset licence identifier, and the exact
+  64-hex SHA-256 of its licence file.
+- Exactly 10,000 rows requires at least 300 unique IDs in an explicit, blinded human
+  review attestation. Any population of at least 100,000 requires at least 500.
+  Other positive population sizes fail closed; policy minima may only be stricter.
+- The attestation binds the pilot ID, output checksum, population, protocol, timestamp,
+  and reviewed IDs. Eligibility requires exactly one unique output ID per attested row
+  and rejects reviewed IDs not present in the output.
+- Policy, attestation, and approval-result contracts are frozen and use immutable tuple
+  collections. Security-relevant values are strict and are never silently coerced or
+  stripped.
+- These checks are pure in-memory contracts. Packaging, publication, uploads, and
+  release manifests are not implemented by this release.
+
 A failed mandatory gate returns a non-zero command exit code. Thresholds may not be
 changed retrospectively to make a completed statistical run pass.

@@ -14,6 +14,7 @@ individual-level Statistics Denmark records.
 | False statistical claims | Source universes, dates, proxies, pooling, and holdouts are explicit | The output is still a fitted synthetic model, not official microdata |
 | Visual presentation becoming sensitive or identifying | `visual_persona` is required to use the closed Danish format and vocabulary for mutable clothing, accessories, colours, and a generic background; the validator rejects every other token, including sensitive, location, institution, and physical claims | Human review remains mandatory for implications outside the controlled format |
 | Unauthorised LLM execution | Committed configuration is disabled; live calls require a local configuration and `--live`; invocations have row and HTTP-request caps | A user with repository and provider access can deliberately enable bounded calls |
+| Premature publication | Release eligibility requires a disabled-capable policy and a blinded human-review attestation bound to the output | Packaging, publication, and reviewer authenticity are not implemented or cryptographically established |
 
 ## Prohibited Phase-2 fields
 
