@@ -7,6 +7,24 @@ import pytest
 from danish_personas.sampling.generator import _origin_quota_sample
 
 
+def test_equal_remainders_use_official_code_order_independently_of_input() -> None:
+    """Equal largest remainders favour codes, not incoming row positions."""
+    ordered = pl.DataFrame(
+        {
+            "origin_country_code": ["5100", "5101", "5102"],
+            "origin_country": ["Denmark", "Country A", "Country B"],
+            "count": [1, 1, 1],
+        }
+    )
+    shuffled = ordered.reverse()
+
+    first = _origin_quota_sample(frame=ordered, rows=2, rng=np.random.default_rng(42))
+    second = _origin_quota_sample(frame=shuffled, rows=2, rng=np.random.default_rng(42))
+
+    assert first.equals(second)
+    assert sorted(first.get_column("origin_country_code")) == ["5100", "5101"]
+
+
 def test_origin_sampling_is_deterministic_and_preserves_unequal_weights() -> None:
     """Repeated seeded quota sampling has exact largest-remainder counts."""
     first = _origin_quota_sample(

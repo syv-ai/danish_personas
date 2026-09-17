@@ -56,6 +56,30 @@ def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
         categories_path=categories_path,
     )
     assert report.passed
+
+    corrupted_origin = (
+        frame.with_row_index()
+        .with_columns(
+            pl.when(pl.col("index") == 0)
+            .then(pl.lit("Corrupted label"))
+            .otherwise(pl.col("origin_country"))
+            .alias("origin_country")
+        )
+        .drop("index")
+    )
+    corrupted_origin.write_parquet(first / first_manifest.data_file)
+    corrupted_report = validate_demographics(
+        run_dir=first,
+        bundle_dir=bundle_dir,
+        validation_config_path=validation_path,
+        categories_path=categories_path,
+    )
+    corrupted_metrics = {metric.name: metric for metric in corrupted_report.metrics}
+    assert corrupted_metrics["origin_country_mapping"].value == 1
+    assert not corrupted_metrics["origin_country_mapping"].passed
+    assert corrupted_metrics["origin_country_unexpected_categories"].value == 1
+    assert not corrupted_metrics["origin_country_unexpected_categories"].passed
+
     frame.with_columns((pl.col("age") + 1).alias("age")).write_parquet(
         first / first_manifest.data_file
     )
@@ -113,15 +137,15 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     befolk = folk.drop("marital_status")
     ras210 = pl.DataFrame(
         {
-            "municipality_code": ["101"],
-            "status_group_code": ["00"],
-            "age_key": ["30"],
-            "sex": ["male"],
-            "count": [100],
-            "suppressed": [False],
-            "municipality": ["Copenhagen"],
-            "region_code": ["084"],
-            "region": ["Region Hovedstaden"],
+            "municipality_code": ["101", "101"],
+            "status_group_code": ["00", "00"],
+            "age_key": ["30", "30"],
+            "sex": ["male", "female"],
+            "count": [100, 100],
+            "suppressed": [False, False],
+            "municipality": ["Copenhagen", "Copenhagen"],
+            "region_code": ["084", "084"],
+            "region": ["Region Hovedstaden", "Region Hovedstaden"],
         }
     )
     origin = pl.DataFrame(

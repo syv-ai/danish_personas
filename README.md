@@ -16,18 +16,15 @@ smoke-test infrastructure only: each direct generation invocation is capped at f
 rows, while a pilot can span multiple shards. Release-scale generation and human
 approval are not implemented release gates.
 
-The validated local Phase 2 run has 100,000 records. The Phase 3 smoke report
-documents a passed three-record run, but that generated data is not committed. Read
-the reports before making statistical or quality claims:
+The canonical local Phase 2 workflow passes at both 2,000-row smoke and 100,000-row
+statistical sizes. Their run IDs are `0122b894dec6829e` and `ea321089a79d3650` for
+source bundle `fda86665792f7734`. The Phase 3 smoke report documents a passed
+three-record historical run, but that generated data is not committed. Read the reports
+before making statistical or quality claims:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
 - [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
-
-Adding the official geography classification changed the prepared bundle identifier, so
-the Phase 2 validation report describes a superseded bundle and run. Those runs will be
-regenerated on a separate branch; until then, treat the report's identifiers and measured
-numbers as historical.
 
 ## Developer setup guide
 
@@ -91,8 +88,8 @@ tokens, or generated data artefacts.
 
 The following commands restore the six exact Statistics Denmark aggregate snapshots and
 the official geography classification snapshot, prepare a local source bundle, generate
-1,000 deterministic records, and validate every stage without network access. The archive
-and attribution are documented in [`data/README.md`](data/README.md).
+2,000 deterministic smoke records, and validate every stage without network access. The
+archive and attribution are documented in [`data/README.md`](data/README.md).
 
 ```bash
 set -o pipefail
@@ -113,7 +110,8 @@ uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 RUN=$( \
   uv run src/scripts/generate_demographics.py \
     --bundle "$BUNDLE" \
-    --rows 1000 \
+    --config config/sampling.yaml \
+    --rows 2000 \
     --seed 20260914 \
     --output-dir data/runs/smoke \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
@@ -172,7 +170,8 @@ The assignments capture the exact paths printed by the CLI commands rather than
 selecting an arbitrary newest directory.
 
 Freeze a deterministic 1,000-row input for optional LLM development work only after the
-statistical validation passes:
+statistical validation passes. This is a separate, deliberate Phase-3 development size;
+it does not replace the canonical 2,000-row Phase-2 smoke validation:
 
 ```bash
 uv run src/scripts/freeze_demographic_sample.py \
