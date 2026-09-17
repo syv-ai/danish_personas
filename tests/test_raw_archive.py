@@ -4,11 +4,14 @@ import io
 import tarfile
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner, Result
 
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SnapshotManifest
+from danish_personas.sources import archive as archive_service
+from danish_personas.sources.exceptions import SourceArchiveError
 from danish_personas.sources.prepare import prepare_bundle
 from danish_personas.validation.checks import validate_sources
 from scripts.build_raw_archive import main as pack
@@ -16,6 +19,26 @@ from scripts.restore_raw_sources import RAW_DIRECTORY, main
 
 PROJECT_ROOT = Path(__file__).parents[1]
 ARCHIVE_PATH = PROJECT_ROOT / "data" / f"{RAW_DIRECTORY}.tar.zst"
+
+
+def test_archive_command_help_retains_legacy_wording() -> None:
+    """Archive command help retains the original descriptions."""
+    runner = CliRunner()
+
+    pack_help = runner.invoke(pack, ["--help"])
+    restore_help = runner.invoke(main, ["--help"])
+
+    assert pack_help.exit_code == 0
+    assert restore_help.exit_code == 0
+    compact_pack_help = " ".join(pack_help.output.split())
+    compact_restore_help = " ".join(restore_help.output.split())
+    assert "Members are sorted by archive path" in compact_pack_help
+    assert "Optional directory holding the immutable raw snapshots" in compact_pack_help
+    assert "Optional destination archive" in compact_pack_help
+    assert (
+        "If the archive is missing, unsafe, corrupt, or the target already exists."
+        in compact_restore_help
+    )
 
 
 def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> None:
@@ -101,6 +124,32 @@ def test_packing_rejects_symlink_to_content_outside_raw_tree(tmp_path: Path) -> 
 
     assert result.exit_code != 0
     assert "non-regular" in result.output
+    assert not archive_path.exists()
+
+
+def test_packing_translates_enumeration_failure_to_click_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Enumeration OSErrors cross the service and command error boundaries."""
+    raw_dir = tmp_path / RAW_DIRECTORY
+    raw_dir.mkdir()
+    archive_path = tmp_path / "archive.tar.zst"
+
+    def fail_enumeration(raw_dir: Path) -> list[Path]:
+        raise PermissionError("enumeration denied")
+
+    monkeypatch.setattr(archive_service, "_regular_files", fail_enumeration)
+
+    with pytest.raises(click.ClickException) as raised:
+        CliRunner().invoke(
+            pack,
+            ["--raw-dir", str(raw_dir), "--archive", str(archive_path)],
+            catch_exceptions=False,
+            standalone_mode=False,
+        )
+
+    assert isinstance(raised.value.__cause__, SourceArchiveError)
+    assert "enumeration denied" in str(raised.value)
     assert not archive_path.exists()
 
 
