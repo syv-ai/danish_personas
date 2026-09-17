@@ -175,20 +175,21 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         live=True,
     )
 
-    resolution_columns = {
+    resolution_columns = (
         "age_resolution",
         "marital_resolution",
+        "education_resolution",
         "detailed_status_resolution",
-    }
+    )
     sample = pl.read_parquet(paths["sample"])
-    assert resolution_columns <= set(sample.columns)
+    assert set(resolution_columns) <= set(sample.columns)
     assert len(_MockClient.payloads) == 2
     attributes_payload = _MockClient.payloads[0]["demographics_and_personality"]
     descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
-    assert resolution_columns.isdisjoint(attributes_payload)
-    assert resolution_columns.isdisjoint(descriptions_payload)
+    assert set(resolution_columns).isdisjoint(attributes_payload)
+    assert set(resolution_columns).isdisjoint(descriptions_payload)
     assert "generated_attributes" in _MockClient.payloads[1]
 
     generation_manifest = json.loads(
@@ -196,7 +197,10 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
-    assert resolution_columns <= set(output.columns)
+    assert set(resolution_columns) <= set(output.columns)
+    assert output.select(list(resolution_columns)).equals(
+        sample.head(1).select(list(resolution_columns))
+    )
 
 
 def _write_inputs(root: Path) -> dict[str, Path]:
@@ -208,6 +212,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "value": [1, 2],
             "age_resolution": ["age_band_sex", "age_band"],
             "marital_resolution": ["region_age_band_sex", "age_band"],
+            "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
             "detailed_status_resolution": ["status", "sex_status"],
         }
     )
