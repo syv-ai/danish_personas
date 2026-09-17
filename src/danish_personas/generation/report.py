@@ -23,18 +23,24 @@ from .pipeline import generation_context_sha256, models_match, validate_upstream
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 
-def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
+def validate_persona_pilot(
+    pilot_dir: Path, repository_root: Path | None = None
+) -> ValidationReport:
     """Validate a merged pilot and freshly validate every shard.
 
     Args:
         pilot_dir:
             Completed pilot directory.
+        repository_root (optional):
+            Repository root for manifest input and configuration paths.
 
     Returns:
         Machine-readable validation report, including for malformed artefacts.
     """
     try:
-        report = _build_persona_pilot_report(pilot_dir=pilot_dir)
+        report = _build_persona_pilot_report(
+            pilot_dir=pilot_dir, repository_root=repository_root
+        )
     except (OSError, UnicodeError, ValueError, pl.exceptions.PolarsError) as error:
         report = _failed_report(
             kind="persona_pilot", subject_id=pilot_dir.name, error=error
@@ -43,12 +49,16 @@ def validate_persona_pilot(pilot_dir: Path) -> ValidationReport:
     return report
 
 
-def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
+def _build_persona_pilot_report(
+    pilot_dir: Path, repository_root: Path | None = None
+) -> ValidationReport:
     """Build a merged-pilot report and freshly validate every shard.
 
     Args:
         pilot_dir:
             Completed pilot directory.
+        repository_root (optional):
+            Repository root for manifest input and configuration paths.
 
     Returns:
         Machine-readable validation report.
@@ -62,7 +72,9 @@ def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
         output = pl.DataFrame()
     try:
         expected = (
-            pl.read_parquet(manifest.input_file).sort("persona_id").head(manifest.rows)
+            pl.read_parquet(_repository_path(repository_root, manifest.input_file))
+            .sort("persona_id")
+            .head(manifest.rows)
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         expected = pl.DataFrame()
@@ -80,7 +92,9 @@ def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
             batch_report = ValidationReport.model_validate_json(
                 report_path.read_text(encoding="utf-8")
             )
-            fresh_report = _build_persona_run_report(manifest_path.parent)
+            fresh_report = _build_persona_run_report(
+                manifest_path.parent, repository_root=repository_root
+            )
             if (
                 not _checksum_matches(manifest_path, reference.manifest_sha256)
                 or not _checksum_matches(
@@ -125,7 +139,7 @@ def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
         merged_batches = pl.DataFrame()
     content_errors = _count_content_errors(output=output)
     provenance_passed = _pilot_provenance_matches(
-        pilot_dir=pilot_dir, manifest=manifest
+        pilot_dir=pilot_dir, manifest=manifest, repository_root=repository_root
     )
     checks = [
         _metric(
@@ -180,7 +194,9 @@ def _build_persona_pilot_report(pilot_dir: Path) -> ValidationReport:
     return report
 
 
-def _build_persona_run_report(run_dir: Path) -> ValidationReport:
+def _build_persona_run_report(
+    run_dir: Path, repository_root: Path | None = None
+) -> ValidationReport:
     """Build a persona-run report without writing it to disk.
 
     Returns:
@@ -196,7 +212,7 @@ def _build_persona_run_report(run_dir: Path) -> ValidationReport:
         output = pl.DataFrame()
     try:
         upstream = (
-            pl.read_parquet(manifest.input_file)
+            pl.read_parquet(_repository_path(repository_root, manifest.input_file))
             .sort("persona_id")
             .slice(manifest.offset, manifest.rows)
         )
@@ -206,7 +222,9 @@ def _build_persona_run_report(run_dir: Path) -> ValidationReport:
         ids = output.get_column("persona_id").to_list()
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         ids = []
-    provenance_passed = _persona_provenance_matches(manifest=manifest)
+    provenance_passed = _persona_provenance_matches(
+        manifest=manifest, repository_root=repository_root
+    )
     checks: list[MetricResult] = [
         _metric(
             name="output_checksum",
@@ -518,25 +536,33 @@ def _metric(
     )
 
 
-def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
+def _persona_provenance_matches(
+    manifest: GenerationManifest, repository_root: Path | None = None
+) -> bool:
     """Recompute the run's identity, range, and generation-context bindings.
 
     Returns:
         Whether all derivable provenance bindings match.
     """
     try:
+        input_path = _repository_path(repository_root, manifest.input_file)
+        sample_manifest_path = _repository_path(
+            repository_root, manifest.sample_manifest_file
+        )
         validated_upstream = validate_upstream_sample(
-            input_path=manifest.input_file,
-            sample_manifest_path=manifest.sample_manifest_file,
+            input_path=input_path, sample_manifest_path=sample_manifest_path
         )
         if manifest.generation_config_file is None:
             return False
-        config = load_yaml_model(
-            path=manifest.generation_config_file, model=GenerationConfig
-        )
-        attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
-        personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
-        sample = pl.read_parquet(manifest.input_file).sort("persona_id")
+        config_path = _repository_path(repository_root, manifest.generation_config_file)
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        attributes_prompt = _repository_path(
+            repository_root, config.attributes_prompt
+        ).read_text(encoding="utf-8")
+        personas_prompt = _repository_path(
+            repository_root, config.personas_prompt
+        ).read_text(encoding="utf-8")
+        sample = pl.read_parquet(input_path).sort("persona_id")
         if manifest.offset + manifest.rows > sample.height:
             return False
         selected_ids = (
@@ -550,15 +576,13 @@ def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
             attributes_prompt=attributes_prompt,
             personas_prompt=personas_prompt,
         )
-        input_sha256 = sha256_file(manifest.input_file)
+        input_sha256 = sha256_file(input_path)
         return (
             manifest.llm_generation
             and manifest.validator_version == VALIDATOR_VERSION
             and config.llm_generation_enabled
             and input_sha256 == manifest.input_sha256
-            and _checksum_matches(
-                manifest.generation_config_file, manifest.generation_config_sha256
-            )
+            and _checksum_matches(config_path, manifest.generation_config_sha256)
             and validated_upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model
             and config.base_url == manifest.base_url
@@ -577,6 +601,12 @@ def _persona_provenance_matches(manifest: GenerationManifest) -> bool:
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
+
+
+def _repository_path(root: Path | None, value: Path) -> Path:
+    if root is None or value.is_absolute():
+        return value
+    return root / value
 
 
 def _pilot_aggregates_match(
@@ -633,30 +663,38 @@ def _pilot_aggregates_match(
     )
 
 
-def _pilot_provenance_matches(*, pilot_dir: Path, manifest: PilotManifest) -> bool:
+def _pilot_provenance_matches(
+    *, pilot_dir: Path, manifest: PilotManifest, repository_root: Path | None = None
+) -> bool:
     """Recompute the pilot identity and all derivable provenance bindings.
 
     Returns:
         Whether all pilot provenance and identity invariants hold.
     """
     try:
+        input_path = _repository_path(repository_root, manifest.input_file)
+        sample_manifest_path = _repository_path(
+            repository_root, manifest.sample_manifest_file
+        )
+        config_path = _repository_path(repository_root, manifest.generation_config_file)
         upstream = validate_upstream_sample(
-            input_path=manifest.input_file,
-            sample_manifest_path=manifest.sample_manifest_file,
+            input_path=input_path, sample_manifest_path=sample_manifest_path
         )
-        config = load_yaml_model(
-            path=manifest.generation_config_file, model=GenerationConfig
-        )
-        attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
-        personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
-        input_sha256 = sha256_file(manifest.input_file)
-        config_sha256 = sha256_file(manifest.generation_config_file)
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        attributes_prompt = _repository_path(
+            repository_root, config.attributes_prompt
+        ).read_text(encoding="utf-8")
+        personas_prompt = _repository_path(
+            repository_root, config.personas_prompt
+        ).read_text(encoding="utf-8")
+        input_sha256 = sha256_file(input_path)
+        config_sha256 = sha256_file(config_path)
         context_sha256 = generation_context_sha256(
             config=config,
             attributes_prompt=attributes_prompt,
             personas_prompt=personas_prompt,
         )
-        sample_rows = pl.read_parquet(manifest.input_file).height
+        sample_rows = pl.read_parquet(input_path).height
         expected_batches = math.ceil(manifest.rows / manifest.batch_size)
         expected_pilot_ids = {
             persona_pilot_id(
@@ -688,9 +726,7 @@ def _pilot_provenance_matches(*, pilot_dir: Path, manifest: PilotManifest) -> bo
             and expected_batches * manifest.maximum_shard_requests
             <= manifest.maximum_total_requests
             and input_sha256 == manifest.input_sha256
-            and _checksum_matches(
-                manifest.sample_manifest_file, manifest.sample_manifest_sha256
-            )
+            and _checksum_matches(sample_manifest_path, manifest.sample_manifest_sha256)
             and config_sha256 == manifest.generation_config_sha256
             and upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model

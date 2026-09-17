@@ -27,8 +27,13 @@ never loads `.env`, and deterministic workflows make no network or LLM requests.
 
 Release packaging is offline and has no upload, authentication, or token options.
 Retain `release-manifest.sha256` (or the printed digest) externally and pass it to
-`release verify` after relocating the package. Uploading is deliberately not implemented
-by Python; a future operator may use `hf upload --create-pr` manually after review.
+`release verify` after relocating the package. After verification and an external
+digest check, an operator may upload manually:
 
+```bash
+hf upload OWNER/DATASET RELEASE_DIR --type dataset --create-pr
+```
+
+Uploading is deliberately not implemented by Python; never upload before verification.
 The existing `uv run src/scripts/*.py` commands remain supported for compatibility.
 Run `uv run danish-personas --help` or append `--help` to any group for all options.

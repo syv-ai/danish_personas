@@ -78,12 +78,16 @@ def _package(
     """
     calls: list[Path] = []
 
-    def validate(*, pilot_dir: Path) -> ValidationReport:
+    def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
+        assert repository_root == case.repository
         calls.append(pilot_dir)
         return case.report
 
-    def inventory(*, pilot_dir: Path, manifest: object) -> list[Path]:
+    def inventory(
+        *, pilot_dir: Path, repository_root: Path, manifest: object
+    ) -> list[Path]:
         assert pilot_dir == case.pilot
+        assert repository_root == case.repository
         assert getattr(manifest, "pilot_id") == case.manifest.pilot_id
         return []
 
@@ -113,7 +117,8 @@ def test_package_release_calls_public_validation_with_exact_subject(
     """The fresh pilot validation service receives the exact pilot path."""
     observed: list[Path] = []
 
-    def validate(*, pilot_dir: Path) -> ValidationReport:
+    def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
+        assert repository_root == release_case.repository
         observed.append(pilot_dir)
         return release_case.report
 
