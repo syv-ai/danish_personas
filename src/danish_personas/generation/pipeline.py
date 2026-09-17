@@ -26,6 +26,9 @@ from .models import (
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
+AUDIT_FIELDS = frozenset(
+    {"age_resolution", "marital_resolution", "detailed_status_resolution"}
+)
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
@@ -195,6 +198,7 @@ def _generate_one(
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
+    prompt_row = {key: value for key, value in row.items() if key not in AUDIT_FIELDS}
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{persona_id}.json"
     attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
@@ -228,7 +232,7 @@ def _generate_one(
         attributes = _complete_validated(
             client=client,
             prompt=attributes_prompt,
-            payload={"demographics_and_personality": row},
+            payload={"demographics_and_personality": prompt_row},
             schema_name="generated_attributes",
             schema=t.cast(dict[str, object], GeneratedAttributes.model_json_schema()),
             parser=parse_attributes,
@@ -253,7 +257,7 @@ def _generate_one(
             client=client,
             prompt=personas_prompt,
             payload={
-                "demographics_and_personality": row,
+                "demographics_and_personality": prompt_row,
                 "generated_attributes": attributes.model_dump(mode="json"),
             },
             schema_name="persona_descriptions",

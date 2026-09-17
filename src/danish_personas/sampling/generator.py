@@ -21,6 +21,28 @@ TRAITS = (
     "neuroticism",
 )
 Distribution = tuple[list[dict[str, object]], np.ndarray]
+Ladder = tuple[tuple[str, tuple[str, ...]], ...]
+LadderIndex = list[tuple[str, tuple[str, ...], dict[tuple[str, ...], Distribution]]]
+
+# Ordered sparse-cell back-off. Each ladder ends at the most general cell that
+# is still structurally valid, so backing off can never cross an invariant:
+# an age stays inside its band, and a detailed status stays inside the broad
+# RAS209 status it refines. A missing final level is a structural zero, not
+# sparsity, and must fail rather than silently widen further.
+AGE_LADDER: Ladder = (
+    ("age_band_sex", ("age_band", "sex")),
+    ("age_band", ("age_band",)),
+)
+MARITAL_LADDER: Ladder = (
+    ("region_age_band_sex", ("region_code", "age_band", "sex")),
+    ("age_band_sex", ("age_band", "sex")),
+    ("age_band", ("age_band",)),
+)
+DETAIL_LADDER: Ladder = (
+    ("age_band_sex_status", ("age_band", "sex", "labour_market_status")),
+    ("sex_status", ("sex", "labour_market_status")),
+    ("status", ("labour_market_status",)),
+)
 
 
 def generate_records(
@@ -74,18 +96,23 @@ def generate_records(
     ocean_rng = np.random.default_rng(ocean_seed)
 
     sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
-    age_distributions = _distribution_index(
-        frame=age_frame, key_columns=["age_band", "sex"], payload_columns=["age"]
+    age_distributions = _ladder_index(
+        frame=age_frame,
+        ladder=AGE_LADDER,
+        payload_columns=["age"],
+        smoothing=config.smoothing,
     )
-    marital_distributions = _distribution_index(
+    marital_distributions = _ladder_index(
         frame=marital_frame,
-        key_columns=["region_code", "age_band", "sex"],
+        ladder=MARITAL_LADDER,
         payload_columns=["marital_status"],
+        smoothing=config.smoothing,
     )
-    detail_distributions = _distribution_index(
+    detail_distributions = _ladder_index(
         frame=detail_frame,
-        key_columns=["age_band", "sex", "labour_market_status"],
+        ladder=DETAIL_LADDER,
         payload_columns=["detailed_status_code", "detailed_status"],
+        smoothing=config.smoothing,
     )
     records = _build_records(
         sampled_joint=sampled_joint,
@@ -139,9 +166,9 @@ def _add_ocean(
 
 def _build_records(
     sampled_joint: pl.DataFrame,
-    age_distributions: dict[tuple[str, ...], Distribution],
-    marital_distributions: dict[tuple[str, ...], Distribution],
-    detail_distributions: dict[tuple[str, ...], Distribution],
+    age_distributions: LadderIndex,
+    marital_distributions: LadderIndex,
+    detail_distributions: LadderIndex,
     rng: np.random.Generator,
     country: str,
     seed: int,
@@ -152,22 +179,22 @@ def _build_records(
         age_band = str(joint["age_band"])
         sex = str(joint["sex"])
         labour_status = str(joint["labour_market_status"])
-        age = _as_int(
-            value=_draw(distributions=age_distributions, key=(age_band, sex), rng=rng)[
-                "age"
-            ]
+        values = {
+            "age_band": age_band,
+            "sex": sex,
+            "region_code": region_code,
+            "labour_market_status": labour_status,
+        }
+        age_payload, age_resolution = _draw(
+            ladder_index=age_distributions, values=values, rng=rng
         )
-        marital_status = str(
-            _draw(
-                distributions=marital_distributions,
-                key=(region_code, age_band, sex),
-                rng=rng,
-            )["marital_status"]
+        age = _as_int(value=age_payload["age"])
+        marital_payload, marital_resolution = _draw(
+            ladder_index=marital_distributions, values=values, rng=rng
         )
-        detail = _draw(
-            distributions=detail_distributions,
-            key=(age_band, sex, labour_status),
-            rng=rng,
+        marital_status = str(marital_payload["marital_status"])
+        detail, detail_resolution = _draw(
+            ladder_index=detail_distributions, values=values, rng=rng
         )
         records.append(
             {
@@ -176,9 +203,11 @@ def _build_records(
                 ),
                 "country": country,
                 "age": age,
+                "age_resolution": age_resolution,
                 "age_band": age_band,
                 "sex": sex,
                 "marital_status": marital_status,
+                "marital_resolution": marital_resolution,
                 "region_code": region_code,
                 "region": joint["region"],
                 "education_level": joint["education_level"],
@@ -189,6 +218,7 @@ def _build_records(
                 "labour_market_status": labour_status,
                 "detailed_status_code": detail["detailed_status_code"],
                 "detailed_status": detail["detailed_status"],
+                "detailed_status_resolution": detail_resolution,
             }
         )
     return records
@@ -202,20 +232,67 @@ def _as_int(value: object) -> int:
 
 
 def _draw(
-    distributions: dict[tuple[str, ...], Distribution],
-    key: tuple[str, ...],
-    rng: np.random.Generator,
-) -> dict[str, object]:
-    if key not in distributions:
-        message = f"No prepared distribution for {key}"
-        raise ValueError(message)
-    payloads, probabilities = distributions[key]
-    index = int(rng.choice(len(payloads), p=probabilities))
-    return payloads[index]
+    ladder_index: LadderIndex, values: dict[str, str], rng: np.random.Generator
+) -> tuple[dict[str, object], str]:
+    """Draw from the most specific populated cell, reporting its level.
+
+    Exactly one random draw is consumed regardless of how far the ladder backs
+    off, so the random stream does not depend on cell sparsity.
+
+    Args:
+        ladder_index:
+            Per-level distributions, most specific first.
+        values:
+            Current record values available as key components.
+        rng:
+            Random generator.
+
+    Returns:
+        The drawn payload and the name of the level that produced it.
+
+    Raises:
+        ValueError:
+            If no level of the ladder has a populated cell.
+    """
+    for level, key_columns, distributions in ladder_index:
+        key = tuple(values[column] for column in key_columns)
+        distribution = distributions.get(key)
+        if distribution is None:
+            continue
+        payloads, probabilities = distribution
+        index = int(rng.choice(len(payloads), p=probabilities))
+        return payloads[index], level
+    keys = {
+        level: [values[column] for column in columns]
+        for level, columns, _ in ladder_index
+    }
+    message = f"No prepared distribution at any back-off level: {keys}"
+    raise ValueError(message)
+
+
+def _ladder_index(
+    frame: pl.DataFrame, ladder: Ladder, payload_columns: list[str], smoothing: float
+) -> LadderIndex:
+    return [
+        (
+            level,
+            key_columns,
+            _distribution_index(
+                frame=frame,
+                key_columns=list(key_columns),
+                payload_columns=payload_columns,
+                smoothing=smoothing,
+            ),
+        )
+        for level, key_columns in ladder
+    ]
 
 
 def _distribution_index(
-    frame: pl.DataFrame, key_columns: list[str], payload_columns: list[str]
+    frame: pl.DataFrame,
+    key_columns: list[str],
+    payload_columns: list[str],
+    smoothing: float,
 ) -> dict[tuple[str, ...], Distribution]:
     distributions: dict[tuple[str, ...], Distribution] = {}
     eligible = frame.filter((pl.col("count") > 0) & ~pl.col("suppressed")).sort(
@@ -223,11 +300,15 @@ def _distribution_index(
     )
     for raw_key, group in eligible.group_by(key_columns, maintain_order=True):
         key = tuple(str(value) for value in raw_key)
+        aggregated = group.group_by(payload_columns, maintain_order=True).agg(
+            pl.col("count").sum()
+        )
         payloads = [
             dict(zip(payload_columns, row, strict=True))
-            for row in group.select(payload_columns).iter_rows()
+            for row in aggregated.select(payload_columns).iter_rows()
         ]
-        counts = group.get_column("count").to_numpy().astype(np.float64)
+        counts = aggregated.get_column("count").to_numpy().astype(np.float64)
+        counts = counts + smoothing
         distributions[key] = (payloads, counts / counts.sum())
     return distributions
 

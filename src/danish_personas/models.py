@@ -140,9 +140,11 @@ class DemographicRecord(OceanTraits):
     persona_id: str
     country: t.Literal["Danmark"]
     age: int = Field(ge=18, le=125)
+    age_resolution: t.Literal["age_band_sex", "age_band"]
     age_band: str
     sex: t.Literal["male", "female"]
     marital_status: str
+    marital_resolution: t.Literal["region_age_band_sex", "age_band_sex", "age_band"]
     region_code: str
     region: str
     education_level: str
@@ -151,6 +153,7 @@ class DemographicRecord(OceanTraits):
     labour_market_status: str
     detailed_status_code: str
     detailed_status: str
+    detailed_status_resolution: t.Literal["age_band_sex_status", "sex_status", "status"]
 
 
 class RunManifest(StrictModel):
@@ -278,6 +281,7 @@ class ValidationConfig(StrictModel):
     standard_error_multiplier: float = Field(gt=0.0)
     minimum_expected_count: float = Field(ge=0.0)
     maximum_ocean_pairwise_correlation: float = Field(ge=0.0)
+    maximum_backoff_rate: float = Field(ge=0.0, le=1.0)
     maximum_total_variation: dict[str, float]
     smoke_maximum_total_variation: float = Field(gt=0.0)
     smoke_holdout_maximum_total_variation: float = Field(gt=0.0)

@@ -185,6 +185,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "fitted_marginal": 0.2,
                 "heldout_marginal": 0.5,
             },
+            "maximum_backoff_rate": 0.01,
             "smoke_maximum_total_variation": 0.2,
             "smoke_holdout_maximum_total_variation": 0.2,
             "mandatory_marginals": [

@@ -59,7 +59,12 @@ def validate_demographics(
         frame=frame, manifest=manifest, data_path=data_path, bundle_dir=bundle_dir
     )
     metrics.extend(
-        _structural_metrics(frame=frame, manifest=manifest, categories=categories)
+        _structural_metrics(
+            frame=frame,
+            manifest=manifest,
+            categories=categories,
+            maximum_backoff_rate=config.maximum_backoff_rate,
+        )
     )
     metrics.extend(
         _distribution_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
@@ -310,7 +315,10 @@ def _logical_checksum(frame: pl.DataFrame) -> str:
 
 
 def _structural_metrics(
-    frame: pl.DataFrame, manifest: RunManifest, categories: CategoryConfig
+    frame: pl.DataFrame,
+    manifest: RunManifest,
+    categories: CategoryConfig,
+    maximum_backoff_rate: float,
 ) -> list[MetricResult]:
     invalid_schema = 0
     for row in frame.iter_rows(named=True):
@@ -337,7 +345,23 @@ def _structural_metrics(
         | ((pl.col("age") < 70) & (pl.col("education_resolution") != "ras209_age_band"))
     ).height
     unique_ids = frame.get_column("persona_id").n_unique()
+    backed_off = frame.filter(
+        (pl.col("age_resolution") != "age_band_sex")
+        | (pl.col("marital_resolution") != "region_age_band_sex")
+        | (pl.col("detailed_status_resolution") != "age_band_sex_status")
+    ).height
+    backoff_rate = backed_off / frame.height if frame.height else 0.0
     return [
+        MetricResult(
+            name="sparse_cell_backoff_rate",
+            passed=backoff_rate <= maximum_backoff_rate,
+            value=backoff_rate,
+            threshold=maximum_backoff_rate,
+            details=(
+                f"{backed_off} of {frame.height} records were drawn from a "
+                "coarser cell than the most specific one."
+            ),
+        ),
         MetricResult(
             name="row_count",
             passed=frame.height == manifest.rows,
