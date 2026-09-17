@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
+    SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
     DemographicRecord,
@@ -295,6 +296,9 @@ def _provenance_metrics(
             _logical_checksum(frame=frame) == manifest.logical_content_sha256
         ),
         "bundle_identity": bundle.bundle_id == manifest.bundle_id,
+        "sampler_schema_version": (
+            manifest.sampler_schema_version == SAMPLER_SCHEMA_VERSION
+        ),
         "bundle_manifest_checksum": (
             sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
         ),
