@@ -1,7 +1,7 @@
 """Integrity and schema verification for prepared source bundles."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import polars as pl
 
@@ -174,13 +174,17 @@ def verify_prepared_bundle(*, bundle_dir: Path) -> BundleManifest:
             f"{manifest.prepared_bundle_schema_version}"
         )
         raise ValueError(message)
-    required_files = {*REQUIRED_COLUMNS, SOURCE_REPORT}
-    missing_files = sorted(required_files - set(manifest.files))
+    canonical_files = _canonical_manifest_files(manifest.files)
+    required_files = {
+        *(_canonical_relative_key(path) for path in REQUIRED_COLUMNS),
+        _canonical_relative_key(SOURCE_REPORT),
+    }
+    missing_files = sorted(required_files - set(canonical_files))
     if missing_files:
         raise ValueError(f"Prepared bundle manifest is missing files: {missing_files}")
     verify_checksums(
         base_dir=bundle_dir,
-        expected=manifest.files,
+        expected=canonical_files,
         message="Prepared bundle verification failed",
     )
     _verify_schemas(bundle_dir=bundle_dir)
@@ -191,6 +195,23 @@ def verify_prepared_bundle(*, bundle_dir: Path) -> BundleManifest:
     if not isinstance(report, dict) or report.get("passed") is not True:
         raise ValueError("Prepared bundle source preparation did not pass")
     return manifest
+
+
+def _canonical_manifest_files(files: dict[str, str]) -> dict[str, str]:
+    canonical_files: dict[str, str] = {}
+    for relative_path, checksum in files.items():
+        canonical_path = _canonical_relative_key(relative_path)
+        if canonical_path in canonical_files:
+            raise ValueError(
+                "Prepared bundle manifest contains duplicate file keys: "
+                f"{canonical_path}"
+            )
+        canonical_files[canonical_path] = checksum
+    return canonical_files
+
+
+def _canonical_relative_key(relative_path: str) -> str:
+    return PurePosixPath(relative_path.replace("\\", "/")).as_posix()
 
 
 def _verify_schemas(*, bundle_dir: Path) -> None:
