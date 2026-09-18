@@ -46,6 +46,8 @@ from .models import (
 from .policy import validate_release_approval
 from .verifier import _verify_release
 
+_WINDOWS = os.name == "nt"
+
 
 class ReleasePackagingError(ValueError):
     """Raised when a release cannot be safely packaged."""
@@ -374,7 +376,7 @@ def _capture_file(path: Path) -> _InventoryItem:
     try:
         before_fd = os.fstat(descriptor)
         _require_stat_file(path=path, stat_result=before_fd)
-        if _platform_file_metadata(before_path) != _platform_file_metadata(before_fd):
+        if _cross_observer_metadata(before_path) != _cross_observer_metadata(before_fd):
             raise ReleasePackagingError(f"Input metadata changed: {path}")
         chunks: list[bytes] = []
         while True:
@@ -385,10 +387,13 @@ def _capture_file(path: Path) -> _InventoryItem:
         content = b"".join(chunks)
         after_fd = os.fstat(descriptor)
         after_path = os.lstat(candidate)
+        _require_stat_file(path=path, stat_result=after_fd)
+        _require_stat_file(path=path, stat_result=after_path)
         if (
-            _platform_file_metadata(before_fd) != _platform_file_metadata(after_fd)
-            or _platform_file_metadata(before_path)
-            != _platform_file_metadata(after_path)
+            _descriptor_stability_metadata(before_fd)
+            != _descriptor_stability_metadata(after_fd)
+            or _path_stability_metadata(before_path)
+            != _path_stability_metadata(after_path)
             or len(content) != before_fd.st_size
         ):
             raise ReleasePackagingError(f"Input metadata changed: {path}")
@@ -408,35 +413,65 @@ def _capture_file(path: Path) -> _InventoryItem:
         os.close(descriptor)
 
 
-def _platform_file_metadata(
+def _cross_observer_metadata(
     metadata_source: os.stat_result | _InventoryItem,
 ) -> tuple[int, ...]:
-    """Return metadata that is stable for this platform's file identity checks.
+    """Return fields safe to compare between path and descriptor observations."""
+    if not _WINDOWS:
+        return _posix_metadata(metadata_source)
+    _, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
+    return (nlink, size)
 
-    Windows does not provide reliable values for device, inode, or creation time
-    across path and descriptor observations, so content hashing supplies the
-    remaining identity check during inventory rechecks.
-    """
+
+def _posix_metadata(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, ...]:
+    return _stat_fields(metadata_source)
+
+
+def _stat_fields(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, int, int, int, int, int, int]:
     if isinstance(metadata_source, _InventoryItem):
-        mode = metadata_source.mode
-        nlink = metadata_source.nlink
-        size = metadata_source.size
-        mtime_ns = metadata_source.mtime_ns
-        device = metadata_source.device
-        inode = metadata_source.inode
-        ctime_ns = metadata_source.ctime_ns
-    else:
-        mode = metadata_source.st_mode
-        nlink = metadata_source.st_nlink
-        size = metadata_source.st_size
-        mtime_ns = metadata_source.st_mtime_ns
-        device = metadata_source.st_dev
-        inode = metadata_source.st_ino
-        ctime_ns = metadata_source.st_ctime_ns
-    stable = (mode, nlink, size, mtime_ns)
-    if os.name == "nt":
-        return stable
-    return (*stable, device, inode, ctime_ns)
+        return (
+            metadata_source.mode,
+            metadata_source.nlink,
+            metadata_source.size,
+            metadata_source.mtime_ns,
+            metadata_source.device,
+            metadata_source.inode,
+            metadata_source.ctime_ns,
+        )
+    return (
+        metadata_source.st_mode,
+        metadata_source.st_nlink,
+        metadata_source.st_size,
+        metadata_source.st_mtime_ns,
+        metadata_source.st_dev,
+        metadata_source.st_ino,
+        metadata_source.st_ctime_ns,
+    )
+
+
+def _descriptor_stability_metadata(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, ...]:
+    """Return fields stable across descriptor observations during one read."""
+    if not _WINDOWS:
+        return _posix_metadata(metadata_source)
+    mode, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
+    # Windows may update descriptor mtime while the file is being read.
+    return (mode, nlink, size)
+
+
+def _path_stability_metadata(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, ...]:
+    """Return fields stable across path observations during one read."""
+    if not _WINDOWS:
+        return _posix_metadata(metadata_source)
+    mode, nlink, size, mtime_ns, _, _, _ = _stat_fields(metadata_source)
+    return (mode, nlink, size, mtime_ns)
 
 
 def _require_stat_file(*, path: Path, stat_result: os.stat_result) -> None:
@@ -719,10 +754,21 @@ def _recheck_inventory(items: list[_InventoryItem]) -> None:
                 f"Consumed file changed: {item.path}"
             ) from error
         if (
-            _platform_file_metadata(current) != _platform_file_metadata(item)
+            _inventory_metadata(current) != _inventory_metadata(item)
             or current.sha256 != item.sha256
         ):
             raise ReleasePackagingError(f"Consumed file changed: {item.path}")
+
+
+def _inventory_metadata(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, ...]:
+    """Return fields stable when a captured file is reopened later."""
+    if not _WINDOWS:
+        return _posix_metadata(metadata_source)
+    mode, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
+    # Inventory captures descriptor metadata, whose Windows mtime is not stable.
+    return (mode, nlink, size)
 
 
 def _recheck_pilot_tree(
@@ -1302,7 +1348,7 @@ def _rename_noreplace(source: Path, destination: Path) -> None:
     """
     if destination.exists() or destination.is_symlink():
         raise ReleasePackagingError("Release destination already exists")
-    if os.name != "posix":
+    if _WINDOWS:
         _rename_windows(source, destination)
         return
     _rename_posix(source, destination)
