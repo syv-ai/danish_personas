@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import collections.abc as c
 import ctypes
+import ctypes.wintypes as wintypes
 import errno
 import hashlib
 import inspect
@@ -17,6 +19,11 @@ import tempfile
 import typing as t
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    msvcrt = None
 
 import polars as pl
 import yaml
@@ -47,6 +54,24 @@ from .policy import validate_release_approval
 from .verifier import _verify_release
 
 _WINDOWS = os.name == "nt"
+_WINDOWS_NATIVE = os.name == "nt"
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FINAL_SHARE_MODE = _WINDOWS_FILE_SHARE_READ
+_WINDOWS_DIRECTORY_SHARE_MODE = _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_DEVICE = 0x00000040
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FINAL_FLAGS = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+_WINDOWS_DIRECTORY_FLAGS = (
+    _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT | _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
+)
+_WINDOWS_FILETIME_UNIX_EPOCH = 116444736000000000
 
 
 class ReleasePackagingError(ValueError):
@@ -72,6 +97,31 @@ class _InventoryItem:
 class _PilotTreeEntry:
     relative: Path
     kind: t.Literal["file", "directory"]
+
+
+@dataclass(frozen=True)
+class _WindowsFileInfo:
+    attributes: int
+    volume_serial: int
+    file_index: int
+    size: int
+    number_of_links: int
+    write_time: int
+
+
+class _WindowsHandleInformation(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", wintypes.DWORD),
+        ("creation_time", wintypes.FILETIME),
+        ("last_access_time", wintypes.FILETIME),
+        ("last_write_time", wintypes.FILETIME),
+        ("volume_serial_number", wintypes.DWORD),
+        ("file_size_high", wintypes.DWORD),
+        ("file_size_low", wintypes.DWORD),
+        ("number_of_links", wintypes.DWORD),
+        ("file_index_high", wintypes.DWORD),
+        ("file_index_low", wintypes.DWORD),
+    ]
 
 
 _PUBLIC_FILES = (
@@ -359,6 +409,8 @@ def _capture_file(path: Path) -> _InventoryItem:
         ReleasePackagingError:
             If the path is not a stable, regular, single-link file.
     """
+    if _WINDOWS_NATIVE:
+        return _capture_file_windows(path)
     candidate = _lexical_absolute(path)
     _require_no_symlink_components(candidate)
     try:
@@ -412,6 +464,243 @@ def _capture_file(path: Path) -> _InventoryItem:
         )
     finally:
         os.close(descriptor)
+
+
+def _capture_file_windows(path: Path) -> _InventoryItem:
+    """Capture a Windows file while holding share-denying native handles.
+
+    Returns:
+        The bytes and native identity captured from ``path``.
+
+    Raises:
+        ReleasePackagingError:
+            If Windows cannot provide a stable, safe capture.
+    """
+    candidate = _lexical_absolute(path)
+    parent_handles = _windows_open_parent_directories(candidate)
+    descriptor: int | None = None
+    reopened: int | None = None
+    try:
+        descriptor = _windows_open_file_descriptor(candidate)
+        before = _windows_file_information(_windows_handle_for_fd(descriptor))
+        _require_windows_regular_file(path=path, info=before)
+        content = _read_capture_descriptor(descriptor, path=path)
+        after = _windows_file_information(_windows_handle_for_fd(descriptor))
+        _require_windows_regular_file(path=path, info=after)
+        if (
+            not _windows_observations_match(before, after)
+            or len(content) != before.size
+        ):
+            raise ReleasePackagingError(f"Input metadata changed: {path}")
+
+        reopened = _windows_open_file_descriptor(candidate)
+        reopened_info = _windows_file_information(_windows_handle_for_fd(reopened))
+        _require_windows_regular_file(path=path, info=reopened_info)
+        if not _windows_observations_match(before, reopened_info):
+            raise ReleasePackagingError(f"Input metadata changed: {path}")
+        return _InventoryItem(
+            path=candidate,
+            size=before.size,
+            sha256=sha256_bytes(content),
+            device=before.volume_serial,
+            inode=before.file_index,
+            mode=stat.S_IFREG,
+            nlink=before.number_of_links,
+            mtime_ns=_windows_filetime_ns(before.write_time),
+            ctime_ns=_windows_filetime_ns(before.write_time),
+            content=content,
+        )
+    except OSError as error:
+        raise ReleasePackagingError(f"Cannot capture input file: {path}") from error
+    finally:
+        if reopened is not None:
+            _close_windows_descriptor(reopened)
+        if descriptor is not None:
+            _close_windows_descriptor(descriptor)
+        for handle in parent_handles:
+            _windows_close_handle(handle)
+
+
+def _close_windows_descriptor(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _read_capture_descriptor(descriptor: int, *, path: Path) -> bytes:
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    except OSError as error:
+        raise ReleasePackagingError(f"Cannot read input file: {path}") from error
+
+
+def _require_windows_regular_file(*, path: Path, info: _WindowsFileInfo) -> None:
+    if info.attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ReleasePackagingError(f"Input must not be a reparse point: {path}")
+    if info.attributes & (
+        _WINDOWS_FILE_ATTRIBUTE_DIRECTORY | _WINDOWS_FILE_ATTRIBUTE_DEVICE
+    ):
+        raise ReleasePackagingError(f"Input must be a regular file: {path}")
+    if info.number_of_links != 1:
+        raise ReleasePackagingError(f"Input must be a regular non-linked file: {path}")
+
+
+def _windows_close_handle(handle: int) -> None:
+    try:
+        _windows_kernel32().CloseHandle(handle)
+    except OSError:
+        pass
+
+
+def _windows_kernel32() -> ctypes.CDLL:
+    loader = t.cast(c.Callable[..., ctypes.CDLL], getattr(ctypes, "WinDLL"))
+    kernel32 = loader("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_WindowsHandleInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def _windows_file_information(handle: int) -> _WindowsFileInfo:
+    kernel32 = _windows_kernel32()
+    information = _WindowsHandleInformation()
+    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+        error = _windows_last_error()
+        raise ReleasePackagingError(
+            f"Cannot inspect Windows input handle (error {error})"
+        )
+    return _WindowsFileInfo(
+        attributes=int(information.file_attributes),
+        volume_serial=int(information.volume_serial_number),
+        file_index=(int(information.file_index_high) << 32)
+        | int(information.file_index_low),
+        size=(int(information.file_size_high) << 32) | int(information.file_size_low),
+        number_of_links=int(information.number_of_links),
+        write_time=(int(information.last_write_time.dwHighDateTime) << 32)
+        | int(information.last_write_time.dwLowDateTime),
+    )
+
+
+def _windows_last_error() -> int:
+    getter = t.cast(c.Callable[[], int], getattr(ctypes, "get_last_error"))
+    return getter()
+
+
+def _windows_filetime_ns(filetime: int) -> int:
+    return (filetime - _WINDOWS_FILETIME_UNIX_EPOCH) * 100
+
+
+def _windows_handle_for_fd(descriptor: int) -> int:
+    if msvcrt is None:
+        raise ReleasePackagingError("Windows C runtime is unavailable")
+    return _windows_handle_value(msvcrt.get_osfhandle(descriptor))
+
+
+def _windows_handle_value(handle: object) -> int:
+    if isinstance(handle, int):
+        return handle
+    value = getattr(handle, "value", None)
+    if isinstance(value, int):
+        return value
+    raise ReleasePackagingError("Windows API returned an invalid handle")
+
+
+def _windows_observations_match(
+    first: _WindowsFileInfo, second: _WindowsFileInfo
+) -> bool:
+    return (
+        first.volume_serial == second.volume_serial
+        and first.file_index == second.file_index
+        and first.size == second.size
+        and first.write_time == second.write_time
+        and first.attributes == second.attributes
+        and first.number_of_links == second.number_of_links
+    )
+
+
+def _windows_open_file_descriptor(path: Path) -> int:
+    raw_handle = _windows_create_file(path, directory=False)
+    try:
+        if msvcrt is None:
+            raise ReleasePackagingError("Windows C runtime is unavailable")
+        return msvcrt.open_osfhandle(
+            raw_handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
+    except (OSError, ValueError, ReleasePackagingError) as error:
+        _windows_close_handle(raw_handle)
+        raise ReleasePackagingError(f"Cannot open input file: {path}") from error
+
+
+def _windows_create_file(path: Path, *, directory: bool) -> int:
+    try:
+        kernel32 = _windows_kernel32()
+        access = _WINDOWS_FILE_READ_ATTRIBUTES if directory else _WINDOWS_GENERIC_READ
+        share = (
+            _WINDOWS_DIRECTORY_SHARE_MODE if directory else _WINDOWS_FINAL_SHARE_MODE
+        )
+        flags = _WINDOWS_DIRECTORY_FLAGS if directory else _WINDOWS_FINAL_FLAGS
+        raw_handle = kernel32.CreateFileW(
+            str(path), access, share, None, _WINDOWS_OPEN_EXISTING, flags, None
+        )
+        handle = _windows_handle_value(raw_handle)
+        if handle in (-1, ctypes.c_void_p(-1).value):
+            error = _windows_last_error()
+            raise ReleasePackagingError(
+                f"Cannot open input path: {path} (Windows error {error})"
+            )
+        return handle
+    except ReleasePackagingError:
+        raise
+    except OSError as error:
+        raise ReleasePackagingError(f"Cannot open input path: {path}") from error
+
+
+def _windows_open_parent_directories(path: Path) -> list[int]:
+    handles: list[int] = []
+    parent = path.parent
+    current = Path(parent.anchor)
+    try:
+        for component in (parent, *parent.parts[1:]):
+            if component != parent:
+                current /= component
+            handle = _windows_create_file(current, directory=True)
+            try:
+                info = _windows_file_information(handle)
+                if info.attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT or not (
+                    info.attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY
+                ):
+                    raise ReleasePackagingError(
+                        f"Input parent is not a regular directory: {current}"
+                    )
+            except BaseException:
+                _windows_close_handle(handle)
+                raise
+            handles.append(handle)
+    except BaseException:
+        for handle in handles:
+            _windows_close_handle(handle)
+        raise
+    return handles
 
 
 def _cross_observer_metadata(
