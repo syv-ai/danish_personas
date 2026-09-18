@@ -834,7 +834,7 @@ def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
 
 
 def test_windows_capture_contract_uses_no_follow_and_stable_identity() -> None:
-    """The native contract denies writes/deletes and compares full identity."""
+    """Native file and parent handles deny mutation sharing."""
     first = packager._WindowsFileInfo(
         attributes=0,
         volume_serial=7,
@@ -851,6 +851,14 @@ def test_windows_capture_contract_uses_no_follow_and_stable_identity() -> None:
     )
     assert packager._WINDOWS_FINAL_SHARE_MODE == packager._WINDOWS_FILE_SHARE_READ
     assert not packager._WINDOWS_FINAL_SHARE_MODE & packager._WINDOWS_FILE_SHARE_WRITE
+    assert not packager._WINDOWS_FINAL_SHARE_MODE & packager._WINDOWS_FILE_SHARE_DELETE
+    assert packager._WINDOWS_DIRECTORY_SHARE_MODE == packager._WINDOWS_FILE_SHARE_READ
+    assert not (
+        packager._WINDOWS_DIRECTORY_SHARE_MODE & packager._WINDOWS_FILE_SHARE_WRITE
+    )
+    assert not packager._WINDOWS_DIRECTORY_SHARE_MODE & (
+        packager._WINDOWS_FILE_SHARE_DELETE
+    )
     assert packager._windows_observations_match(first, same)
     assert not packager._windows_observations_match(first, changed)
 
@@ -900,6 +908,31 @@ def _unsafe_stat(kind: str, actual: object) -> SimpleNamespace:
         st_mtime_ns=getattr(actual, "st_mtime_ns"),
         st_ctime_ns=getattr(actual, "st_ctime_ns"),
     )
+
+
+@pytest.mark.skipif(not packager._WINDOWS_NATIVE, reason="Windows-only mutation test")
+def test_windows_parent_handles_block_directory_rename_during_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retained parent handles block renames until capture finishes."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "source.bin"
+    source.write_bytes(b"captured")
+    renamed = tmp_path / "renamed"
+    original_read = packager._read_capture_descriptor
+
+    def read_with_mutation(descriptor: int, *, path: Path) -> bytes:
+        with pytest.raises(OSError):
+            source_dir.rename(renamed)
+        return original_read(descriptor, path=path)
+
+    monkeypatch.setattr(packager, "_read_capture_descriptor", read_with_mutation)
+    item = packager._capture_file(source)
+
+    assert item.content == b"captured"
+    source_dir.rename(renamed)
+    assert (renamed / source.name).read_bytes() == b"captured"
 
 
 def test_windows_recheck_ignores_unreliable_identity_fields(
