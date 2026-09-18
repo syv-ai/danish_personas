@@ -374,7 +374,7 @@ def _capture_file(path: Path) -> _InventoryItem:
     try:
         before_fd = os.fstat(descriptor)
         _require_stat_file(path=path, stat_result=before_fd)
-        if _file_metadata(before_path) != _file_metadata(before_fd):
+        if _platform_file_metadata(before_path) != _platform_file_metadata(before_fd):
             raise ReleasePackagingError(f"Input metadata changed: {path}")
         chunks: list[bytes] = []
         while True:
@@ -386,8 +386,9 @@ def _capture_file(path: Path) -> _InventoryItem:
         after_fd = os.fstat(descriptor)
         after_path = os.lstat(candidate)
         if (
-            _file_metadata(before_fd) != _file_metadata(after_fd)
-            or _file_metadata(before_path) != _file_metadata(after_path)
+            _platform_file_metadata(before_fd) != _platform_file_metadata(after_fd)
+            or _platform_file_metadata(before_path)
+            != _platform_file_metadata(after_path)
             or len(content) != before_fd.st_size
         ):
             raise ReleasePackagingError(f"Input metadata changed: {path}")
@@ -407,16 +408,35 @@ def _capture_file(path: Path) -> _InventoryItem:
         os.close(descriptor)
 
 
-def _file_metadata(stat: os.stat_result) -> tuple[int, ...]:
-    return (
-        stat.st_mode,
-        stat.st_nlink,
-        stat.st_size,
-        stat.st_dev,
-        stat.st_ino,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-    )
+def _platform_file_metadata(
+    metadata_source: os.stat_result | _InventoryItem,
+) -> tuple[int, ...]:
+    """Return metadata that is stable for this platform's file identity checks.
+
+    Windows does not provide reliable values for device, inode, or creation time
+    across path and descriptor observations, so content hashing supplies the
+    remaining identity check during inventory rechecks.
+    """
+    if isinstance(metadata_source, _InventoryItem):
+        mode = metadata_source.mode
+        nlink = metadata_source.nlink
+        size = metadata_source.size
+        mtime_ns = metadata_source.mtime_ns
+        device = metadata_source.device
+        inode = metadata_source.inode
+        ctime_ns = metadata_source.ctime_ns
+    else:
+        mode = metadata_source.st_mode
+        nlink = metadata_source.st_nlink
+        size = metadata_source.st_size
+        mtime_ns = metadata_source.st_mtime_ns
+        device = metadata_source.st_dev
+        inode = metadata_source.st_ino
+        ctime_ns = metadata_source.st_ctime_ns
+    stable = (mode, nlink, size, mtime_ns)
+    if os.name == "nt":
+        return stable
+    return (*stable, device, inode, ctime_ns)
 
 
 def _require_stat_file(*, path: Path, stat_result: os.stat_result) -> None:
@@ -699,23 +719,8 @@ def _recheck_inventory(items: list[_InventoryItem]) -> None:
                 f"Consumed file changed: {item.path}"
             ) from error
         if (
-            current.size,
-            current.sha256,
-            current.device,
-            current.inode,
-            current.mode,
-            current.nlink,
-            current.mtime_ns,
-            current.ctime_ns,
-        ) != (
-            item.size,
-            item.sha256,
-            item.device,
-            item.inode,
-            item.mode,
-            item.nlink,
-            item.mtime_ns,
-            item.ctime_ns,
+            _platform_file_metadata(current) != _platform_file_metadata(item)
+            or current.sha256 != item.sha256
         ):
             raise ReleasePackagingError(f"Consumed file changed: {item.path}")
 

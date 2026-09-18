@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PosixPath
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -51,6 +52,49 @@ def test_aba_replacement_cannot_change_validation_snapshot(tmp_path: Path) -> No
         assert (snapshot / "pilot/checkpoint.json").read_bytes() == b"invalid"
     finally:
         shutil.rmtree(snapshot)
+
+
+def test_capture_accepts_windows_path_and_descriptor_identity_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows identity fields may differ between path and descriptor stats."""
+    source = tmp_path / "source.bin"
+    content = b"captured"
+    source.write_bytes(content)
+    actual = source.stat()
+    path_calls = 0
+    fd_calls = 0
+
+    def stat_view(offset: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_nlink=actual.st_nlink,
+            st_size=actual.st_size,
+            st_dev=actual.st_dev + offset,
+            st_ino=actual.st_ino + offset,
+            st_mtime_ns=actual.st_mtime_ns,
+            st_ctime_ns=actual.st_ctime_ns + offset,
+        )
+
+    def fake_lstat(_: object) -> SimpleNamespace:
+        nonlocal path_calls
+        path_calls += 1
+        return stat_view(path_calls)
+
+    def fake_fstat(_: int) -> SimpleNamespace:
+        nonlocal fd_calls
+        fd_calls += 1
+        return stat_view(100 + fd_calls)
+
+    monkeypatch.setattr(packager, "Path", PosixPath)
+    monkeypatch.setattr(packager.os, "name", "nt")
+    monkeypatch.setattr(packager.os, "lstat", fake_lstat)
+    monkeypatch.setattr(packager.os, "fstat", fake_fstat)
+
+    item = packager._capture_file(source)
+
+    assert item.content == content
+    assert item.sha256 == packager.sha256_bytes(content)
 
 
 def test_capture_inventory_keeps_captured_bytes_after_replacement(
@@ -676,3 +720,40 @@ def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(ReleasePackagingError, match="symlink"):
         packager._require_regular_file(link / "input.txt")
+
+
+def test_windows_recheck_ignores_unreliable_identity_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows rechecks accept stable files with changed identity fields."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"captured")
+    monkeypatch.setattr(packager, "Path", PosixPath)
+    monkeypatch.setattr(packager.os, "name", "nt")
+    inventory = packager._snapshot_inventory(paths=[source])
+    item = inventory[0]
+    changed_identity = replace(
+        item, device=item.device + 1, inode=item.inode + 1, ctime_ns=item.ctime_ns + 1
+    )
+    monkeypatch.setattr(packager, "_capture_file", lambda _: changed_identity)
+
+    packager._recheck_inventory(inventory)
+
+
+@pytest.mark.parametrize("field", ["size", "mtime_ns", "nlink", "sha256"])
+def test_windows_recheck_rejects_stable_metadata_or_hash_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """Windows rechecks reject changed stable metadata and content."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"captured")
+    monkeypatch.setattr(packager, "Path", PosixPath)
+    monkeypatch.setattr(packager.os, "name", "nt")
+    inventory = packager._snapshot_inventory(paths=[source])
+    item = inventory[0]
+    value = "0" * 64 if field == "sha256" else getattr(item, field) + 1
+    changed = replace(item, **{field: value})
+    monkeypatch.setattr(packager, "_capture_file", lambda _: changed)
+
+    with pytest.raises(ReleasePackagingError, match="Consumed file changed"):
+        packager._recheck_inventory(inventory)
