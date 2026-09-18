@@ -148,20 +148,30 @@ def test_capture_uses_binary_flag_and_preserves_binary_content(
     source = tmp_path / "source.bin"
     content = b"prefix\r\n\x1a\r\nparquet-bytes\x1a\r\n"
     source.write_bytes(content)
-    binary_flag = getattr(packager.os, "O_BINARY", 0)
-    captured_flags: list[int] = []
-    original_open = packager.os.open
+    if packager._WINDOWS_NATIVE:
+        # Native capture uses CreateFileW and an explicit reparse-point denial
+        # contract instead of the POSIX os.open flags below.
+        assert (
+            packager._WINDOWS_FINAL_FLAGS
+            & packager._WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+        )
+        assert packager._WINDOWS_FINAL_SHARE_MODE == packager._WINDOWS_FILE_SHARE_READ
+        item = packager._capture_file(source)
+    else:
+        binary_flag = getattr(packager.os, "O_BINARY", 0)
+        captured_flags: list[int] = []
+        original_open = packager.os.open
 
-    def capture_open(path: Path, flags: int, *args: int) -> int:
-        captured_flags.append(flags)
-        return original_open(path, flags, *args)
+        def capture_open(path: Path, flags: int, *args: int) -> int:
+            captured_flags.append(flags)
+            return original_open(path, flags, *args)
 
-    monkeypatch.setattr(packager.os, "open", capture_open)
+        monkeypatch.setattr(packager.os, "open", capture_open)
+        item = packager._capture_file(source)
 
-    item = packager._capture_file(source)
+        assert captured_flags
+        assert binary_flag == 0 or captured_flags[0] & binary_flag == binary_flag
 
-    assert captured_flags
-    assert binary_flag == 0 or captured_flags[0] & binary_flag == binary_flag
     assert item.content == content
     assert item.size == len(content)
     assert item.sha256 == packager.sha256_bytes(content)

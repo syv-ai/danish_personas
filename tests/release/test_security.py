@@ -112,7 +112,7 @@ def test_package_rejects_linked_input_files(
     (tmp_path / "licence-target").write_bytes(
         b"Creative Commons Attribution 4.0 International\n"
     )
-    with pytest.raises(ReleasePackagingError, match="regular non-linked"):
+    with pytest.raises(ReleasePackagingError, match="regular non-linked|reparse point"):
         _package(release_case, monkeypatch)
 
     original.unlink()
@@ -121,7 +121,7 @@ def test_package_rejects_linked_input_files(
     target.write_text("card", encoding="utf-8")
     release_case.card.unlink()
     release_case.card.hardlink_to(target)
-    with pytest.raises(ReleasePackagingError, match="regular non-linked"):
+    with pytest.raises(ReleasePackagingError, match="regular non-linked|reparse point"):
         _package(release_case, monkeypatch)
 
 

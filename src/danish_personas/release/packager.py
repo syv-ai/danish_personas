@@ -67,6 +67,8 @@ _WINDOWS_FILE_ATTRIBUTE_DEVICE = 0x00000040
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_ERROR_FILE_NOT_FOUND = 2
+_WINDOWS_ERROR_PATH_NOT_FOUND = 3
 _WINDOWS_FINAL_FLAGS = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
 _WINDOWS_DIRECTORY_FLAGS = (
     _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT | _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
@@ -665,6 +667,8 @@ def _windows_create_file(path: Path, *, directory: bool) -> int:
         handle = _windows_handle_value(raw_handle)
         if handle in (-1, ctypes.c_void_p(-1).value):
             error = _windows_last_error()
+            if error in (_WINDOWS_ERROR_FILE_NOT_FOUND, _WINDOWS_ERROR_PATH_NOT_FOUND):
+                raise ReleasePackagingError(f"Missing input file: {path}")
             raise ReleasePackagingError(
                 f"Cannot open input path: {path} (Windows error {error})"
             )
