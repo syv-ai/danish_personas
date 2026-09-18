@@ -22,7 +22,11 @@ from ..models import (
     ValidationConfig,
     ValidationReport,
 )
-from ..sources.bundle import verify_prepared_bundle
+from ..sources.bundle import (
+    SOURCE_REPORT,
+    _verify_prepared_bundle_capture,
+    verify_prepared_bundle,
+)
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -581,9 +585,16 @@ def _backoff_metrics(frame: pl.DataFrame, maximum_rate: float) -> list[MetricRes
     return metrics
 
 
-def _write_reports(directory: Path, report: ValidationReport) -> None:
-    json_path = directory / "validation-report.json"
-    write_json(path=json_path, payload=report)
+def _write_reports(directory: Path, report: ValidationReport) -> dict[str, bytes]:
+    json_content = (
+        json.dumps(
+            report.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    ).encode("utf-8")
+    _atomic_report_write(
+        path=directory / "validation-report.json", content=json_content
+    )
     lines = [
         f"# {report.kind.title()} validation report",
         "",
@@ -599,8 +610,9 @@ def _write_reports(directory: Path, report: ValidationReport) -> None:
         f"{'PASS' if metric.passed else 'FAIL'} |"
         for metric in report.metrics
     )
-    (directory / "validation-report.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
+    markdown_content = ("\n".join(lines) + "\n").encode("utf-8")
+    _atomic_report_write(
+        path=directory / "validation-report.md", content=markdown_content
     )
     LOGGER.info(
         "%s validation %s for %s",
@@ -608,6 +620,17 @@ def _write_reports(directory: Path, report: ValidationReport) -> None:
         "passed" if report.passed else "failed",
         report.subject_id,
     )
+    return {
+        "validation-report.json": json_content,
+        "validation-report.md": markdown_content,
+    }
+
+
+def _atomic_report_write(*, path: Path, content: bytes) -> None:
+    """Replace one validation report atomically."""
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_bytes(content)
+    temporary.replace(path)
 
 
 def validate_sources(bundle_dir: Path) -> ValidationReport:
@@ -624,9 +647,8 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         ValueError:
             If the prepared bundle or an existing bound report is invalid.
     """
-    manifest = verify_prepared_bundle(bundle_dir=bundle_dir)
-    source_report_path = bundle_dir / "source-preparation-report.json"
-    source_payload = json.loads(source_report_path.read_text(encoding="utf-8"))
+    manifest, capture = _verify_prepared_bundle_capture(bundle_dir=bundle_dir)
+    source_payload = json.loads(capture.files[SOURCE_REPORT].content.decode("utf-8"))
     metrics = [
         MetricResult(
             name="prepared_bundle_integrity",
@@ -667,7 +689,13 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         subject_id=manifest.bundle_id,
         metrics=metrics,
     )
-    existing_report = _load_existing_source_report(bundle_dir=bundle_dir)
+    existing_report = _load_existing_source_report(
+        content=(
+            capture.files["validation-report.json"].content
+            if "validation-report.json" in capture.files
+            else None
+        )
+    )
     if existing_report is not None:
         if _report_semantics(existing_report) != _report_semantics(report):
             raise ValueError(
@@ -675,19 +703,21 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
             )
         return existing_report
 
-    _write_reports(directory=bundle_dir, report=report)
+    report_bytes = _write_reports(directory=bundle_dir, report=report)
     manifest_files = dict(manifest.files)
-    for report_name in ("validation-report.json", "validation-report.md"):
-        report_path = bundle_dir / report_name
-        manifest_files[report_name] = sha256_file(report_path)
+    for report_name, content in report_bytes.items():
+        manifest_files[report_name] = hashlib.sha256(content).hexdigest()
     write_json(
         path=bundle_dir / "bundle-manifest.json",
         payload=manifest.model_copy(update={"files": manifest_files}),
     )
+    # Re-capture the rewritten report and manifest so callers never rely on
+    # bytes or checksums read before the atomic replacements.
+    verify_prepared_bundle(bundle_dir=bundle_dir)
     return report
 
 
-def _load_existing_source_report(*, bundle_dir: Path) -> ValidationReport | None:
+def _load_existing_source_report(*, content: bytes | None) -> ValidationReport | None:
     """Load an already-bound source report without repairing it implicitly.
 
     The prepared-bundle verifier has already checked the report checksum when this
@@ -701,17 +731,12 @@ def _load_existing_source_report(*, bundle_dir: Path) -> ValidationReport | None
         ValueError:
             If the bound report cannot be parsed as a validation report.
     """
-    report_path = bundle_dir / "validation-report.json"
-    if not report_path.exists():
+    if content is None:
         return None
     try:
-        return ValidationReport.model_validate_json(
-            report_path.read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError) as error:
-        raise ValueError(
-            f"Bound source validation report is malformed: {report_path}"
-        ) from error
+        return ValidationReport.model_validate_json(content)
+    except (ValueError, TypeError) as error:
+        raise ValueError("Bound source validation report is malformed") from error
 
 
 def _report_semantics(report: ValidationReport) -> dict[str, object]:
