@@ -29,6 +29,39 @@ from danish_personas.release.packager import ReleasePackagingError, package_rele
 from danish_personas.release.verifier import verify_release
 
 
+def test_aba_replacement_cannot_change_validation_snapshot(tmp_path: Path) -> None:
+    """A valid replacement at the original path cannot repair captured input."""
+    repository = tmp_path / "repository"
+    pilot = tmp_path / "pilot"
+    repository.mkdir()
+    pilot.mkdir()
+    checkpoint = pilot / "checkpoint.json"
+    checkpoint.write_bytes(b"invalid")
+    inventory = packager._snapshot_inventory(paths=[checkpoint])
+    snapshot = packager._materialise_snapshot(
+        inventory=inventory, pilot_dir=pilot, repository_root=repository
+    )
+    try:
+        checkpoint.write_bytes(b"valid")
+        checkpoint.write_bytes(b"invalid")
+        assert (snapshot / "pilot/checkpoint.json").read_bytes() == b"invalid"
+    finally:
+        shutil.rmtree(snapshot)
+
+
+def test_capture_inventory_keeps_captured_bytes_after_replacement(
+    tmp_path: Path,
+) -> None:
+    """Packaging bytes remain bound to the descriptor capture."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"captured")
+    inventory = packager._snapshot_inventory(paths=[source])
+    source.write_bytes(b"replacement")
+    assert packager._captured_bytes(inventory, source) == b"captured"
+    with pytest.raises(ReleasePackagingError, match="Consumed file changed"):
+        packager._recheck_inventory(inventory)
+
+
 def test_evidence_derivation_fixture_is_strict_and_accounted(
     release_case: ReleaseCase,
 ) -> None:
@@ -40,6 +73,39 @@ def test_evidence_derivation_fixture_is_strict_and_accounted(
     )
     assert evidence.accounting.total_tokens == 0
     assert evidence.model_dump(mode="json")["shards"][0]["rows"] == 10_000
+
+
+def test_package_aba_replacement_cannot_repair_invalid_snapshot(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh validation cannot observe a valid replacement of invalid input."""
+    valid_original = release_case.output.read_bytes()
+    invalid_original = b"invalid parquet"
+    release_case.output.write_bytes(invalid_original)
+
+    def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
+        assert pilot_dir.name == "pilot"
+        assert repository_root.name == "repository"
+        release_case.output.write_bytes(valid_original)
+        release_case.output.write_bytes(invalid_original)
+        return release_case.report
+
+    monkeypatch.setattr(packager, "validate_persona_pilot", validate)
+    monkeypatch.setattr(packager, "_derive_consumed_files", lambda **_: [])
+    try:
+        with pytest.raises(ReleasePackagingError, match="not readable Parquet"):
+            package_release(
+                pilot_dir=release_case.pilot,
+                attestation_path=release_case.attestation,
+                policy_path=release_case.policy,
+                dataset_card_path=release_case.card,
+                licence_path=release_case.licence,
+                repository_root=release_case.repository,
+                output_parent=release_case.output_parent,
+            )
+    finally:
+        release_case.output.write_bytes(valid_original)
+    assert not list(release_case.output_parent.glob("*"))
 
 
 def test_package_release_builds_allowlisted_release_and_verifies(
@@ -88,7 +154,9 @@ def _package(
     calls: list[Path] = []
 
     def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
-        assert repository_root == case.repository
+        assert repository_root.name == "repository"
+        assert pilot_dir.name == "pilot"
+        assert pilot_dir != case.pilot
         calls.append(pilot_dir)
         return case.report
 
@@ -101,8 +169,17 @@ def _package(
         return []
 
     def evidence(**kwargs: object) -> ReleaseEvidence:
-        assert kwargs["pilot_dir"] == case.pilot
-        return coherent_evidence(case)
+        snapshot_pilot = kwargs["pilot_dir"]
+        assert isinstance(snapshot_pilot, Path)
+        assert snapshot_pilot.name == "pilot"
+        evidence = coherent_evidence(case)
+        return evidence.model_copy(
+            update={
+                "pilot_validation_report_sha256": sha256_file(
+                    snapshot_pilot / "pilot-validation-report.json"
+                )
+            }
+        )
 
     monkeypatch.setattr(packager, "validate_persona_pilot", validate)
     monkeypatch.setattr(packager, "_derive_consumed_files", inventory)
@@ -116,7 +193,8 @@ def _package(
         repository_root=case.repository,
         output_parent=case.output_parent,
     )
-    assert calls == [case.pilot]
+    assert len(calls) == 1
+    assert calls[0].name == "pilot"
     return result
 
 
@@ -127,7 +205,9 @@ def test_package_release_calls_public_validation_with_exact_subject(
     observed: list[Path] = []
 
     def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
-        assert repository_root == release_case.repository
+        assert repository_root.name == "repository"
+        assert pilot_dir.name == "pilot"
+        assert pilot_dir != release_case.pilot
         observed.append(pilot_dir)
         return release_case.report
 
@@ -282,6 +362,27 @@ def test_package_release_rejects_wrong_licence_and_policy_metadata(
         _package(release_case, monkeypatch)
 
 
+def test_package_uses_captured_bytes_during_copy_time_replacement(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement cannot alter bytes selected for the package."""
+    captured_card = release_case.card.read_bytes()
+    original = packager._install_files
+    observed: list[bytes] = []
+
+    def replace_before_copy(**kwargs: object) -> None:
+        release_case.card.write_bytes(b"replacement")
+        original(**kwargs)
+        stage = kwargs["stage"]
+        assert isinstance(stage, Path)
+        observed.append((stage / "README.md").read_bytes())
+
+    monkeypatch.setattr(packager, "_install_files", replace_before_copy)
+    with pytest.raises(ReleasePackagingError, match="Consumed file changed"):
+        _package(release_case, monkeypatch)
+    assert observed == [captured_card]
+
+
 def test_package_uses_manifest_effective_generation_config(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -316,9 +417,16 @@ def test_package_uses_manifest_effective_generation_config(
         "generation.yaml": sha256_file(local_path),
     }
 
-    def evidence(**_: object) -> ReleaseEvidence:
+    def evidence(**kwargs: object) -> ReleaseEvidence:
+        snapshot_pilot = kwargs["pilot_dir"]
+        assert isinstance(snapshot_pilot, Path)
         return coherent_evidence(case).model_copy(
-            update={"config_hashes": config_hashes}
+            update={
+                "config_hashes": config_hashes,
+                "pilot_validation_report_sha256": sha256_file(
+                    snapshot_pilot / "pilot-validation-report.json"
+                ),
+            }
         )
 
     monkeypatch.setattr(packager, "_require_clean_git", lambda _: None)
@@ -457,6 +565,35 @@ def test_scanner_accepts_only_nullable_career_goals(release_case: ReleaseCase) -
     unsafe = output.with_columns(pl.lit(None, dtype=pl.Null).alias("cultural_context"))
     with pytest.raises(ReleasePackagingError, match="logical dtype"):
         packager._scan_dataframe(unsafe)
+
+
+def test_snapshot_materialisation_preserves_repository_and_pilot_paths(
+    tmp_path: Path,
+) -> None:
+    """Captured files are copied without links and with relative semantics."""
+    repository = tmp_path / "repository"
+    pilot = tmp_path / "pilot"
+    repository.mkdir()
+    pilot.mkdir()
+    repository_file = repository / "config" / "generation.yaml"
+    pilot_file = pilot / "checkpoints" / "persona.json"
+    repository_file.parent.mkdir()
+    pilot_file.parent.mkdir()
+    repository_file.write_bytes(b"repository")
+    pilot_file.write_bytes(b"pilot")
+    inventory = packager._snapshot_inventory(paths=[repository_file, pilot_file])
+    snapshot = packager._materialise_snapshot(
+        inventory=inventory, pilot_dir=pilot, repository_root=repository
+    )
+    try:
+        assert (
+            snapshot / "repository/config/generation.yaml"
+        ).read_bytes() == b"repository"
+        assert (snapshot / "pilot/checkpoints/persona.json").read_bytes() == b"pilot"
+        assert not (snapshot / "repository/config/generation.yaml").is_symlink()
+        assert not (snapshot / "pilot/checkpoints/persona.json").is_symlink()
+    finally:
+        shutil.rmtree(snapshot)
 
 
 def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
