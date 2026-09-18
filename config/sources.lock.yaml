@@ -3,15 +3,83 @@ language: en
 release_rows: 100000
 minimum_source_count: 50
 minimum_expected_release_count: 5
-resolved_at: '2026-09-18T07:21:13.115091+00:00'
+resolved_at: '2026-09-18T12:48:06.507528+00:00'
 sources:
+- table_id: LONS20
+  role: job_function_sex_marginal
+  period: '2024'
+  format: CSV
+  metadata_url: https://api.statbank.dk/v1/tableinfo/LONS20?lang=en
+  data_url: https://api.statbank.dk/v1/data
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
+  table_updated_at: '2025-09-29T08:00:00'
+  unit: DKK
+  dimensions:
+    ARBF:
+    - '01'
+    - '02'
+    - '03'
+    - '11'
+    - '12'
+    - '13'
+    - '14'
+    - '21'
+    - '22'
+    - '23'
+    - '24'
+    - '25'
+    - '26'
+    - '31'
+    - '32'
+    - '33'
+    - '34'
+    - '35'
+    - '41'
+    - '42'
+    - '43'
+    - '44'
+    - '51'
+    - '52'
+    - '53'
+    - '54'
+    - '61'
+    - '62'
+    - '71'
+    - '72'
+    - '73'
+    - '74'
+    - '75'
+    - '81'
+    - '82'
+    - '83'
+    - '91'
+    - '92'
+    - '93'
+    - '94'
+    - '95'
+    - '96'
+    SEKTOR:
+    - '1000'
+    AFLOEN:
+    - TIFA
+    LONGRP:
+    - LTOT
+    "L\xD8NM\xC5L":
+    - ANTAL
+    "K\xD8N":
+    - M
+    - K
+    Tid:
+    - '2024'
+  expected_zero_codes: []
+  estimated_cells: 672
 - table_id: FOLK2
   role: origin_country_marginal
   period: '2025'
   format: BULK
   metadata_url: https://api.statbank.dk/v1/tableinfo/FOLK2?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2026-02-12T08:00:00'
   unit: Number
   dimensions:
@@ -417,7 +485,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/FOLK1A?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2026-08-10T08:00:00'
   unit: Number
   dimensions:
@@ -650,7 +718,7 @@ sources:
   format: BULK
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS209?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
@@ -826,7 +894,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS202?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
@@ -933,7 +1001,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/BEFOLK3?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2026-07-01T08:00:00'
   unit: Number
   dimensions:
@@ -1159,7 +1227,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS210?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
+  retrieved_metadata_at: '2026-09-18T12:48:06.507528+00:00'
   table_updated_at: '2025-11-18T08:00:00'
   unit: Number
   dimensions:

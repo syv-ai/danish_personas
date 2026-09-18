@@ -12,7 +12,7 @@ from danish_personas.sources.exceptions import SourceAcquisitionError
 
 def test_archive_services_round_trip_raw_files(tmp_path: Path) -> None:
     """The package archive services preserve files through a safe round trip."""
-    raw_dir = tmp_path / "raw-hardened-20260918"
+    raw_dir = tmp_path / "raw-hardened-20260919"
     source_file = raw_dir / "folk1a" / "query-hash" / "data.csv"
     source_file.parent.mkdir(parents=True)
     source_file.write_text("value\n1\n", encoding="utf-8", newline="\n")

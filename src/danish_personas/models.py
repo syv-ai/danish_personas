@@ -8,14 +8,62 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 4
+SAMPLER_SCHEMA_VERSION: int = 5
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 3
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 4
 FROZEN_SAMPLE_SCHEMA_VERSION: int = 2
-SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
-SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({4})
+SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
+
+ELIGIBLE_JOB_FUNCTION_STATUS_CODES: frozenset[str] = frozenset(
+    {"15", "20", "25", "30", "35", "40"}
+)
+DISCO_TWO_DIGIT_CODES: tuple[str, ...] = (
+    "01",
+    "02",
+    "03",
+    "11",
+    "12",
+    "13",
+    "14",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "41",
+    "42",
+    "43",
+    "44",
+    "51",
+    "52",
+    "53",
+    "54",
+    "61",
+    "62",
+    "71",
+    "72",
+    "73",
+    "74",
+    "75",
+    "81",
+    "82",
+    "83",
+    "91",
+    "92",
+    "93",
+    "94",
+    "95",
+    "96",
+)
 
 
 class StatBankValue(BaseModel):
@@ -165,6 +213,35 @@ class DemographicRecord(OceanTraits):
     detailed_status_code: str
     detailed_status: str
     detailed_status_resolution: t.Literal["age_band_sex_status", "sex_status", "status"]
+    job_function_code: str | None = None
+    job_function: str | None = None
+    job_function_resolution: t.Literal["lons20_sex_marginal", "not_applicable"]
+
+    @model_validator(mode="after")
+    def validate_job_function(self) -> "DemographicRecord":
+        """Require paired job-function fields exactly for eligible employees.
+
+        Returns:
+            The validated record.
+
+        Raises:
+            ValueError:
+                If fields or resolution disagree with detailed-status eligibility.
+        """
+        eligible = self.detailed_status_code in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        paired = self.job_function_code is not None and self.job_function is not None
+        if eligible != paired:
+            message = (
+                "Job-function fields must be paired exactly for eligible employees"
+            )
+            raise ValueError(message)
+        expected = "lons20_sex_marginal" if eligible else "not_applicable"
+        if self.job_function_resolution != expected:
+            message = (
+                "Job-function resolution does not match detailed-status eligibility"
+            )
+            raise ValueError(message)
+        return self
 
 
 class RunManifest(StrictModel):
@@ -333,7 +410,7 @@ class ValidationConfig(StrictModel):
         if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
             message = f"Unsupported validation config version: {self.version}"
             raise ValueError(message)
-        required = {"origin_country", "municipality_code"}
+        required = {"origin_country", "municipality_code", "job_function"}
         missing = sorted(required - set(self.mandatory_marginals))
         if missing:
             message = f"Validation config is missing mandatory marginals: {missing}"

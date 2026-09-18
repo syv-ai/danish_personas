@@ -294,6 +294,10 @@ def test_package_release_builds_allowlisted_release_and_verifies(
         item for item in ("attestations", "provenance", "data")
     }
     assert not list(result.path.rglob("*.attributes.json"))
+    released = pl.read_parquet(result.path / "data" / "personas.parquet")
+    assert {"job_function_code", "job_function", "job_function_resolution"} <= set(
+        released.columns
+    )
     assert (
         verify_release(
             release_dir=result.path, expected_manifest_sha256=result.manifest_sha256

@@ -160,6 +160,63 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "count": [107, 2, 0],
         }
     )
+    job_function = pl.DataFrame(
+        [
+            {
+                "job_function_code": code,
+                "job_function": f"{code} Fixture job function",
+                "sex": sex,
+                "count": index + 1,
+            }
+            for sex in ("female", "male")
+            for index, code in enumerate(
+                (
+                    "01",
+                    "02",
+                    "03",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "21",
+                    "22",
+                    "23",
+                    "24",
+                    "25",
+                    "26",
+                    "31",
+                    "32",
+                    "33",
+                    "34",
+                    "35",
+                    "41",
+                    "42",
+                    "43",
+                    "44",
+                    "51",
+                    "52",
+                    "53",
+                    "54",
+                    "61",
+                    "62",
+                    "71",
+                    "72",
+                    "73",
+                    "74",
+                    "75",
+                    "81",
+                    "82",
+                    "83",
+                    "91",
+                    "92",
+                    "93",
+                    "94",
+                    "95",
+                    "96",
+                )
+            )
+        ]
+    )
     age_sampling = folk.select(
         "municipality_code",
         "municipality",
@@ -193,6 +250,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     frames = {
         "folk1a_base_unpooled": folk,
         "folk2_origin_country_marginal": origin,
+        "job_function_sex_marginal": job_function,
         "folk_age_sampling": age_sampling,
         "folk_marital_sampling": marital_sampling,
         "ras209_joint_unpooled": ras209,
@@ -230,7 +288,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=sampling_path,
         payload={
-            "version": 2,
+            "version": 3,
             "seed": 42,
             "smoke_rows": 100,
             "statistical_rows": 200,
@@ -252,7 +310,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=validation_path,
         payload={
-            "version": 4,
+            "version": 5,
             "absolute_proportion_tolerance": 0.2,
             "standard_error_multiplier": 5.0,
             "minimum_expected_count": 1.0,
@@ -273,6 +331,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "education_level",
                 "labour_market_status",
                 "origin_country",
+                "job_function",
             ],
         },
     )
@@ -303,6 +362,62 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
 
 def _write_yaml(path: Path, payload: dict[str, object]) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def test_job_function_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
+    """Changing only LONS20 weights leaves every pre-existing field unchanged."""
+    first_paths = _write_bundle(root=tmp_path / "first-job")
+    second_paths = _write_bundle(root=tmp_path / "second-job")
+    marginal_path = second_paths[0] / "normalized" / "job_function_sex_marginal.parquet"
+    marginal = pl.read_parquet(marginal_path).with_columns(
+        pl.when(pl.col("job_function_code") == "01")
+        .then(pl.lit(1_000_000))
+        .otherwise(pl.col("count"))
+        .alias("count")
+    )
+    marginal.write_parquet(marginal_path)
+    _refresh_bundle_manifest(bundle_dir=second_paths[0])
+
+    first = generate_records(
+        bundle_dir=first_paths[0],
+        sampling_config_path=first_paths[1],
+        output_dir=tmp_path / "job-runs-first",
+        rows=200,
+        seed=42,
+    )
+    second = generate_records(
+        bundle_dir=second_paths[0],
+        sampling_config_path=second_paths[1],
+        output_dir=tmp_path / "job-runs-second",
+        rows=200,
+        seed=42,
+    )
+    first_frame = pl.read_parquet(first / "structured-records.parquet")
+    second_frame = pl.read_parquet(second / "structured-records.parquet")
+    existing_fields = [
+        field
+        for field in first_frame.columns
+        if field not in {"job_function_code", "job_function", "job_function_resolution"}
+    ]
+
+    assert first_frame.select(existing_fields).equals(
+        second_frame.select(existing_fields)
+    )
+    assert not first_frame.select("job_function_code").equals(
+        second_frame.select("job_function_code")
+    )
+
+
+def _refresh_bundle_manifest(*, bundle_dir: Path) -> None:
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    files = {
+        relative_path: sha256_file(bundle_dir / relative_path)
+        for relative_path in manifest.files
+    }
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
 
 
 def test_new_sampler_schema_does_not_reuse_legacy_run(tmp_path: Path) -> None:
@@ -371,18 +486,6 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
         if field not in {"origin_country_code", "origin_country"}
     ]
     assert first_frame.select(old_fields).equals(second_frame.select(old_fields))
-
-
-def _refresh_bundle_manifest(*, bundle_dir: Path) -> None:
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    files = {
-        relative_path: sha256_file(bundle_dir / relative_path)
-        for relative_path in manifest.files
-    }
-    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
 
 
 def test_sampler_and_validator_reject_tampered_bundle(tmp_path: Path) -> None:

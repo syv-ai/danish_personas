@@ -1,26 +1,26 @@
 # Phase 2 validation report
 
-The canonical deterministic sampler schema is version 4 and the prepared-bundle schema
-is version 3. Both municipality-native runs were regenerated offline with seed
+The canonical deterministic sampler schema is version 5 and the prepared-bundle schema
+is version 4. Both municipality-native runs were regenerated offline with seed
 `20260914`, with no LLM calls.
 
 ## Artefacts
 
-- Source bundle: `a276e45eb987fb73`
+- Source bundle: `333a0a166ca0e030`
 - Sampling-config SHA-256:
-  `aaba1c0ec2d338fe2020b2946eaaeb77e1c89d4bd85e1b63b46b280845b8a033`
+  `696fec4e5369fcf91b010f5a111819a638f2e6f32e503941a1e4e976b379e825`
 - Validation-config SHA-256:
-  `c744ecbfe9d68516c8c1feaf2fff7b9482543bc9f713191f2713b42e1a5493df`
-- Smoke run: `11a191f044aa245a` (2,000 rows; **PASS**)
+  `1a1a8847ef8efa0c26f31258d5fbd87fe184ba1835cef5b39567e9564569991e`
+- Smoke run: `c7387bc90e8896d5` (2,000 rows; **PASS**)
 - Smoke Parquet SHA-256:
-  `3b102cb5980e690fa4486921abcafb7fea65e9a75c34f0d6e2c3086fbfc37fa2`
+  `64059a786346f797742b3a4bd4f077569edc6335c6f84aea4d6380254eb51c05`
 - Smoke logical-content SHA-256:
-  `761c610ce854eb6839303c43ad402a093fc501ee1512054b6e4a27a431c6f8cb`
-- Statistical run: `cd12e81f3de71f0d` (100,000 rows; **PASS**)
+  `d53d7d6000e18efee14259036c23df1f24da14762e6e123fa943b6226bd90ad1`
+- Statistical run: `6c288bd32f96e1f1` (100,000 rows; **PASS**)
 - Statistical Parquet SHA-256:
-  `e49dea3332fbbf0edf8728f9ab5d280e3251108f43aeabb7b6c62cb2734c1654`
+  `691d1a90b9a704f13af68cab7ef804f5e0fd6d75949e0e412630f8d2f00c8320`
 - Statistical logical-content SHA-256:
-  `c847bb9d8d68c46c33c881e1693b75a485b6ebd620220c33cc39e49a15644cb2`
+  `28201b12b916b1fffc8b7bcfcb98bdb4dbcce1744385eb7f63efea3b880add35`
 - Frozen text-development input remains a separate 1,000-row local artefact. Sample
   provenance schema 2 uses municipality, education, and labour status as strata.
 
@@ -30,7 +30,9 @@ mappings, configurations, and code.
 
 ## Source result
 
-- Six official tables and one official classification snapshot were checksummed.
+- Seven official tables and one official classification snapshot were checksummed.
+- LONS20 contains exactly 42 two-digit DISCO-08 groups per sex: 881,774 women
+  and 919,819 men in its incomplete earnings-statistics universe.
 - The lock, hierarchy, and prepared RAS209 joint contain the same 99 municipalities.
 - FOLK1A and RAS209 remain municipality-keyed; no regional reaggregation is used by the
   sampler.
@@ -48,6 +50,9 @@ mappings, configurations, and code.
 | Maximum fitted marginal TV | 1.5148% | 0.2903% | 5% / 2% |
 | Municipality marginal TV | 0.6321% | 0.0137% | 5% / 2% |
 | FOLK2 origin marginal TV | 0.8430% | 0.0256% | 5% / 2% |
+| LONS20 job function TV, women | 0.9350% | 0.0186% | 5% / 2% |
+| LONS20 job function TV, men | 0.9535% | 0.0181% | 5% / 2% |
+| Job-function mapping/eligibility errors | 0 | 0 | 0 |
 | Municipality RAS209 joint TV | 49.2167% | 8.9276% | info / 10% |
 | Held-out municipality population TV | 21.8453% | 2.9804% | 25% / 5% |
 | Held-out status-by-sex TV | 1.8680% | 0.3806% | 25% / 5% |
