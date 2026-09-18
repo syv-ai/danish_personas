@@ -1,14 +1,17 @@
 """Strict typed contracts for release policy and human review evidence."""
 
+import math
 import re
 import typing as t
 from datetime import datetime
+from pathlib import Path
 
 from pydantic import (
     AliasChoices,
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StrictStr,
     field_validator,
@@ -231,6 +234,123 @@ class ReleasePolicy(StrictModel):
 ReleaseApprovalResult = ReleaseApproval
 
 
+class Accounting(StrictModel):
+    """Aggregate generation accounting with no provider-identifying metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requests: StrictInt = Field(ge=0)
+    retries: StrictInt = Field(ge=0)
+    rejected_validation_responses: StrictInt = Field(ge=0)
+    dropped_rows: StrictInt = Field(ge=0)
+    prompt_tokens: StrictInt = Field(ge=0)
+    completion_tokens: StrictInt = Field(ge=0)
+    total_tokens: StrictInt = Field(ge=0)
+    input_price_per_million_usd: StrictFloat = Field(ge=0.0)
+    output_price_per_million_usd: StrictFloat = Field(ge=0.0)
+    list_price_estimated_cost_usd: StrictFloat = Field(ge=0.0)
+    provider_estimated_cost_usd: StrictFloat | None = Field(default=None, ge=0.0)
+
+    @field_validator(
+        "input_price_per_million_usd",
+        "output_price_per_million_usd",
+        "list_price_estimated_cost_usd",
+        "provider_estimated_cost_usd",
+    )
+    @classmethod
+    def _finite_cost(_cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("Costs must be finite")
+        return value
+
+    providers: tuple[StrictStr, ...]
+
+    @field_validator("providers")
+    @classmethod
+    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if tuple(sorted(set(value))) != value:
+            raise ValueError("Provider names must be sorted and unique")
+        return value
+
+
+class Artifact(StrictModel):
+    """One public release file covered by the release manifest."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: StrictStr = Field(min_length=1)
+    role: StrictStr = Field(min_length=1)
+    sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    size: StrictInt = Field(ge=0)
+
+
+class ReleaseManifest(StrictModel):
+    """Signed-by-hash description of every file in a public release."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: t.Literal[1]
+    release_id: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _strict_version(_cls, value: object) -> object:
+        if type(value) is not int or value != 1:
+            raise ValueError("Release manifest version must be exactly integer 1")
+        return value
+
+    created_at: datetime
+    pilot_id: StrictStr = Field(min_length=1)
+    model: StrictStr = Field(min_length=1)
+    rows: StrictInt = Field(gt=0)
+    git_head: StrictStr = Field(pattern=r"^[0-9a-f]{40}$")
+    origin_url: StrictStr = Field(min_length=1)
+    uv_lock_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[Artifact, ...] = Field(
+        min_length=1, validation_alias=AliasChoices("artifacts", "files")
+    )
+
+    @model_validator(mode="after")
+    def _require_aware_created_at(self) -> "ReleaseManifest":
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("Manifest timestamp must be timezone-aware")
+        return self
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _strict_created_at(_cls, value: object) -> object:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str) and _CANONICAL_TIMESTAMP.fullmatch(value):
+            return value
+        raise ValueError("Manifest timestamp must be timezone-aware ISO-8601")
+
+    @property
+    def files(self) -> tuple[Artifact, ...]:
+        """Manifest-covered files using the common public terminology."""
+        return self.artifacts
+
+
+Manifest = ReleaseManifest
+
+
+class ReleasePackageResult(StrictModel):
+    """Result returned after an atomic release installation."""
+
+    path: Path
+    manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _strict_path(_cls, value: object) -> object:
+        if not isinstance(value, Path):
+            raise ValueError("Package path must be a pathlib.Path")
+        return value
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class ReviewAttestation(StrictModel):
     """Blinded human-review attestation bound to one generated output.
 
@@ -327,3 +447,79 @@ def _require_exact_unique_ids(*, values: tuple[str, ...]) -> None:
         raise ValueError("Reviewed persona IDs must be nonblank and unpadded")
     if len(set(values)) != len(values):
         raise ValueError("Reviewed persona IDs must be unique")
+
+
+class ShardEvidence(StrictModel):
+    """Portable accounting and checksums for one generation shard."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    shard_id: StrictStr = Field(min_length=1)
+    offset: StrictInt = Field(ge=0)
+    rows: StrictInt = Field(gt=0)
+    manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    report_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    requests: StrictInt = Field(ge=0)
+    retries: StrictInt = Field(ge=0)
+    rejected_validation_responses: StrictInt = Field(ge=0)
+    prompt_tokens: StrictInt = Field(ge=0)
+    completion_tokens: StrictInt = Field(ge=0)
+    total_tokens: StrictInt = Field(ge=0)
+    provider_cost_usd: StrictFloat | None = Field(default=None, ge=0.0)
+    providers: tuple[StrictStr, ...]
+
+    @field_validator("provider_cost_usd")
+    @classmethod
+    def _finite_cost(_cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("Costs must be finite")
+        return value
+
+    @field_validator("providers")
+    @classmethod
+    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or item != item.strip() for item in value):
+            raise ValueError("Provider names must be nonblank")
+        if tuple(sorted(set(value))) != value:
+            raise ValueError("Provider names must be sorted and unique")
+        return value
+
+
+class ReleaseEvidence(StrictModel):
+    """Portable provenance and accounting for a release."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: t.Literal[1]
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _strict_version(_cls, value: object) -> object:
+        if type(value) is not int or value != 1:
+            raise ValueError("Release evidence version must be exactly integer 1")
+        return value
+
+    pilot_id: StrictStr = Field(min_length=1)
+    model: StrictStr = Field(min_length=1)
+    rows: StrictInt = Field(gt=0)
+    output_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    input_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    sample_manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    validator_version: StrictStr = Field(min_length=1)
+    attributes_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    personas_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    upstream_run_id: StrictStr = Field(min_length=1)
+    sample_source_run_id: StrictStr | None = None
+    source_bundle_id: StrictStr | None = None
+    policy_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    attestation_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    licence_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    code_license_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    uv_lock_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    pilot_validation_report_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    config_hashes: dict[StrictStr, StrictStr] = Field(min_length=5)
+    shards: tuple[ShardEvidence, ...] = Field(min_length=1)
+    accounting: Accounting

@@ -654,6 +654,48 @@ def test_pilot_validation_rejects_independent_tampering(
     assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
 
 
+def test_pilot_validation_uses_repository_root_from_another_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh pilot validation resolves relative evidence outside process cwd."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    pilot_dir = run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "pilot",
+        rows=1,
+        batch_size=1,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=5,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
+    )
+    manifest_path = pilot_dir / "pilot-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    relative_input = paths["sample"].relative_to(tmp_path)
+    relative_sample_manifest = paths["sample_manifest"].relative_to(tmp_path)
+    relative_config = paths["config"].relative_to(tmp_path)
+    manifest["input_file"] = str(relative_input)
+    manifest["sample_manifest_file"] = str(relative_sample_manifest)
+    manifest["generation_config_file"] = str(relative_config)
+    for reference in manifest["batch_runs"]:
+        shard_path = pilot_dir / reference["manifest_file"]
+        shard = json.loads(shard_path.read_text(encoding="utf-8"))
+        shard["input_file"] = str(relative_input)
+        shard["sample_manifest_file"] = str(relative_sample_manifest)
+        shard["generation_config_file"] = str(relative_config)
+        write_json(path=shard_path, payload=shard)
+        reference["manifest_sha256"] = sha256_file(shard_path)
+    write_json(path=manifest_path, payload=manifest)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert validate_persona_pilot(pilot_dir=pilot_dir, repository_root=tmp_path).passed
+
+
 def test_pipeline_rejects_tampering_and_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
