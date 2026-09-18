@@ -8,7 +8,10 @@ import pytest
 from danish_personas.io import sha256_file, sha256_text, write_json
 from danish_personas.models import BundleManifest, SnapshotManifest
 from danish_personas.sampling.generator import generate_records
-from danish_personas.sources.bundle import verify_prepared_bundle
+from danish_personas.sources.bundle import (
+    _regular_file_inventory,
+    verify_prepared_bundle,
+)
 from danish_personas.sources.prepare import _verify_existing_bundle, verify_raw_snapshot
 from danish_personas.validation.checks import validate_demographics, validate_sources
 from tests.test_non_llm_pipeline import _write_bundle
@@ -109,6 +112,17 @@ def test_nested_pass_cannot_override_failed_source_report(tmp_path: Path) -> Non
         validate_sources(bundle_dir=bundle_dir)
 
 
+def test_prepared_bundle_inventory_accepts_normal_files(tmp_path: Path) -> None:
+    """The inventory contract accepts ordinary files on every platform."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+
+    inventory = _regular_file_inventory(bundle_dir=bundle_dir)
+
+    assert inventory["source-preparation-report.json"] == (
+        bundle_dir / "source-preparation-report.json"
+    )
+
+
 def test_prepared_bundle_manifest_excludes_itself(tmp_path: Path) -> None:
     """The manifest is the sole regular file excluded from its own file map."""
     bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
@@ -153,7 +167,10 @@ def test_prepared_bundle_verifier_rejects_inventory_attacks(
     target = bundle_dir / "source-preparation-report.json"
     if kind == "symlink":
         target.unlink()
-        target.symlink_to(tmp_path / "outside")
+        try:
+            target.symlink_to(tmp_path / "outside")
+        except OSError:
+            pytest.skip("symbolic links are unavailable")
     elif kind == "hardlink":
         replacement = bundle_dir / "hardlink-source.txt"
         replacement.write_text("hard link", encoding="utf-8")
@@ -178,7 +195,9 @@ def test_prepared_bundle_verifier_rejects_inventory_attacks(
             "alias", encoding="utf-8"
         )
 
-    with pytest.raises(ValueError, match="symlink|hard link|case-colliding"):
+    with pytest.raises(
+        ValueError, match="symlink|reparse point|hard link|case-colliding"
+    ):
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
@@ -327,3 +346,32 @@ def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
 
     with pytest.raises(ValueError, match="differs from recomputed validation"):
         validate_sources(bundle_dir=bundle_dir)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native inventory contract")
+@pytest.mark.parametrize("kind", ["normal", "symlink", "hardlink"])
+def test_windows_native_inventory_contract(tmp_path: Path, kind: str) -> None:
+    """Windows inventory uses native identity for files and links."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    target = bundle_dir / "source-preparation-report.json"
+    if kind == "normal":
+        inventory = _regular_file_inventory(bundle_dir=bundle_dir)
+        assert inventory["source-preparation-report.json"] == target
+        return
+    if kind == "symlink":
+        target.unlink()
+        try:
+            target.symlink_to(tmp_path / "outside")
+        except OSError:
+            pytest.skip("symbolic links are unavailable")
+    else:
+        replacement = bundle_dir / "hardlink-source.txt"
+        replacement.write_text("hard link", encoding="utf-8")
+        target.unlink()
+        try:
+            os.link(replacement, target)
+        except OSError:
+            pytest.skip("hard links are unavailable")
+
+    with pytest.raises(ValueError, match="symlink|reparse point|hard link"):
+        _regular_file_inventory(bundle_dir=bundle_dir)
