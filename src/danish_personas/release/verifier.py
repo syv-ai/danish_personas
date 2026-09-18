@@ -15,9 +15,10 @@ from ..generation.models import (
     GenerationConfig,
     PersonaDescriptions,
 )
+from ..generation.pipeline import generation_context_sha256
 from ..io import load_yaml_model, sha256_file
 from ..models import DemographicRecord, StrictModel, ValidationReport
-from .common import release_id, role
+from .common import persona_output_dtypes_are_valid, release_id, role
 from .models import ReleaseEvidence, ReleaseManifest, ReleasePolicy, ReviewAttestation
 from .policy import validate_release_approval
 
@@ -94,7 +95,8 @@ def _verify_release(
         r"[0-9a-fA-F]{64}", expected_manifest_sha256
     ):
         raise ReleaseVerificationError("Expected manifest SHA-256 is mandatory")
-    release_dir = Path(release_dir)
+    release_dir = _lexical_absolute(Path(release_dir))
+    _require_no_symlink_components(release_dir)
     manifest_path = release_dir / "release-manifest.json"
     try:
         actual_digest = sha256_file(manifest_path)
@@ -154,11 +156,42 @@ def _check_layout(release_dir: Path, manifest: ReleaseManifest) -> None:
         )
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Make an absolute normalised path without following symlinks.
+
+    Returns:
+        An absolute, lexically normalised path.
+    """
+    return Path(os.path.abspath(os.path.normpath(path)))
+
+
 def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     try:
         return model.model_validate_json(path.read_text(encoding="utf-8"))
     except Exception as error:
         raise ReleaseVerificationError(f"Invalid public contract: {path}") from error
+
+
+def _require_no_symlink_components(path: Path) -> None:
+    """Reject symlink components in a supplied verifier path.
+
+    Raises:
+        ReleaseVerificationError:
+            If a path component is a symlink or cannot be inspected.
+    """
+    candidate = _lexical_absolute(path)
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
+        current /= component
+        try:
+            if current.is_symlink():
+                raise ReleaseVerificationError(
+                    "Release directory path contains a symlink component"
+                )
+        except OSError as error:
+            raise ReleaseVerificationError(
+                "Release path cannot be inspected"
+            ) from error
 
 
 def _verify_contents(
@@ -362,24 +395,7 @@ def _check_output(
         expected_columns
     ):
         raise ReleaseVerificationError("Persona output schema must match exactly")
-    expected_dtypes: dict[str, object] = {
-        name: (
-            pl.Int64
-            if name == "age"
-            else pl.Float64
-            if name.endswith("_score")
-            else pl.String
-        )
-        for name in expected_columns
-        if name not in {"skills_and_expertise", "hobbies_and_interests"}
-    }
-    expected_dtypes["skills_and_expertise"] = pl.List(pl.String)
-    expected_dtypes["hobbies_and_interests"] = pl.List(pl.String)
-    if any(
-        not (name == "age" and output.schema[name] in {pl.Int32, pl.Int64})
-        and output.schema[name] != dtype
-        for name, dtype in expected_dtypes.items()
-    ):
+    if not persona_output_dtypes_are_valid(output):
         raise ReleaseVerificationError(
             "Persona output contains an invalid logical dtype"
         )
@@ -449,17 +465,42 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
         path = f"provenance/config/{name}"
         if path not in _PUBLIC_FILES or sha256_file(release_dir / path) != expected:
             raise ReleaseVerificationError("Configuration checksum mismatch")
-    config = _load_yaml(
-        release_dir / "provenance/config/generation.yaml", GenerationConfig
-    )
-    if evidence.generation_config_sha256 != sha256_file(
-        release_dir / "provenance/config/generation.yaml"
-    ):
+    _check_generation_context(release_dir=release_dir, evidence=evidence)
+
+
+def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -> None:
+    """Check the packaged effective config, prompts, and context digest.
+
+    Raises:
+        ReleaseVerificationError:
+            If a packaged generation input or digest is inconsistent.
+    """
+    config_path = release_dir / "provenance/config/generation.yaml"
+    config = _load_yaml(config_path, GenerationConfig)
+    if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
+    attributes_path = release_dir / "provenance/prompts/attributes-da.md"
+    personas_path = release_dir / "provenance/prompts/personas-da.md"
     if config.attributes_prompt != Path("config/prompts/attributes-da.md"):
         raise ReleaseVerificationError("Generation attributes prompt binding failed")
     if config.personas_prompt != Path("config/prompts/personas-da.md"):
         raise ReleaseVerificationError("Generation personas prompt binding failed")
+    if sha256_file(attributes_path) != evidence.attributes_prompt_sha256:
+        raise ReleaseVerificationError("Attributes prompt checksum mismatch")
+    if sha256_file(personas_path) != evidence.personas_prompt_sha256:
+        raise ReleaseVerificationError("Personas prompt checksum mismatch")
+    try:
+        context = generation_context_sha256(
+            config=config,
+            attributes_prompt=attributes_path.read_text(encoding="utf-8"),
+            personas_prompt=personas_path.read_text(encoding="utf-8"),
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ReleaseVerificationError(
+            "Generation context cannot be computed"
+        ) from error
+    if context != evidence.generation_context_sha256:
+        raise ReleaseVerificationError("Generation context checksum binding failed")
 
 
 def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:

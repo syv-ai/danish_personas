@@ -1,6 +1,7 @@
 """Validation report for completed LLM persona smoke runs."""
 
 import math
+import os
 import typing as t
 from datetime import UTC, datetime
 from pathlib import Path
@@ -243,11 +244,17 @@ def _build_persona_run_report(
         ),
     ]
     validation_errors = _count_content_errors(output=output)
+    config_path = (
+        _repository_path(repository_root, manifest.generation_config_file)
+        if manifest.generation_config_file is not None
+        else None
+    )
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
         output=output,
         upstream_columns=upstream.columns,
         manifest=manifest,
+        config_path=config_path,
     )
     checks.append(
         MetricResult(
@@ -293,6 +300,7 @@ def _count_checkpoint_errors(
     output: pl.DataFrame,
     upstream_columns: list[str],
     manifest: GenerationManifest,
+    config_path: Path | None,
 ) -> int:
     """Count checkpoint, response-sequence, ledger, and accounting errors.
 
@@ -349,7 +357,7 @@ def _count_checkpoint_errors(
                 )
                 or not replay_valid
                 or not _stage_attempts_within_config(
-                    manifest=manifest, stage_attempts=stage_attempts
+                    config_path=config_path, stage_attempts=stage_attempts
                 )
             ):
                 errors += 1
@@ -367,26 +375,31 @@ def _count_checkpoint_errors(
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         errors += 1
     if not _checkpoint_accounting_matches(
-        run_dir=run_dir, manifest=manifest, checkpoints=checkpoints
+        run_dir=run_dir,
+        manifest=manifest,
+        checkpoints=checkpoints,
+        config_path=config_path,
     ):
         errors += 1
     return errors
 
 
 def _checkpoint_accounting_matches(
-    *, run_dir: Path, manifest: GenerationManifest, checkpoints: list[PersonaCheckpoint]
+    *,
+    run_dir: Path,
+    manifest: GenerationManifest,
+    checkpoints: list[PersonaCheckpoint],
+    config_path: Path | None,
 ) -> bool:
     """Bind checkpoint usage and the request ledger to the generation manifest.
 
     Returns:
         Whether all request and response accounting matches exactly.
     """
-    if manifest.generation_config_file is None or len(checkpoints) != manifest.rows:
+    if config_path is None or len(checkpoints) != manifest.rows:
         return False
     try:
-        config = load_yaml_model(
-            path=manifest.generation_config_file, model=GenerationConfig
-        )
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
         ledger = RequestLedger.model_validate_json(
             (run_dir / "request-ledger.json").read_text(encoding="utf-8")
         )
@@ -465,19 +478,17 @@ def _responses_match_checkpoint(
 
 
 def _stage_attempts_within_config(
-    *, manifest: GenerationManifest, stage_attempts: tuple[int, int]
+    *, config_path: Path | None, stage_attempts: tuple[int, int]
 ) -> bool:
     """Check response attempts against the persisted generation configuration.
 
     Returns:
         Whether each stage stayed within its validation-attempt limit.
     """
-    if manifest.generation_config_file is None:
+    if config_path is None:
         return False
     try:
-        config = load_yaml_model(
-            path=manifest.generation_config_file, model=GenerationConfig
-        )
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
     return all(
@@ -603,10 +614,12 @@ def _persona_provenance_matches(
         return False
 
 
-def _repository_path(root: Path | None, value: Path) -> Path:
-    if root is None or value.is_absolute():
-        return value
-    return root / value
+def _repository_path(root: Path | None, value: Path | None) -> Path:
+    if value is None:
+        raise ValueError("A repository path is required")
+    base = Path.cwd() if root is None else root
+    candidate = value if value.is_absolute() else base / value
+    return Path(os.path.abspath(os.path.normpath(candidate)))
 
 
 def _pilot_aggregates_match(
@@ -766,18 +779,24 @@ def _failed_report(
     )
 
 
-def validate_persona_run(run_dir: Path) -> ValidationReport:
+def validate_persona_run(
+    run_dir: Path, repository_root: Path | None = None
+) -> ValidationReport:
     """Validate output integrity, safety, and upstream preservation.
 
     Args:
         run_dir:
             Completed persona generation run.
+        repository_root (optional):
+            Repository root for manifest input and configuration paths.
 
     Returns:
         Machine-readable validation report, including for malformed artefacts.
     """
     try:
-        report = _build_persona_run_report(run_dir=run_dir)
+        report = _build_persona_run_report(
+            run_dir=run_dir, repository_root=repository_root
+        )
     except (OSError, UnicodeError, ValueError, pl.exceptions.PolarsError) as error:
         report = _failed_report(kind="personas", subject_id=run_dir.name, error=error)
     write_json(path=run_dir / "validation-report.json", payload=report)

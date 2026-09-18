@@ -29,7 +29,7 @@ from ..generation.models import (
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..models import DemographicRecord, RunManifest, StrictModel, ValidationReport
-from .common import release_id, role
+from .common import persona_output_dtypes_are_valid, release_id, role
 from .models import (
     Accounting,
     Artifact,
@@ -105,23 +105,19 @@ def package_release(
     """
     _require_directory(pilot_dir)
     _require_directory(repository_root)
-    pilot_dir = pilot_dir.resolve()
-    repository_root = repository_root.resolve()
-    output_parent = output_parent.resolve()
+    pilot_dir = _lexical_absolute(pilot_dir)
+    repository_root = _lexical_absolute(repository_root)
+    output_parent = _lexical_absolute(output_parent)
+    _require_no_symlink_components(output_parent)
     _require_clean_git(repository_root)
     git_head, origin_url = _git_provenance(repository_root)
     pilot_manifest = _load_json_model(pilot_dir / "pilot-manifest.json", PilotManifest)
     _require_regular_file(policy_path)
     policy = load_yaml_model(path=policy_path, model=ReleasePolicy)
     attestation = _load_json_model(attestation_path, ReviewAttestation)
-    config_path = _repository_path(repository_root, Path("config/generation.yaml"))
-    manifest_config_path = _repository_path(
+    config_path = _repository_path(
         repository_root, pilot_manifest.generation_config_file
     )
-    if manifest_config_path != config_path:
-        raise ReleasePackagingError(
-            "Generation config must be the repository config/generation.yaml"
-        )
     config = load_yaml_model(path=config_path, model=GenerationConfig)
     attributes_path = _repository_path(repository_root, config.attributes_prompt)
     personas_path = _repository_path(repository_root, config.personas_prompt)
@@ -224,6 +220,7 @@ def package_release(
             policy_path=policy_path,
             evidence=evidence,
             report=report,
+            config_path=config_path,
             attributes_path=attributes_path,
             personas_path=personas_path,
             repository_root=repository_root,
@@ -329,6 +326,7 @@ def _install_files(**kwargs: object) -> None:
     attributes_path = t.cast(Path, kwargs["attributes_path"])
     personas_path = t.cast(Path, kwargs["personas_path"])
     repository_root = t.cast(Path, kwargs["repository_root"])
+    config_path = t.cast(Path, kwargs["config_path"])
     inventory = t.cast(list[_InventoryItem], kwargs["inventory"])
     payloads: dict[str, bytes] = {
         "README.md": _captured_bytes(inventory, t.cast(Path, kwargs["card_path"])),
@@ -366,9 +364,12 @@ def _install_files(**kwargs: object) -> None:
         "sampling.yaml",
         "validation.yaml",
     ):
-        payloads[f"provenance/config/{name}"] = _captured_bytes(
-            inventory, repository_root / "config" / name
+        source = (
+            config_path
+            if name == "generation.yaml"
+            else repository_root / "config" / name
         )
+        payloads[f"provenance/config/{name}"] = _captured_bytes(inventory, source)
     for name in (
         "source-register.md",
         "privacy-risk-register.md",
@@ -493,24 +494,7 @@ def _validate_pilot_for_release(
         expected_columns
     ):
         raise ReleasePackagingError("Persona output schema must match exactly")
-    expected_dtypes: dict[str, object] = {
-        name: (
-            pl.Int64
-            if name == "age"
-            else pl.Float64
-            if name.endswith("_score")
-            else pl.String
-        )
-        for name in expected_columns
-        if name not in {"skills_and_expertise", "hobbies_and_interests"}
-    }
-    expected_dtypes["skills_and_expertise"] = pl.List(pl.String)
-    expected_dtypes["hobbies_and_interests"] = pl.List(pl.String)
-    if any(
-        not (name == "age" and output.schema[name] in {pl.Int32, pl.Int64})
-        and output.schema[name] != dtype
-        for name, dtype in expected_dtypes.items()
-    ):
+    if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
     validate_release_approval(
         policy=policy,
@@ -542,6 +526,7 @@ def _validate_pilot_for_release(
         attestation_path=attestation_path,
         licence_path=licence_path,
         repository_root=repository_root,
+        config_path=config_path,
     )
     _scan_public_values(
         values=[
@@ -569,8 +554,6 @@ def _assert_manifest_bindings(
 ) -> None:
     if manifest.llm_generation is not True or not config.llm_generation_enabled:
         raise ReleasePackagingError("Release requires enabled LLM generation")
-    if config_path.name != "generation.yaml":
-        raise ReleasePackagingError("Generation config path binding failed")
     if attributes_path != config_path.parent / "prompts/attributes-da.md":
         raise ReleasePackagingError("Generation attributes prompt path binding failed")
     if personas_path != config_path.parent / "prompts/personas-da.md":
@@ -593,6 +576,7 @@ def _derive_evidence(
     attestation_path: Path,
     licence_path: Path,
     repository_root: Path,
+    config_path: Path | None = None,
 ) -> ReleaseEvidence:
     """Derive portable evidence and reconcile every shard with the pilot.
 
@@ -688,15 +672,20 @@ def _derive_evidence(
         source_bundle_id = upstream.bundle_id
     except ReleasePackagingError:
         pass
+    effective_config_path = config_path or _repository_path(
+        repository_root, manifest.generation_config_file
+    )
     config_hashes = {
-        name: sha256_file(repository_root / "config" / name)
-        for name in (
-            "generation.yaml",
-            "sources.lock.yaml",
-            "categories.yaml",
-            "sampling.yaml",
-            "validation.yaml",
-        )
+        "generation.yaml": sha256_file(effective_config_path),
+        **{
+            name: sha256_file(repository_root / "config" / name)
+            for name in (
+                "sources.lock.yaml",
+                "categories.yaml",
+                "sampling.yaml",
+                "validation.yaml",
+            )
+        },
     }
     return ReleaseEvidence(
         version=1,
@@ -788,18 +777,29 @@ def _load_json_model(path: Path, model: type[ModelType]) -> ModelType:
 
 
 def _require_regular_file(path: Path) -> None:
-    _require_no_symlink_components(path)
+    candidate = _lexical_absolute(path)
+    _require_no_symlink_components(candidate)
     try:
-        stat = path.lstat()
+        stat = candidate.lstat()
     except OSError as error:
         raise ReleasePackagingError(f"Missing input file: {path}") from error
-    if path.is_symlink() or not os.path.isfile(path) or stat.st_nlink != 1:
+    if candidate.is_symlink() or not os.path.isfile(candidate) or stat.st_nlink != 1:
         raise ReleasePackagingError(f"Input must be a regular non-linked file: {path}")
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Make an absolute normalised path without following symlinks.
+
+    Returns:
+        An absolute, lexically normalised path.
+    """
+    return Path(os.path.abspath(os.path.normpath(path)))
+
+
 def _require_no_symlink_components(path: Path) -> None:
-    current = Path(path.anchor)
-    for component in path.parts[1:]:
+    candidate = _lexical_absolute(path)
+    current = Path(candidate.anchor)
+    for component in candidate.parts[1:]:
         current /= component
         try:
             if current.is_symlink():
@@ -821,14 +821,13 @@ def _output_path(owner_dir: Path, value: Path) -> Path:
         ReleasePackagingError:
             If the source is not a regular file or escapes its owner.
     """
-    candidate = value if value.is_absolute() else owner_dir / value
+    candidate = _lexical_absolute(value if value.is_absolute() else owner_dir / value)
     _require_regular_file(candidate)
-    resolved = candidate.resolve()
     try:
-        resolved.relative_to(owner_dir.resolve())
+        candidate.relative_to(_lexical_absolute(owner_dir))
     except ValueError as error:
         raise ReleasePackagingError("Output path escapes its owning run") from error
-    return resolved
+    return candidate
 
 
 def _pilot_path(pilot_dir: Path, value: Path) -> Path:
@@ -841,16 +840,15 @@ def _pilot_path(pilot_dir: Path, value: Path) -> Path:
         ReleasePackagingError:
             If the source is not a regular file or escapes the pilot.
     """
-    candidate = value if value.is_absolute() else pilot_dir / value
+    candidate = _lexical_absolute(value if value.is_absolute() else pilot_dir / value)
     _require_regular_file(candidate)
-    resolved = candidate.resolve()
     try:
-        resolved.relative_to(pilot_dir.resolve())
+        candidate.relative_to(_lexical_absolute(pilot_dir))
     except ValueError as error:
         raise ReleasePackagingError(
             "Pilot batch path escapes pilot directory"
         ) from error
-    return resolved
+    return candidate
 
 
 def _regular_bytes(path: Path) -> bytes:
@@ -920,17 +918,17 @@ def _repository_path(repository_root: Path, value: Path) -> Path:
         ReleasePackagingError:
             If the source is not a regular file or escapes the repository.
     """
-    candidate = value if value.is_absolute() else repository_root / value
+    candidate = _lexical_absolute(
+        value if value.is_absolute() else repository_root / value
+    )
     _require_regular_file(candidate)
-    resolved_root = repository_root.resolve()
-    resolved = candidate.resolve()
     try:
-        resolved.relative_to(resolved_root)
+        candidate.relative_to(_lexical_absolute(repository_root))
     except ValueError as error:
         raise ReleasePackagingError(
             "Repository manifest path escapes repository root"
         ) from error
-    return resolved
+    return candidate
 
 
 def _require_clean_git(root: Path) -> None:
@@ -939,11 +937,13 @@ def _require_clean_git(root: Path) -> None:
 
 
 def _require_directory(path: Path) -> None:
+    candidate = _lexical_absolute(path)
+    _require_no_symlink_components(candidate)
     try:
-        path.lstat()
+        candidate.lstat()
     except OSError as error:
         raise ReleasePackagingError(f"Missing directory: {path}") from error
-    if path.is_symlink() or not os.path.isdir(path):
+    if candidate.is_symlink() or not os.path.isdir(candidate):
         raise ReleasePackagingError(f"Input must be a regular directory: {path}")
 
 
@@ -954,7 +954,14 @@ def _require_public_prompt(path: Path, expected: str) -> None:
 
 
 def _scan_dataframe(output: pl.DataFrame) -> None:
-    """Recursively scan every scalar in every public Parquet column."""
+    """Recursively scan every scalar in every public Parquet column.
+
+    Raises:
+        ReleasePackagingError:
+            If the output schema or a public value is unsafe.
+    """
+    if not persona_output_dtypes_are_valid(output):
+        raise ReleasePackagingError("Persona output contains an invalid logical dtype")
     for column in output.columns:
         for value in output[column].to_list():
             _scan_public_value(value)
