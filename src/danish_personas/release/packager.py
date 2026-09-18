@@ -419,8 +419,10 @@ def _cross_observer_metadata(
     """Return fields safe to compare between path and descriptor observations."""
     if not _WINDOWS:
         return _posix_metadata(metadata_source)
-    _, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
-    return (nlink, size)
+    # Windows identity fields can differ between path and descriptor views.
+    # Size is the only cross-observation value needed before hashing content.
+    _, _, size, _, _, _, _ = _stat_fields(metadata_source)
+    return (size,)
 
 
 def _posix_metadata(
@@ -459,9 +461,9 @@ def _descriptor_stability_metadata(
     """Return fields stable across descriptor observations during one read."""
     if not _WINDOWS:
         return _posix_metadata(metadata_source)
-    mode, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
-    # Windows may update descriptor mtime while the file is being read.
-    return (mode, nlink, size)
+    # Windows metadata is only a safety check for each individual observation.
+    _, _, size, _, _, _, _ = _stat_fields(metadata_source)
+    return (size,)
 
 
 def _path_stability_metadata(
@@ -470,8 +472,9 @@ def _path_stability_metadata(
     """Return fields stable across path observations during one read."""
     if not _WINDOWS:
         return _posix_metadata(metadata_source)
-    mode, nlink, size, mtime_ns, _, _, _ = _stat_fields(metadata_source)
-    return (mode, nlink, size, mtime_ns)
+    # Windows metadata is only a safety check for each individual observation.
+    _, _, size, _, _, _, _ = _stat_fields(metadata_source)
+    return (size,)
 
 
 def _require_stat_file(*, path: Path, stat_result: os.stat_result) -> None:
@@ -753,10 +756,14 @@ def _recheck_inventory(items: list[_InventoryItem]) -> None:
             raise ReleasePackagingError(
                 f"Consumed file changed: {item.path}"
             ) from error
-        if (
-            _inventory_metadata(current) != _inventory_metadata(item)
-            or current.sha256 != item.sha256
-        ):
+        if _WINDOWS:
+            changed = current.size != item.size or current.sha256 != item.sha256
+        else:
+            changed = (
+                _inventory_metadata(current) != _inventory_metadata(item)
+                or current.sha256 != item.sha256
+            )
+        if changed:
             raise ReleasePackagingError(f"Consumed file changed: {item.path}")
 
 
@@ -766,9 +773,9 @@ def _inventory_metadata(
     """Return fields stable when a captured file is reopened later."""
     if not _WINDOWS:
         return _posix_metadata(metadata_source)
-    mode, nlink, size, _, _, _, _ = _stat_fields(metadata_source)
-    # Inventory captures descriptor metadata, whose Windows mtime is not stable.
-    return (mode, nlink, size)
+    # Rechecks compare the captured size and hash explicitly on Windows.
+    _, _, size, _, _, _, _ = _stat_fields(metadata_source)
+    return (size,)
 
 
 def _recheck_pilot_tree(
