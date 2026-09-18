@@ -27,9 +27,11 @@ These gates apply before any LLM integration may be enabled.
   validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with
   the official Statistics Denmark geography classification.
-- Prepared-file checksums match the bundle manifest.
-- The prepared-bundle schema version is bound into bundle identity; legacy bundles are
-  rejected rather than reused.
+- A shared boundary verifier requires prepared-bundle schema 3, all mandatory Parquet
+  schemas, successful source preparation, and every manifest checksum before either
+  sampling or demographic validation. Legacy, malformed, and tampered bundles fail.
+- The locked RAS209 selection, official hierarchy, and prepared RAS209 joint have exactly
+  equal municipality-code sets. Blank hierarchy codes, titles, or parents fail.
 - Sparse-cell pooling retains at least 99% of the relevant source universe.
 
 ## Generated records
@@ -44,18 +46,23 @@ These gates apply before any LLM integration may be enabled.
   draw backs off to a coarser cell.
 - Every record records the back-off level that produced its age, marital status,
   and detailed status, and each of those ladders independently keeps at most 1% of
-  records on a coarser cell. The validation configuration is schema version 3 and
-  explicitly requires `maximum_backoff_rate` and the origin marginal gate.
+  records on a coarser cell. Age and marital back-off can relax age or sex only while
+  retaining the same municipality; no region or national fallback exists. RAS202's
+  national detailed-status refinement remains a separate ladder. The validation
+  configuration is schema version 4.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
   younger than 70.
 - Every fitted marginal cell with expected count of at least five lies within the larger
   of 0.5 percentage points or three binomial standard errors.
+- Municipality replaces region in fitted and held-out geography gates. Region has only
+  an exact official-parent consistency gate.
 - Total variation is at most 5% for smoke marginals and 2% for 100,000-row fitted
-  marginals.
-- Smoke holdout total variation is at most 10%; 100,000-row holdout total variation is
-  at most 5%.
+  marginals. The high-dimensional municipality RAS209 joint is informational at 2,000
+  rows and capped at 10% at 100,000 rows.
+- Municipality held-out population total variation is at most 25% for the 2,000-row
+  smoke and 5% at 100,000 rows.
 - OCEAN scores lie in `[20, 80]`.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
 - The run manifest records exactly zero LLM calls and the sampler schema version.
@@ -69,11 +76,13 @@ These gates apply before any LLM integration may be enabled.
   fitted categories fail explicitly and remain included in distribution accounting.
   The mapping and origin marginal meet the same statistical gates as other mandatory
   marginals.
-- `country` remains the residence value `Danmark`, and `education_level` is retained.
+- `country` remains the residence value `Danmark`; mandatory municipality code and name,
+  official region parent, and `education_level` are retained.
   Origin is not ethnicity, citizenship, or residence and cannot drive language,
   culture, religion, occupation, personality, or visual appearance.
 - Both origin fields remain in upstream/generated outputs and input/checkpoint hashes,
-  but are withheld from both LLM payloads; all resolution fields are also withheld.
+  but are withheld from both LLM payloads; municipality and all resolution fields are
+  also withheld.
 
 `SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. It is part of the

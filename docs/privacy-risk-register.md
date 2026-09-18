@@ -7,7 +7,7 @@ individual-level Statistics Denmark records.
 | --- | --- | --- |
 | Synthetic record mistaken for a real person | Dataset card and manifests identify every row as synthetic | Users may ignore documentation |
 | Rare-cell reconstruction | Minimum source count, release-size pooling, and 99% coverage gate | Aggregate combinations may still appear distinctive |
-| Geographic identification | Phase-2 records contain region only; exact addresses, CPR numbers, and municipality are excluded | Regional combinations can still be distinctive |
+| Geographic identification | Phase-2 records contain official municipality and region fields but exclude exact addresses, coordinates, and CPR numbers; municipality is withheld from LLM payloads | Municipality-level synthetic combinations can still be distinctive and require review before release |
 | Sensitive-attribute inference | Prompts prohibit inference; versioned validators reject configured health, religion, sexuality, ethnicity, and political terms; visual guidance uses a controlled non-sensitive format; official FOLK2 origin is sampled independently, retained in outputs and hashes, and withheld from LLM payloads | General term lists have false negatives; aggregate origin categories can still be misread as ethnicity or citizenship, and human review remains mandatory |
 | Personality stereotyping | OCEAN is independent of demographics; prompts require probabilistic, non-deficit framing | Generated prose can still reintroduce associations or overstate traits |
 | Source-response leakage | Only aggregate-derived records enter prompts; raw response envelopes and rejected completion text are not stored, while accepted content, usage metadata, and response hashes are checkpointed | Accepted generated text and checkpoints still require restricted handling before release |
@@ -33,6 +33,7 @@ ethnicity, citizenship, or residence. Origin cannot drive language, culture, rel
 occupation, personality, or visual appearance. The two origin fields are withheld from
 both LLM stages, while remaining in upstream outputs and input/checkpoint hashes.
 
-Municipality aggregates are used only to construct official regional source counts.
-Municipality fields are absent from generated Phase-2 records. A later release must pass
-a separate privacy review before adding more detailed geography.
+Municipality aggregates remain municipality-keyed throughout Phase 2, and generated
+records retain the official municipality code and name. Region is only its hierarchy
+parent. Municipality is withheld from both LLM stages, and any release of the structured
+fields still requires the geographic-identification review recorded above.

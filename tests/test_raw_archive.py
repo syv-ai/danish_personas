@@ -10,10 +10,11 @@ from click.testing import CliRunner, Result
 
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SnapshotManifest
+from danish_personas.sampling.generator import generate_records
 from danish_personas.sources import archive as archive_service
 from danish_personas.sources.exceptions import SourceArchiveError
 from danish_personas.sources.prepare import prepare_bundle
-from danish_personas.validation.checks import validate_sources
+from danish_personas.validation.checks import validate_demographics, validate_sources
 from scripts.build_raw_archive import main as pack
 from scripts.restore_raw_sources import RAW_DIRECTORY, main
 
@@ -54,8 +55,22 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "711c9d2982e1a56a"
     assert validate_sources(bundle_dir=bundle_dir).passed
+
+    run_dir = generate_records(
+        bundle_dir=bundle_dir,
+        sampling_config_path=PROJECT_ROOT / "config" / "sampling.yaml",
+        output_dir=tmp_path / "runs",
+        rows=2_000,
+        seed=20260914,
+    )
+    report = validate_demographics(
+        run_dir=run_dir,
+        bundle_dir=bundle_dir,
+        validation_config_path=PROJECT_ROOT / "config" / "validation.yaml",
+        categories_path=PROJECT_ROOT / "config" / "categories.yaml",
+    )
+    assert report.passed
 
 
 def _restore(archive_path: Path, output_dir: Path, force: bool = False) -> Result:

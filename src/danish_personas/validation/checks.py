@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
-    PREPARED_BUNDLE_SCHEMA_VERSION,
     SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
@@ -23,6 +22,7 @@ from ..models import (
     ValidationConfig,
     ValidationReport,
 )
+from ..sources.bundle import verify_prepared_bundle
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -52,6 +52,7 @@ def validate_demographics(
     Returns:
         Validation report.
     """
+    verify_prepared_bundle(bundle_dir=bundle_dir)
     config = load_yaml_model(path=validation_config_path, model=ValidationConfig)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
     manifest_path = run_dir / "run-manifest.json"
@@ -76,6 +77,7 @@ def validate_demographics(
     )
     metrics.extend(_heldout_metrics(frame=frame, bundle_dir=bundle_dir, config=config))
     metrics.extend(_ocean_metrics(frame=frame, config=config))
+    metrics.extend(_geography_parent_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.append(
         MetricResult(
@@ -106,10 +108,10 @@ def _distribution_metrics(
     )
     ras209 = pl.read_parquet(source_dir / "ras209_sampling.parquet")
     targets = {
-        "sex": (folk, ["sex"]),
-        "region_code": (folk, ["region_code"]),
+        "sex": (ras209, ["sex"]),
+        "municipality_code": (ras209, ["municipality_code"]),
         "marital_status": (folk, ["marital_status"]),
-        "age_band": (folk, ["age_band"]),
+        "age_band": (ras209, ["age_band"]),
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
         "origin_country": (
@@ -131,23 +133,24 @@ def _distribution_metrics(
                 smoke_maximum_tv=config.smoke_maximum_total_variation,
             )
         )
-    metrics.extend(
-        _compare_distribution(
-            name="ras209_fitted_joint",
-            generated=frame,
-            target=ras209,
-            columns=[
-                "region_code",
-                "age_band",
-                "sex",
-                "education_level",
-                "labour_market_status",
-            ],
-            config=config,
-            maximum_tv=config.maximum_total_variation["fitted_marginal"],
-            smoke_maximum_tv=config.smoke_maximum_total_variation,
-        )
+    joint_metrics = _compare_distribution(
+        name="ras209_fitted_joint",
+        generated=frame,
+        target=ras209,
+        columns=[
+            "municipality_code",
+            "age_band",
+            "sex",
+            "education_level",
+            "labour_market_status",
+        ],
+        config=config,
+        maximum_tv=config.maximum_municipality_joint_total_variation,
+        # At 2,000 rows the municipality joint has more populated source cells than
+        # observations. Its cell and TV gates become statistically meaningful at 100k.
+        smoke_maximum_tv=1.0,
     )
+    metrics.extend(joint_metrics if frame.height >= 100_000 else joint_metrics[1:])
     return metrics
 
 
@@ -251,6 +254,51 @@ def _compare_distribution(
     ]
 
 
+def _geography_parent_metrics(
+    frame: pl.DataFrame, bundle_dir: Path
+) -> list[MetricResult]:
+    """Check municipality labels and region parents against the hierarchy.
+
+    Args:
+        frame:
+            Generated demographic records.
+        bundle_dir:
+            Verified prepared bundle.
+
+    Returns:
+        Official hierarchy consistency metrics.
+    """
+    columns = ["municipality_code", "municipality", "region_code", "region"]
+    observed = frame.select(columns).unique()
+    expected = pl.read_parquet(
+        bundle_dir / "normalized" / "geography_hierarchy.parquet"
+    ).select(columns)
+    mismatches = observed.join(
+        expected, on=columns, how="anti", nulls_equal=True
+    ).height
+    municipality_count = observed.get_column("municipality_code").n_unique()
+    unique_mapping_count = observed.height
+    return [
+        MetricResult(
+            name="municipality_hierarchy_mapping",
+            passed=mismatches == 0,
+            value=mismatches,
+            threshold=0,
+            details=(
+                "Municipality names and region parents must match the official "
+                "hierarchy."
+            ),
+        ),
+        MetricResult(
+            name="municipality_parent_consistency",
+            passed=unique_mapping_count == municipality_count,
+            value=unique_mapping_count - municipality_count,
+            threshold=0,
+            details="Each municipality must have exactly one name and region parent.",
+        ),
+    ]
+
+
 def _heldout_metrics(
     frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
 ) -> list[MetricResult]:
@@ -276,7 +324,7 @@ def _heldout_metrics(
         name="heldout_population_joint",
         generated=frame,
         target=befolk,
-        columns=["region_code", "sex", "age_band"],
+        columns=["municipality_code", "sex", "age_band"],
         config=config,
         maximum_tv=maximum_tv,
         smoke_maximum_tv=config.smoke_holdout_maximum_total_variation,
@@ -572,48 +620,19 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
     Returns:
         Validation report.
     """
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    checksum_failures = [
-        relative_path
-        for relative_path, checksum in manifest.files.items()
-        if not (bundle_dir / relative_path).exists()
-        or sha256_file(bundle_dir / relative_path) != checksum
-    ]
+    manifest = verify_prepared_bundle(bundle_dir=bundle_dir)
     source_report_path = bundle_dir / "source-preparation-report.json"
     source_payload = json.loads(source_report_path.read_text(encoding="utf-8"))
-    source_passed = source_payload.get("passed") is True
     metrics = [
         MetricResult(
-            name="prepared_bundle_schema",
-            passed=(
-                manifest.prepared_bundle_schema_version
-                == PREPARED_BUNDLE_SCHEMA_VERSION
-            ),
-            value=manifest.prepared_bundle_schema_version,
-            threshold=PREPARED_BUNDLE_SCHEMA_VERSION,
-            details="Prepared bundle schema is current.",
-        ),
-        MetricResult(
-            name="prepared_file_checksums",
-            passed=not checksum_failures,
-            value=len(checksum_failures),
-            threshold=0,
-            details=(
-                "All prepared files match the bundle manifest."
-                if not checksum_failures
-                else f"Mismatches: {', '.join(checksum_failures)}"
-            ),
-        ),
-        MetricResult(
-            name="source_preparation",
-            passed=source_passed,
-            value="pass" if source_passed else "fail",
+            name="prepared_bundle_integrity",
+            passed=True,
+            value="pass",
             threshold="pass",
-            details="All selected source tables are populated and unsuppressed.",
-        ),
+            details=(
+                "Schema, required files, checksums, and source preparation are valid."
+            ),
+        )
     ]
     origin_checks = source_payload.get("origin_country_checks")
     if isinstance(origin_checks, dict):

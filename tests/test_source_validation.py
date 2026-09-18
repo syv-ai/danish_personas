@@ -8,29 +8,27 @@ from danish_personas.io import sha256_file, sha256_text, write_json
 from danish_personas.models import BundleManifest, SnapshotManifest
 from danish_personas.sources.prepare import verify_raw_snapshot
 from danish_personas.validation.checks import validate_sources
+from tests.test_non_llm_pipeline import _write_bundle
 
 
 def test_nested_pass_cannot_override_failed_source_report(tmp_path: Path) -> None:
     """Source validation requires the top-level report result to pass."""
-    source_report = tmp_path / "source-preparation-report.json"
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    source_report = bundle_dir / "source-preparation-report.json"
     write_json(
         path=source_report,
         payload={"passed": False, "tables": {"example": {"passed": True}}},
     )
-    manifest = BundleManifest(
-        bundle_id="failed-source-fixture",
-        created_at="2026-09-14T00:00:00+00:00",
-        source_lock_sha256="0" * 64,
-        categories_sha256="1" * 64,
-        source_snapshots=[],
-        classification_snapshots=[],
-        files={source_report.name: sha256_file(source_report)},
-        reference_periods={},
-        assumptions=[],
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
     )
-    write_json(path=tmp_path / "bundle-manifest.json", payload=manifest)
-    report = validate_sources(bundle_dir=tmp_path)
-    assert not report.passed
+    files = dict(manifest.files)
+    files[source_report.name] = sha256_file(source_report)
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
+
+    with pytest.raises(ValueError, match="source preparation did not pass"):
+        validate_sources(bundle_dir=bundle_dir)
 
 
 def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:

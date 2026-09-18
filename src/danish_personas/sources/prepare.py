@@ -18,6 +18,7 @@ from ..models import (
     SourceLock,
     StatBankMetadata,
 )
+from .bundle import verify_prepared_bundle
 from .classification import classification_snapshot_dir, verify_classification_snapshot
 from .statbank import source_query_content, source_snapshot_dir
 
@@ -108,6 +109,9 @@ def prepare_bundle(
     origin_source = next(
         source for source in lock.sources if source.table_id == "FOLK2"
     )
+    ras209_source = next(
+        source for source in lock.sources if source.table_id == "RAS209"
+    )
     prepared_source_frames = dict(source_frames)
     prepared_source_frames["FOLK2"] = _materialise_origin_zero_codes(
         raw_frame=source_frames["FOLK2"],
@@ -146,6 +150,11 @@ def prepare_bundle(
         release_rows=lock.release_rows,
         minimum_source_count=lock.minimum_source_count,
         minimum_expected_release_count=lock.minimum_expected_release_count,
+    )
+    _verify_ras209_municipality_sets(
+        locked_codes=set(ras209_source.dimensions["OMRÅDE"]),
+        geography=geography,
+        prepared=frames["ras209_sampling"],
     )
     files: dict[str, str] = {}
     for name, frame in frames.items():
@@ -397,12 +406,9 @@ def _normalise_frames(
     folk = folk_calibration.filter(pl.col("age") >= 18).with_columns(
         _age_band_expression().alias("age_band")
     )
-    folk_threshold = _release_threshold(
-        total=float(folk.get_column("count").sum()),
-        release_rows=release_rows,
-        minimum_source_count=minimum_source_count,
-        minimum_expected_release_count=minimum_expected_release_count,
-    )
+    # Municipality is an invariant, so source-cell filtering must not force a
+    # regional or national fallback. Structural zero handling remains in the sampler.
+    folk_threshold = 0
     folk_age_sampling = (
         folk.group_by(
             [
@@ -1039,20 +1045,38 @@ def _result_text(passed: object) -> str:
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    if manifest.prepared_bundle_schema_version != PREPARED_BUNDLE_SCHEMA_VERSION:
-        message = (
-            "Prepared bundle uses unsupported schema version "
-            f"{manifest.prepared_bundle_schema_version}"
-        )
-        raise ValueError(message)
-    verify_checksums(
-        base_dir=bundle_dir,
-        expected=manifest.files,
-        message="Prepared bundle verification failed",
-    )
+    del manifest_path
+    verify_prepared_bundle(bundle_dir=bundle_dir)
+
+
+def _verify_ras209_municipality_sets(
+    *, locked_codes: set[str], geography: pl.DataFrame, prepared: pl.DataFrame
+) -> None:
+    """Require one exact RAS209 municipality universe through preparation.
+
+    Args:
+        locked_codes:
+            Municipality codes selected in the immutable RAS209 lock.
+        geography:
+            Official hierarchy municipality lookup.
+        prepared:
+            Prepared municipality-native RAS209 joint.
+
+    Raises:
+        ValueError:
+            If the locked, hierarchy, and prepared municipality sets differ.
+    """
+    hierarchy_codes = set(geography.get_column("municipality_code").to_list())
+    prepared_codes = set(prepared.get_column("municipality_code").to_list())
+    if locked_codes == hierarchy_codes == prepared_codes:
+        return
+    details = {
+        "locked_not_hierarchy": sorted(locked_codes - hierarchy_codes),
+        "hierarchy_not_locked": sorted(hierarchy_codes - locked_codes),
+        "locked_not_prepared": sorted(locked_codes - prepared_codes),
+        "prepared_not_locked": sorted(prepared_codes - locked_codes),
+    }
+    raise ValueError(f"RAS209 municipality sets differ: {details}")
 
 
 def read_geography_classification(csv_path: Path) -> pl.DataFrame:
@@ -1082,8 +1106,14 @@ def read_geography_classification(csv_path: Path) -> pl.DataFrame:
             code = (record["KODE"] or "").strip()
             title = (record["TITEL"] or "").strip()
             level = (record["NIVEAU"] or "").strip()
-            if not code:
+            if level not in {REGION_LEVEL, LANDSDEL_LEVEL, MUNICIPALITY_LEVEL}:
                 continue
+            if not code or not title:
+                message = (
+                    "Geography hierarchy contains a blank code or title at "
+                    f"level {level or '<blank>'}"
+                )
+                raise ValueError(message)
             if level == REGION_LEVEL:
                 region = (code, title)
                 landsdel = None

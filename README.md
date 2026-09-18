@@ -16,11 +16,9 @@ smoke-test infrastructure only: each direct generation invocation is capped at f
 rows, while a pilot can span multiple shards. Release-scale generation and human
 approval are not implemented release gates.
 
-The historical canonical Phase 2 workflow passed at both 2,000-row smoke and
-100,000-row statistical sizes using the superseded source bundle. The municipality
-source overhaul introduces bundle `711c9d2982e1a56a`; demographic runs must be rebuilt
-and revalidated before making statistical or quality claims. Read the reports before
-making claims:
+The municipality-native canonical Phase 2 workflow passes at both 2,000-row smoke and
+100,000-row statistical sizes using prepared bundle `a276e45eb987fb73`, sampler schema
+4, and validation schema 4. Read the reports before making claims:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
@@ -213,11 +211,12 @@ both LLM payloads.
 They cannot drive language, culture, religion, occupation, personality, or visual
 appearance. FOLK1A, RAS209, and RAS202 ground the distributions;
 BEFOLK3 and RAS210 are held-out aggregate diagnostics.
-Municipality aggregates remain municipality-keyed throughout source preparation and are
-not grouped into regional person-sampling artefacts. Municipality fields are not emitted
-in generated records. The municipality, landsdel, and region hierarchy comes from the
-official Statistics Denmark classification snapshot, and preparation fails if it
-disagrees with the maps derived from FOLK1A or municipality-level RAS209 metadata.
+Municipality aggregates remain municipality-keyed throughout source preparation and
+sampling; they are never grouped into regional person-sampling artefacts. Generated
+records retain mandatory `municipality_code` and `municipality` fields. Region is attached
+only as the official parent from the Statistics Denmark classification snapshot, and
+preparation fails unless the locked, hierarchy, and prepared RAS209 municipality sets
+match exactly. Municipality fields remain withheld from both LLM payloads.
 
 ## Optional LLM workflow
 
@@ -349,9 +348,10 @@ approve any proposed release.
 Statistics Denmark inputs are public aggregate tables, not individual-level records. The
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
 aged 18-125 with the fixed residence value `Danmark`, independently sampled official
-FOLK2 origin fields, sex, age, marital status, region, broad education, labour status,
-detailed status, and independent OCEAN scores. Origin is not ethnicity, citizenship, or
-residence, and cannot drive language, culture, religion, occupation, personality, or
+FOLK2 origin fields, sex, age, marital status, municipality, its official region parent,
+broad education, labour status, detailed status, and independent OCEAN scores. Origin
+is not ethnicity, citizenship, or residence, and cannot drive language, culture,
+religion, occupation, personality, or
 visual appearance. It does not emit names, exact addresses, coordinates, CPR or other
 administrative identifiers, employers, occupations,
 income, household details, ancestry, citizenship, health, religion, sexuality, politics,
@@ -362,9 +362,9 @@ claims about demographics or personality. Validators check strict schemas, Danis
 contact and identifying-number patterns, configured sensitive terms, duplicate
 descriptions (including visual guidance), upstream preservation, checksums, and
 checkpoint provenance. These are finite automated checks, not a guarantee of anonymity
-or safe use. Treat regional
-combinations, accepted text, checkpoints, tokens, and provider telemetry as restricted.
-Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting and
+or safe use. Treat municipality-level combinations, accepted text, checkpoints, tokens,
+and provider telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for
+vulnerability reporting and
 [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing outputs.
 
 ## Validation and development checks

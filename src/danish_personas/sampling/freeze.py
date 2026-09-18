@@ -6,7 +6,7 @@ from pathlib import Path
 import polars as pl
 
 from ..io import sha256_file, write_json
-from ..models import RunManifest
+from ..models import FROZEN_SAMPLE_SCHEMA_VERSION, RunManifest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +40,8 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
     if rows > frame.height:
         raise SampleSizeError("Requested sample exceeds the run row count")
     groups = frame.sort("persona_id").partition_by(
-        ["region_code", "education_level", "labour_market_status"], maintain_order=True
+        ["municipality_code", "education_level", "labour_market_status"],
+        maintain_order=True,
     )
     selected: list[pl.DataFrame] = []
     depth = 0
@@ -59,9 +60,10 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
     sample.write_parquet(output, compression="zstd")
     sample_manifest: dict[str, object] = {
+        "sample_schema_version": FROZEN_SAMPLE_SCHEMA_VERSION,
         "source_run_id": manifest.run_id,
         "rows": sample.height,
-        "strata": ["region_code", "education_level", "labour_market_status"],
+        "strata": ["municipality_code", "education_level", "labour_market_status"],
         "method": "deterministic round-robin within sorted strata",
         "data_file": output.name,
         "sha256": sha256_file(output),

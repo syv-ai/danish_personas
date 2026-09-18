@@ -191,6 +191,8 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "detailed_status_resolution",
         "origin_country_code",
         "origin_country",
+        "municipality_code",
+        "municipality",
     )
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
@@ -225,11 +227,13 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "persona_id": ["persona-1", "persona-2"],
             "country": ["Danmark", "Danmark"],
             "age": [35, 72],
-            "age_resolution": ["age_band_sex", "age_band"],
+            "age_resolution": ["municipality_age_band_sex", "municipality_age_band"],
             "age_band": ["30-49", "67+"],
             "sex": ["female", "male"],
             "marital_status": ["married_or_separated", "never_married"],
-            "marital_resolution": ["region_age_band_sex", "age_band"],
+            "marital_resolution": ["municipality_age_band_sex", "municipality"],
+            "municipality_code": ["101", "265"],
+            "municipality": ["København", "Roskilde"],
             "region_code": ["084", "085"],
             "region": ["Region Hovedstaden", "Region Sjælland"],
             "education_level": ["masters", "vocational"],
@@ -283,6 +287,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         ),
     )
     sample_manifest = FrozenSampleManifest(
+        sample_schema_version=2,
         source_run_id=run_manifest.run_id,
         rows=2,
         strata=[],

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import polars as pl
+import pytest
 import yaml
 
 from danish_personas.io import sha256_file, sha256_text, write_json
@@ -105,6 +106,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "marital_status": ["never_married", "married_or_separated"],
             "count": [100, 100],
             "suppressed": [False, False],
+            "age_band": ["30-49", "30-49"],
             "municipality": ["Copenhagen", "Copenhagen"],
             "region_code": ["084", "084"],
             "region": ["Region Hovedstaden", "Region Hovedstaden"],
@@ -112,6 +114,8 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     )
     ras209 = pl.DataFrame(
         {
+            "municipality_code": ["101", "101"],
+            "municipality": ["Copenhagen", "Copenhagen"],
             "region_code": ["084", "084"],
             "region": ["Region Hovedstaden", "Region Hovedstaden"],
             "age_band": ["30-49", "30-49"],
@@ -134,7 +138,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "suppressed": [False, False],
         }
     )
-    befolk = folk.drop("marital_status")
+    befolk = folk.drop("marital_status", "age_band")
     ras210 = pl.DataFrame(
         {
             "municipality_code": ["101", "101"],
@@ -155,27 +159,57 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "count": [107, 2, 0],
         }
     )
-    age_sampling = folk.select("sex", "age", "count", "suppressed").with_columns(
-        pl.lit("30-49").alias("age_band")
-    )
-    marital_sampling = folk.select(
-        "region_code", "region", "sex", "marital_status", "count", "suppressed"
+    age_sampling = folk.select(
+        "municipality_code",
+        "municipality",
+        "region_code",
+        "region",
+        "sex",
+        "age",
+        "count",
+        "suppressed",
     ).with_columns(pl.lit("30-49").alias("age_band"))
+    marital_sampling = folk.select(
+        "municipality_code",
+        "municipality",
+        "region_code",
+        "region",
+        "sex",
+        "marital_status",
+        "count",
+        "suppressed",
+    ).with_columns(pl.lit("30-49").alias("age_band"))
+    geography = pl.DataFrame(
+        {
+            "municipality_code": ["101"],
+            "municipality": ["Copenhagen"],
+            "landsdel_code": ["01"],
+            "landsdel": ["Landsdel Byen København"],
+            "region_code": ["084"],
+            "region": ["Region Hovedstaden"],
+        }
+    )
     frames = {
         "folk1a_base_unpooled": folk,
         "folk2_origin_country_marginal": origin,
         "folk_age_sampling": age_sampling,
         "folk_marital_sampling": marital_sampling,
+        "ras209_joint_unpooled": ras209,
         "ras209_sampling": ras209,
+        "ras202_detail_unpooled": ras202.with_columns(pl.lit("30").alias("age_key")),
         "ras202_sampling": ras202,
         "befolk3_holdout": befolk,
         "ras210_holdout": ras210,
+        "geography_hierarchy": geography,
     }
     files: dict[str, str] = {}
     for name, frame in frames.items():
         path = normalized / f"{name}.parquet"
         frame.write_parquet(path)
         files[str(path.relative_to(bundle_dir))] = sha256_file(path)
+    source_report = bundle_dir / "source-preparation-report.json"
+    write_json(path=source_report, payload={"passed": True})
+    files[source_report.name] = sha256_file(source_report)
     manifest = BundleManifest(
         bundle_id="fixture-bundle",
         created_at="2026-09-14T00:00:00+00:00",
@@ -194,14 +228,14 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=sampling_path,
         payload={
-            "version": 1,
+            "version": 2,
             "seed": 42,
             "smoke_rows": 100,
             "statistical_rows": 200,
             "country": "Danmark",
             "minimum_age": 18,
             "maximum_age": 125,
-            "publication_geography": "region",
+            "publication_geography": "municipality",
             "smoothing": 0.0,
             "ocean": {
                 "mean": 50.0,
@@ -216,7 +250,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=validation_path,
         payload={
-            "version": 3,
+            "version": 4,
             "absolute_proportion_tolerance": 0.2,
             "standard_error_multiplier": 5.0,
             "minimum_expected_count": 1.0,
@@ -225,12 +259,13 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 "fitted_marginal": 0.2,
                 "heldout_marginal": 0.5,
             },
+            "maximum_municipality_joint_total_variation": 0.2,
             "maximum_backoff_rate": 0.01,
             "smoke_maximum_total_variation": 0.2,
             "smoke_holdout_maximum_total_variation": 0.2,
             "mandatory_marginals": [
                 "sex",
-                "region_code",
+                "municipality_code",
                 "marital_status",
                 "age_band",
                 "education_level",
@@ -311,6 +346,7 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
             "count": [2, 107, 0],
         }
     ).write_parquet(origin_path)
+    _refresh_bundle_manifest(bundle_dir=second_paths[0])
     first = generate_records(
         bundle_dir=first_paths[0],
         sampling_config_path=first_paths[1],
@@ -335,6 +371,67 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
     assert first_frame.select(old_fields).equals(second_frame.select(old_fields))
 
 
+def _refresh_bundle_manifest(*, bundle_dir: Path) -> None:
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    files = {
+        relative_path: sha256_file(bundle_dir / relative_path)
+        for relative_path in manifest.files
+    }
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
+
+
+def test_sampler_and_validator_reject_tampered_bundle(tmp_path: Path) -> None:
+    """Both Phase-2 boundaries reject prepared files changed after manifesting."""
+    bundle_dir, sampling_path, validation_path, categories_path = _write_bundle(
+        root=tmp_path
+    )
+    run_dir = generate_records(
+        bundle_dir=bundle_dir,
+        sampling_config_path=sampling_path,
+        output_dir=tmp_path / "runs",
+        rows=20,
+        seed=42,
+    )
+    target = bundle_dir / "normalized" / "ras209_sampling.parquet"
+    target.write_bytes(target.read_bytes() + b"tampered")
+
+    with pytest.raises(ValueError, match="Prepared bundle verification failed"):
+        generate_records(
+            bundle_dir=bundle_dir,
+            sampling_config_path=sampling_path,
+            output_dir=tmp_path / "other-runs",
+            rows=20,
+            seed=42,
+        )
+    with pytest.raises(ValueError, match="Prepared bundle verification failed"):
+        validate_demographics(
+            run_dir=run_dir,
+            bundle_dir=bundle_dir,
+            validation_config_path=validation_path,
+            categories_path=categories_path,
+        )
+
+
+def test_sampler_rejects_manifested_malformed_bundle_schema(tmp_path: Path) -> None:
+    """A matching checksum cannot bless a prepared table with missing columns."""
+    bundle_dir, sampling_path, _, _ = _write_bundle(root=tmp_path)
+    target = bundle_dir / "normalized" / "ras209_sampling.parquet"
+    pl.read_parquet(target).drop("municipality_code").write_parquet(target)
+    _refresh_bundle_manifest(bundle_dir=bundle_dir)
+
+    with pytest.raises(ValueError, match="Prepared bundle schema mismatch"):
+        generate_records(
+            bundle_dir=bundle_dir,
+            sampling_config_path=sampling_path,
+            output_dir=tmp_path / "runs",
+            rows=20,
+            seed=42,
+        )
+
+
 def test_terminal_backoff_reaches_records_and_each_ceiling_is_enforced(
     tmp_path: Path,
 ) -> None:
@@ -351,8 +448,9 @@ def test_terminal_backoff_reaches_records_and_each_ceiling_is_enforced(
         path = normalized / filename
         frame = pl.read_parquet(path).with_columns(pl.lit("other").alias("sex"))
         if filename == "folk_marital_sampling.parquet":
-            frame = frame.with_columns(pl.lit("999").alias("region_code"))
+            frame = frame.with_columns(pl.lit("18-29").alias("age_band"))
         frame.write_parquet(path)
+    _refresh_bundle_manifest(bundle_dir=bundle_dir)
 
     run_dir = generate_records(
         bundle_dir=bundle_dir,
@@ -367,8 +465,8 @@ def test_terminal_backoff_reaches_records_and_each_ceiling_is_enforced(
     frame = pl.read_parquet(run_dir / manifest.data_file)
     for row in frame.iter_rows(named=True):
         DemographicRecord.model_validate(row)
-    assert set(frame.get_column("age_resolution").unique()) == {"age_band"}
-    assert set(frame.get_column("marital_resolution").unique()) == {"age_band"}
+    assert set(frame.get_column("age_resolution").unique()) == {"municipality_age_band"}
+    assert set(frame.get_column("marital_resolution").unique()) == {"municipality"}
     assert set(frame.get_column("detailed_status_resolution").unique()) == {"status"}
 
     validation = yaml.safe_load(validation_path.read_text(encoding="utf-8"))

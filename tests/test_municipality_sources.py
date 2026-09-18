@@ -11,6 +11,8 @@ from danish_personas.sources.prepare import (
     _add_geography,
     _pool_ras209,
     _verify_existing_bundle,
+    _verify_ras209_municipality_sets,
+    read_geography_classification,
 )
 
 
@@ -20,6 +22,7 @@ def test_existing_legacy_bundle_is_rejected(tmp_path: Path) -> None:
     report.write_text('{"passed": true}\n', encoding="utf-8")
     manifest = BundleManifest(
         bundle_id="legacy",
+        prepared_bundle_schema_version=2,
         created_at="2026-09-17T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
@@ -63,6 +66,43 @@ def test_geography_lookup_uses_official_names_and_parents() -> None:
         "region_code": "084",
         "region": "Region Hovedstaden",
     }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '1;"";1;Region Hovedstaden;\n',
+        '1;"084";1;;\n',
+        ('1;"084";1;Region Hovedstaden;\n2;"01";2;;\n3;"101";3;København;\n'),
+        (
+            '1;"084";1;Region Hovedstaden;\n'
+            '2;"01";2;Landsdel Byen København;\n'
+            '3;"101";3;;\n'
+        ),
+    ],
+)
+def test_hierarchy_rejects_blank_codes_titles_and_parents(
+    tmp_path: Path, body: str
+) -> None:
+    """Blank hierarchy identity fields cannot inherit stale parent values."""
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text(
+        "SEKVENS;KODE;NIVEAU;TITEL;GENERELLE_NOTER\n" + body, encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="blank code or title"):
+        read_geography_classification(csv_path=csv_path)
+
+
+def test_ras209_municipality_sets_must_be_exact() -> None:
+    """The lock, hierarchy, and prepared joint must name the same municipalities."""
+    geography = pl.DataFrame({"municipality_code": ["101", "147"]})
+    prepared = pl.DataFrame({"municipality_code": ["101"]})
+
+    with pytest.raises(ValueError, match="RAS209 municipality sets differ"):
+        _verify_ras209_municipality_sets(
+            locked_codes={"101", "147"}, geography=geography, prepared=prepared
+        )
 
 
 def test_ras209_pooling_keeps_municipalities_in_the_joint() -> None:
