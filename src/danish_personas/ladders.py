@@ -17,13 +17,13 @@ from dataclasses import dataclass
 Ladder = tuple[tuple[str, tuple[str, ...]], ...]
 
 AGE_LADDER: Ladder = (
-    ("age_band_sex", ("age_band", "sex")),
-    ("age_band", ("age_band",)),
+    ("municipality_age_band_sex", ("municipality_code", "age_band", "sex")),
+    ("municipality_age_band", ("municipality_code", "age_band")),
 )
 MARITAL_LADDER: Ladder = (
-    ("region_age_band_sex", ("region_code", "age_band", "sex")),
-    ("age_band_sex", ("age_band", "sex")),
-    ("age_band", ("age_band",)),
+    ("municipality_age_band_sex", ("municipality_code", "age_band", "sex")),
+    ("municipality_age_band", ("municipality_code", "age_band")),
+    ("municipality", ("municipality_code",)),
 )
 DETAIL_LADDER: Ladder = (
     ("age_band_sex_status", ("age_band", "sex", "labour_market_status")),
@@ -84,6 +84,6 @@ def levels(ladder: Ladder) -> tuple[str, ...]:
 
     Examples:
         >>> levels(AGE_LADDER)
-        ('age_band_sex', 'age_band')
+        ('municipality_age_band_sex', 'municipality_age_band')
     """
     return tuple(name for name, _ in ladder)

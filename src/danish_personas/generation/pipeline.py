@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
+    FROZEN_SAMPLE_SCHEMA_VERSION,
     SAMPLER_SCHEMA_VERSION,
     DemographicRecord,
     RunManifest,
@@ -42,6 +43,8 @@ AUDIT_FIELDS = frozenset(
         "education_resolution",
         "origin_country_code",
         "origin_country",
+        "municipality_code",
+        "municipality",
     )
 )
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
@@ -516,9 +519,7 @@ def validate_upstream_sample(
         ValueError:
             If any checksum, provenance, schema, order, or membership check fails.
     """
-    sample_manifest = FrozenSampleManifest.model_validate_json(
-        sample_manifest_path.read_text(encoding="utf-8")
-    )
+    sample_manifest = _load_current_sample_manifest(path=sample_manifest_path)
     if sample_manifest.sha256 != sha256_file(input_path):
         message = "Frozen sample checksum does not match its manifest"
         raise ValueError(message)
@@ -573,6 +574,29 @@ def validate_upstream_sample(
         message = "Frozen sample contains rows absent from validated Phase-2 data"
         raise ValueError(message)
     return upstream
+
+
+def _load_current_sample_manifest(*, path: Path) -> FrozenSampleManifest:
+    """Load a frozen-sample manifest with the current provenance schema.
+
+    Args:
+        path:
+            Frozen-sample manifest path.
+
+    Returns:
+        Validated current manifest.
+
+    Raises:
+        ValueError:
+            If the provenance schema version is unsupported.
+    """
+    manifest = FrozenSampleManifest.model_validate_json(
+        path.read_text(encoding="utf-8")
+    )
+    if manifest.sample_schema_version != FROZEN_SAMPLE_SCHEMA_VERSION:
+        message = "Frozen sample uses an unsupported provenance schema version"
+        raise ValueError(message)
+    return manifest
 
 
 def _validate_current_demographic_sample(

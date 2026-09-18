@@ -324,10 +324,9 @@ Phases 0-2 are implemented and validated. The source bundle prepares the officia
 FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
 deterministic quotas and retains its official code and label; origin is withheld from
 both LLM stages and cannot drive language, culture, religion, occupation, personality,
-or visual appearance. The superseded source bundle `fda86665792f7734` produced the
-historical passing canonical runs `0122b894dec6829e` (2,000-row smoke) and
-`ea321089a79d3650` (100,000-row statistical); the municipality overhaul requires new
-runs.
+or visual appearance. Prepared-bundle schema 3 produced municipality-native bundle `a276e45eb987fb73`.
+Sampler schema 4 produced passing canonical runs `11a191f044aa245a` (2,000-row smoke)
+and `cd12e81f3de71f0d` (100,000-row statistical).
 See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics.
 LLM generation remains disabled in configuration and guarded by an executable failure.
 
@@ -387,10 +386,13 @@ proxy and mark `education_resolution` accordingly.
 Only retain edges for which an official cross-tabulation or defensible fitted model
 exists. For sparse cells, use a documented hierarchy:
 
-1. exact conditional cell;
-2. retain municipality keys while coarsening only documented age/education cells;
-3. back off from detailed to broad education or status;
-4. back off to a national conditional distribution.
+1. use the exact municipality, age-band, and sex conditional cell;
+2. relax sex or age-band only while retaining the same municipality;
+3. fail if that municipality has no terminal cell.
+
+RAS202 detailed-status refinement is explicitly separate: it is a national table and may
+relax age and sex only while retaining the RAS209 broad status. No FOLK1A or RAS209 draw
+may back off to region or national geography.
 
 Apply smoothing only after structural zeros. Record which back-off level produced each
 row for audit and validation, even if that field is omitted from the public release.
@@ -456,7 +458,7 @@ Report, at minimum:
 - absolute percentage-point error by category;
 - total variation and Jensen-Shannon distance for categorical distributions;
 - Wasserstein distance for age;
-- errors by region and for smaller demographic groups;
+- errors by municipality and for smaller demographic groups;
 - back-off rates and unsupported combinations.
 
 Acceptance bands should account for sample size. A practical starting rule is that each

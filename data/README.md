@@ -22,7 +22,7 @@ The command creates `data/raw-hardened-20260918/`. Derived source bundles, demog
 records, and LLM outputs remain ignored by Git and can be rebuilt using the main
 [developer setup guide](../README.md#developer-setup-guide).
 
-The canonical offline source bundle is `711c9d2982e1a56a` (prepared-bundle schema 2).
+The canonical offline source bundle is `a276e45eb987fb73` (prepared-bundle schema 3).
 It passed source validation. The prior bundle is not reusable; demographic runs must
 be rebuilt from this new source chain. The separate frozen text-development sample
 remains 1,000 rows by design.

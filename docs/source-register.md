@@ -84,12 +84,14 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   than from positional inference over FOLK1A's StatBank metadata value list. The
   classification's codes are byte-identical to StatBank's `OMRÅDE` dimension ids, and it
   contributes 5 regions, 11 landsdele, and 99 level-3 areas: Denmark's 98 municipalities
-  plus Christiansø (`411`). FOLK1A also includes code `411`, so Christiansø contributes
-  to regional calibration even though municipality is not emitted in generated records.
+  plus Christiansø (`411`). FOLK1A also includes code `411`, and municipality code and
+  name are retained in generated records.
 - Source preparation cross-checks the classification against the maps derived from both
-  FOLK1A and RAS209 metadata and fails the bundle on any disagreement, missing or extra
-  municipality, duplicate code, or null value. On this chain the check reports 99
-  level-3 areas, 11 landsdele, 5 regions, and zero disagreements. All prepared names
+  FOLK1A and RAS209 metadata and requires exact equality of the locked, hierarchy, and
+  prepared RAS209 municipality sets. It fails on any disagreement, missing or extra
+  municipality, duplicate code, null, blank code, blank title, or blank parent. On this
+  chain the check reports 99 level-3 areas, 11 landsdele, 5 regions, and zero
+  disagreements. All prepared names
   and region parents come from the validated classification lookup.
 - The hierarchy is written to `normalized/geography_hierarchy.parquet` in the prepared
   bundle with `municipality_code`, `municipality`, `landsdel_code`, `landsdel`,

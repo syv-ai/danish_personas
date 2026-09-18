@@ -1,27 +1,28 @@
 # Phase 2 validation report
 
-The canonical deterministic sampler schema is version 3 and includes the independent
-FOLK2 origin-country marginal. Both runs below were regenerated offline with seed
-`20260914`, without LLM calls and without changing any validation threshold.
+The canonical deterministic sampler schema is version 4 and the prepared-bundle schema
+is version 3. Both municipality-native runs were regenerated offline with seed
+`20260914`, with no LLM calls.
 
 ## Artefacts
 
-- Source bundle: `fda86665792f7734`
+- Source bundle: `a276e45eb987fb73`
 - Sampling-config SHA-256:
-  `65619c66c67bfac30fe3c97f94fc590de1022612f95d2354d2fd52e2c1d45868`
-- Smoke run: `0122b894dec6829e` (2,000 rows; **PASS**)
+  `aaba1c0ec2d338fe2020b2946eaaeb77e1c89d4bd85e1b63b46b280845b8a033`
+- Validation-config SHA-256:
+  `c744ecbfe9d68516c8c1feaf2fff7b9482543bc9f713191f2713b42e1a5493df`
+- Smoke run: `11a191f044aa245a` (2,000 rows; **PASS**)
 - Smoke Parquet SHA-256:
-  `d841e37ab0077905badad1aae203eccb6dd709e42dd8dd12b472dad24480dfa2`
+  `3b102cb5980e690fa4486921abcafb7fea65e9a75c34f0d6e2c3086fbfc37fa2`
 - Smoke logical-content SHA-256:
-  `dd5f0df38a7f6d9ebbf02fe9c35cf9e3998be8f7dc2d5e733ef00ddcac0ae2ce`
-- Statistical run: `ea321089a79d3650` (100,000 rows; **PASS**)
+  `761c610ce854eb6839303c43ad402a093fc501ee1512054b6e4a27a431c6f8cb`
+- Statistical run: `cd12e81f3de71f0d` (100,000 rows; **PASS**)
 - Statistical Parquet SHA-256:
-  `b12d9e719b968afe1dd27e43dfe68fdd242791c7bb713b8e8e676901b1f130b4`
+  `e49dea3332fbbf0edf8728f9ab5d280e3251108f43aeabb7b6c62cb2734c1654`
 - Statistical logical-content SHA-256:
-  `e19122c398e59dcf235cfe45c5586232f637451b68260002bfd16e0fe2425301`
-- Frozen text-development input: 1,000 stratified rows (ignored local artefact).
-  This deliberate Phase-3 development size is separate from the 2,000-row Phase-2
-  validation smoke size.
+  `c847bb9d8d68c46c33c881e1693b75a485b6ebd620220c33cc39e49a15644cb2`
+- Frozen text-development input remains a separate 1,000-row local artefact. Sample
+  provenance schema 2 uses municipality, education, and labour status as strata.
 
 The compressed raw snapshots are committed with attribution. Restored and generated
 datasets remain ignored by Git and are reproducible from the source archive, lock,
@@ -30,10 +31,11 @@ mappings, configurations, and code.
 ## Source result
 
 - Six official tables and one official classification snapshot were checksummed.
-- Adjusted RAS209 adult total: 4,845,759.
-- RAS202 adult total: 4,845,960.
-- Sparse-cell sampling table: 531 cells.
-- Retained RAS209 coverage: 99.6439%.
+- The lock, hierarchy, and prepared RAS209 joint contain the same 99 municipalities.
+- FOLK1A and RAS209 remain municipality-keyed; no regional reaggregation is used by the
+  sampler.
+- RAS202 remains a separate national detailed-status refinement.
+- Shared integrity, schema, and successful-preparation verification passed.
 - Source validation: **PASS**.
 
 ## Deterministic run results
@@ -42,21 +44,22 @@ mappings, configurations, and code.
 | --- | ---: | ---: | ---: |
 | Rows | 2,000 | 100,000 | exact |
 | Schema errors | 0 | 0 | 0 |
-| Status mapping errors | 0 | 0 | 0 |
-| Education proxy errors | 0 | 0 | 0 |
-| Maximum fitted marginal TV | 1.4587% | 0.1739% | 5% / 2% |
+| Municipality hierarchy errors | 0 | 0 | 0 |
+| Maximum fitted marginal TV | 1.5148% | 0.2903% | 5% / 2% |
+| Municipality marginal TV | 0.6321% | 0.0137% | 5% / 2% |
 | FOLK2 origin marginal TV | 0.8430% | 0.0256% | 5% / 2% |
-| Full 531-cell fitted joint TV | 3.5609% | 0.0676% | 5% / 2% |
-| Held-out population joint TV | 0.8651% | 0.1094% | 10% / 5% |
-| Held-out status-by-sex TV | 0.4283% | 0.0309% | 10% / 5% |
-| OCEAN score-bound errors | 0 | 0 | 0 |
-| Maximum pairwise OCEAN correlation | 0.040965 | 0.004863 | info / 0.02 |
-| Origin mapping errors | 0 | 0 | 0 |
-| Unexpected fitted categories | 0 | 0 | 0 |
-| Zero-weight origin categories emitted | 0 | 0 | 0 |
+| Municipality RAS209 joint TV | 49.2167% | 8.9276% | info / 10% |
+| Held-out municipality population TV | 21.8453% | 2.9804% | 25% / 5% |
+| Held-out status-by-sex TV | 1.8680% | 0.3806% | 25% / 5% |
+| Age back-off | 0% | 0% | 1% |
+| Marital back-off | 0% | 0% | 1% |
+| Detailed-status back-off | 0% | 0.003% | 1% |
+| Maximum OCEAN correlation | 0.040965 | 0.004863 | info / 0.02 |
 | LLM calls | 0 | 0 | 0 |
 
-Every mandatory cell-wise confidence check passed in both runs. Overall Phase-2 result:
-**PASS**.
+The 2,000-row municipality joint has more populated source cells than observations, so
+its joint TV is explicitly informational at smoke size. Its marginal, hierarchy, and
+held-out municipality gates are mandatory. Every mandatory gate passed in both runs.
+Overall Phase 2 result: **PASS**.
 
 The machine-readable reports remain beside the local source bundle and generated runs.
