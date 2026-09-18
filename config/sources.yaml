@@ -82,9 +82,13 @@ sources:
   - table_id: RAS209
     role: education_status_joint
     period: "2024"
+    # The municipality-level joint is retained through preparation; BULK avoids
+    # materialising the approximately 5.3 million-cell response in the API's
+    # non-streaming format.
+    format: BULK
     dimensions:
       OMRÅDE:
-        selector: regions
+        selector: municipalities
       UDDANNELSE:
         selector: non_total
       SOCIO:

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
+    PREPARED_BUNDLE_SCHEMA_VERSION,
     SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
@@ -585,6 +586,16 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
     source_payload = json.loads(source_report_path.read_text(encoding="utf-8"))
     source_passed = source_payload.get("passed") is True
     metrics = [
+        MetricResult(
+            name="prepared_bundle_schema",
+            passed=(
+                manifest.prepared_bundle_schema_version
+                == PREPARED_BUNDLE_SCHEMA_VERSION
+            ),
+            value=manifest.prepared_bundle_schema_version,
+            threshold=PREPARED_BUNDLE_SCHEMA_VERSION,
+            details="Prepared bundle schema is current.",
+        ),
         MetricResult(
             name="prepared_file_checksums",
             passed=not checksum_failures,

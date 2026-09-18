@@ -1,18 +1,17 @@
 # Source register
 
-Retrieved through the official Statistics Denmark StatBank API on 14 and 17 September
-2026. The exact dimension selections are frozen in `config/sources.lock.yaml`. The immutable
-snapshots are committed as `data/raw-hardened-20260917.tar.zst` under CC BY 4.0; its
-SHA-256 is `480d1aedec2f583849b1d5a9eec801180c9fe1140c0ec4c1333d23dd66192e8a`.
-Restoration creates content-addressed
-query subdirectories under
-`data/raw-hardened-20260917/`.
+Retrieved through the official Statistics Denmark StatBank API on 18 September 2026.
+The exact dimension selections are frozen in `config/sources.lock.yaml`. The immutable
+snapshots are committed as `data/raw-hardened-20260918.tar.zst` under CC BY 4.0; its
+SHA-256 is `7361a6e199d9977c63478cc167f89383c3288e4f247219c10056882a7f31ac99`.
+Restoration creates content-addressed query subdirectories under
+`data/raw-hardened-20260918/`; the previous 20260917 chain is retained unchanged.
 
 | Table | Period | Pipeline role | Selected observations | API cells | Raw bytes | CSV SHA-256 |
 | --- | --- | --- | ---: | ---: | ---: | --- |
-| [FOLK2][folk2] | 2025 | Adult national origin marginal (official IELAND) | 312,336 | 2,186,352 | 2,940,320 | `d71b0a5f95c0489659470a7f061f68c248122342df22d9bf259b41f10e4b1bc1` |
+| [FOLK2][folk2] | 2025 | Adult national origin marginal (official IELAND) | 312,336 | 2,186,352 | 2,980,413 | `5842fa32fc4b333e2955697db87f3d595940c8a015688119d8f0eea7c01cc7cf` |
 | [FOLK1A][folk1a] | 2025Q1 | Exact age, sex, municipality, marital status | 87,120 | 522,720 | 5,637,970 | `fc70f900e628c169660c354f487723d4556e707e49ef95a96fad3d63b01c4741` |
-| [RAS209][ras209] | 2024 | Joint broad education and labour status | 40,800 | 285,600 | 4,995,164 | `f0422d7ae0d2c33bd19f62a4647db036530f38b9e4ba945f408fbc75aeb418ca` |
+| [RAS209][ras209] | 2024 | Municipality joint education and labour status | 807,840 | 5,654,880 | 23,962,725 | `8db475275c36062a20307673565b57ebae6738d46f8e7cbcf9dc878cff2d0c67` |
 | [RAS202][ras202] | 2024 | Detailed status by exact age and sex | 3,672 | 18,360 | 231,540 | `9d5293ed0979a245c990a4177b35f3c5877ac34011d7f978138ceded0226ca86` |
 | [BEFOLK3][befolk3] | 2025 | Held-out population validation | 21,384 | 106,920 | 1,008,139 | `b6e72015815cae98a484059c0261c00ffc0597a600ecc4ee5d74b9819cd7acd9` |
 | [RAS210][ras210] | 2024 | Held-out status-by-municipality validation | 32,076 | 192,456 | 2,072,366 | `d1eca1c04b11fba402a3cc18d0c44503dbadc2bbcb289170aa09e0e0dd66cefa` |
@@ -20,9 +19,10 @@ query subdirectories under
 For each table, the snapshot also contains English and Danish metadata, the exact POST
 query, response headers, and a machine-readable checksum manifest. Selected observations
 are the product of selected values; API cells multiply that count by every selected
-dimension plus the observation-value column. FOLK2 uses StatBank's BULK streaming
-response because its 2,186,352 actual cells exceed the one-million limit for non-streaming
-formats. BULK is explicitly exempt from that limit. StatBank omits zero-count BULK rows;
+dimension plus the observation-value column. FOLK2 and RAS209 use StatBank's BULK
+streaming response because their 2,186,352 and 5,654,880 actual cells exceed the
+one-million limit for non-streaming formats. BULK is explicitly exempt from that limit
+and is streamed to disk in bounded chunks. StatBank omits zero-count BULK rows;
 the 31 omitted IELAND partitions in this snapshot are recorded explicitly as reviewed
 `expected_zero_codes` in `config/sources.yaml` and its resolved lock. Preparation
 materialises only those approved omissions as explicit unsuppressed zeroes; any other
@@ -66,12 +66,14 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
 - FOLK1A 2025Q1 is the closest demographic snapshot to the November 2024 RAS data.
 - FOLK1A ages 16-19 estimate the age-18-and-over share of RAS209's 16-19 band. Ages 16
   and 17 are excluded from generated records.
-- RAS209 education is pooled to primary, secondary or vocational, higher education, and
-  not stated.
+- RAS209 is acquired for all 99 official level-3 areas, including Christiansø (`411`),
+  and the raw and unpooled prepared joint retains municipality, education, status,
+  age-band, and sex. The pooled person-sampling artefact also retains municipality
+  keys; it never aggregates those rows by region.
 - RAS209 age is pooled to 18-29, 30-49, 50-66, and 67+.
-- Calibration cells must contain at least 50 source persons and have an expected count
-  of at least five in a 100,000-row release. The resulting 531-cell table retains
-  99.6439% of the adjusted RAS209 population.
+- RAS209 age and education pooling is performed within each municipality. The
+  municipality-level sampling artefact retains the complete adjusted source universe;
+  sparse cells are not silently replaced by a regional aggregate.
 - The RAS209 `67+` education category is explicitly labelled as a proxy for generated
   people aged 70 and over.
 - RAS202 may refine a detailed status only within the broad RAS209 status already
@@ -84,11 +86,11 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   contributes 5 regions, 11 landsdele, and 99 level-3 areas: Denmark's 98 municipalities
   plus Christiansø (`411`). FOLK1A also includes code `411`, so Christiansø contributes
   to regional calibration even though municipality is not emitted in generated records.
-- Source preparation cross-checks the classification against the map derived from
-  FOLK1A's metadata and fails the bundle on any disagreement, missing municipality, or
-  null value. On the committed snapshots the check reports 99 level-3 areas, 11
-  landsdele, 5 regions, and zero disagreements, so the previous heuristic was correct;
-  the classification gives it an official source and a permanent regression check.
+- Source preparation cross-checks the classification against the maps derived from both
+  FOLK1A and RAS209 metadata and fails the bundle on any disagreement, missing or extra
+  municipality, duplicate code, or null value. On this chain the check reports 99
+  level-3 areas, 11 landsdele, 5 regions, and zero disagreements. All prepared names
+  and region parents come from the validated classification lookup.
 - The hierarchy is written to `normalized/geography_hierarchy.parquet` in the prepared
   bundle with `municipality_code`, `municipality`, `landsdel_code`, `landsdel`,
   `region_code`, and `region`. Landsdel is carried in the prepared bundle only; it is

@@ -3,47 +3,15 @@ language: en
 release_rows: 100000
 minimum_source_count: 50
 minimum_expected_release_count: 5
-resolved_at: '2026-09-17T15:55:33.572114+00:00'
+resolved_at: '2026-09-18T07:21:13.115091+00:00'
 sources:
 - table_id: FOLK2
   role: origin_country_marginal
   period: '2025'
   format: BULK
-  expected_zero_codes:
-  - '5111'
-  - '5176'
-  - '5184'
-  - '5248'
-  - '5253'
-  - '5256'
-  - '5264'
-  - '5286'
-  - '5301'
-  - '5307'
-  - '5325'
-  - '5336'
-  - '5346'
-  - '5353'
-  - '5394'
-  - '5397'
-  - '5428'
-  - '5473'
-  - '5480'
-  - '5493'
-  - '5494'
-  - '5498'
-  - '5506'
-  - '5516'
-  - '5527'
-  - '5528'
-  - '5529'
-  - '5530'
-  - '5531'
-  - '5533'
-  - '5535'
   metadata_url: https://api.statbank.dk/v1/tableinfo/FOLK2?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2026-02-12T08:00:00'
   unit: Number
   dimensions:
@@ -410,6 +378,38 @@ sources:
     - '5999'
     Tid:
     - '2025'
+  expected_zero_codes:
+  - '5111'
+  - '5176'
+  - '5184'
+  - '5248'
+  - '5253'
+  - '5256'
+  - '5264'
+  - '5286'
+  - '5301'
+  - '5307'
+  - '5325'
+  - '5336'
+  - '5346'
+  - '5353'
+  - '5394'
+  - '5397'
+  - '5428'
+  - '5473'
+  - '5480'
+  - '5493'
+  - '5494'
+  - '5498'
+  - '5506'
+  - '5516'
+  - '5527'
+  - '5528'
+  - '5529'
+  - '5530'
+  - '5531'
+  - '5533'
+  - '5535'
   estimated_cells: 2186352
 - table_id: FOLK1A
   role: demographic_base
@@ -417,7 +417,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/FOLK1A?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2026-08-10T08:00:00'
   unit: Number
   dimensions:
@@ -642,23 +642,118 @@ sources:
     - F
     Tid:
     - 2025K1
+  expected_zero_codes: []
   estimated_cells: 522720
 - table_id: RAS209
   role: education_status_joint
   period: '2024'
-  format: CSV
+  format: BULK
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS209?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
     "OMR\xC5DE":
-    - 084
-    - 085
-    - 083
-    - 082
-    - 081
+    - '101'
+    - '147'
+    - '155'
+    - '185'
+    - '165'
+    - '151'
+    - '153'
+    - '157'
+    - '159'
+    - '161'
+    - '163'
+    - '167'
+    - '169'
+    - '183'
+    - '173'
+    - '175'
+    - '187'
+    - '201'
+    - '240'
+    - '210'
+    - '250'
+    - '190'
+    - '270'
+    - '260'
+    - '217'
+    - '219'
+    - '223'
+    - '230'
+    - '400'
+    - '411'
+    - '253'
+    - '259'
+    - '350'
+    - '265'
+    - '269'
+    - '320'
+    - '376'
+    - '316'
+    - '326'
+    - '360'
+    - '370'
+    - '306'
+    - '329'
+    - '330'
+    - '340'
+    - '336'
+    - '390'
+    - '420'
+    - '430'
+    - '440'
+    - '482'
+    - '410'
+    - '480'
+    - '450'
+    - '461'
+    - '479'
+    - '492'
+    - '530'
+    - '561'
+    - '563'
+    - '607'
+    - '510'
+    - '621'
+    - '540'
+    - '550'
+    - '573'
+    - '575'
+    - '630'
+    - '580'
+    - '710'
+    - '766'
+    - '615'
+    - '707'
+    - '727'
+    - '730'
+    - '741'
+    - '740'
+    - '746'
+    - '706'
+    - '751'
+    - '657'
+    - '661'
+    - '756'
+    - '665'
+    - '760'
+    - '779'
+    - '671'
+    - '791'
+    - '810'
+    - '813'
+    - '860'
+    - '849'
+    - '825'
+    - '846'
+    - '773'
+    - '840'
+    - '787'
+    - '820'
+    - '851'
     UDDANNELSE:
     - H10
     - H20
@@ -723,14 +818,15 @@ sources:
     - K
     Tid:
     - '2024'
-  estimated_cells: 285600
+  expected_zero_codes: []
+  estimated_cells: 5654880
 - table_id: RAS202
   role: detailed_status_refinement
   period: '2024'
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS202?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2026-05-05T08:00:00'
   unit: Number
   dimensions:
@@ -829,6 +925,7 @@ sources:
     - K
     Tid:
     - '2024'
+  expected_zero_codes: []
   estimated_cells: 18360
 - table_id: BEFOLK3
   role: population_holdout
@@ -836,7 +933,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/BEFOLK3?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2026-07-01T08:00:00'
   unit: Number
   dimensions:
@@ -1054,6 +1151,7 @@ sources:
     - '125'
     Tid:
     - '2025'
+  expected_zero_codes: []
   estimated_cells: 106920
 - table_id: RAS210
   role: municipality_status_holdout
@@ -1061,7 +1159,7 @@ sources:
   format: CSV
   metadata_url: https://api.statbank.dk/v1/tableinfo/RAS210?lang=en
   data_url: https://api.statbank.dk/v1/data
-  retrieved_metadata_at: '2026-09-17T15:55:33.572114+00:00'
+  retrieved_metadata_at: '2026-09-18T07:21:13.115091+00:00'
   table_updated_at: '2025-11-18T08:00:00'
   unit: Number
   dimensions:
@@ -1229,6 +1327,7 @@ sources:
     - K
     Tid:
     - '2024'
+  expected_zero_codes: []
   estimated_cells: 192456
 classifications:
 - classification_id: NUTS_V1_2007_DK
