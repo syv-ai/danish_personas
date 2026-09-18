@@ -270,8 +270,15 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     )
     for name in DemographicRecord.model_fields:
         if name not in output_frame.columns:
-            value: object = (
-                35 if name == "age" else 50.0 if name.endswith("_score") else "Danmark"
+            fixture_values: dict[str, object] = {
+                "detailed_status_code": "30",
+                "job_function_code": "24",
+                "job_function": "24 Business and administration professionals",
+                "job_function_resolution": "lons20_sex_marginal",
+            }
+            value: object = fixture_values.get(
+                name,
+                35 if name == "age" else 50.0 if name.endswith("_score") else "Danmark",
             )
             output_frame = output_frame.with_columns(pl.lit(value).alias(name))
     output_frame = output_frame.select(

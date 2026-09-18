@@ -17,7 +17,7 @@ The deterministic workflow defaults to the committed raw archive and versioned
 configuration. It restores, prepares, validates, generates, and validates in order,
 passing each service's returned path to the next boundary. `--raw-parent` defaults to
 `data`; the restored and prepared path is always its fixed
-`raw-hardened-20260918` child. `statistical` runs the smoke stage first, then generates
+`raw-hardened-20260919` child. `statistical` runs the smoke stage first, then generates
 the configured statistical row count and freezes 1,000 rows by default. Use
 `--sample-rows` to change that development sample size.
 

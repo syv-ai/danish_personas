@@ -29,6 +29,6 @@ def test_validation_config_rejects_unsupported_schema_version() -> None:
         path=Path("config/validation.yaml"), model=ValidationConfig
     )
 
-    assert config.version == 4
+    assert config.version == 5
     with pytest.raises(ValidationError, match="Unsupported validation config version"):
-        ValidationConfig.model_validate(config.model_dump(mode="json") | {"version": 3})
+        ValidationConfig.model_validate(config.model_dump(mode="json") | {"version": 4})

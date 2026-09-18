@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
+    ELIGIBLE_JOB_FUNCTION_STATUS_CODES,
     SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
@@ -83,6 +84,9 @@ def validate_demographics(
     metrics.extend(_ocean_metrics(frame=frame, config=config))
     metrics.extend(_geography_parent_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
+    metrics.extend(
+        _job_function_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
+    )
     metrics.append(
         MetricResult(
             name="llm_calls",
@@ -125,6 +129,8 @@ def _distribution_metrics(
     }
     metrics: list[MetricResult] = []
     for name in config.mandatory_marginals:
+        if name == "job_function":
+            continue
         target_frame, columns = targets[name]
         metrics.extend(
             _compare_distribution(
@@ -343,6 +349,81 @@ def _heldout_metrics(
         smoke_maximum_tv=config.smoke_holdout_maximum_total_variation,
     )
     return [population[-1], status[-1]]
+
+
+def _job_function_metrics(
+    frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
+) -> list[MetricResult]:
+    """Check LONS20 mapping, eligibility, and sex-conditional allocation.
+
+    Returns:
+        Structural and sex-conditional statistical metrics.
+    """
+    target = pl.read_parquet(
+        bundle_dir / "normalized" / "job_function_sex_marginal.parquet"
+    )
+    eligible = pl.col("detailed_status_code").is_in(
+        sorted(ELIGIBLE_JOB_FUNCTION_STATUS_CODES)
+    )
+    paired = (
+        pl.col("job_function_code").is_not_null() & pl.col("job_function").is_not_null()
+    )
+    eligibility_errors = frame.filter(
+        (
+            eligible
+            & (~paired | (pl.col("job_function_resolution") != "lons20_sex_marginal"))
+        )
+        | (
+            ~eligible
+            & (
+                paired
+                | pl.col("job_function_code").is_not_null()
+                | pl.col("job_function").is_not_null()
+                | (pl.col("job_function_resolution") != "not_applicable")
+            )
+        )
+    ).height
+    columns = ["job_function_code", "job_function"]
+    expected_pairs = target.select(columns).unique()
+    observed_pairs = frame.filter(eligible).select(columns).unique()
+    mapping_errors = observed_pairs.join(
+        expected_pairs, on=columns, how="anti", nulls_equal=True
+    ).height
+    metrics = [
+        MetricResult(
+            name="job_function_eligibility_errors",
+            passed=eligibility_errors == 0,
+            value=eligibility_errors,
+            threshold=0,
+            details="Only approved RAS202 employee statuses receive paired fields.",
+        ),
+        MetricResult(
+            name="job_function_mapping_errors",
+            passed=mapping_errors == 0,
+            value=mapping_errors,
+            threshold=0,
+            details=(
+                "Generated job functions must retain official LONS20 code-label pairs."
+            ),
+        ),
+    ]
+    for sex in ("female", "male"):
+        metrics.extend(
+            _compare_distribution(
+                name=f"job_function_{sex}",
+                generated=frame.filter(eligible & (pl.col("sex") == sex)),
+                target=target.filter(pl.col("sex") == sex),
+                columns=columns,
+                config=config,
+                maximum_tv=config.maximum_total_variation["fitted_marginal"],
+                smoke_maximum_tv=(
+                    config.maximum_total_variation["fitted_marginal"]
+                    if frame.height >= 100_000
+                    else config.smoke_maximum_total_variation
+                ),
+            )
+        )
+    return metrics
 
 
 def _now() -> str:
@@ -680,6 +761,20 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
                         value="pass" if check["passed"] else "fail",
                         threshold="pass",
                         details=f"FOLK2 {check_name.replace('_', ' ')} check.",
+                    )
+                )
+    job_function_checks = source_payload.get("job_function_checks")
+    if isinstance(job_function_checks, dict):
+        for check_name in ("two_digit_partition", "sex_coverage", "positive_counts"):
+            check = job_function_checks.get(check_name)
+            if isinstance(check, dict) and isinstance(check.get("passed"), bool):
+                metrics.append(
+                    MetricResult(
+                        name=f"lons20_{check_name}",
+                        passed=check["passed"],
+                        value="pass" if check["passed"] else "fail",
+                        threshold="pass",
+                        details=f"LONS20 {check_name.replace('_', ' ')} check.",
                     )
                 )
     report = ValidationReport(

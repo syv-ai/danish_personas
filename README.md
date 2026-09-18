@@ -17,8 +17,8 @@ rows, while a pilot can span multiple shards. Release-scale generation and human
 approval are not implemented release gates.
 
 The municipality-native canonical Phase 2 workflow passes at both 2,000-row smoke and
-100,000-row statistical sizes using prepared bundle `a276e45eb987fb73`, sampler schema
-4, and validation schema 4. Read the reports before making claims:
+100,000-row statistical sizes using prepared bundle `333a0a166ca0e030`, sampler schema
+5, and validation schema 5. Read the reports before making claims:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
@@ -98,7 +98,7 @@ uv run danish-personas workflow deterministic --target statistical \
 The default statistical workflow runs the configured smoke and statistical row counts,
 then freezes a 1,000-row sample. Change that development sample size with
 `--sample-rows`. `--raw-parent` defaults to `data`; the workflow always restores and
-prepares `data/raw-hardened-20260918` (or the same fixed child below a custom parent).
+prepares `data/raw-hardened-20260919` (or the same fixed child below a custom parent).
 Configuration and output paths are also configurable. It is offline and makes no LLM
 calls. Source `resolve` and `fetch` need
 explicit `--network`, while persona shards are dry runs unless `--live` is supplied and
@@ -108,8 +108,9 @@ The legacy script commands below remain supported and compatible.
 
 ### Regenerate development data
 
-The following commands restore the six exact Statistics Denmark aggregate snapshots and
-the official geography classification snapshot, prepare a local source bundle, generate
+The following commands restore the seven exact Statistics Denmark aggregate snapshots
+and the official geography classification snapshot, prepare a local source bundle,
+generate
 2,000 deterministic smoke records, and validate every stage without network access. The
 archive and attribution are documented in [`data/README.md`](data/README.md).
 
@@ -122,7 +123,7 @@ BUNDLE=$( \
   uv run src/scripts/build_distributions.py \
     --lock config/sources.lock.yaml \
     --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260918 \
+    --raw-dir data/raw-hardened-20260919 \
     --output-dir data/processed \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
 )
@@ -166,7 +167,7 @@ BUNDLE=$( \
   uv run src/scripts/build_distributions.py \
     --lock config/sources.lock.yaml \
     --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260918 \
+    --raw-dir data/raw-hardened-20260919 \
     --output-dir data/processed \
     2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
 )
@@ -202,7 +203,10 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
-The source preparation stage uses FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and RAS210.
+The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3,
+and RAS210. LONS20 provides a sex-conditional synthetic job-function marginal for
+eligible employees only; its earnings-statistics universe is not all-worker
+representation, and the fields are withheld from both LLM payloads.
 FOLK2 is an independent national marginal of official IELAND country-of-origin
 categories for adults. It preserves categories such as Stateless and Not stated, but is
 not ethnicity, citizenship, or residence. Each Phase 2 record receives an independently
@@ -323,9 +327,9 @@ remain ignored and reproducible.
 All generated artefacts belong under the ignored `data/` directory. Important outputs
 are:
 
-- `data/raw-hardened-20260918/<table>/<query-hash>/`: restored immutable `data.csv`,
+- `data/raw-hardened-20260919/<table>/<query-hash>/`: restored immutable `data.csv`,
   metadata, query, response headers, and `snapshot-manifest.json` files;
-- `data/raw-hardened-20260918/classifications/<classification-id>/<url-hash>/`: restored
+- `data/raw-hardened-20260919/classifications/<classification-id>/<url-hash>/`: restored
   immutable `data.csv`, `response-headers.json`, and `snapshot-manifest.json` files;
 - `data/processed/<bundle-id>/`: normalised Parquet distributions,
   `bundle-manifest.json`, and source preparation reports;

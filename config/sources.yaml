@@ -13,6 +13,67 @@ classifications:
     page_url: https://www.dst.dk/da/Statistik/dokumentation/nomenklaturer/nuts
     attachment_url: https://www.dst.dk/klassifikationsbilag/5d18d1e0-400b-4505-92ad-6782915980a3csv_da
 sources:
+  - table_id: LONS20
+    role: job_function_sex_marginal
+    period: "2024"
+    # Exactly the 42 two-digit DISCO-08 groups. Never mix hierarchy levels.
+    dimensions:
+      ARBF:
+        values:
+          - "01"
+          - "02"
+          - "03"
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+          - "21"
+          - "22"
+          - "23"
+          - "24"
+          - "25"
+          - "26"
+          - "31"
+          - "32"
+          - "33"
+          - "34"
+          - "35"
+          - "41"
+          - "42"
+          - "43"
+          - "44"
+          - "51"
+          - "52"
+          - "53"
+          - "54"
+          - "61"
+          - "62"
+          - "71"
+          - "72"
+          - "73"
+          - "74"
+          - "75"
+          - "81"
+          - "82"
+          - "83"
+          - "91"
+          - "92"
+          - "93"
+          - "94"
+          - "95"
+          - "96"
+      SEKTOR:
+        values: ["1000"]
+      AFLOEN:
+        values: [TIFA]
+      LONGRP:
+        values: [LTOT]
+      LØNMÅL:
+        values: [ANTAL]
+      KØN:
+        values: [M, K]
+      Tid:
+        values: ["2024"]
   - table_id: FOLK2
     role: origin_country_marginal
     period: "2025"

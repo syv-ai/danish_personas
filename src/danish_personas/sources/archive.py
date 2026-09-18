@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .exceptions import SourceArchiveError
 
-RAW_DIRECTORY = "raw-hardened-20260918"
+RAW_DIRECTORY = "raw-hardened-20260919"
 DEFAULT_ARCHIVE = Path("data") / f"{RAW_DIRECTORY}.tar.zst"
 FILE_MODE = 0o644
 # Pinned so the committed archive does not change size with library defaults.

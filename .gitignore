@@ -94,6 +94,8 @@ data/*
 !data/.gitkeep
 !data/README.md
 !data/raw-hardened-20260917.tar.zst
+!data/raw-hardened-20260918.tar.zst
+!data/raw-hardened-20260919.tar.zst
 
 # Models
 models/*

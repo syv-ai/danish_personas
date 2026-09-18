@@ -43,6 +43,9 @@ AUDIT_FIELDS = frozenset(
         "education_resolution",
         "origin_country_code",
         "origin_country",
+        "job_function_code",
+        "job_function",
+        "job_function_resolution",
         "municipality_code",
         "municipality",
     )
