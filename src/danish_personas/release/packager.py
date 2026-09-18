@@ -123,9 +123,9 @@ def package_release(
     repository_root = _lexical_absolute(repository_root)
     output_parent = _lexical_absolute(output_parent)
     _require_no_symlink_components(output_parent)
-    _require_clean_git(repository_root)
     provenance = _git_provenance(repository_root)
-    git_head, origin_url, _ = provenance
+    git_head, origin_url, git_status = provenance
+    _require_clean_provenance(status=git_status)
     pilot_tree = _snapshot_pilot_tree(pilot_dir)
     pilot_files = [
         pilot_dir / entry.relative for entry in pilot_tree if entry.kind == "file"
@@ -1363,8 +1363,8 @@ def _repository_path(repository_root: Path, value: Path) -> Path:
     return candidate
 
 
-def _require_clean_git(root: Path) -> None:
-    if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+def _require_clean_provenance(*, status: str) -> None:
+    if status:
         raise ReleasePackagingError("Git checkout must be clean")
 
 

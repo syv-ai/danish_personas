@@ -29,6 +29,10 @@ from danish_personas.release.packager import ReleasePackagingError, package_rele
 from danish_personas.release.verifier import verify_release
 
 
+def _clean_provenance(_: Path) -> tuple[str, str, str]:
+    return "a" * 40, "https://example.invalid/origin.git", ""
+
+
 def test_aba_replacement_cannot_change_validation_snapshot(tmp_path: Path) -> None:
     """A valid replacement at the original path cannot repair captured input."""
     repository = tmp_path / "repository"
@@ -287,6 +291,35 @@ def test_package_release_rejects_existing_empty_destination(
     assert target.is_dir() and not list(target.iterdir())
 
 
+def test_package_release_rejects_initial_dirty_provenance_before_work(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty initial provenance tuple stops all validation and installation work."""
+    dirty = ("a" * 40, "https://example.invalid/origin.git", " M dirty.txt")
+    provenance_calls: list[tuple[str, str, str]] = []
+    work_calls: list[str] = []
+
+    def provenance(_: Path) -> tuple[str, str, str]:
+        provenance_calls.append(dirty)
+        return dirty
+
+    def forbidden(**_: object) -> None:
+        work_calls.append("work")
+        raise AssertionError("packaging work must not start")
+
+    monkeypatch.setattr(packager, "_git_provenance", provenance)
+    monkeypatch.setattr(packager, "_validate_pilot_for_release", forbidden)
+    monkeypatch.setattr(packager, "_materialise_snapshot", forbidden)
+    monkeypatch.setattr(packager, "_install_files", forbidden)
+
+    with pytest.raises(ReleasePackagingError, match="clean"):
+        _package(release_case, monkeypatch)
+
+    assert provenance_calls == [dirty]
+    assert work_calls == []
+    assert not list(release_case.output_parent.glob("*"))
+
+
 def test_package_release_rejects_injected_populated_destination(
     packaged_release: tuple[ReleaseCase, Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -370,7 +403,7 @@ def test_package_release_rejects_prompt_hash_mismatch(
     """Prompt files are public inputs whose manifest hashes cannot drift."""
     prompt = release_case.repository / "config/prompts/attributes-da.md"
     prompt.write_text(prompt.read_text(encoding="utf-8") + "changed", encoding="utf-8")
-    monkeypatch.setattr(packager, "_require_clean_git", lambda _: None)
+    monkeypatch.setattr(packager, "_git_provenance", _clean_provenance)
     with pytest.raises(ReleasePackagingError, match="Prompt checksum"):
         _package(release_case, monkeypatch)
 
@@ -467,7 +500,7 @@ def test_package_uses_manifest_effective_generation_config(
             }
         )
 
-    monkeypatch.setattr(packager, "_require_clean_git", lambda _: None)
+    monkeypatch.setattr(packager, "_git_provenance", _clean_provenance)
     monkeypatch.setattr(packager, "validate_persona_pilot", lambda **_: case.report)
     monkeypatch.setattr(packager, "_derive_consumed_files", lambda **_: [])
     monkeypatch.setattr(packager, "_derive_evidence", evidence)
