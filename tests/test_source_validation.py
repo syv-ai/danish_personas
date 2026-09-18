@@ -262,7 +262,14 @@ def test_prepared_bundle_verifier_rejects_manifest_aliases(
     )
     files = dict(manifest.files)
     path, checksum = next(iter(files.items()))
-    alias = path.replace("/", "\\") if alias_kind == "separator" else path.swapcase()
+    if alias_kind == "separator":
+        alias = path.replace("/", "\\") if "/" in path else path.replace("\\", "/")
+        assert alias != path
+        assert bundle_module._canonical_relative_key(alias) == (
+            bundle_module._canonical_relative_key(path)
+        )
+    else:
+        alias = path.swapcase()
     files[alias] = checksum
     write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
 
