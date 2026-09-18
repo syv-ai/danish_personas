@@ -234,7 +234,7 @@ class BundleManifest(StrictModel):
     """Manifest for a prepared source bundle."""
 
     bundle_id: str
-    prepared_bundle_schema_version: int = PREPARED_BUNDLE_SCHEMA_VERSION
+    prepared_bundle_schema_version: int
     created_at: str
     source_lock_sha256: str
     categories_sha256: str

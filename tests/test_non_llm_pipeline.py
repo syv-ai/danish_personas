@@ -8,6 +8,7 @@ import yaml
 
 from danish_personas.io import sha256_file, sha256_text, write_json
 from danish_personas.models import (
+    PREPARED_BUNDLE_SCHEMA_VERSION,
     SAMPLER_SCHEMA_VERSION,
     BundleManifest,
     DemographicRecord,
@@ -212,6 +213,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     files[source_report.name] = sha256_file(source_report)
     manifest = BundleManifest(
         bundle_id="fixture-bundle",
+        prepared_bundle_schema_version=PREPARED_BUNDLE_SCHEMA_VERSION,
         created_at="2026-09-14T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
