@@ -664,4 +664,12 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         metrics=metrics,
     )
     _write_reports(directory=bundle_dir, report=report)
+    manifest_files = dict(manifest.files)
+    for report_name in ("validation-report.json", "validation-report.md"):
+        report_path = bundle_dir / report_name
+        manifest_files[report_name] = sha256_file(report_path)
+    write_json(
+        path=bundle_dir / "bundle-manifest.json",
+        payload=manifest.model_copy(update={"files": manifest_files}),
+    )
     return report
