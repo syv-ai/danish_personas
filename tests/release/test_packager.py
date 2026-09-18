@@ -326,6 +326,44 @@ def test_package_release_rejects_missing_input_and_path_traversal(
         _package(release_case, monkeypatch)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["restore_checkpoint", "add_checkpoint", "remove_ledger", "add_unrelated"],
+)
+def test_package_release_rejects_pilot_tree_membership_changes(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Pilot checkpoint and ledger membership cannot change during staging."""
+    shard = release_case.pilot / "shard"
+    checkpoints = shard / "checkpoints"
+    ledger = shard / "request-ledger.json"
+    if mutation == "add_checkpoint":
+        checkpoints.mkdir(parents=True)
+        (checkpoints / "existing.json").write_text("{}", encoding="utf-8")
+    elif mutation == "remove_ledger":
+        shard.mkdir()
+        ledger.write_text("{}", encoding="utf-8")
+
+    original = packager._install_files
+
+    def mutate(**kwargs: object) -> None:
+        original(**kwargs)
+        if mutation in {"restore_checkpoint", "add_checkpoint"}:
+            checkpoints.mkdir(parents=True, exist_ok=True)
+            (checkpoints / "restored.json").write_text("{}", encoding="utf-8")
+        elif mutation == "remove_ledger":
+            ledger.unlink()
+        else:
+            (release_case.pilot / "unexpected.txt").write_text(
+                "unexpected", encoding="utf-8"
+            )
+
+    monkeypatch.setattr(packager, "_install_files", mutate)
+    with pytest.raises(ReleasePackagingError, match="Pilot tree membership changed"):
+        _package(release_case, monkeypatch)
+    assert not list(release_case.output_parent.glob("*"))
+
+
 def test_package_release_rejects_prompt_hash_mismatch(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
