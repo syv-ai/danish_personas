@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,10 +110,10 @@ def test_capture_inventory_keeps_captured_bytes_after_replacement(
         packager._recheck_inventory(inventory)
 
 
-def test_capture_rejects_windows_path_metadata_change(
+def test_capture_rejects_windows_size_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Windows path observations still reject a changed stable mtime."""
+    """Windows capture rejects a path observation with a changed size."""
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
     actual = source.stat()
@@ -124,7 +125,7 @@ def test_capture_rejects_windows_path_metadata_change(
         return SimpleNamespace(
             st_mode=actual.st_mode,
             st_nlink=actual.st_nlink,
-            st_size=actual.st_size,
+            st_size=actual.st_size + (path_calls > 1),
             st_dev=actual.st_dev,
             st_ino=actual.st_ino,
             st_mtime_ns=actual.st_mtime_ns + path_calls,
@@ -793,6 +794,52 @@ def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
         packager._require_regular_file(link / "input.txt")
 
 
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "nonregular"])
+@pytest.mark.parametrize("observer", ["path", "fd"])
+def test_windows_capture_rejects_unsafe_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, observer: str
+) -> None:
+    """Windows checks reject unsafe path and descriptor observations."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"captured")
+    actual = source.stat()
+    unsafe = _unsafe_stat(kind=kind, actual=actual)
+
+    def fake_lstat(_: object) -> object:
+        return unsafe if observer == "path" else actual
+
+    def fake_fstat(_: int) -> object:
+        return unsafe if observer == "fd" else actual
+
+    monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager.os, "lstat", fake_lstat)
+    monkeypatch.setattr(packager.os, "fstat", fake_fstat)
+
+    with pytest.raises(ReleasePackagingError):
+        packager._capture_file(source)
+
+
+def _unsafe_stat(kind: str, actual: object) -> SimpleNamespace:
+    if kind == "symlink":
+        mode = stat.S_IFLNK | 0o777
+        nlink = 1
+    elif kind == "hardlink":
+        mode = getattr(actual, "st_mode")
+        nlink = 2
+    else:
+        mode = stat.S_IFDIR | 0o755
+        nlink = 1
+    return SimpleNamespace(
+        st_mode=mode,
+        st_nlink=nlink,
+        st_size=getattr(actual, "st_size"),
+        st_dev=getattr(actual, "st_dev"),
+        st_ino=getattr(actual, "st_ino"),
+        st_mtime_ns=getattr(actual, "st_mtime_ns"),
+        st_ctime_ns=getattr(actual, "st_ctime_ns"),
+    )
+
+
 def test_windows_recheck_ignores_unreliable_identity_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -804,6 +851,7 @@ def test_windows_recheck_ignores_unreliable_identity_fields(
     item = inventory[0]
     changed_identity = replace(
         item,
+        mode=item.mode ^ 0o1,
         device=item.device + 1,
         inode=item.inode + 1,
         mtime_ns=item.mtime_ns + 1,
@@ -814,11 +862,11 @@ def test_windows_recheck_ignores_unreliable_identity_fields(
     packager._recheck_inventory(inventory)
 
 
-@pytest.mark.parametrize("field", ["mode", "size", "nlink", "sha256"])
-def test_windows_recheck_rejects_stable_metadata_or_hash_changes(
+@pytest.mark.parametrize("field", ["size", "sha256"])
+def test_windows_recheck_rejects_size_or_hash_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
-    """Windows rechecks reject changed stable metadata and content."""
+    """Windows rechecks reject changed size or content hashes."""
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
     monkeypatch.setattr(packager, "_WINDOWS", True)
