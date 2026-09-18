@@ -619,6 +619,10 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
 
     Returns:
         Validation report.
+
+    Raises:
+        ValueError:
+            If the prepared bundle or an existing bound report is invalid.
     """
     manifest = verify_prepared_bundle(bundle_dir=bundle_dir)
     source_report_path = bundle_dir / "source-preparation-report.json"
@@ -663,6 +667,14 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         subject_id=manifest.bundle_id,
         metrics=metrics,
     )
+    existing_report = _load_existing_source_report(bundle_dir=bundle_dir)
+    if existing_report is not None:
+        if _report_semantics(existing_report) != _report_semantics(report):
+            raise ValueError(
+                "Existing source validation report differs from recomputed validation"
+            )
+        return existing_report
+
     _write_reports(directory=bundle_dir, report=report)
     manifest_files = dict(manifest.files)
     for report_name in ("validation-report.json", "validation-report.md"):
@@ -673,3 +685,35 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         payload=manifest.model_copy(update={"files": manifest_files}),
     )
     return report
+
+
+def _load_existing_source_report(*, bundle_dir: Path) -> ValidationReport | None:
+    """Load an already-bound source report without repairing it implicitly.
+
+    The prepared-bundle verifier has already checked the report checksum when this
+    function is called.  Parsing it here ensures a bound report with an invalid
+    schema cannot be silently replaced by a fresh validation result.
+
+    Returns:
+        The existing report, or ``None`` when validation has not run yet.
+
+    Raises:
+        ValueError:
+            If the bound report cannot be parsed as a validation report.
+    """
+    report_path = bundle_dir / "validation-report.json"
+    if not report_path.exists():
+        return None
+    try:
+        return ValidationReport.model_validate_json(
+            report_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"Bound source validation report is malformed: {report_path}"
+        ) from error
+
+
+def _report_semantics(report: ValidationReport) -> dict[str, object]:
+    """Return report content excluding its non-semantic creation timestamp."""
+    return report.model_dump(mode="json", exclude={"created_at"})

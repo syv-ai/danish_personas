@@ -56,6 +56,22 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         output_dir=tmp_path / "prepared",
     )
     assert validate_sources(bundle_dir=bundle_dir).passed
+    report_path = bundle_dir / "validation-report.json"
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    report_bytes = report_path.read_bytes()
+    report_sha256 = sha256_file(report_path)
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_sha256 = sha256_file(manifest_path)
+
+    assert (
+        prepare_bundle(
+            lock_path=PROJECT_ROOT / "config" / "sources.lock.yaml",
+            categories_path=PROJECT_ROOT / "config" / "categories.yaml",
+            raw_dir=output_dir / RAW_DIRECTORY,
+            output_dir=tmp_path / "prepared",
+        )
+        == bundle_dir
+    )
 
     run_dir = generate_records(
         bundle_dir=bundle_dir,
@@ -64,6 +80,12 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         rows=2_000,
         seed=20260914,
     )
+    assert validate_sources(bundle_dir=bundle_dir).passed
+    assert report_path.read_bytes() == report_bytes
+    assert sha256_file(report_path) == report_sha256
+    assert manifest_path.read_bytes() == manifest_bytes
+    assert sha256_file(manifest_path) == manifest_sha256
+
     report = validate_demographics(
         run_dir=run_dir,
         bundle_dir=bundle_dir,
