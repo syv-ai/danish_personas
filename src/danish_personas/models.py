@@ -8,8 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 3
-SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
+SAMPLER_SCHEMA_VERSION: int = 4
+# Increment when prepared source artefacts or their interpretation changes.
+# The bundle identity includes this value so incompatible historical bundles cannot
+# be silently reused.
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 3
+FROZEN_SAMPLE_SCHEMA_VERSION: int = 2
+SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({4})
 
 
 class StatBankValue(BaseModel):
@@ -141,11 +147,15 @@ class DemographicRecord(OceanTraits):
     origin_country_code: str
     origin_country: str
     age: int = Field(ge=18, le=125)
-    age_resolution: t.Literal["age_band_sex", "age_band"]
+    age_resolution: t.Literal["municipality_age_band_sex", "municipality_age_band"]
     age_band: str
     sex: t.Literal["male", "female"]
     marital_status: str
-    marital_resolution: t.Literal["region_age_band_sex", "age_band_sex", "age_band"]
+    marital_resolution: t.Literal[
+        "municipality_age_band_sex", "municipality_age_band", "municipality"
+    ]
+    municipality_code: str
+    municipality: str
     region_code: str
     region: str
     education_level: str
@@ -184,9 +194,25 @@ class SamplingConfig(StrictModel):
     country: t.Literal["Danmark"]
     minimum_age: int = Field(ge=18)
     maximum_age: int = Field(le=125)
-    publication_geography: t.Literal["region"]
+    publication_geography: t.Literal["municipality"]
     smoothing: float = Field(ge=0.0)
     ocean: OceanConfig
+
+    @model_validator(mode="after")
+    def validate_version(self) -> "SamplingConfig":
+        """Reject sampling files with an unsupported schema version.
+
+        Returns:
+            The validated configuration.
+
+        Raises:
+            ValueError:
+                If the configuration version is not supported.
+        """
+        if self.version not in SUPPORTED_SAMPLING_CONFIG_VERSIONS:
+            message = f"Unsupported sampling config version: {self.version}"
+            raise ValueError(message)
+        return self
 
 
 class SnapshotManifest(StrictModel):
@@ -208,6 +234,7 @@ class BundleManifest(StrictModel):
     """Manifest for a prepared source bundle."""
 
     bundle_id: str
+    prepared_bundle_schema_version: int
     created_at: str
     source_lock_sha256: str
     categories_sha256: str
@@ -287,6 +314,7 @@ class ValidationConfig(StrictModel):
     maximum_ocean_pairwise_correlation: float = Field(ge=0.0)
     maximum_backoff_rate: float = Field(ge=0.0, le=1.0)
     maximum_total_variation: dict[str, float]
+    maximum_municipality_joint_total_variation: float = Field(gt=0.0)
     smoke_maximum_total_variation: float = Field(gt=0.0)
     smoke_holdout_maximum_total_variation: float = Field(gt=0.0)
     mandatory_marginals: list[str]
@@ -305,8 +333,10 @@ class ValidationConfig(StrictModel):
         if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
             message = f"Unsupported validation config version: {self.version}"
             raise ValueError(message)
-        if "origin_country" not in self.mandatory_marginals:
-            message = "Validation config must include the origin_country marginal"
+        required = {"origin_country", "municipality_code"}
+        missing = sorted(required - set(self.mandatory_marginals))
+        if missing:
+            message = f"Validation config is missing mandatory marginals: {missing}"
             raise ValueError(message)
         return self
 

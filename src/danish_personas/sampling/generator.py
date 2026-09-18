@@ -12,7 +12,8 @@ import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import SAMPLED_ATTRIBUTES, Ladder
-from ..models import SAMPLER_SCHEMA_VERSION, BundleManifest, RunManifest, SamplingConfig
+from ..models import SAMPLER_SCHEMA_VERSION, RunManifest, SamplingConfig
+from ..sources.bundle import verify_prepared_bundle
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -63,9 +64,7 @@ def generate_records(
     """
     config = load_yaml_model(path=sampling_config_path, model=SamplingConfig)
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
-    bundle = BundleManifest.model_validate_json(
-        bundle_manifest_path.read_text(encoding="utf-8")
-    )
+    bundle = verify_prepared_bundle(bundle_dir=bundle_dir)
     run_id = sha256_text(
         f"{SAMPLER_SCHEMA_VERSION}:{bundle.bundle_id}:"
         f"{sha256_file(sampling_config_path)}:{rows}:{seed}"
@@ -88,12 +87,21 @@ def generate_records(
 
     source_dir = bundle_dir / "normalized"
     joint_frame = pl.read_parquet(source_dir / "ras209_sampling.parquet")
+    geography = pl.read_parquet(source_dir / "geography_hierarchy.parquet")
+    geography_lookup = {
+        str(row["municipality_code"]): row
+        for row in geography.select(
+            "municipality_code", "municipality", "region_code", "region"
+        ).iter_rows(named=True)
+    }
     demographic_seed, ocean_seed, origin_seed = np.random.SeedSequence(seed).spawn(3)
     demographic_rng = np.random.default_rng(demographic_seed)
     ocean_rng = np.random.default_rng(ocean_seed)
     origin_rng = np.random.default_rng(origin_seed)
 
-    sampled_joint = _quota_sample(frame=joint_frame, rows=rows, rng=demographic_rng)
+    sampled_joint = _municipality_quota_sample(
+        frame=joint_frame, rows=rows, rng=demographic_rng
+    )
     origin_frame = pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet")
     sampled_origin = _origin_quota_sample(frame=origin_frame, rows=rows, rng=origin_rng)
     ladders = {
@@ -111,6 +119,7 @@ def generate_records(
         rng=demographic_rng,
         country=config.country,
         seed=seed,
+        geography_lookup=geography_lookup,
     )
     _add_ocean(records=records, config=config, rng=ocean_rng)
     _attach_origin(records=records, sampled_origin=sampled_origin)
@@ -180,6 +189,7 @@ def _build_records(
     rng: np.random.Generator,
     country: str,
     seed: int,
+    geography_lookup: dict[str, dict[str, object]],
 ) -> list[dict[str, object]]:
     """Draw the remaining fields for every quota-sampled joint row.
 
@@ -194,16 +204,34 @@ def _build_records(
             Fixed country label for every record.
         seed:
             Seed the deterministic identifiers derive from.
+        geography_lookup:
+            Official municipality names and parent regions keyed by municipality code.
 
     Returns:
         One mapping per record, before OCEAN traits are attached.
+
+    Raises:
+        ValueError:
+            If a sampled RAS209 municipality is absent from the hierarchy.
     """
     records: list[dict[str, object]] = []
     for index, joint in enumerate(sampled_joint.iter_rows(named=True)):
         values = {
             column: str(joint[column])
-            for column in ("age_band", "sex", "region_code", "labour_market_status")
+            for column in (
+                "municipality_code",
+                "age_band",
+                "sex",
+                "labour_market_status",
+            )
         }
+        geography = geography_lookup.get(values["municipality_code"])
+        if geography is None:
+            message = (
+                "RAS209 municipality is absent from the official hierarchy: "
+                f"{values['municipality_code']}"
+            )
+            raise ValueError(message)
         drawn: dict[str, object] = {}
         for column, ladder_index in ladders.items():
             payload, level = _draw(ladder_index=ladder_index, values=values, rng=rng)
@@ -222,8 +250,10 @@ def _build_records(
                 "sex": values["sex"],
                 "marital_status": drawn["marital_status"],
                 "marital_resolution": drawn["marital_resolution"],
-                "region_code": values["region_code"],
-                "region": joint["region"],
+                "municipality_code": values["municipality_code"],
+                "municipality": geography["municipality"],
+                "region_code": geography["region_code"],
+                "region": geography["region"],
                 "education_level": joint["education_level"],
                 "education_source_code": joint["education_source_code"],
                 "education_resolution": (
@@ -380,6 +410,58 @@ def _logical_checksum(frame: pl.DataFrame) -> str:
     return digest.hexdigest()
 
 
+def _municipality_quota_sample(
+    frame: pl.DataFrame, rows: int, rng: np.random.Generator
+) -> pl.DataFrame:
+    """Sample RAS209 while preserving municipality quotas exactly.
+
+    The high-dimensional municipality joint has more cells than the smoke-run row
+    count. Largest remainders over those cells would systematically favour the first
+    sorted categories, so quotas are exact only at the municipality boundary and the
+    within-municipality joint is sampled probabilistically.
+
+    Args:
+        frame:
+            Municipality-native RAS209 joint.
+        rows:
+            Number of records to sample.
+        rng:
+            Deterministic demographic random generator.
+
+    Returns:
+        Shuffled sampled RAS209 rows.
+    """
+    eligible = _eligible(frame=frame).sort(sorted(frame.columns))
+    totals = (
+        eligible.group_by("municipality_code")
+        .agg(pl.col("count").sum())
+        .sort("municipality_code")
+    )
+    weights = totals.get_column("count").to_numpy().astype(np.float64)
+    expected = weights / weights.sum() * rows
+    allocations = np.floor(expected).astype(np.int64)
+    remainder = rows - int(allocations.sum())
+    fractions = expected - allocations
+    allocations[np.argsort(-fractions, kind="stable")[:remainder]] += 1
+    sampled: list[pl.DataFrame] = []
+    for municipality_code, allocation in zip(
+        totals.get_column("municipality_code"), allocations, strict=True
+    ):
+        if allocation == 0:
+            continue
+        group = eligible.filter(pl.col("municipality_code") == municipality_code)
+        group_weights = group.get_column("count").to_numpy().astype(np.float64)
+        indices = rng.choice(
+            group.height,
+            size=int(allocation),
+            replace=True,
+            p=group_weights / group_weights.sum(),
+        )
+        sampled.append(group[indices])
+    result = pl.concat(sampled)
+    return result[rng.permutation(result.height)]
+
+
 def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
@@ -443,19 +525,3 @@ def _origin_quota_sample(
     indices = np.repeat(np.arange(positive.height), allocations)
     rng.shuffle(indices)
     return positive[indices]
-
-
-def _quota_sample(
-    frame: pl.DataFrame, rows: int, rng: np.random.Generator
-) -> pl.DataFrame:
-    eligible = _eligible(frame=frame).sort(sorted(frame.columns))
-    weights = eligible.get_column("count").to_numpy().astype(np.float64)
-    expected = weights / weights.sum() * rows
-    allocations = np.floor(expected).astype(np.int64)
-    remainder = rows - int(allocations.sum())
-    fractions = expected - allocations
-    stable_order = np.argsort(-fractions, kind="stable")
-    allocations[stable_order[:remainder]] += 1
-    indices = np.repeat(np.arange(eligible.height), allocations)
-    rng.shuffle(indices)
-    return eligible[indices]

@@ -1,11 +1,11 @@
-version: 1
+version: 2
 seed: 20260914
 smoke_rows: 2000
 statistical_rows: 100000
 country: Danmark
 minimum_age: 18
 maximum_age: 125
-publication_geography: region
+publication_geography: municipality
 smoothing: 0.0
 ocean:
   mean: 50.0

@@ -10,10 +10,11 @@ from click.testing import CliRunner, Result
 
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SnapshotManifest
+from danish_personas.sampling.generator import generate_records
 from danish_personas.sources import archive as archive_service
 from danish_personas.sources.exceptions import SourceArchiveError
 from danish_personas.sources.prepare import prepare_bundle
-from danish_personas.validation.checks import validate_sources
+from danish_personas.validation.checks import validate_demographics, validate_sources
 from scripts.build_raw_archive import main as pack
 from scripts.restore_raw_sources import RAW_DIRECTORY, main
 
@@ -54,8 +55,44 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
         raw_dir=output_dir / RAW_DIRECTORY,
         output_dir=tmp_path / "prepared",
     )
-    assert bundle_dir.name == "fda86665792f7734"
     assert validate_sources(bundle_dir=bundle_dir).passed
+    report_path = bundle_dir / "validation-report.json"
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    report_bytes = report_path.read_bytes()
+    report_sha256 = sha256_file(report_path)
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_sha256 = sha256_file(manifest_path)
+
+    assert (
+        prepare_bundle(
+            lock_path=PROJECT_ROOT / "config" / "sources.lock.yaml",
+            categories_path=PROJECT_ROOT / "config" / "categories.yaml",
+            raw_dir=output_dir / RAW_DIRECTORY,
+            output_dir=tmp_path / "prepared",
+        )
+        == bundle_dir
+    )
+
+    run_dir = generate_records(
+        bundle_dir=bundle_dir,
+        sampling_config_path=PROJECT_ROOT / "config" / "sampling.yaml",
+        output_dir=tmp_path / "runs",
+        rows=2_000,
+        seed=20260914,
+    )
+    assert validate_sources(bundle_dir=bundle_dir).passed
+    assert report_path.read_bytes() == report_bytes
+    assert sha256_file(report_path) == report_sha256
+    assert manifest_path.read_bytes() == manifest_bytes
+    assert sha256_file(manifest_path) == manifest_sha256
+
+    report = validate_demographics(
+        run_dir=run_dir,
+        bundle_dir=bundle_dir,
+        validation_config_path=PROJECT_ROOT / "config" / "validation.yaml",
+        categories_path=PROJECT_ROOT / "config" / "categories.yaml",
+    )
+    assert report.passed
 
 
 def _restore(archive_path: Path, output_dir: Path, force: bool = False) -> Result:

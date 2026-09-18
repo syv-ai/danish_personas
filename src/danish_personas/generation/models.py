@@ -11,6 +11,7 @@ from ..models import StrictModel
 class FrozenSampleManifest(StrictModel):
     """Manifest proving the origin of a frozen Phase-3 sample."""
 
+    sample_schema_version: int
     source_run_id: str
     rows: int = Field(gt=0)
     strata: list[str]

@@ -22,6 +22,11 @@ from ..models import (
     ValidationConfig,
     ValidationReport,
 )
+from ..sources.bundle import (
+    SOURCE_REPORT,
+    _verify_prepared_bundle_capture,
+    verify_prepared_bundle,
+)
 
 LOGGER = logging.getLogger(__name__)
 TRAITS = (
@@ -51,6 +56,7 @@ def validate_demographics(
     Returns:
         Validation report.
     """
+    verify_prepared_bundle(bundle_dir=bundle_dir)
     config = load_yaml_model(path=validation_config_path, model=ValidationConfig)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
     manifest_path = run_dir / "run-manifest.json"
@@ -75,6 +81,7 @@ def validate_demographics(
     )
     metrics.extend(_heldout_metrics(frame=frame, bundle_dir=bundle_dir, config=config))
     metrics.extend(_ocean_metrics(frame=frame, config=config))
+    metrics.extend(_geography_parent_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
     metrics.append(
         MetricResult(
@@ -105,10 +112,10 @@ def _distribution_metrics(
     )
     ras209 = pl.read_parquet(source_dir / "ras209_sampling.parquet")
     targets = {
-        "sex": (folk, ["sex"]),
-        "region_code": (folk, ["region_code"]),
+        "sex": (ras209, ["sex"]),
+        "municipality_code": (ras209, ["municipality_code"]),
         "marital_status": (folk, ["marital_status"]),
-        "age_band": (folk, ["age_band"]),
+        "age_band": (ras209, ["age_band"]),
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
         "origin_country": (
@@ -130,23 +137,24 @@ def _distribution_metrics(
                 smoke_maximum_tv=config.smoke_maximum_total_variation,
             )
         )
-    metrics.extend(
-        _compare_distribution(
-            name="ras209_fitted_joint",
-            generated=frame,
-            target=ras209,
-            columns=[
-                "region_code",
-                "age_band",
-                "sex",
-                "education_level",
-                "labour_market_status",
-            ],
-            config=config,
-            maximum_tv=config.maximum_total_variation["fitted_marginal"],
-            smoke_maximum_tv=config.smoke_maximum_total_variation,
-        )
+    joint_metrics = _compare_distribution(
+        name="ras209_fitted_joint",
+        generated=frame,
+        target=ras209,
+        columns=[
+            "municipality_code",
+            "age_band",
+            "sex",
+            "education_level",
+            "labour_market_status",
+        ],
+        config=config,
+        maximum_tv=config.maximum_municipality_joint_total_variation,
+        # At 2,000 rows the municipality joint has more populated source cells than
+        # observations. Its cell and TV gates become statistically meaningful at 100k.
+        smoke_maximum_tv=1.0,
     )
+    metrics.extend(joint_metrics if frame.height >= 100_000 else joint_metrics[1:])
     return metrics
 
 
@@ -250,6 +258,51 @@ def _compare_distribution(
     ]
 
 
+def _geography_parent_metrics(
+    frame: pl.DataFrame, bundle_dir: Path
+) -> list[MetricResult]:
+    """Check municipality labels and region parents against the hierarchy.
+
+    Args:
+        frame:
+            Generated demographic records.
+        bundle_dir:
+            Verified prepared bundle.
+
+    Returns:
+        Official hierarchy consistency metrics.
+    """
+    columns = ["municipality_code", "municipality", "region_code", "region"]
+    observed = frame.select(columns).unique()
+    expected = pl.read_parquet(
+        bundle_dir / "normalized" / "geography_hierarchy.parquet"
+    ).select(columns)
+    mismatches = observed.join(
+        expected, on=columns, how="anti", nulls_equal=True
+    ).height
+    municipality_count = observed.get_column("municipality_code").n_unique()
+    unique_mapping_count = observed.height
+    return [
+        MetricResult(
+            name="municipality_hierarchy_mapping",
+            passed=mismatches == 0,
+            value=mismatches,
+            threshold=0,
+            details=(
+                "Municipality names and region parents must match the official "
+                "hierarchy."
+            ),
+        ),
+        MetricResult(
+            name="municipality_parent_consistency",
+            passed=unique_mapping_count == municipality_count,
+            value=unique_mapping_count - municipality_count,
+            threshold=0,
+            details="Each municipality must have exactly one name and region parent.",
+        ),
+    ]
+
+
 def _heldout_metrics(
     frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
 ) -> list[MetricResult]:
@@ -275,7 +328,7 @@ def _heldout_metrics(
         name="heldout_population_joint",
         generated=frame,
         target=befolk,
-        columns=["region_code", "sex", "age_band"],
+        columns=["municipality_code", "sex", "age_band"],
         config=config,
         maximum_tv=maximum_tv,
         smoke_maximum_tv=config.smoke_holdout_maximum_total_variation,
@@ -532,9 +585,16 @@ def _backoff_metrics(frame: pl.DataFrame, maximum_rate: float) -> list[MetricRes
     return metrics
 
 
-def _write_reports(directory: Path, report: ValidationReport) -> None:
-    json_path = directory / "validation-report.json"
-    write_json(path=json_path, payload=report)
+def _write_reports(directory: Path, report: ValidationReport) -> dict[str, bytes]:
+    json_content = (
+        json.dumps(
+            report.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    ).encode("utf-8")
+    _atomic_report_write(
+        path=directory / "validation-report.json", content=json_content
+    )
     lines = [
         f"# {report.kind.title()} validation report",
         "",
@@ -550,8 +610,9 @@ def _write_reports(directory: Path, report: ValidationReport) -> None:
         f"{'PASS' if metric.passed else 'FAIL'} |"
         for metric in report.metrics
     )
-    (directory / "validation-report.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
+    markdown_content = ("\n".join(lines) + "\n").encode("utf-8")
+    _atomic_report_write(
+        path=directory / "validation-report.md", content=markdown_content
     )
     LOGGER.info(
         "%s validation %s for %s",
@@ -559,6 +620,17 @@ def _write_reports(directory: Path, report: ValidationReport) -> None:
         "passed" if report.passed else "failed",
         report.subject_id,
     )
+    return {
+        "validation-report.json": json_content,
+        "validation-report.md": markdown_content,
+    }
+
+
+def _atomic_report_write(*, path: Path, content: bytes) -> None:
+    """Replace one validation report atomically."""
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_bytes(content)
+    temporary.replace(path)
 
 
 def validate_sources(bundle_dir: Path) -> ValidationReport:
@@ -570,39 +642,23 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
 
     Returns:
         Validation report.
+
+    Raises:
+        ValueError:
+            If the prepared bundle or an existing bound report is invalid.
     """
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    checksum_failures = [
-        relative_path
-        for relative_path, checksum in manifest.files.items()
-        if not (bundle_dir / relative_path).exists()
-        or sha256_file(bundle_dir / relative_path) != checksum
-    ]
-    source_report_path = bundle_dir / "source-preparation-report.json"
-    source_payload = json.loads(source_report_path.read_text(encoding="utf-8"))
-    source_passed = source_payload.get("passed") is True
+    manifest, capture = _verify_prepared_bundle_capture(bundle_dir=bundle_dir)
+    source_payload = json.loads(capture.files[SOURCE_REPORT].content.decode("utf-8"))
     metrics = [
         MetricResult(
-            name="prepared_file_checksums",
-            passed=not checksum_failures,
-            value=len(checksum_failures),
-            threshold=0,
-            details=(
-                "All prepared files match the bundle manifest."
-                if not checksum_failures
-                else f"Mismatches: {', '.join(checksum_failures)}"
-            ),
-        ),
-        MetricResult(
-            name="source_preparation",
-            passed=source_passed,
-            value="pass" if source_passed else "fail",
+            name="prepared_bundle_integrity",
+            passed=True,
+            value="pass",
             threshold="pass",
-            details="All selected source tables are populated and unsuppressed.",
-        ),
+            details=(
+                "Schema, required files, checksums, and source preparation are valid."
+            ),
+        )
     ]
     origin_checks = source_payload.get("origin_country_checks")
     if isinstance(origin_checks, dict):
@@ -633,5 +689,56 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         subject_id=manifest.bundle_id,
         metrics=metrics,
     )
-    _write_reports(directory=bundle_dir, report=report)
+    existing_report = _load_existing_source_report(
+        content=(
+            capture.files["validation-report.json"].content
+            if "validation-report.json" in capture.files
+            else None
+        )
+    )
+    if existing_report is not None:
+        if _report_semantics(existing_report) != _report_semantics(report):
+            raise ValueError(
+                "Existing source validation report differs from recomputed validation"
+            )
+        return existing_report
+
+    report_bytes = _write_reports(directory=bundle_dir, report=report)
+    manifest_files = dict(manifest.files)
+    for report_name, content in report_bytes.items():
+        manifest_files[report_name] = hashlib.sha256(content).hexdigest()
+    write_json(
+        path=bundle_dir / "bundle-manifest.json",
+        payload=manifest.model_copy(update={"files": manifest_files}),
+    )
+    # Re-capture the rewritten report and manifest so callers never rely on
+    # bytes or checksums read before the atomic replacements.
+    verify_prepared_bundle(bundle_dir=bundle_dir)
     return report
+
+
+def _load_existing_source_report(*, content: bytes | None) -> ValidationReport | None:
+    """Load an already-bound source report without repairing it implicitly.
+
+    The prepared-bundle verifier has already checked the report checksum when this
+    function is called.  Parsing it here ensures a bound report with an invalid
+    schema cannot be silently replaced by a fresh validation result.
+
+    Returns:
+        The existing report, or ``None`` when validation has not run yet.
+
+    Raises:
+        ValueError:
+            If the bound report cannot be parsed as a validation report.
+    """
+    if content is None:
+        return None
+    try:
+        return ValidationReport.model_validate_json(content)
+    except (ValueError, TypeError) as error:
+        raise ValueError("Bound source validation report is malformed") from error
+
+
+def _report_semantics(report: ValidationReport) -> dict[str, object]:
+    """Return report content excluding its non-semantic creation timestamp."""
+    return report.model_dump(mode="json", exclude={"created_at"})

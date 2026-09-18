@@ -81,6 +81,22 @@ def test_reader_rejects_a_municipality_before_its_parents(tmp_path: Path) -> Non
         read_geography_classification(csv_path=csv_path)
 
 
+def test_reader_rejects_duplicate_municipality_codes(tmp_path: Path) -> None:
+    """Duplicate hierarchy rows cannot create an ambiguous parent lookup."""
+    csv_path = _write_classification(
+        tmp_path=tmp_path,
+        body=(
+            '1;"084";1;Region Hovedstaden;\n'
+            '2;"04";2;Landsdel Bornholm;\n'
+            '3;"411";3;Christiansø;\n'
+            '4;"411";3;Christiansø;\n'
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Duplicate municipality codes"):
+        read_geography_classification(csv_path=csv_path)
+
+
 def test_reader_resolves_each_municipality_to_its_parents(tmp_path: Path) -> None:
     """Municipalities inherit the landsdel and region above them."""
     csv_path = _write_classification(

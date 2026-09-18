@@ -211,11 +211,12 @@ and timestamp, so an unchanged snapshot tree always produces identical archive b
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
 preparation reports. `normalized/geography_hierarchy.parquet` holds the official
 region, landsdel, and municipality hierarchy read from the `geography_hierarchy`
-classification. Preparation cross-checks it against the map derived from FOLK1A's
-StatBank metadata and fails the bundle on any disagreement, missing municipality, or
-null value. Landsdel stays inside the prepared bundle and is not emitted in generated
-records. Deterministic runs contain `structured-records.parquet`,
-`run-manifest.json`, and JSON/Markdown validation reports. Frozen samples have an
+classification. Preparation cross-checks it against FOLK1A and RAS209 metadata and
+requires exact equality of the locked, hierarchy, and prepared RAS209 municipality
+sets. Blank, missing, duplicate, or mismatched hierarchy values fail. Municipality code
+and name remain in generated records; landsdel stays inside the prepared bundle.
+Deterministic runs contain `structured-records.parquet`, `run-manifest.json`, and
+JSON/Markdown validation reports. Frozen samples have an
 adjacent `.manifest.json`. Persona runs contain `generated-personas.parquet`,
 `generation-manifest.json`, `request-ledger.json`, per-person attribute/final
 checkpoints, and `validation-report.json`. Pilots additionally contain merged output,
@@ -265,19 +266,17 @@ must fail loudly, not be repaired by overwriting files.
   A cell missing at a ladder's final level is a structural zero and must keep failing
   loudly. Back-off consumes one random draw at any level, so reordering the draws or
   adding a ladder step changes every record for a given seed.
-- Of the four back-off steps in the plan, the ladders implement step 1 and, for
-  geography, step 2 in the form the schema allows: municipality never reaches Phase 2
-  output, so coarsening the region key is the whole of it. Step 3 coarsens the outcome
-  rather than the key and has no draw site here, because education and broad status
-  arrive together from the RAS209 joint sample instead of from a ladder. Step 4 is
-  refused: a national distribution could place an age outside its own band. Do not add
-  a step that emits a broad status in `detailed_status`; an unreconciled RAS209/RAS202
-  cell should fail loudly rather than silently widen that field's meaning.
+- Age and marital ladders may relax age or sex only within the same municipality; they
+  never fall back to region or national geography. Education and broad status arrive
+  together from the municipality-native RAS209 joint instead of from a ladder. RAS202
+  detailed-status refinement is explicitly separate and national, but may never leave
+  the sampled broad status. A missing terminal cell must fail loudly.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
-  individual records. Municipality data is used for regional calibration and is absent
-  from Phase 2 output. Do not add names, addresses, occupations, employers, income,
-  households, citizenship, ancestry, health, religion, sexuality, politics, criminal
-  history, or other sensitive fields without a separate privacy review.
+  individual records. Phase 2 retains official municipality fields but withholds them
+  from LLM payloads; treat municipality-level combinations as restricted. Do not add
+  names, addresses, occupations, employers, income, households, citizenship, ancestry,
+  health, religion, sexuality, politics, criminal history, or other sensitive fields
+  without a separate privacy review.
 - Only lowercase `makefile` is tracked; case-insensitive systems may display it as
   `Makefile`. Make targets can mutate Git state; inspect `git status` before and after
   using them.
