@@ -200,6 +200,37 @@ def test_verify_release_rejects_forbidden_parquet_string(
         verify_release(release_dir=release, expected_manifest_sha256=digest)
 
 
+def test_verify_release_rejects_joint_config_tamper_with_stale_context(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Re-signing config and evidence cannot bypass their context binding."""
+    release, _ = verifier_package
+    config_path = release / "provenance/config/generation.yaml"
+    config_path.write_bytes(
+        config_path.read_bytes().replace(b"TEST_TOKEN", b"NEW_TOKEN")
+    )
+    evidence_path = release / "provenance/evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    config_hash = sha256_file(config_path)
+    evidence["config_hashes"]["generation.yaml"] = config_hash
+    evidence["generation_config_sha256"] = config_hash
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest["evidence_sha256"] = sha256_file(evidence_path)
+    for artifact in manifest["artifacts"]:
+        if artifact["path"] == "provenance/evidence.json":
+            artifact["sha256"] = sha256_file(evidence_path)
+            artifact["size"] = evidence_path.stat().st_size
+        elif artifact["path"] == "provenance/config/generation.yaml":
+            artifact["sha256"] = config_hash
+            artifact["size"] = config_path.stat().st_size
+    digest = _refresh_manifest(release, **manifest)
+    with pytest.raises(ReleaseVerificationError, match="context"):
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+
 @pytest.mark.parametrize("mutation", ["missing", "extra", "empty"])
 def test_verify_release_rejects_missing_extra_and_empty_paths(
     verifier_package: tuple[Path, str], mutation: str

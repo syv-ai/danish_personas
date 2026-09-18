@@ -11,11 +11,20 @@ import polars as pl
 import pytest
 from conftest import ReleaseCase, coherent_evidence
 
-from danish_personas.generation.models import GenerationManifest, PilotBatchReference
-from danish_personas.io import sha256_file
+from danish_personas.generation.models import (
+    GenerationConfig,
+    GenerationManifest,
+    PilotBatchReference,
+)
+from danish_personas.generation.pipeline import generation_context_sha256
+from danish_personas.io import load_yaml_model, sha256_file, write_json
 from danish_personas.models import ValidationReport
 from danish_personas.release import packager
-from danish_personas.release.models import ReleaseEvidence, ReleasePackageResult
+from danish_personas.release.models import (
+    ReleaseEvidence,
+    ReleaseManifest,
+    ReleasePackageResult,
+)
 from danish_personas.release.packager import ReleasePackagingError, package_release
 from danish_personas.release.verifier import verify_release
 
@@ -273,6 +282,63 @@ def test_package_release_rejects_wrong_licence_and_policy_metadata(
         _package(release_case, monkeypatch)
 
 
+def test_package_uses_manifest_effective_generation_config(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ignored local config is snapshotted as the effective generation config."""
+    local_path = release_case.repository / "config/generation.local.yaml"
+    local_path.write_bytes(
+        (release_case.repository / "config/generation.yaml")
+        .read_bytes()
+        .replace(b"TEST_TOKEN", b"LOCAL_TOKEN")
+    )
+    config = load_yaml_model(path=local_path, model=GenerationConfig)
+    context = generation_context_sha256(
+        config=config,
+        attributes_prompt=(
+            release_case.repository / "config/prompts/attributes-da.md"
+        ).read_text(encoding="utf-8"),
+        personas_prompt=(
+            release_case.repository / "config/prompts/personas-da.md"
+        ).read_text(encoding="utf-8"),
+    )
+    manifest = release_case.manifest.model_copy(
+        update={
+            "generation_config_file": Path("config/generation.local.yaml"),
+            "generation_config_sha256": sha256_file(local_path),
+            "generation_context_sha256": context,
+        }
+    )
+    write_json(path=release_case.pilot / "pilot-manifest.json", payload=manifest)
+    case = replace(release_case, manifest=manifest)
+    config_hashes = {
+        **coherent_evidence(case).config_hashes,
+        "generation.yaml": sha256_file(local_path),
+    }
+
+    def evidence(**_: object) -> ReleaseEvidence:
+        return coherent_evidence(case).model_copy(
+            update={"config_hashes": config_hashes}
+        )
+
+    monkeypatch.setattr(packager, "_require_clean_git", lambda _: None)
+    monkeypatch.setattr(packager, "validate_persona_pilot", lambda **_: case.report)
+    monkeypatch.setattr(packager, "_derive_consumed_files", lambda **_: [])
+    monkeypatch.setattr(packager, "_derive_evidence", evidence)
+    result = package_release(
+        pilot_dir=case.pilot,
+        attestation_path=case.attestation,
+        policy_path=case.policy,
+        dataset_card_path=case.card,
+        licence_path=case.licence,
+        repository_root=case.repository,
+        output_parent=case.output_parent,
+    )
+    assert (
+        result.path / "provenance/config/generation.yaml"
+    ).read_bytes() == local_path.read_bytes()
+
+
 def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
     release_case: ReleaseCase,
 ) -> None:
@@ -350,3 +416,55 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
     assert evidence.shards[0].rows == 2
     assert evidence.accounting.requests == 4
     assert evidence.accounting.retries == 0
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1", b"1"])
+def test_release_versions_require_exact_integer_one(
+    release_case: ReleaseCase, version: object
+) -> None:
+    """Release contracts reject values that Pydantic could coerce to one."""
+    manifest = release_case.manifest
+    manifest_payload = {
+        "version": version,
+        "release_id": "a" * 32,
+        "created_at": "2026-09-17T00:00:00+00:00",
+        "pilot_id": manifest.pilot_id,
+        "model": manifest.model,
+        "rows": 1,
+        "git_head": "a" * 40,
+        "origin_url": "https://example.invalid/repo.git",
+        "uv_lock_sha256": "a" * 64,
+        "evidence_sha256": "a" * 64,
+        "artifacts": [
+            {"path": "README.md", "role": "dataset-card", "sha256": "a" * 64, "size": 0}
+        ],
+    }
+    evidence_payload = coherent_evidence(release_case).model_dump(mode="json")
+    evidence_payload["version"] = version
+    with pytest.raises(ValueError):
+        ReleaseManifest.model_validate(manifest_payload)
+    with pytest.raises(ValueError):
+        ReleaseEvidence.model_validate(evidence_payload)
+
+
+def test_scanner_accepts_only_nullable_career_goals(release_case: ReleaseCase) -> None:
+    """Only the optional all-null career field may use Polars Null dtype."""
+    output = pl.read_parquet(release_case.output)
+    safe = output.with_columns(
+        pl.lit(None, dtype=pl.Null).alias("career_goals_and_ambitions")
+    )
+    packager._scan_dataframe(safe)
+    unsafe = output.with_columns(pl.lit(None, dtype=pl.Null).alias("cultural_context"))
+    with pytest.raises(ReleasePackagingError, match="logical dtype"):
+        packager._scan_dataframe(unsafe)
+
+
+def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
+    """Path checks inspect the first relative component and every parent."""
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "input.txt").write_text("input", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ReleasePackagingError, match="symlink"):
+        packager._require_regular_file(link / "input.txt")

@@ -20,6 +20,7 @@ from danish_personas.generation.models import (
     PersonaDescriptions,
     PilotManifest,
 )
+from danish_personas.generation.pipeline import generation_context_sha256
 from danish_personas.io import sha256_file
 from danish_personas.models import DemographicRecord, ValidationReport
 from danish_personas.release import packager
@@ -284,6 +285,15 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         "validation_report_file": "shard/report.json",
         "validation_report_sha256": zero_hash,
     }
+    generation_context = generation_context_sha256(
+        config=generation_config,
+        attributes_prompt=(repository / "config/prompts/attributes-da.md").read_text(
+            encoding="utf-8"
+        ),
+        personas_prompt=(repository / "config/prompts/personas-da.md").read_text(
+            encoding="utf-8"
+        ),
+    )
     manifest = PilotManifest(
         pilot_id=PILOT_ID,
         created_at=REVIEWED_AT.isoformat(),
@@ -296,7 +306,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         sample_manifest_sha256=sha256_file(sample_manifest),
         generation_config_file=Path("config/generation.yaml"),
         generation_config_sha256=sha256_file(config_path),
-        generation_context_sha256=zero_hash,
+        generation_context_sha256=generation_context,
         validator_version="validator-1",
         attributes_prompt_sha256=sha256_file(
             repository / "config/prompts/attributes-da.md"
