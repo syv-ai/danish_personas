@@ -20,9 +20,16 @@ These gates apply before any LLM integration may be enabled.
   selected codes fail preparation and source validation.
 - FOLK2 retains official categories such as Stateless and Not stated explicitly; it
   does not create continents, regions, or inferred correlations.
+- RAS209 selects all official level-3 municipality areas, including Christiansø when
+  exposed, and preserves the municipality x education x status x age-band x sex joint.
+- Prepared person-sampling artefacts retain municipality keys and never aggregate those
+  rows by region. Municipality names and official region parents come only from the
+  validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with
   the official Statistics Denmark geography classification.
 - Prepared-file checksums match the bundle manifest.
+- The prepared-bundle schema version is bound into bundle identity; legacy bundles are
+  rejected rather than reused.
 - Sparse-cell pooling retains at least 99% of the relevant source universe.
 
 ## Generated records

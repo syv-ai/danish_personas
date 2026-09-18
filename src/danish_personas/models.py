@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
 SAMPLER_SCHEMA_VERSION: int = 3
+# Increment when prepared source artefacts or their interpretation changes.
+# The bundle identity includes this value so incompatible historical bundles cannot
+# be silently reused.
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 2
 SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
 
 
@@ -208,6 +212,7 @@ class BundleManifest(StrictModel):
     """Manifest for a prepared source bundle."""
 
     bundle_id: str
+    prepared_bundle_schema_version: int = 1
     created_at: str
     source_lock_sha256: str
     categories_sha256: str

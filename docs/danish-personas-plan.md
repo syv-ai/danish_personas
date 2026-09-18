@@ -248,7 +248,7 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Marital status | FOLK1A | Preserve official definitions |
 | Citizenship validation | FOLK1B | Uses broad age bands |
 | Ancestry validation | FOLK1E | Do not interpret as ethnicity |
-| Broad education and status | RAS209 | Region, age band, sex, education, status |
+| Broad education and status | RAS209 | Municipality, age band, sex, education, status |
 | Detailed status and retirement | RAS202 | Exact age through 70, then `71+`; no region |
 | Municipality status validation | RAS210 | Three status groups; title says ages 13-70 |
 | Detailed education under 70 | HFUDD11, HFUDD16 | Both cover ages 15-69 only |
@@ -259,8 +259,9 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Geography boundaries | DAGI | Needs Datafordeler credentials; not used |
 | Housing extensions | BOL103, BOL104, BBR aggregates | Do not link addresses to people |
 
-Use RAS209 as the primary joint calibration table for region, broad education,
-socioeconomic status, age band, and sex. Use RAS202 to refine detailed retirement and
+Use RAS209 as the primary municipality-level joint calibration table for broad education,
+socioeconomic status, age band, and sex; attach the official region parent only through
+hierarchy lookup. Use RAS202 to refine detailed retirement and
 other status categories by age and sex. RAS is measured on the last working day of
 November.
 
@@ -323,8 +324,10 @@ Phases 0-2 are implemented and validated. The source bundle prepares the officia
 FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
 deterministic quotas and retains its official code and label; origin is withheld from
 both LLM stages and cannot drive language, culture, religion, occupation, personality,
-or visual appearance. Source bundle `fda86665792f7734` produced passing canonical runs
-`0122b894dec6829e` (2,000-row smoke) and `ea321089a79d3650` (100,000-row statistical).
+or visual appearance. The superseded source bundle `fda86665792f7734` produced the
+historical passing canonical runs `0122b894dec6829e` (2,000-row smoke) and
+`ea321089a79d3650` (100,000-row statistical); the municipality overhaul requires new
+runs.
 See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics.
 LLM generation remains disabled in configuration and guarded by an executable failure.
 
@@ -370,9 +373,9 @@ Start with transparent cascaded conditional distributions rather than a black-bo
 A candidate v1 dependency graph is:
 
 ```text
-region -> municipality
-age + sex + region -> marital_status
-age_band + sex + region -> broad_education + broad_status  # RAS209
+municipality -> official region parent
+age + sex + municipality -> marital_status
+age_band + sex + municipality -> broad_education + broad_status  # RAS209
 age + sex + broad_status -> detailed_status                 # RAS202
 ```
 
@@ -385,7 +388,7 @@ Only retain edges for which an official cross-tabulation or defensible fitted mo
 exists. For sparse cells, use a documented hierarchy:
 
 1. exact conditional cell;
-2. back off from municipality to region;
+2. retain municipality keys while coarsening only documented age/education cells;
 3. back off from detailed to broad education or status;
 4. back off to a national conditional distribution.
 

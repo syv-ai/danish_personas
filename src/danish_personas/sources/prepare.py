@@ -10,6 +10,7 @@ import polars as pl
 
 from ..io import load_yaml_model, sha256_file, sha256_text, verify_checksums, write_json
 from ..models import (
+    PREPARED_BUNDLE_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
     ClassificationManifest,
@@ -25,6 +26,22 @@ REGION_PREFIX = "Region "
 REGION_LEVEL = "1"
 LANDSDEL_LEVEL = "2"
 MUNICIPALITY_LEVEL = "3"
+
+
+def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, str]]:
+    """Map each municipality to its region code and label.
+
+    Args:
+        geography:
+            Hierarchy read from the official classification.
+
+    Returns:
+        Municipality code mapped to its region code and region name.
+    """
+    return {
+        row["municipality_code"]: (row["region_code"], row["region"])
+        for row in geography.iter_rows(named=True)
+    }
 
 
 def prepare_bundle(
@@ -51,9 +68,10 @@ def prepare_bundle(
     """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
-    bundle_id = sha256_text(f"{sha256_file(lock_path)}:{sha256_file(categories_path)}")[
-        :16
-    ]
+    bundle_id = sha256_text(
+        f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
+        f"{sha256_file(categories_path)}"
+    )[:16]
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
     if manifest_path.exists():
@@ -119,13 +137,12 @@ def prepare_bundle(
         raise ValueError(message)
 
     geography = read_geography_classification(csv_path=geography_csv_path)
-    region_map = _region_map_from_geography(geography=geography)
     normalized_dir.mkdir(parents=True, exist_ok=True)
     frames = _normalise_frames(
         raw_frames=prepared_source_frames,
         metadata_by_table=metadata_by_table,
         categories=categories,
-        region_map=region_map,
+        geography=geography,
         release_rows=lock.release_rows,
         minimum_source_count=lock.minimum_source_count,
         minimum_expected_release_count=lock.minimum_expected_release_count,
@@ -144,6 +161,14 @@ def prepare_bundle(
     geography_metrics = _geography_metrics(
         geography=geography,
         statbank_region_map=_build_region_map(metadata=metadata_by_table["FOLK1A"]),
+    )
+    ras209_geography_metrics = _geography_metrics(
+        geography=geography,
+        statbank_region_map=_build_region_map(metadata=metadata_by_table["RAS209"]),
+    )
+    geography_metrics["ras209_mapping"] = ras209_geography_metrics
+    geography_metrics["passed"] = bool(geography_metrics["passed"]) and bool(
+        ras209_geography_metrics["passed"]
     )
     origin_metrics = _origin_country_metrics(
         raw_frame=source_frames["FOLK2"],
@@ -171,6 +196,7 @@ def prepare_bundle(
 
     manifest = BundleManifest(
         bundle_id=bundle_id,
+        prepared_bundle_schema_version=PREPARED_BUNDLE_SCHEMA_VERSION,
         created_at=_now(),
         source_lock_sha256=sha256_file(lock_path),
         categories_sha256=sha256_file(categories_path),
@@ -233,12 +259,15 @@ def _geography_metrics(
     Returns:
         Counts, disagreements, and the overall pass flag for the report.
     """
+    municipality_codes = geography.get_column("municipality_code")
+    duplicate_municipalities = sorted(
+        geography.filter(pl.col("municipality_code").is_duplicated())
+        .get_column("municipality_code")
+        .unique()
+        .to_list()
+    )
     classification_codes = dict(
-        zip(
-            geography.get_column("municipality_code"),
-            geography.get_column("region_code"),
-            strict=True,
-        )
+        zip(municipality_codes, geography.get_column("region_code"), strict=True)
     )
     statbank_codes = {code: region[0] for code, region in statbank_region_map.items()}
     disagreements = sorted(
@@ -247,14 +276,23 @@ def _geography_metrics(
         if classification_codes[code] != statbank_codes[code]
     )
     missing = sorted(statbank_codes.keys() - classification_codes.keys())
+    extra = sorted(classification_codes.keys() - statbank_codes.keys())
     complete = geography.null_count().sum_horizontal().item() == 0
-    passed = not disagreements and not missing and complete
+    passed = (
+        not disagreements
+        and not missing
+        and not extra
+        and not duplicate_municipalities
+        and complete
+    )
     return {
         "municipalities": geography.height,
         "regions": geography.get_column("region_code").n_unique(),
         "landsdele": geography.get_column("landsdel_code").n_unique(),
         "statbank_disagreements": disagreements,
         "missing_from_classification": missing,
+        "extra_in_classification": extra,
+        "duplicate_municipalities": duplicate_municipalities,
         "complete": complete,
         "passed": passed,
     }
@@ -330,7 +368,7 @@ def _normalise_frames(
     raw_frames: dict[str, pl.DataFrame],
     metadata_by_table: dict[str, StatBankMetadata],
     categories: CategoryConfig,
-    region_map: dict[str, tuple[str, str]],
+    geography: pl.DataFrame,
     release_rows: int,
     minimum_source_count: int,
     minimum_expected_release_count: int,
@@ -355,11 +393,7 @@ def _normalise_frames(
         pl.col("count"),
         pl.col("suppressed"),
     )
-    folk_calibration = _add_geography(
-        frame=folk_calibration,
-        region_map=region_map,
-        municipality_labels=labels["FOLK1A"]["OMRÅDE"],
-    )
+    folk_calibration = _add_geography(frame=folk_calibration, geography=geography)
     folk = folk_calibration.filter(pl.col("age") >= 18).with_columns(
         _age_band_expression().alias("age_band")
     )
@@ -370,18 +404,38 @@ def _normalise_frames(
         minimum_expected_release_count=minimum_expected_release_count,
     )
     folk_age_sampling = (
-        folk.group_by(["age_band", "sex", "age"])
+        folk.group_by(
+            [
+                "municipality_code",
+                "municipality",
+                "region_code",
+                "region",
+                "age_band",
+                "sex",
+                "age",
+            ]
+        )
         .agg(pl.col("count").sum(), pl.col("suppressed").any())
         .filter(pl.col("count") >= folk_threshold)
     )
     folk_marital_sampling = (
-        folk.group_by(["region_code", "region", "age_band", "sex", "marital_status"])
+        folk.group_by(
+            [
+                "municipality_code",
+                "municipality",
+                "region_code",
+                "region",
+                "age_band",
+                "sex",
+                "marital_status",
+            ]
+        )
         .agg(pl.col("count").sum(), pl.col("suppressed").any())
         .filter(pl.col("count") >= folk_threshold)
     )
 
     ras209 = raw_frames["RAS209"].select(
-        pl.col("OMRÅDE").alias("region_code"),
+        pl.col("OMRÅDE").alias("municipality_code"),
         pl.col("UDDANNELSE").alias("education_source_code"),
         pl.col("UDDANNELSE")
         .replace_strict(categories.education)
@@ -392,16 +446,14 @@ def _normalise_frames(
         pl.col("count"),
         pl.col("suppressed"),
     )
-    ras209 = ras209.with_columns(
-        pl.col("region_code")
-        .replace_strict(_region_labels(metadata=metadata_by_table["RAS209"]))
-        .alias("region")
-    )
+    ras209 = _add_geography(frame=ras209, geography=geography)
     ras209 = _adjust_young_adult_counts(
         ras209=ras209, folk_calibration=folk_calibration
     )
     ras209_joint = ras209.group_by(
         [
+            "municipality_code",
+            "municipality",
             "region_code",
             "region",
             "age_band",
@@ -461,11 +513,7 @@ def _normalise_frames(
         pl.col("count"),
         pl.col("suppressed"),
     )
-    befolk = _add_geography(
-        frame=befolk,
-        region_map=region_map,
-        municipality_labels=labels["BEFOLK3"]["OMRÅDE"],
-    )
+    befolk = _add_geography(frame=befolk, geography=geography)
 
     ras210 = raw_frames["RAS210"].select(
         pl.col("BOPKOM").alias("municipality_code"),
@@ -475,11 +523,7 @@ def _normalise_frames(
         pl.col("count"),
         pl.col("suppressed"),
     )
-    ras210 = _add_geography(
-        frame=ras210,
-        region_map=region_map,
-        municipality_labels=labels["RAS210"]["BOPKOM"],
-    )
+    ras210 = _add_geography(frame=ras210, geography=geography)
     return {
         "folk2_origin_country_marginal": folk2,
         "folk1a_base_unpooled": folk,
@@ -494,41 +538,56 @@ def _normalise_frames(
     }
 
 
-def _add_geography(
-    frame: pl.DataFrame,
-    region_map: dict[str, tuple[str, str]],
-    municipality_labels: dict[str, str],
-) -> pl.DataFrame:
-    region_codes = {code: region[0] for code, region in region_map.items()}
-    region_names = {code: region[1] for code, region in region_map.items()}
-    return frame.with_columns(
-        pl.col("municipality_code")
-        .replace_strict(municipality_labels)
-        .alias("municipality"),
-        pl.col("municipality_code").replace_strict(region_codes).alias("region_code"),
-        pl.col("municipality_code").replace_strict(region_names).alias("region"),
+def _add_geography(frame: pl.DataFrame, geography: pl.DataFrame) -> pl.DataFrame:
+    """Attach names and parents using the validated official hierarchy.
+
+    Args:
+        frame:
+            Municipality-keyed source rows.
+        geography:
+            Validated official geography hierarchy.
+
+    Returns:
+        Source rows with official municipality and region fields.
+
+    Raises:
+        ValueError:
+            If a municipality is duplicated in or absent from the hierarchy.
+    """
+    lookup = geography.select(
+        "municipality_code", "municipality", "region_code", "region"
     )
+    if lookup.get_column("municipality_code").n_unique() != lookup.height:
+        raise ValueError("Geography hierarchy contains duplicate municipality codes")
+    unknown = set(frame.get_column("municipality_code").to_list()) - set(
+        lookup.get_column("municipality_code").to_list()
+    )
+    if unknown:
+        raise ValueError(
+            f"Municipalities missing from official hierarchy: {sorted(unknown)}"
+        )
+    return frame.join(lookup, on="municipality_code", how="left", validate="m:1")
 
 
 def _adjust_young_adult_counts(
     ras209: pl.DataFrame, folk_calibration: pl.DataFrame
 ) -> pl.DataFrame:
     band = folk_calibration.filter(pl.col("age").is_between(16, 19))
-    totals = band.group_by(["region_code", "sex"]).agg(
+    totals = band.group_by(["municipality_code", "sex"]).agg(
         pl.col("count").sum().alias("band_count")
     )
     adults = (
         band.filter(pl.col("age") >= 18)
-        .group_by(["region_code", "sex"])
+        .group_by(["municipality_code", "sex"])
         .agg(pl.col("count").sum().alias("adult_count"))
     )
-    factors = totals.join(adults, on=["region_code", "sex"]).with_columns(
+    factors = totals.join(adults, on=["municipality_code", "sex"]).with_columns(
         (pl.col("adult_count") / pl.col("band_count")).alias("adult_share")
     )
     return (
         ras209.join(
-            factors.select("region_code", "sex", "adult_share"),
-            on=["region_code", "sex"],
+            factors.select("municipality_code", "sex", "adult_share"),
+            on=["municipality_code", "sex"],
             how="left",
         )
         .with_columns(
@@ -624,11 +683,15 @@ def _pool_ras209(
         "not_stated": "H90",
     }
     total = float(frame.get_column("count").sum())
-    threshold = _release_threshold(
-        total=total,
-        release_rows=release_rows,
-        minimum_source_count=minimum_source_count,
-        minimum_expected_release_count=minimum_expected_release_count,
+    threshold = (
+        0
+        if "municipality_code" in frame.columns
+        else _release_threshold(
+            total=total,
+            release_rows=release_rows,
+            minimum_source_count=minimum_source_count,
+            minimum_expected_release_count=minimum_expected_release_count,
+        )
     )
     pooled = (
         frame.with_columns(
@@ -644,6 +707,8 @@ def _pool_ras209(
         )
         .group_by(
             [
+                "municipality_code",
+                "municipality",
                 "region_code",
                 "region",
                 "age_band",
@@ -687,15 +752,6 @@ def _ras_age_band_expression() -> pl.Expr:
         .then(pl.lit("50-66"))
         .otherwise(pl.lit("67+"))
     )
-
-
-def _region_labels(metadata: StatBankMetadata) -> dict[str, str]:
-    area = next(variable for variable in metadata.variables if variable.id == "OMRÅDE")
-    return {
-        value.id: value.text
-        for value in area.values
-        if value.text.startswith(REGION_PREFIX)
-    }
 
 
 def _now() -> str:
@@ -860,22 +916,6 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, str]]:
-    """Map each municipality to its region code and label.
-
-    Args:
-        geography:
-            Hierarchy read from the official classification.
-
-    Returns:
-        Municipality code mapped to its region code and region name.
-    """
-    return {
-        row["municipality_code"]: (row["region_code"], row["region"])
-        for row in geography.iter_rows(named=True)
-    }
-
-
 def _source_metrics(
     frames: dict[str, pl.DataFrame],
     geography_metrics: dict[str, object],
@@ -1002,6 +1042,12 @@ def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
     manifest = BundleManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8")
     )
+    if manifest.prepared_bundle_schema_version != PREPARED_BUNDLE_SCHEMA_VERSION:
+        message = (
+            "Prepared bundle uses unsupported schema version "
+            f"{manifest.prepared_bundle_schema_version}"
+        )
+        raise ValueError(message)
     verify_checksums(
         base_dir=bundle_dir,
         expected=manifest.files,
@@ -1060,7 +1106,17 @@ def read_geography_classification(csv_path: Path) -> pl.DataFrame:
     if not rows:
         message = f"No municipalities found in {csv_path}"
         raise ValueError(message)
-    return pl.DataFrame(rows)
+    frame = pl.DataFrame(rows)
+    duplicate_codes = sorted(
+        frame.filter(pl.col("municipality_code").is_duplicated())
+        .get_column("municipality_code")
+        .unique()
+        .to_list()
+    )
+    if duplicate_codes:
+        message = f"Duplicate municipality codes in {csv_path}: {duplicate_codes}"
+        raise ValueError(message)
+    return frame
 
 
 def verify_raw_snapshot(

@@ -3,6 +3,8 @@
 import json
 import logging
 import math
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,12 +30,26 @@ from ..models import (
     StatBankMetadata,
     StatBankValue,
 )
-from .http import request_with_retries, response_headers_content
+from .http import RETRY_ATTEMPTS, request_with_retries, response_headers_content
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://api.statbank.dk/v1"
 MAX_CELLS = 1_000_000
 REGION_LABEL_PREFIX = "Region "
+
+
+def _canonical_csv_bytes(content: bytes) -> bytes:
+    """Return UTF-8 CSV bytes with explicit LF line endings.
+
+    Args:
+        content:
+            CSV response bytes from StatBank.
+
+    Returns:
+        Canonical UTF-8 CSV bytes.
+    """
+    text = content.decode("utf-8-sig")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def fetch_sources(lock: SourceLock, raw_dir: Path) -> list[SnapshotManifest]:
@@ -79,17 +95,16 @@ def _fetch_source(
     _, metadata_da_bytes = _get_metadata(
         client=client, table_id=source.table_id, language="da"
     )
-    response = request_with_retries(
-        client=client, method="POST", url=source.data_url, json_payload=query
-    )
     retrieved_at = _now()
-    data_bytes = _canonical_csv_bytes(content=response.content)
+    data_path = snapshot_dir / "data.csv"
+    response_headers = _download_data(
+        client=client, source=source, query=query, destination=data_path
+    )
     files = {
         "metadata-en.json": metadata_bytes,
         "metadata-da.json": metadata_da_bytes,
         "query.json": query_content.encode("utf-8"),
-        "data.csv": data_bytes,
-        "response-headers.json": response_headers_content(response=response),
+        "response-headers.json": response_headers,
     }
     for name, content in files.items():
         write_new_bytes(path=snapshot_dir / name, content=content)
@@ -100,35 +115,108 @@ def _fetch_source(
         metadata_sha256=sha256_file(path=snapshot_dir / "metadata-en.json"),
         metadata_da_sha256=sha256_file(path=snapshot_dir / "metadata-da.json"),
         query_sha256=sha256_text(content=query_content),
-        data_sha256=sha256_file(path=snapshot_dir / "data.csv"),
+        data_sha256=sha256_file(path=data_path),
         response_headers_sha256=sha256_file(
             path=snapshot_dir / "response-headers.json"
         ),
         retrieved_at=retrieved_at,
-        data_bytes=len(data_bytes),
+        data_bytes=data_path.stat().st_size,
     )
     write_json(path=manifest_path, payload=manifest)
     LOGGER.info(
         "Fetched %s (%s, %s bytes)",
         source.table_id,
         metadata_en.text,
-        f"{len(response.content):,}",
+        f"{data_path.stat().st_size:,}",
     )
     return manifest
 
 
-def _canonical_csv_bytes(content: bytes) -> bytes:
-    """Return UTF-8 CSV bytes with explicit LF line endings.
-
-    Args:
-        content:
-            CSV response bytes from StatBank.
+def _download_data(
+    client: httpx.Client,
+    source: LockedSource,
+    query: dict[str, object],
+    destination: Path,
+) -> bytes:
+    """Download and canonicalise a source response with bounded memory.
 
     Returns:
-        Canonical UTF-8 CSV bytes.
+        Canonical response headers.
     """
-    text = content.decode("utf-8-sig")
-    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=destination.parent, prefix=".data-", delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        if source.format == "BULK":
+            headers = _stream_bulk_response(
+                client=client, source=source, query=query, destination=temporary_path
+            )
+        else:
+            response = request_with_retries(
+                client=client, method="POST", url=source.data_url, json_payload=query
+            )
+            temporary_path.write_bytes(response.content)
+            headers = response_headers_content(response=response)
+        _canonicalise_csv_file(source=temporary_path, destination=destination)
+        return headers
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _canonicalise_csv_file(source: Path, destination: Path) -> None:
+    """Canonicalise line endings without loading a response into memory."""
+    pending_carriage_return = False
+    first_chunk = True
+    with source.open("rb") as input_file, destination.open("xb") as output_file:
+        while chunk := input_file.read(1024 * 1024):
+            if first_chunk:
+                chunk = chunk.removeprefix(b"\xef\xbb\xbf")
+                first_chunk = False
+            if pending_carriage_return:
+                chunk = b"\r" + chunk
+                pending_carriage_return = False
+            if chunk.endswith(b"\r"):
+                chunk = chunk[:-1]
+                pending_carriage_return = True
+            output_file.write(chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+        if pending_carriage_return:
+            output_file.write(b"\n")
+
+
+def _stream_bulk_response(
+    client: httpx.Client,
+    source: LockedSource,
+    query: dict[str, object],
+    destination: Path,
+) -> bytes:
+    """Stream a BULK response to disk while retrying transient HTTP errors.
+
+    Returns:
+        Canonical response headers.
+
+    Raises:
+        httpx.HTTPError:
+            If every HTTP attempt fails.
+        RuntimeError:
+            If the bounded retry loop ends without a response.
+    """
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            with client.stream(
+                method="POST", url=source.data_url, json=query
+            ) as response:
+                response.raise_for_status()
+                headers = response_headers_content(response=response)
+                with destination.open("wb") as file:
+                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                        file.write(chunk)
+                return headers
+        except httpx.HTTPError:
+            if attempt == RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(2**attempt)
+    raise RuntimeError("BULK retry loop ended without a response or an error")
 
 
 def _get_metadata(
