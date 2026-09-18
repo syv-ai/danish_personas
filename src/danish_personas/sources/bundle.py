@@ -1,9 +1,14 @@
 """Integrity and schema verification for prepared source bundles."""
 
+import collections.abc as c
+import ctypes
+import ctypes.wintypes as wintypes
 import json
 import ntpath
 import os
 import stat
+import typing as t
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
@@ -146,6 +151,16 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
 }
 SOURCE_REPORT = "source-preparation-report.json"
 BUNDLE_MANIFEST = "bundle-manifest.json"
+
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_DEVICE = 0x00000040
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
 
 def verify_prepared_bundle(*, bundle_dir: Path) -> BundleManifest:
@@ -314,22 +329,26 @@ def _ensure_path_stays_in_bundle(*, bundle_dir: Path, relative_path: str) -> Non
 def _regular_file_inventory(*, bundle_dir: Path) -> dict[str, Path]:
     """Return the exact, non-linked regular-file inventory of a bundle.
 
-    Directory traversal uses ``lstat`` semantics throughout.  The manifest is
-    included in this inventory for comparison, but is handled as the one
-    explicit exception to the manifest file map by the caller.
+    Directory traversal uses no-follow semantics throughout.  POSIX uses
+    ``lstat``; Windows uses native handles.  The manifest is included in this
+    inventory for comparison, but is handled as the one explicit exception to
+    the manifest file map by the caller.
 
     Raises:
         ValueError:
             If the root or an entry is unsafe or cannot be inspected.
     """
-    try:
-        root_stat = os.lstat(bundle_dir)
-    except OSError as error:
-        message = f"Prepared bundle directory cannot be read: {bundle_dir}"
-        raise ValueError(message) from error
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-        message = f"Prepared bundle root is not a real directory: {bundle_dir}"
-        raise ValueError(message)
+    if os.name == "nt":
+        _require_windows_inventory_directory(path=bundle_dir)
+    else:
+        try:
+            root_stat = os.lstat(bundle_dir)
+        except OSError as error:
+            message = f"Prepared bundle directory cannot be read: {bundle_dir}"
+            raise ValueError(message) from error
+        if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+            message = f"Prepared bundle root is not a real directory: {bundle_dir}"
+            raise ValueError(message)
 
     inventory: dict[str, Path] = {}
     casefolded_paths: dict[str, str] = {}
@@ -382,29 +401,235 @@ def _inspect_inventory_entry(
         ValueError:
             If the entry is a link, special file, or hard link.
     """
+    if os.name == "nt":
+        is_directory = _inspect_windows_inventory_entry(
+            entry=entry, path=Path(entry.path), relative_path=relative_path
+        )
+        if is_directory:
+            return None
+    else:
+        try:
+            entry_stat = entry.stat(follow_symlinks=False)
+        except OSError as error:
+            raise ValueError(
+                f"Prepared bundle entry cannot be inspected: {relative_path}"
+            ) from error
+        if stat.S_ISLNK(entry_stat.st_mode):
+            raise ValueError(
+                f"Prepared bundle inventory contains a symlink: {relative_path}"
+            )
+        if stat.S_ISDIR(entry_stat.st_mode):
+            return None
+        if not stat.S_ISREG(entry_stat.st_mode):
+            raise ValueError(
+                f"Prepared bundle inventory contains a non-regular file: "
+                f"{relative_path}"
+            )
+        if entry_stat.st_nlink != 1:
+            raise ValueError(
+                f"Prepared bundle inventory contains a hard link: {relative_path}"
+            )
+    canonical_path = _canonical_relative_key(relative_path)
+    _ensure_path_stays_in_bundle(bundle_dir=bundle_dir, relative_path=canonical_path)
+    return canonical_path, Path(entry.path)
+
+
+def _inspect_windows_inventory_entry(
+    *, entry: os.DirEntry[str], path: Path, relative_path: str
+) -> bool:
+    """Inspect a bundle entry through a no-follow Windows handle.
+
+    Returns:
+        Whether the entry is a directory.
+
+    Raises:
+        ValueError:
+            If the entry cannot be inspected or is unsafe for a bundle.
+    """
     try:
-        entry_stat = entry.stat(follow_symlinks=False)
+        directory_hint = entry.is_dir(follow_symlinks=False) or entry.is_symlink()
+        information = _inspect_windows_path(path=path, directory=directory_hint)
     except OSError as error:
         raise ValueError(
             f"Prepared bundle entry cannot be inspected: {relative_path}"
         ) from error
-    if stat.S_ISLNK(entry_stat.st_mode):
+    attributes = information.attributes
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
         raise ValueError(
-            f"Prepared bundle inventory contains a symlink: {relative_path}"
+            "Prepared bundle inventory contains a symlink or reparse point: "
+            f"{relative_path}"
         )
-    if stat.S_ISDIR(entry_stat.st_mode):
-        return None
-    if not stat.S_ISREG(entry_stat.st_mode):
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY:
+        return True
+    if attributes & _WINDOWS_FILE_ATTRIBUTE_DEVICE:
         raise ValueError(
             f"Prepared bundle inventory contains a non-regular file: {relative_path}"
         )
-    if entry_stat.st_nlink != 1:
+    if information.number_of_links != 1:
         raise ValueError(
             f"Prepared bundle inventory contains a hard link: {relative_path}"
         )
-    canonical_path = _canonical_relative_key(relative_path)
-    _ensure_path_stays_in_bundle(bundle_dir=bundle_dir, relative_path=canonical_path)
-    return canonical_path, Path(entry.path)
+    return False
+
+
+class _WindowsHandleInformation(ctypes.Structure):
+    """Layout of the Windows ``BY_HANDLE_FILE_INFORMATION`` structure."""
+
+    _fields_ = [
+        ("file_attributes", wintypes.DWORD),
+        ("creation_time", wintypes.FILETIME),
+        ("last_access_time", wintypes.FILETIME),
+        ("last_write_time", wintypes.FILETIME),
+        ("volume_serial_number", wintypes.DWORD),
+        ("file_size_high", wintypes.DWORD),
+        ("file_size_low", wintypes.DWORD),
+        ("number_of_links", wintypes.DWORD),
+        ("file_index_high", wintypes.DWORD),
+        ("file_index_low", wintypes.DWORD),
+    ]
+
+
+@dataclass(frozen=True)
+class _WindowsInventoryInformation:
+    """File information captured from a no-follow Windows handle."""
+
+    attributes: int
+    number_of_links: int
+
+
+def _inspect_windows_path(
+    *, path: Path, directory: bool
+) -> _WindowsInventoryInformation:
+    """Read Windows file information while denying replacement sharing.
+
+    Returns:
+        The attributes and hard-link count captured from the open handle.
+
+    Raises:
+        OSError:
+            If the path cannot be opened or queried.
+    """
+    handle: int | None = None
+    try:
+        handle = _windows_open_inventory_handle(path=path, directory=directory)
+        kernel32 = _windows_kernel32()
+        information = _WindowsHandleInformation()
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            error = _windows_last_error()
+            raise OSError(error, f"GetFileInformationByHandle failed: {path}")
+        return _WindowsInventoryInformation(
+            attributes=int(information.file_attributes),
+            number_of_links=int(information.number_of_links),
+        )
+    finally:
+        if handle is not None:
+            _windows_close_inventory_handle(handle)
+
+
+def _windows_close_inventory_handle(handle: int) -> None:
+    """Close a native inventory handle, preserving the original failure."""
+    _windows_kernel32().CloseHandle(handle)
+
+
+def _windows_kernel32() -> ctypes.CDLL:
+    """Return the configured Windows kernel32 API handle."""
+    loader = getattr(ctypes, "WinDLL")
+    kernel32 = loader("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_WindowsHandleInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def _windows_last_error() -> int:
+    """Return the last Windows API error code."""
+    getter = t.cast(c.Callable[[], int], getattr(ctypes, "get_last_error"))
+    return getter()
+
+
+def _windows_open_inventory_handle(*, path: Path, directory: bool) -> int:
+    """Open a path without following its final reparse point.
+
+    Returns:
+        The native handle.
+
+    Raises:
+        OSError:
+            If the path cannot be opened.
+    """
+    kernel32 = _windows_kernel32()
+    access = _WINDOWS_FILE_READ_ATTRIBUTES
+    if not directory:
+        access |= _WINDOWS_GENERIC_READ
+    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    if directory:
+        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
+    raw_handle = kernel32.CreateFileW(
+        str(path),
+        access,
+        _WINDOWS_FILE_SHARE_READ,
+        None,
+        _WINDOWS_OPEN_EXISTING,
+        flags,
+        None,
+    )
+    handle = _windows_handle_value(raw_handle)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in (-1, invalid_handle):
+        error = _windows_last_error()
+        raise OSError(error, f"CreateFileW failed: {path}")
+    return handle
+
+
+def _windows_handle_value(handle: object) -> int:
+    """Convert a ctypes Windows handle to an integer.
+
+    Returns:
+        The native handle value.
+
+    Raises:
+        OSError:
+            If the API returned an invalid handle.
+    """
+    if isinstance(handle, int):
+        return handle
+    value = getattr(handle, "value", None)
+    if isinstance(value, int):
+        return value
+    raise OSError("CreateFileW returned an invalid handle")
+
+
+def _require_windows_inventory_directory(*, path: Path) -> None:
+    """Require a real directory using a no-follow native Windows handle.
+
+    Raises:
+        ValueError:
+            If the path is missing, a reparse point, or not a directory.
+    """
+    try:
+        information = _inspect_windows_path(path=path, directory=True)
+    except OSError as error:
+        message = f"Prepared bundle directory cannot be read: {path}"
+        raise ValueError(message) from error
+    if (
+        information.attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+        or not information.attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY
+    ):
+        raise ValueError(f"Prepared bundle root is not a real directory: {path}")
 
 
 def _verify_schemas(*, bundle_dir: Path) -> None:
