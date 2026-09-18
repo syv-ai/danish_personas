@@ -68,7 +68,9 @@ def packaged_release(
     calls: list[Path] = []
 
     def validate(*, pilot_dir: Path, repository_root: Path) -> ValidationReport:
-        assert repository_root == release_case.repository
+        assert repository_root.name == "repository"
+        assert pilot_dir.name == "pilot"
+        assert pilot_dir != release_case.pilot
         calls.append(pilot_dir)
         return release_case.report
 
@@ -81,9 +83,15 @@ def packaged_release(
         return []
 
     def evidence(**kwargs: object) -> ReleaseEvidence:
-        assert kwargs["pilot_dir"] == release_case.pilot
+        snapshot_pilot = kwargs["pilot_dir"]
+        assert isinstance(snapshot_pilot, Path)
+        assert snapshot_pilot.name == "pilot"
         assert kwargs["manifest"] == release_case.manifest
-        return coherent_evidence(release_case)
+        evidence = coherent_evidence(release_case)
+        report_path = snapshot_pilot / "pilot-validation-report.json"
+        return evidence.model_copy(
+            update={"pilot_validation_report_sha256": sha256_file(report_path)}
+        )
 
     monkeypatch.setattr(packager, "validate_persona_pilot", validate)
     monkeypatch.setattr(packager, "_derive_consumed_files", no_inventory)
@@ -97,7 +105,8 @@ def packaged_release(
         repository_root=release_case.repository,
         output_parent=release_case.output_parent,
     )
-    assert calls == [release_case.pilot]
+    assert len(calls) == 1
+    assert calls[0].name == "pilot"
     return release_case, result.path, result.manifest_sha256
 
 
