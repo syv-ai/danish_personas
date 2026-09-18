@@ -1,6 +1,6 @@
 """Regression tests for source-validation provenance gates."""
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -106,6 +106,26 @@ def test_nested_pass_cannot_override_failed_source_report(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="source preparation did not pass"):
         validate_sources(bundle_dir=bundle_dir)
+
+
+def test_prepared_bundle_verifier_accepts_windows_manifest_keys(tmp_path: Path) -> None:
+    """Windows relative keys are canonicalised before bundle verification."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    windows_files = {
+        "\\".join(PureWindowsPath(relative_path).parts): checksum
+        for relative_path, checksum in manifest.files.items()
+    }
+    write_json(
+        path=manifest_path, payload=manifest.model_copy(update={"files": windows_files})
+    )
+
+    verified = verify_prepared_bundle(bundle_dir=bundle_dir)
+
+    assert verified.files == windows_files
 
 
 def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:
