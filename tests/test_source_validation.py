@@ -5,6 +5,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+import danish_personas.sources.bundle as bundle_module
 from danish_personas.io import sha256_file, sha256_text, write_json
 from danish_personas.models import BundleManifest, SnapshotManifest
 from danish_personas.sampling.generator import generate_records
@@ -135,6 +136,37 @@ def test_prepared_bundle_manifest_excludes_itself(tmp_path: Path) -> None:
     write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
 
     with pytest.raises(ValueError, match="exclude"):
+        verify_prepared_bundle(bundle_dir=bundle_dir)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor race seam")
+@pytest.mark.parametrize("replacement_kind", ["same-size", "symlink", "hardlink"])
+def test_prepared_bundle_rechecks_path_after_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement_kind: str
+) -> None:
+    """A path swap after capture cannot alter or evade verification."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    target = bundle_dir / "source-preparation-report.json"
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(target.read_bytes())
+    replaced = False
+    original_hash = bundle_module._sha256_bytes
+
+    def replace_during_hash(content: bytes) -> str:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            target.unlink()
+            if replacement_kind == "symlink":
+                target.symlink_to(replacement)
+            elif replacement_kind == "hardlink":
+                os.link(replacement, target)
+            else:
+                replacement.replace(target)
+        return original_hash(content)
+
+    monkeypatch.setattr(bundle_module, "_sha256_bytes", replace_during_hash)
+    with pytest.raises(ValueError, match="changed|safely"):
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
