@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -59,23 +60,46 @@ def test_package_rejects_concurrent_lock(
         _package(release_case, monkeypatch)
 
 
+@pytest.mark.parametrize("mutation", ["head", "origin"])
 def test_package_rejects_git_provenance_change_during_install(
-    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     """A changed HEAD or origin cannot race the final installation boundary."""
-    original = packager._git_provenance
-    calls = 0
+    original_install = packager._install_files
 
-    def changed(root: Path) -> tuple[str, str]:
-        nonlocal calls
-        calls += 1
-        value = original(root)
-        return value if calls == 1 else ("f" * 40, value[1])
+    def mutate(**kwargs: object) -> None:
+        original_install(**kwargs)
+        if mutation == "head":
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(release_case.repository),
+                    "commit",
+                    "--allow-empty",
+                    "-qm",
+                    "post-staging mutation",
+                ],
+                check=True,
+            )
+        else:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(release_case.repository),
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://example.invalid/changed.git",
+                ],
+                check=True,
+            )
 
-    monkeypatch.setattr(packager, "_git_provenance", changed)
+    monkeypatch.setattr(packager, "_install_files", mutate)
     with pytest.raises(ReleasePackagingError, match="provenance changed"):
         _package(release_case, monkeypatch)
-    assert not release_case.output_parent.exists()
+    assert not list(release_case.output_parent.glob("*"))
 
 
 def test_package_rejects_linked_input_files(

@@ -66,6 +66,12 @@ class _InventoryItem:
     snapshot_path: Path | None = None
 
 
+@dataclass(frozen=True)
+class _PilotTreeEntry:
+    relative: Path
+    kind: t.Literal["file", "directory"]
+
+
 _PUBLIC_FILES = (
     "README.md",
     "LICENSE.txt",
@@ -118,10 +124,21 @@ def package_release(
     output_parent = _lexical_absolute(output_parent)
     _require_no_symlink_components(output_parent)
     _require_clean_git(repository_root)
-    git_head, origin_url = _git_provenance(repository_root)
-    inventory = _snapshot_inventory(paths=[pilot_dir / "pilot-manifest.json"])
+    provenance = _git_provenance(repository_root)
+    git_head, origin_url, _ = provenance
+    pilot_tree = _snapshot_pilot_tree(pilot_dir)
+    pilot_files = [
+        pilot_dir / entry.relative for entry in pilot_tree if entry.kind == "file"
+    ]
+    inventory = _snapshot_inventory(paths=pilot_files)
     pilot_manifest = _load_captured_json(
         inventory=inventory, path=pilot_dir / "pilot-manifest.json", model=PilotManifest
+    )
+    _require_pilot_tree_structure(
+        pilot_dir=pilot_dir,
+        membership=pilot_tree,
+        manifest=pilot_manifest,
+        inventory=inventory,
     )
     _capture_path(path=policy_path, inventory=inventory)
     policy = _load_captured_yaml(
@@ -189,6 +206,7 @@ def package_release(
         pilot_dir=pilot_dir,
         repository_root=repository_root,
         external_paths=(attestation_path, policy_path, dataset_card_path, licence_path),
+        pilot_tree=pilot_tree,
     )
     snapshot_repository = snapshot_root / "repository"
     snapshot_pilot = snapshot_root / "pilot"
@@ -216,10 +234,10 @@ def package_release(
     finally:
         shutil.rmtree(snapshot_root, ignore_errors=True)
 
+    _recheck_pilot_tree(pilot_dir=pilot_dir, expected=pilot_tree)
     _recheck_inventory(inventory)
-    _require_clean_git(repository_root)
-    git_head_after, origin_after = _git_provenance(repository_root)
-    if (git_head_after, origin_after) != (git_head, origin_url):
+    final_provenance = _git_provenance(repository_root)
+    if final_provenance != provenance:
         raise ReleasePackagingError("Git provenance changed during packaging")
 
     output_parent.mkdir(parents=True, exist_ok=True)
@@ -291,8 +309,10 @@ def package_release(
             expected_manifest_sha256=manifest_sha256,
             allow_staging=True,
         )
+        _recheck_pilot_tree(pilot_dir=pilot_dir, expected=pilot_tree)
         _recheck_inventory(inventory)
-        _require_clean_git(repository_root)
+        if _git_provenance(repository_root) != provenance:
+            raise ReleasePackagingError("Git provenance changed during packaging")
         _rename_noreplace(stage, destination)
         stage = None
         return ReleasePackageResult(path=destination, manifest_sha256=manifest_sha256)
@@ -620,6 +640,7 @@ def _materialise_snapshot(
     pilot_dir: Path,
     repository_root: Path,
     external_paths: tuple[Path, ...] = (),
+    pilot_tree: tuple[_PilotTreeEntry, ...] | None = None,
 ) -> Path:
     """Build a private, link-free tree from immutable source records.
 
@@ -637,6 +658,12 @@ def _materialise_snapshot(
     pilot_dir = _lexical_absolute(pilot_dir)
     allowed_external = {_lexical_absolute(path) for path in external_paths}
     try:
+        if pilot_tree is not None:
+            for entry in pilot_tree:
+                if entry.kind == "directory":
+                    (snapshot_root / "pilot" / entry.relative).mkdir(
+                        parents=True, exist_ok=True
+                    )
         for index, item in enumerate(inventory):
             if item.path.is_relative_to(pilot_dir):
                 root = snapshot_root / "pilot"
@@ -691,6 +718,143 @@ def _recheck_inventory(items: list[_InventoryItem]) -> None:
             item.ctime_ns,
         ):
             raise ReleasePackagingError(f"Consumed file changed: {item.path}")
+
+
+def _recheck_pilot_tree(
+    *, pilot_dir: Path, expected: tuple[_PilotTreeEntry, ...]
+) -> None:
+    """Require pilot membership and entry types to remain unchanged.
+
+    Raises:
+        ReleasePackagingError:
+            If membership or entry types changed.
+    """
+    current = _snapshot_pilot_tree(pilot_dir)
+    if current != expected:
+        raise ReleasePackagingError("Pilot tree membership changed during packaging")
+
+
+def _snapshot_pilot_tree(pilot_dir: Path) -> tuple[_PilotTreeEntry, ...]:
+    """Capture every pilot entry without following links.
+
+    Returns:
+        The sorted lexical membership and entry types below ``pilot_dir``.
+    """
+    root = _lexical_absolute(pilot_dir)
+    entries: list[_PilotTreeEntry] = []
+
+    def visit(directory: Path, relative_root: Path) -> None:
+        try:
+            children = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as error:
+            raise ReleasePackagingError(
+                f"Cannot inspect pilot tree: {directory}"
+            ) from error
+        for child in children:
+            relative = relative_root / child.name
+            try:
+                child_stat = child.stat(follow_symlinks=False)
+            except OSError as error:
+                raise ReleasePackagingError(
+                    f"Cannot inspect pilot entry: {child.path}"
+                ) from error
+            if stat.S_ISLNK(child_stat.st_mode):
+                raise ReleasePackagingError(
+                    f"Pilot tree must not contain links: {child.path}"
+                )
+            if stat.S_ISDIR(child_stat.st_mode):
+                entries.append(_PilotTreeEntry(relative=relative, kind="directory"))
+                visit(Path(child.path), relative)
+            elif stat.S_ISREG(child_stat.st_mode):
+                entries.append(_PilotTreeEntry(relative=relative, kind="file"))
+            else:
+                raise ReleasePackagingError(
+                    f"Pilot tree contains a non-regular entry: {child.path}"
+                )
+
+    visit(root, Path())
+    return tuple(sorted(entries, key=lambda entry: entry.relative.as_posix()))
+
+
+def _require_pilot_tree_structure(
+    *,
+    pilot_dir: Path,
+    membership: tuple[_PilotTreeEntry, ...],
+    manifest: PilotManifest,
+    inventory: list[_InventoryItem],
+) -> None:
+    """Reject pilot entries outside the documented pilot file layout.
+
+    Raises:
+        ReleasePackagingError:
+            If an entry is not part of the expected pilot structure.
+    """
+    root = _lexical_absolute(pilot_dir)
+    expected_files, expected_directories, shard_directories = _pilot_layout(
+        root=root, manifest=manifest, inventory=inventory
+    )
+    checkpoint_directories = {
+        directory / "checkpoints" for directory in shard_directories
+    }
+    for entry in membership:
+        relative = entry.relative
+        allowed = relative in expected_files
+        if relative not in expected_files and relative.parent in shard_directories:
+            allowed = relative.name in {"request-ledger.json", "checkpoints"}
+        if relative.parent in checkpoint_directories:
+            allowed = entry.kind == "file" and relative.suffix == ".json"
+        if entry.kind == "directory":
+            allowed = relative in expected_directories
+        if not allowed:
+            raise ReleasePackagingError(f"Unknown pilot tree entry: {root / relative}")
+
+
+def _pilot_layout(
+    *, root: Path, manifest: PilotManifest, inventory: list[_InventoryItem]
+) -> tuple[set[Path], set[Path], set[Path]]:
+    expected_files = {Path("pilot-manifest.json"), Path("pilot-validation-report.json")}
+    shard_directories: set[Path] = set()
+    for reference in manifest.batch_runs:
+        manifest_relative = _relative_pilot_path(root, reference.manifest_file)
+        report_relative = _relative_pilot_path(root, reference.validation_report_file)
+        manifest_path = root / manifest_relative
+        shard_directory = manifest_relative.parent
+        shard_directories.add(shard_directory)
+        expected_files.update((manifest_relative, report_relative))
+        try:
+            shard = _load_captured_json(
+                inventory=inventory, path=manifest_path, model=GenerationManifest
+            )
+        except ReleasePackagingError:
+            shard = None
+        if shard is not None:
+            output_relative = _relative_pilot_path(
+                manifest_path.parent, shard.output_file
+            )
+            expected_files.add(shard_directory / output_relative)
+    expected_files.add(_relative_pilot_path(root, manifest.output_file))
+    expected_directories: set[Path] = set()
+    for path in expected_files:
+        parent = path.parent
+        while parent != Path():
+            expected_directories.add(parent)
+            parent = parent.parent
+    for shard_directory in shard_directories:
+        expected_directories.add(shard_directory / "checkpoints")
+    return expected_files, expected_directories, shard_directories
+
+
+def _relative_pilot_path(root: Path, value: Path) -> Path:
+    candidate = _lexical_absolute(value if value.is_absolute() else root / value)
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as error:
+        raise ReleasePackagingError(
+            f"Pilot path escapes pilot directory: {value}"
+        ) from error
+    if not relative.parts:
+        raise ReleasePackagingError("Pilot path must name a file")
+    return relative
 
 
 def _snapshot_path(inventory: list[_InventoryItem], path: Path) -> Path:
@@ -1015,12 +1179,19 @@ def _acquire_lock(path: Path) -> None:
         ) from error
 
 
-def _git_provenance(root: Path) -> tuple[str, str]:
-    head = _git(root, "rev-parse", "HEAD")
-    origin = _git(root, "remote", "get-url", "origin")
+def _git_provenance(root: Path) -> tuple[str, str, str]:
+    """Return the complete, normalised Git provenance boundary.
+
+    Raises:
+        ReleasePackagingError:
+            If Git provenance cannot be read or has no HEAD or origin.
+    """
+    head = _git(root, "rev-parse", "HEAD").strip()
+    origin = _git(root, "remote", "get-url", "origin").strip()
+    status = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
     if len(head) != 40 or not origin:
         raise ReleasePackagingError("Git HEAD and origin URL are required")
-    return head, origin
+    return head, origin, status
 
 
 def _git(repository_root: Path, *args: str) -> str:
