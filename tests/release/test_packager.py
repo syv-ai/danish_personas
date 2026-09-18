@@ -88,6 +88,7 @@ def test_capture_accepts_windows_path_and_descriptor_identity_fields(
         return stat_view(100 + fd_calls, path_observer=False)
 
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     monkeypatch.setattr(packager.os, "lstat", fake_lstat)
     monkeypatch.setattr(packager.os, "fstat", fake_fstat)
 
@@ -133,6 +134,7 @@ def test_capture_rejects_windows_size_change(
         )
 
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     monkeypatch.setattr(packager.os, "lstat", fake_lstat)
 
     with pytest.raises(ReleasePackagingError, match="Input metadata changed"):
@@ -200,6 +202,7 @@ def test_capture_uses_separate_windows_observer_stability(
         )
 
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     monkeypatch.setattr(packager.os, "lstat", fake_lstat)
     monkeypatch.setattr(packager.os, "fstat", fake_fstat)
 
@@ -820,6 +823,28 @@ def test_supplied_path_with_symlink_parent_is_rejected(tmp_path: Path) -> None:
         packager._require_regular_file(link / "input.txt")
 
 
+def test_windows_capture_contract_uses_no_follow_and_stable_identity() -> None:
+    """The native contract denies writes/deletes and compares full identity."""
+    first = packager._WindowsFileInfo(
+        attributes=0,
+        volume_serial=7,
+        file_index=2**40,
+        size=17,
+        number_of_links=1,
+        write_time=19,
+    )
+    same = replace(first)
+    changed = replace(first, file_index=2**40 + 1)
+
+    assert (
+        packager._WINDOWS_FINAL_FLAGS & packager._WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    )
+    assert packager._WINDOWS_FINAL_SHARE_MODE == packager._WINDOWS_FILE_SHARE_READ
+    assert not packager._WINDOWS_FINAL_SHARE_MODE & packager._WINDOWS_FILE_SHARE_WRITE
+    assert packager._windows_observations_match(first, same)
+    assert not packager._windows_observations_match(first, changed)
+
+
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "nonregular"])
 @pytest.mark.parametrize("observer", ["path", "fd"])
 def test_windows_capture_rejects_unsafe_observations(
@@ -838,6 +863,7 @@ def test_windows_capture_rejects_unsafe_observations(
         return unsafe if observer == "fd" else actual
 
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     monkeypatch.setattr(packager.os, "lstat", fake_lstat)
     monkeypatch.setattr(packager.os, "fstat", fake_fstat)
 
@@ -873,6 +899,7 @@ def test_windows_recheck_ignores_unreliable_identity_fields(
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     inventory = packager._snapshot_inventory(paths=[source])
     item = inventory[0]
     changed_identity = replace(
@@ -896,6 +923,7 @@ def test_windows_recheck_rejects_size_or_hash_changes(
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
     monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager, "_WINDOWS_NATIVE", False)
     inventory = packager._snapshot_inventory(paths=[source])
     item = inventory[0]
     value = "0" * 64 if field == "sha256" else getattr(item, field) + 1
