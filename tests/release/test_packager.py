@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
-from pathlib import Path, PosixPath
+from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
@@ -65,29 +65,28 @@ def test_capture_accepts_windows_path_and_descriptor_identity_fields(
     path_calls = 0
     fd_calls = 0
 
-    def stat_view(offset: int) -> SimpleNamespace:
+    def stat_view(offset: int, *, path_observer: bool) -> SimpleNamespace:
         return SimpleNamespace(
-            st_mode=actual.st_mode,
+            st_mode=actual.st_mode ^ (0o1 if path_observer else 0),
             st_nlink=actual.st_nlink,
             st_size=actual.st_size,
             st_dev=actual.st_dev + offset,
             st_ino=actual.st_ino + offset,
-            st_mtime_ns=actual.st_mtime_ns,
+            st_mtime_ns=actual.st_mtime_ns + (1000 if path_observer else 0),
             st_ctime_ns=actual.st_ctime_ns + offset,
         )
 
     def fake_lstat(_: object) -> SimpleNamespace:
         nonlocal path_calls
         path_calls += 1
-        return stat_view(path_calls)
+        return stat_view(path_calls, path_observer=True)
 
     def fake_fstat(_: int) -> SimpleNamespace:
         nonlocal fd_calls
         fd_calls += 1
-        return stat_view(100 + fd_calls)
+        return stat_view(100 + fd_calls, path_observer=False)
 
-    monkeypatch.setattr(packager, "Path", PosixPath)
-    monkeypatch.setattr(packager.os, "name", "nt")
+    monkeypatch.setattr(packager, "_WINDOWS", True)
     monkeypatch.setattr(packager.os, "lstat", fake_lstat)
     monkeypatch.setattr(packager.os, "fstat", fake_fstat)
 
@@ -108,6 +107,78 @@ def test_capture_inventory_keeps_captured_bytes_after_replacement(
     assert packager._captured_bytes(inventory, source) == b"captured"
     with pytest.raises(ReleasePackagingError, match="Consumed file changed"):
         packager._recheck_inventory(inventory)
+
+
+def test_capture_rejects_windows_path_metadata_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows path observations still reject a changed stable mtime."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"captured")
+    actual = source.stat()
+    path_calls = 0
+
+    def fake_lstat(_: object) -> SimpleNamespace:
+        nonlocal path_calls
+        path_calls += 1
+        return SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_nlink=actual.st_nlink,
+            st_size=actual.st_size,
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_mtime_ns=actual.st_mtime_ns + path_calls,
+            st_ctime_ns=actual.st_ctime_ns,
+        )
+
+    monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager.os, "lstat", fake_lstat)
+
+    with pytest.raises(ReleasePackagingError, match="Input metadata changed"):
+        packager._capture_file(source)
+
+
+def test_capture_uses_separate_windows_observer_stability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows descriptor mtime drift does not mask path stability checks."""
+    source = tmp_path / "source.bin"
+    content = b"captured"
+    source.write_bytes(content)
+    actual = source.stat()
+    fd_calls = 0
+
+    def fake_lstat(_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_nlink=actual.st_nlink,
+            st_size=actual.st_size,
+            st_dev=actual.st_dev + 1,
+            st_ino=actual.st_ino + 1,
+            st_mtime_ns=actual.st_mtime_ns,
+            st_ctime_ns=actual.st_ctime_ns + 1,
+        )
+
+    def fake_fstat(_: int) -> SimpleNamespace:
+        nonlocal fd_calls
+        fd_calls += 1
+        return SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_nlink=actual.st_nlink,
+            st_size=actual.st_size,
+            st_dev=actual.st_dev + 100 + fd_calls,
+            st_ino=actual.st_ino + 100 + fd_calls,
+            st_mtime_ns=actual.st_mtime_ns + fd_calls,
+            st_ctime_ns=actual.st_ctime_ns + 100 + fd_calls,
+        )
+
+    monkeypatch.setattr(packager, "_WINDOWS", True)
+    monkeypatch.setattr(packager.os, "lstat", fake_lstat)
+    monkeypatch.setattr(packager.os, "fstat", fake_fstat)
+
+    item = packager._capture_file(source)
+
+    assert item.content == content
 
 
 def test_evidence_derivation_fixture_is_strict_and_accounted(
@@ -728,27 +799,29 @@ def test_windows_recheck_ignores_unreliable_identity_fields(
     """Windows rechecks accept stable files with changed identity fields."""
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
-    monkeypatch.setattr(packager, "Path", PosixPath)
-    monkeypatch.setattr(packager.os, "name", "nt")
+    monkeypatch.setattr(packager, "_WINDOWS", True)
     inventory = packager._snapshot_inventory(paths=[source])
     item = inventory[0]
     changed_identity = replace(
-        item, device=item.device + 1, inode=item.inode + 1, ctime_ns=item.ctime_ns + 1
+        item,
+        device=item.device + 1,
+        inode=item.inode + 1,
+        mtime_ns=item.mtime_ns + 1,
+        ctime_ns=item.ctime_ns + 1,
     )
     monkeypatch.setattr(packager, "_capture_file", lambda _: changed_identity)
 
     packager._recheck_inventory(inventory)
 
 
-@pytest.mark.parametrize("field", ["size", "mtime_ns", "nlink", "sha256"])
+@pytest.mark.parametrize("field", ["mode", "size", "nlink", "sha256"])
 def test_windows_recheck_rejects_stable_metadata_or_hash_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
     """Windows rechecks reject changed stable metadata and content."""
     source = tmp_path / "source.bin"
     source.write_bytes(b"captured")
-    monkeypatch.setattr(packager, "Path", PosixPath)
-    monkeypatch.setattr(packager.os, "name", "nt")
+    monkeypatch.setattr(packager, "_WINDOWS", True)
     inventory = packager._snapshot_inventory(paths=[source])
     item = inventory[0]
     value = "0" * 64 if field == "sha256" else getattr(item, field) + 1
