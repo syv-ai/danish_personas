@@ -300,3 +300,30 @@ def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:
             expected_query='{"table":"TEST"}\n',
         )
     assert snapshot.query_sha256 == sha256_text(contents["query.json"])
+
+
+def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
+    tmp_path: Path,
+) -> None:
+    """A changed semantic result cannot overwrite an earlier passing report."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    assert validate_sources(bundle_dir=bundle_dir).passed
+
+    source_report = bundle_dir / "source-preparation-report.json"
+    write_json(
+        path=source_report,
+        payload={
+            "passed": True,
+            "origin_country_checks": {"positive_total": {"passed": False}},
+        },
+    )
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    files = dict(manifest.files)
+    files[source_report.name] = sha256_file(source_report)
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
+
+    with pytest.raises(ValueError, match="differs from recomputed validation"):
+        validate_sources(bundle_dir=bundle_dir)
