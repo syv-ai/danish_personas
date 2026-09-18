@@ -139,6 +139,32 @@ def test_capture_rejects_windows_size_change(
         packager._capture_file(source)
 
 
+def test_capture_uses_binary_flag_and_preserves_binary_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Descriptor capture preserves binary bytes and requests binary mode."""
+    source = tmp_path / "source.bin"
+    content = b"prefix\r\n\x1a\r\nparquet-bytes\x1a\r\n"
+    source.write_bytes(content)
+    binary_flag = getattr(packager.os, "O_BINARY", 0)
+    captured_flags: list[int] = []
+    original_open = packager.os.open
+
+    def capture_open(path: Path, flags: int, *args: int) -> int:
+        captured_flags.append(flags)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(packager.os, "open", capture_open)
+
+    item = packager._capture_file(source)
+
+    assert captured_flags
+    assert binary_flag == 0 or captured_flags[0] & binary_flag == binary_flag
+    assert item.content == content
+    assert item.size == len(content)
+    assert item.sha256 == packager.sha256_bytes(content)
+
+
 def test_capture_uses_separate_windows_observer_stability(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

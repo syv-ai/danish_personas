@@ -369,6 +369,7 @@ def _capture_file(path: Path) -> _InventoryItem:
     flags = os.O_RDONLY
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     flags |= nofollow
+    flags |= getattr(os, "O_BINARY", 0)
     try:
         descriptor = os.open(candidate, flags)
     except OSError as error:
