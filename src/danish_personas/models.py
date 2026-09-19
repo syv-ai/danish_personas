@@ -134,23 +134,6 @@ class ClassificationManifest(StrictModel):
     data_bytes: int = Field(gt=0)
 
 
-class LockedSource(StrictModel):
-    """Resolved source query with explicit values."""
-
-    table_id: str
-    role: str
-    period: str
-    format: t.Literal["CSV", "BULK"] = "CSV"
-    metadata_url: str
-    data_url: str
-    retrieved_metadata_at: str
-    table_updated_at: str
-    unit: str
-    dimensions: dict[str, list[str]]
-    expected_zero_codes: list[str] = Field(default_factory=list)
-    estimated_cells: int = Field(gt=0)
-
-
 class MetricResult(StrictModel):
     """One validation metric result."""
 
@@ -229,18 +212,27 @@ class DemographicRecord(OceanTraits):
                 If fields or resolution disagree with detailed-status eligibility.
         """
         eligible = self.detailed_status_code in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
-        paired = self.job_function_code is not None and self.job_function is not None
-        if eligible != paired:
-            message = (
-                "Job-function fields must be paired exactly for eligible employees"
-            )
-            raise ValueError(message)
         expected = "lons20_sex_marginal" if eligible else "not_applicable"
         if self.job_function_resolution != expected:
             message = (
                 "Job-function resolution does not match detailed-status eligibility"
             )
             raise ValueError(message)
+        if self.job_function_resolution == "not_applicable":
+            if self.job_function_code is not None or self.job_function is not None:
+                raise ValueError(
+                    "Not-applicable job-function fields must both be exactly null"
+                )
+            return self
+        if (
+            self.job_function_code is None
+            or self.job_function is None
+            or not self.job_function_code.strip()
+            or not self.job_function.strip()
+        ):
+            raise ValueError(
+                "Eligible job-function fields must both be nonblank strings"
+            )
         return self
 
 
@@ -322,6 +314,34 @@ class BundleManifest(StrictModel):
     assumptions: list[str]
 
 
+class SourceMetadataExpectations(StrictModel):
+    """Versioned metadata semantics expected for a source table."""
+
+    table_text: str
+    description: str
+    unit: str
+    dimensions: dict[str, str]
+    values: dict[str, dict[str, str]]
+
+
+class LockedSource(StrictModel):
+    """Resolved source query with explicit values."""
+
+    table_id: str
+    role: str
+    period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
+    metadata_url: str
+    data_url: str
+    retrieved_metadata_at: str
+    table_updated_at: str
+    unit: str
+    dimensions: dict[str, list[str]]
+    metadata_expectations: SourceMetadataExpectations | None = None
+    expected_zero_codes: list[str] = Field(default_factory=list)
+    estimated_cells: int = Field(gt=0)
+
+
 class SourceLock(StrictModel):
     """Resolved collection of immutable source queries."""
 
@@ -366,6 +386,7 @@ class SourceDefinition(StrictModel):
     period: str
     format: t.Literal["CSV", "BULK"] = "CSV"
     dimensions: dict[str, SourceSelection]
+    metadata_expectations: SourceMetadataExpectations | None = None
     expected_zero_codes: list[str] = Field(default_factory=list)
 
 

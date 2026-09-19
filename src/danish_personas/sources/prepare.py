@@ -23,7 +23,11 @@ from ..models import (
 )
 from .bundle import verify_prepared_bundle
 from .classification import classification_snapshot_dir, verify_classification_snapshot
-from .statbank import source_query_content, source_snapshot_dir
+from .statbank import (
+    _validate_metadata_expectations,
+    source_query_content,
+    source_snapshot_dir,
+)
 
 LOGGER = logging.getLogger(__name__)
 REGION_PREFIX = "Region "
@@ -113,6 +117,12 @@ def prepare_bundle(
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
             (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
+        )
+        _validate_metadata_expectations(
+            table_id=source.table_id,
+            metadata=metadata,
+            expectations=source.metadata_expectations,
+            dimensions=source.dimensions,
         )
         metadata_by_table[source.table_id] = metadata
         source_frames[source.table_id] = _read_source(
@@ -407,6 +417,7 @@ def _normalise_frames(
     minimum_expected_release_count: int,
     job_function_codes: list[str],
 ) -> dict[str, pl.DataFrame]:
+    _reject_negative_counts(raw_frames=raw_frames)
     labels = {
         table: _metadata_labels(metadata=metadata)
         for table, metadata in metadata_by_table.items()
@@ -876,6 +887,18 @@ def _ras_age_band_expression() -> pl.Expr:
     )
 
 
+def _reject_negative_counts(raw_frames: dict[str, pl.DataFrame]) -> None:
+    """Reject negative source counts before any source transformation.
+
+    Raises:
+        ValueError:
+            If any source contains a negative count.
+    """
+    for table_id, frame in raw_frames.items():
+        if bool((frame.get_column("count") < 0).any()):
+            raise ValueError(f"{table_id} contains negative counts")
+
+
 def _now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
@@ -1048,6 +1071,8 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
                     or parsed_count != parsed_count.to_integral_value()
                 ):
                     raise ValueError(f"Non-integral count in {csv_path}: {raw_count}")
+                if parsed_count < 0:
+                    raise ValueError(f"Negative count in {csv_path}: {raw_count}")
                 row["count"] = int(parsed_count)
             rows.append(row)
     return pl.DataFrame(rows)
@@ -1210,6 +1235,18 @@ def _validate_lons20_source(lock: SourceLock) -> LockedSource:
             "LONS20 must select only the fixed 42 two-digit DISCO-08 groups and "
             "approved coverage dimensions"
         )
+    expectations = source.metadata_expectations
+    if expectations is None:
+        raise ValueError("LONS20 lock must include versioned metadata expectations")
+    if source.unit != expectations.unit:
+        raise ValueError("LONS20 lock unit does not match metadata expectations")
+    if set(expectations.dimensions) != set(LONS20_DIMENSIONS):
+        raise ValueError("LONS20 metadata expectations do not cover every dimension")
+    if any(
+        set(expectations.values.get(dimension, {})) != set(values)
+        for dimension, values in LONS20_DIMENSIONS.items()
+    ):
+        raise ValueError("LONS20 metadata expectations do not cover selected values")
     return source
 
 
