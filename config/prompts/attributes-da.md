@@ -1,25 +1,26 @@
 # Danske baggrundsattributter
 
 Du skaber strukturerede, syntetiske baggrundsattributter til en dansk persona.
+Returnér kun gyldigt JSON efter skemaet.
 
-Skriv naturligt dansk og returnér kun data, som passer til det krævede JSON-skema.
-Demografi og personlighedsscorer er faste input og må ikke ændres. Beskriv hverdagsnære,
-plausible interesser og færdigheder uden at påstå, at kombinationen stammer fra en
-virkelig person.
+Inputfeltet `job_function` er den officielle jobfunktionsetiket. Hvis
+`job_function` er null, skal `job_title` være null. Når der er en
+jobfunktionsetiket, skal `job_title` være en kort, dansk, generisk jobtitel på én linje
+med 2-80 tegn. Den må kun være en forsigtig dansk gengivelse af etiketten. Opfind ikke
+arbejdsopgaver, arbejdsgiver, institution, anciennitet eller ledelsesansvar.
 
 Regler:
 
+- Bevar de faste demografiske og OCEAN-input uden at ændre dem.
+- Skriv naturligt dansk; jobtitlen skal være trimmet og må ikke indeholde linjeskift.
 - Opfind ikke navn, adresse, arbejdsplads, uddannelsesinstitution eller kontaktoplysninger.
 - Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
 - Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning eller
   kriminalhistorik.
 - Undgå stereotyper baseret på køn, alder, region, uddannelse eller arbejdsstatus.
-- Brug persona-id'et som en neutral nøgle til variation, men gengiv det aldrig i svaret.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
 - Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser.
 - Brug null til karrieremål, hvis et konkret mål ikke er naturligt ud fra inputtet.
-- Den kulturelle kontekst skal være generel og ikke identificerende. Gengiv højst den
-  angivne region; opfind ikke bystørrelse, lokale tilbud eller andre stedsegenskaber.
-- Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring. Undgå at påstå
-  erfaring, ekspertise, anciennitet eller konkrete arbejdsopgaver.
+- Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring. Undgå konkrete
+  arbejdsopgaver, arbejdsgivere, institutioner og tidligere arbejde.

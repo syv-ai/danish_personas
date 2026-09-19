@@ -335,7 +335,7 @@ def _count_checkpoint_errors(
             }
             output_values = {name: row[name] for name in checkpoint_values}
             replay_valid, stage_attempts = _responses_match_checkpoint(
-                checkpoint=checkpoint
+                checkpoint=checkpoint, demographic=row
             )
             if (
                 checkpoint.persona_id != persona_id
@@ -442,14 +442,17 @@ def _checkpoint_accounting_matches(
 
 
 def _responses_match_checkpoint(
-    *, checkpoint: PersonaCheckpoint
+    *, checkpoint: PersonaCheckpoint, demographic: dict[str, object]
 ) -> tuple[bool, tuple[int, int]]:
     """Replay the two response stages and bind accepted content to the checkpoint.
 
     Returns:
         Whether the sequence is valid and the number of responses for each stage.
     """
-    parsers = (parse_attributes, parse_descriptions)
+    parsers = (
+        lambda content: parse_attributes(content, demographic),
+        lambda content: parse_descriptions(content, demographic, checkpoint.attributes),
+    )
     expected = (checkpoint.attributes, checkpoint.descriptions)
     response_index = 0
     stage_attempts: list[int] = []
@@ -513,8 +516,8 @@ def _count_content_errors(output: pl.DataFrame) -> int:
             descriptions = PersonaDescriptions.model_validate(
                 {name: row[name] for name in PersonaDescriptions.model_fields}
             )
-            parse_attributes(attributes.model_dump_json())
-            parse_descriptions(descriptions.model_dump_json())
+            parse_attributes(attributes.model_dump_json(), row)
+            parse_descriptions(descriptions.model_dump_json(), row, attributes)
         except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             errors += 1
     return errors

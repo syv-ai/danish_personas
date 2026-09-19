@@ -3,6 +3,7 @@
 import collections.abc as c
 import logging
 import os
+import re
 import typing as t
 from pathlib import Path
 
@@ -34,21 +35,40 @@ from .models import (
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
-# Sampler back-off and proxy provenance are withheld from prompts: they record how
-# a value was obtained, not anything about the person. Keep non-ladder resolution
-# fields listed here explicitly so they cannot be omitted when ladders change.
+# Codes and sampler provenance are withheld from prompts. Human-readable labels are
+# deliberately selected below so adding a source column cannot leak provenance.
 AUDIT_FIELDS = frozenset(
     (
         *MOST_SPECIFIC_RESOLUTION,
         "education_resolution",
         "origin_country_code",
-        "origin_country",
+        "education_source_code",
+        "detailed_status_code",
         "job_function_code",
-        "job_function",
-        "job_function_resolution",
         "municipality_code",
-        "municipality",
+        "region_code",
+        "job_function_resolution",
+        "persona_id",
     )
+)
+PROMPT_FIELDS = (
+    "origin_country",
+    "municipality",
+    "job_function",
+    "age",
+    "sex",
+    "education_level",
+    "labour_market_status",
+    "openness_score",
+    "openness_label",
+    "conscientiousness_score",
+    "conscientiousness_label",
+    "extraversion_score",
+    "extraversion_label",
+    "agreeableness_score",
+    "agreeableness_label",
+    "neuroticism_score",
+    "neuroticism_label",
 )
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
@@ -62,7 +82,7 @@ def generate_personas(
     live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and seven persona descriptions.
+    """Generate structured attributes and six persona descriptions.
 
     Args:
         input_path:
@@ -214,7 +234,7 @@ def _generate_one(
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
-    prompt_row = {key: value for key, value in row.items() if key not in AUDIT_FIELDS}
+    prompt_row = _prompt_row(row=row)
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{persona_id}.json"
     attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
@@ -227,8 +247,11 @@ def _generate_one(
             input_sha=input_sha,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
+            demographic=row,
         )
-        parse_descriptions(checkpoint.descriptions.model_dump_json())
+        parse_descriptions(
+            checkpoint.descriptions.model_dump_json(), row, checkpoint.attributes
+        )
         return checkpoint
 
     if attribute_path.exists():
@@ -240,6 +263,7 @@ def _generate_one(
             input_sha=input_sha,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
+            demographic=row,
         )
         attributes = attribute_checkpoint.attributes
         responses = list(attribute_checkpoint.responses)
@@ -253,7 +277,7 @@ def _generate_one(
             payload={"demographics_and_personality": prompt_row},
             schema_name="generated_attributes",
             schema=t.cast(dict[str, object], GeneratedAttributes.model_json_schema()),
-            parser=parse_attributes,
+            parser=lambda content: parse_attributes(content, row),
             maximum_attempts=config.maximum_validation_attempts,
             responses=responses,
         )
@@ -280,7 +304,7 @@ def _generate_one(
             },
             schema_name="persona_descriptions",
             schema=t.cast(dict[str, object], PersonaDescriptions.model_json_schema()),
-            parser=parse_descriptions,
+            parser=lambda content: parse_descriptions(content, row, attributes),
             maximum_attempts=config.maximum_validation_attempts,
             responses=responses,
         )
@@ -349,11 +373,25 @@ def _complete_validated(
     raise last_error
 
 
+def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
+    """Build the intentionally small, human-readable model context.
+
+    Returns:
+        Selected human-readable input fields with any leading DISCO code removed.
+    """
+    payload = {name: row.get(name) for name in PROMPT_FIELDS}
+    job_function = payload.get("job_function")
+    if isinstance(job_function, str):
+        payload["job_function"] = re.sub(r"^\s*\d{1,3}\s+", "", job_function).strip()
+    return payload
+
+
 def _validate_checkpoint(
     checkpoint: AttributeCheckpoint | PersonaCheckpoint,
     input_sha: str,
     generation_context_sha: str,
     model: str,
+    demographic: dict[str, object],
 ) -> None:
     if checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
@@ -364,7 +402,13 @@ def _validate_checkpoint(
     if checkpoint.validator_version != VALIDATOR_VERSION:
         message = f"Stale validator context for {checkpoint.persona_id}"
         raise ValueError(message)
-    parse_attributes(checkpoint.attributes.model_dump_json())
+    parse_attributes(checkpoint.attributes.model_dump_json(), demographic)
+    if isinstance(checkpoint, PersonaCheckpoint):
+        parse_descriptions(
+            checkpoint.descriptions.model_dump_json(),
+            demographic,
+            checkpoint.attributes,
+        )
     if any(
         not models_match(configured=model, returned=response.model)
         for response in checkpoint.responses
@@ -498,7 +542,10 @@ def generation_context_sha256(
                 "attributes_schema": GeneratedAttributes.model_json_schema(),
                 "personas_schema": PersonaDescriptions.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
-                "withheld_fields": sorted(AUDIT_FIELDS),
+                "prompt_fields": PROMPT_FIELDS,
+                "withheld_fields": sorted(
+                    set(DemographicRecord.model_fields) - set(PROMPT_FIELDS)
+                ),
             }
         )
     )
