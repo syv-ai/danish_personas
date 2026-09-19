@@ -140,6 +140,14 @@ def test_all_six_description_fields_must_be_distinct(field: str) -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
+def test_appearance_boundary_does_not_reject_hardt() -> None:
+    """A longer word containing hår is not an appearance claim."""
+    context = demographic(status="retired", job_title=None)
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["professional_persona"] += " Personen arbejder hårdt."
+    parse_descriptions(json.dumps(text), context, attributes(job_title=None))
+
+
 def test_current_title_or_non_employee_status_is_required() -> None:
     """The summary names the exact current title or canonical status."""
     context = demographic()
@@ -149,7 +157,21 @@ def test_current_title_or_non_employee_status_is_required() -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
-@pytest.mark.parametrize("claim", ["familie", "arbejdede tidligere", "udseende"])
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "familie",
+        "børn",
+        "børnenes",
+        "barnet",
+        "ansigter",
+        "ansigtstræk",
+        "hårene",
+        "hudfarve",
+        "arbejdede tidligere",
+        "udseende",
+    ],
+)
 def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
     """Unsupported family, former-work, and appearance claims are rejected."""
     context = demographic(status="retired", job_title=None)
@@ -234,6 +256,40 @@ def test_required_demographic_facts_are_literal(missing: str) -> None:
         ValueError, match=missing if missing != "origin_country" else "origin"
     ):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_status_ten_allows_only_grounded_phrase_in_persona() -> None:
+    """Status 10 permits its canonical phrase, but not related claims."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code="10",
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
+    )
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["persona"] = text["persona"].replace(
+        "arbejder som forretningsspecialist", "er medarbejdende ægtefælle"
+    )
+    assert (
+        parse_descriptions(
+            json.dumps(text), context, attributes(job_title=None)
+        ).persona
+        == text["persona"]
+    )
+
+    for field in ("professional_persona", "sports_persona"):
+        rejected = dict(text)
+        rejected[field] = "Personen er medarbejdende ægtefælle i hverdagen."
+        with pytest.raises(ValueError):
+            parse_descriptions(
+                json.dumps(rejected), context, attributes(job_title=None)
+            )
+
+    rejected = dict(text)
+    rejected["persona"] += " Personen har børnene med sig."
+    with pytest.raises(ValueError):
+        parse_descriptions(json.dumps(rejected), context, attributes(job_title=None))
 
 
 @pytest.mark.parametrize("count", [2, 3])

@@ -462,3 +462,7 @@ class ValidationReport(StrictModel):
     created_at: str
     subject_id: str
     metrics: list[MetricResult]
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: dict[str, object] | None = None
