@@ -4,9 +4,10 @@
 
 This report covers a three-record integration smoke test only. It does not approve the
 frozen 1,000-row development sample, the 10,000-row pilot, or any release-scale persona
-generation. It is a historical report from before the required `visual_persona` field
-was added; its six-description results are not evidence for the current
-seven-description schema or validation gates.
+generation. It is a historical generation-contract v1 report from before the v2 change:
+its six-description results are not evidence for the current six-text grounded-persona
+schema or validation gates. The old run is retained for historical facts only and cannot
+be resumed under v2.
 
 The run used the first three persona identifiers from the checksum-locked, stratified
 Phase-3 seed file. Generation preserved the existing demographic and independently
@@ -17,8 +18,9 @@ sampled OCEAN fields.
 - Endpoint: local `pi-openai-api` OpenAI-compatible proxy.
 - Model: `gpt-5.6-sol` through provider `openai-codex`.
 - Response mode: strict JSON Schema.
-- Stages per record in this historical run: structured attributes, then six persona
-  descriptions; current runs require seven, including `visual_persona`.
+- Stages per record in this historical v1 run: structured attributes, then six persona
+  descriptions under the old prompt contract; current v2 runs return five specialised
+  texts plus one short grounded persona, with no `visual_persona`.
 - Sampling parameters: none; the proxy rejects temperature, seed, and token-limit
   parameters.
 
@@ -36,8 +38,7 @@ succeeded before the persona run.
 - Prompt tokens: 4,795.
 - Completion tokens: 2,545.
 - Total tokens: 7,340.
-- Output SHA-256:
-  `34a9d898dd7df8793c17ec2d4647c84d92e71bff06d2fe51ece757c0c993bac3`.
+- Output SHA-256: `34a9d898dd7df8793c17ec2d4647c84d92e71bff06d2fe51ece757c0c993bac3`.
 - Report result: passed all five mandatory automated metrics.
 
 The proxy did not report monetary cost, so actual cost remains unmeasured. Token counts
@@ -57,13 +58,12 @@ and cooking. The prompts were tightened before the final run to:
 - use the persona identifier only as a hidden variation key;
 - discourage repeated default interest combinations.
 
-Manual review of all 18 final historical descriptions found natural Danish,
-no identifying details, no sensitive-attribute inference, no demographic changes, and
-more varied interests.
-The text remains deliberately conservative when a specialised domain is unsupported.
-Some phrases still sound statistical, particularly translations of detailed labour
-status, and the sample is too small to assess systematic stereotyping, diversity,
-cross-record repetition, or broad language quality.
+Manual review of all 18 final historical descriptions found natural Danish, no
+identifying details, no sensitive-attribute inference, no demographic changes, and more
+varied interests. The text remains deliberately conservative when a specialised domain
+is unsupported. Some phrases still sound statistical, particularly translations of
+detailed labour status, and the sample is too small to assess systematic stereotyping,
+diversity, cross-record repetition, or broad language quality.
 
 ## Gate status
 

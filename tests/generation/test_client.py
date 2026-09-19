@@ -39,7 +39,7 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
 
 def _config() -> GenerationConfig:
     return GenerationConfig(
-        version=1,
+        version=2,
         llm_generation_enabled=True,
         base_url="http://test/v1",
         model="gpt-test",

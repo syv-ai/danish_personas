@@ -34,6 +34,7 @@ from scripts.generate_persona_pilot import main as pilot_main
 class _MockClient:
     requests = 0
     payloads: list[dict[str, object]] = []
+    job_title = "forretningsspecialist"
 
     def __init__(
         self,
@@ -57,10 +58,20 @@ class _MockClient:
         self._requests_made += 1
         if self._record_request is not None:
             self._record_request(self._requests_made)
+        demographics = t.cast(
+            dict[str, object], payload["demographics_and_personality"]
+        )
+        employed = demographics["job_function"] is not None
         content = (
-            _attributes_json()
+            _attributes_json(
+                employed=employed, job_title=type(self).job_title if employed else None
+            )
             if schema_name == "generated_attributes"
-            else _descriptions_json()
+            else _descriptions_json(
+                employed=employed,
+                demographic=demographics,
+                job_title=type(self).job_title if employed else None,
+            )
         )
         return LLMResponse(
             response_id=f"response-{self.requests}",
@@ -95,7 +106,7 @@ class _InterruptingClient(_MockClient):
         return super().complete(schema_name=schema_name, **kwargs)
 
 
-def _attributes_json() -> str:
+def _attributes_json(*, employed: bool = True, job_title: str | None = None) -> str:
     return json.dumps(
         {
             "cultural_context": (
@@ -108,12 +119,49 @@ def _attributes_json() -> str:
                 "at spille brætspil med venner",
             ],
             "career_goals_and_ambitions": None,
+            "job_title": job_title if employed else None,
         },
         ensure_ascii=False,
     )
 
 
-def _descriptions_json() -> str:
+def _descriptions_json(
+    *,
+    employed: bool = True,
+    demographic: dict[str, object] | None = None,
+    job_title: str | None = None,
+) -> str:
+    context = demographic or {
+        "age": 35,
+        "sex": "female",
+        "municipality": "København",
+        "origin_country": "Denmark",
+        "education_level": "masters",
+    }
+    sex = "kvinde" if context["sex"] == "female" else "mand"
+    education = {"masters": "kandidatuddannelse", "vocational": "erhvervsuddannelse"}[
+        str(context["education_level"])
+    ]
+    if employed:
+        persona = (
+            f"Personen er {context['age']} år gammel {sex} fra "
+            f"{context['municipality']} i {context['origin_country']} med en "
+            f"{education} og arbejder som {job_title}. Personen "
+            "kan være rolig og holder af at læse danske romaner, at lytte til "
+            "musik i fritiden og at spille brætspil med venner."
+        )
+    else:
+        status = (
+            "pensionist"
+            if context.get("labour_market_status") == "retired"
+            else "uden for arbejdsmarkedet"
+        )
+        persona = (
+            f"Personen er {context['age']} år gammel {sex} fra "
+            f"{context['municipality']} i {context['origin_country']} med en "
+            f"{education} og er {status}. Personen kan være rolig og nyder "
+            "at læse danske romaner og at lytte til musik i fritiden."
+        )
     return json.dumps(
         {
             "professional_persona": (
@@ -136,14 +184,7 @@ def _descriptions_json() -> str:
                 "I køkkenet er der plads til enkle retter og hyggelige måltider "
                 "med andre."
             ),
-            "persona": (
-                "Personen har en rolig dansk hverdag med plads til læsning, musik "
-                "og venner. Nye opgaver mødes med nysgerrighed og samarbejde."
-            ),
-            "visual_persona": (
-                "Personen vælger en blå skjorte og et grønt armbånd. "
-                "Baggrunden er en neutral flade."
-            ),
+            "persona": persona,
         },
         ensure_ascii=False,
     )
@@ -190,9 +231,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "education_resolution",
         "detailed_status_resolution",
         "origin_country_code",
-        "origin_country",
         "job_function_code",
-        "job_function",
         "job_function_resolution",
         "municipality_code",
         "municipality",
@@ -204,8 +243,20 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
-    assert set(resolution_columns).isdisjoint(attributes_payload)
-    assert set(resolution_columns).isdisjoint(descriptions_payload)
+    withheld_fields = {
+        *set(resolution_columns) - {"municipality"},
+        "region_code",
+        "country",
+        "detailed_status_code",
+        "education_source_code",
+    }
+    assert withheld_fields.isdisjoint(attributes_payload)
+    assert withheld_fields.isdisjoint(descriptions_payload)
+    assert (
+        attributes_payload["job_function"]
+        == "Business and administration professionals"
+    )
+    assert attributes_payload["municipality"] == "København"
     assert attributes_payload["education_level"] == "masters"
     assert descriptions_payload["education_level"] == "masters"
     assert "generated_attributes" in _MockClient.payloads[1]
@@ -215,7 +266,6 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
-    assert "visual_persona" in output.columns
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
         sample.head(1).select(list(resolution_columns))
@@ -260,7 +310,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "neuroticism_score": [48.0, 47.0],
             "neuroticism_label": ["average", "average"],
             "origin_country_code": ["5100", "5103"],
-            "origin_country": ["Denmark", "Stateless"],
+            "origin_country": ["Denmark", "Denmark"],
         }
     )
     source_path = run_dir / "structured-records.parquet"
@@ -310,7 +360,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     personas_prompt.write_text("Danske personaer")
     config_path = root / "generation.yaml"
     config = {
-        "version": 1,
+        "version": 2,
         "llm_generation_enabled": True,
         "base_url": "http://test/v1",
         "model": "test-model",
@@ -335,6 +385,77 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "config": config_path,
         "personas_prompt": personas_prompt,
     }
+
+
+def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Custom title mappings govern initial validation and checkpoint replay."""
+    paths = _write_inputs(root=tmp_path)
+    custom_title = "specialtilpasset forretningsrådgiver"
+    mapping_data = yaml.safe_load(
+        (Path(__file__).parents[2] / "config/job-function-titles.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    mapping_data["job_functions"]["24"]["titles"] = [custom_title]
+    mapping_path = tmp_path / "custom-job-function-titles.yaml"
+    mapping_path.write_text(
+        yaml.safe_dump(mapping_data, allow_unicode=True), encoding="utf-8"
+    )
+    config_data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
+    config_data["job_title_mapping"] = str(mapping_path)
+    paths["config"].write_text(
+        yaml.safe_dump(config_data, allow_unicode=True), encoding="utf-8"
+    )
+
+    class CustomMappingClient(_MockClient):
+        job_title = custom_title
+
+    mismatch_config = tmp_path / "default-job-title-config.yaml"
+    mismatch_data = dict(config_data)
+    mismatch_data.pop("job_title_mapping")
+    mismatch_config.write_text(
+        yaml.safe_dump(mismatch_data, allow_unicode=True), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", CustomMappingClient
+    )
+    with pytest.raises(ValueError, match="allowlisted"):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=mismatch_config,
+            output_dir=tmp_path / "mismatched-output",
+            rows=1,
+            live=True,
+        )
+
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    assert validate_persona_run(run_dir=run_dir).passed
+
+    default_config_data = dict(config_data)
+    default_config_data.pop("job_title_mapping")
+    paths["config"].write_text(
+        yaml.safe_dump(default_config_data, allow_unicode=True), encoding="utf-8"
+    )
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    paths["config"].write_text(
+        yaml.safe_dump(config_data, allow_unicode=True), encoding="utf-8"
+    )
+    mapping_data["job_functions"]["24"]["titles"] = ["anden forretningsrådgiver"]
+    mapping_path.write_text(
+        yaml.safe_dump(mapping_data, allow_unicode=True), encoding="utf-8"
+    )
+    assert not validate_persona_run(run_dir=run_dir).passed
 
 
 @pytest.mark.parametrize(
@@ -410,6 +531,35 @@ def test_persona_validation_rejects_independent_tampering(
             manifest["offset"] = 1
         write_json(path=manifest_path, payload=manifest)
 
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
+def test_persona_validation_rejects_mapping_binding_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay validation rejects forged checkpoint and manifest mapping fields."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    original_checkpoint = checkpoint_path.read_bytes()
+    checkpoint["job_title_mapping_content"]["version"] = 999
+    write_json(path=checkpoint_path, payload=checkpoint)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    checkpoint_path.write_bytes(original_checkpoint)
+    manifest_path = run_dir / "generation-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["job_title_mapping_sha256"] = "f" * 64
+    write_json(path=manifest_path, payload=manifest)
     assert not validate_persona_run(run_dir=run_dir).passed
 
 
@@ -532,7 +682,6 @@ def test_pilot_merges_validated_shards(
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
-    assert "visual_persona" in output.columns
     assert _MockClient.requests == 4
 
 
@@ -662,6 +811,42 @@ def test_pilot_validation_rejects_independent_tampering(
             reference["validation_report_sha256"] = sha256_file(report_path)
         write_json(path=manifest_path, payload=manifest)
 
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+
+def test_pilot_validation_rejects_mapping_binding_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pilot validation rejects forged references and stored report bindings."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    pilot_dir = run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "pilot",
+        rows=1,
+        batch_size=1,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=5,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
+    )
+    manifest_path = pilot_dir / "pilot-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["batch_runs"][0]["job_title_mapping_version"] = 999
+    write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reference = manifest["batch_runs"][0]
+    report_path = pilot_dir / reference["validation_report_file"]
+    stored_report = json.loads(report_path.read_text(encoding="utf-8"))
+    stored_report["job_title_mapping_version"] = 999
+    write_json(path=report_path, payload=stored_report)
+    reference["validation_report_sha256"] = sha256_file(report_path)
+    write_json(path=manifest_path, payload=manifest)
     assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
 
 

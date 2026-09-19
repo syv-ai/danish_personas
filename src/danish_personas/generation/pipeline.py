@@ -3,6 +3,7 @@
 import collections.abc as c
 import logging
 import os
+import re
 import typing as t
 from pathlib import Path
 
@@ -20,6 +21,12 @@ from ..models import (
 )
 from .client import OpenAIClient, RequestBudgetExceeded
 from .identity import generation_run_id
+from .job_titles import (
+    DEFAULT_JOB_TITLE_MAPPING_PATH,
+    JobFunctionTitleMapping,
+    load_job_title_mapping,
+)
+from .job_titles import job_title_mapping_sha256 as mapping_file_sha256
 from .models import (
     AttributeCheckpoint,
     FrozenSampleManifest,
@@ -34,21 +41,41 @@ from .models import (
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
-# Sampler back-off and proxy provenance are withheld from prompts: they record how
-# a value was obtained, not anything about the person. Keep non-ladder resolution
-# fields listed here explicitly so they cannot be omitted when ladders change.
+# Codes and sampler provenance are withheld from prompts. Human-readable labels are
+# deliberately selected below so adding a source column cannot leak provenance.
 AUDIT_FIELDS = frozenset(
     (
         *MOST_SPECIFIC_RESOLUTION,
         "education_resolution",
         "origin_country_code",
-        "origin_country",
+        "education_source_code",
+        "detailed_status_code",
         "job_function_code",
-        "job_function",
-        "job_function_resolution",
         "municipality_code",
-        "municipality",
+        "region_code",
+        "job_function_resolution",
+        "persona_id",
     )
+)
+PROMPT_FIELDS = (
+    "origin_country",
+    "municipality",
+    "job_function",
+    "age",
+    "sex",
+    "education_level",
+    "labour_market_status",
+    "openness_score",
+    "openness_label",
+    "conscientiousness_score",
+    "conscientiousness_label",
+    "extraversion_score",
+    "extraversion_label",
+    "agreeableness_score",
+    "agreeableness_label",
+    "neuroticism_score",
+    "neuroticism_label",
+    "current_status",
 )
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
@@ -62,7 +89,7 @@ def generate_personas(
     live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and seven persona descriptions.
+    """Generate structured attributes and six persona descriptions.
 
     Args:
         input_path:
@@ -99,12 +126,19 @@ def generate_personas(
     frame = sample.slice(offset, rows)
     selected_ids = frame.get_column("persona_id").to_list()
     ordered_ids_sha = sha256_text(canonical_json(selected_ids))
+    mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
+    job_title_mapping = load_job_title_mapping(mapping_path)
+    mapping_sha = mapping_file_sha256(mapping_path)
+    context_mapping = job_title_mapping
+    context_mapping_sha = mapping_sha
     attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
     personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
     generation_context_sha = generation_context_sha256(
         config=config,
         attributes_prompt=attributes_prompt,
         personas_prompt=personas_prompt,
+        job_title_mapping=context_mapping,
+        job_title_mapping_sha256=context_mapping_sha,
     )
     run_id = generation_run_id(
         input_sha256=sha256_file(input_path),
@@ -156,6 +190,9 @@ def generate_personas(
                     attributes_prompt=attributes_prompt,
                     personas_prompt=personas_prompt,
                     generation_context_sha=generation_context_sha,
+                    job_title_mapping=job_title_mapping,
+                    job_title_mapping_sha256=mapping_sha,
+                    job_title_mapping_path=mapping_path,
                 )
             )
     finally:
@@ -173,6 +210,10 @@ def generate_personas(
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context_sha,
         validator_version=VALIDATOR_VERSION,
+        job_title_mapping_file=mapping_path,
+        job_title_mapping_sha256=mapping_sha,
+        job_title_mapping_version=job_title_mapping.version,
+        job_title_mapping_content=job_title_mapping,
         attributes_prompt_sha256=sha256_text(attributes_prompt),
         personas_prompt_sha256=sha256_text(personas_prompt),
         model=config.model or "",
@@ -211,10 +252,13 @@ def _generate_one(
     attributes_prompt: str,
     personas_prompt: str,
     generation_context_sha: str,
+    job_title_mapping: JobFunctionTitleMapping,
+    job_title_mapping_sha256: str,
+    job_title_mapping_path: Path,
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
-    prompt_row = {key: value for key, value in row.items() if key not in AUDIT_FIELDS}
+    prompt_row = _prompt_row(row=row)
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{persona_id}.json"
     attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
@@ -227,8 +271,14 @@ def _generate_one(
             input_sha=input_sha,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
+            demographic=row,
+            job_title_mapping=job_title_mapping,
+            job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_path=job_title_mapping_path,
         )
-        parse_descriptions(checkpoint.descriptions.model_dump_json())
+        parse_descriptions(
+            checkpoint.descriptions.model_dump_json(), row, checkpoint.attributes
+        )
         return checkpoint
 
     if attribute_path.exists():
@@ -240,6 +290,10 @@ def _generate_one(
             input_sha=input_sha,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
+            demographic=row,
+            job_title_mapping=job_title_mapping,
+            job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_path=job_title_mapping_path,
         )
         attributes = attribute_checkpoint.attributes
         responses = list(attribute_checkpoint.responses)
@@ -250,10 +304,17 @@ def _generate_one(
         attributes = _complete_validated(
             client=client,
             prompt=attributes_prompt,
-            payload={"demographics_and_personality": prompt_row},
+            payload={
+                "demographics_and_personality": prompt_row,
+                "allowed_job_titles": _allowed_job_titles(
+                    row=row, mapping=job_title_mapping
+                ),
+            },
             schema_name="generated_attributes",
             schema=t.cast(dict[str, object], GeneratedAttributes.model_json_schema()),
-            parser=parse_attributes,
+            parser=lambda content: parse_attributes(
+                content, row, job_title_mapping=job_title_mapping
+            ),
             maximum_attempts=config.maximum_validation_attempts,
             responses=responses,
         )
@@ -263,6 +324,10 @@ def _generate_one(
             input_sha256=input_sha,
             generation_context_sha256=generation_context_sha,
             validator_version=VALIDATOR_VERSION,
+            job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_version=job_title_mapping.version,
+            job_title_mapping_file=job_title_mapping_path,
+            job_title_mapping_content=job_title_mapping,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests,
@@ -280,7 +345,7 @@ def _generate_one(
             },
             schema_name="persona_descriptions",
             schema=t.cast(dict[str, object], PersonaDescriptions.model_json_schema()),
-            parser=parse_descriptions,
+            parser=lambda content: parse_descriptions(content, row, attributes),
             maximum_attempts=config.maximum_validation_attempts,
             responses=responses,
         )
@@ -290,6 +355,10 @@ def _generate_one(
             input_sha256=input_sha,
             generation_context_sha256=generation_context_sha,
             validator_version=VALIDATOR_VERSION,
+            job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_version=job_title_mapping.version,
+            job_title_mapping_file=job_title_mapping_path,
+            job_title_mapping_content=job_title_mapping,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests + client.requests_made - request_start,
@@ -302,6 +371,10 @@ def _generate_one(
         input_sha256=input_sha,
         generation_context_sha256=generation_context_sha,
         validator_version=VALIDATOR_VERSION,
+        job_title_mapping_sha256=job_title_mapping_sha256,
+        job_title_mapping_version=job_title_mapping.version,
+        job_title_mapping_file=job_title_mapping_path,
+        job_title_mapping_content=job_title_mapping,
         attributes=attributes,
         descriptions=descriptions,
         responses=responses,
@@ -311,6 +384,16 @@ def _generate_one(
     write_json(path=checkpoint_path, payload=checkpoint)
     attribute_path.unlink(missing_ok=True)
     return checkpoint
+
+
+def _allowed_job_titles(
+    *, row: dict[str, object], mapping: JobFunctionTitleMapping
+) -> list[str]:
+    """Return only reviewed titles for the row's official function."""
+    code = row.get("job_function_code")
+    if not isinstance(code, str) or code not in mapping.job_functions:
+        return []
+    return list(mapping.job_functions[code].titles)
 
 
 def _complete_validated(
@@ -349,11 +432,44 @@ def _complete_validated(
     raise last_error
 
 
+def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
+    """Build the intentionally small, human-readable model context.
+
+    Returns:
+        Selected human-readable input fields with any leading DISCO code removed.
+    """
+    payload = {name: row.get(name) for name in PROMPT_FIELDS}
+    detailed_status = str(row.get("detailed_status_code", ""))
+    current_status = {"05": "selvstændig", "10": "medarbejdende ægtefælle"}.get(
+        detailed_status
+    )
+    if current_status is None and row.get("labour_market_status") != "employed":
+        current_status = {
+            "unemployed": "ledig",
+            "student": "studerende",
+            "retired": "pensionist",
+            "other": "uden for arbejdsmarkedet",
+        }.get(str(row.get("labour_market_status", "")).casefold())
+    payload["current_status"] = current_status
+    job_function = payload.get("job_function")
+    if isinstance(job_function, str):
+        # Official labels may be serialised as ``24 Label`` or ``24 - Label``;
+        # neither the code nor its separator is useful model context.
+        payload["job_function"] = re.sub(
+            r"^\s*\d{1,3}(?:\s*[-:]\s*|\s+)", "", job_function
+        ).strip()
+    return payload
+
+
 def _validate_checkpoint(
     checkpoint: AttributeCheckpoint | PersonaCheckpoint,
     input_sha: str,
     generation_context_sha: str,
     model: str,
+    demographic: dict[str, object],
+    job_title_mapping: JobFunctionTitleMapping | None = None,
+    job_title_mapping_sha256: str | None = None,
+    job_title_mapping_path: Path | None = None,
 ) -> None:
     if checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
@@ -364,7 +480,25 @@ def _validate_checkpoint(
     if checkpoint.validator_version != VALIDATOR_VERSION:
         message = f"Stale validator context for {checkpoint.persona_id}"
         raise ValueError(message)
-    parse_attributes(checkpoint.attributes.model_dump_json())
+    if job_title_mapping_sha256 is not None and (
+        checkpoint.job_title_mapping_sha256 != job_title_mapping_sha256
+        or checkpoint.job_title_mapping_version
+        != (job_title_mapping.version if job_title_mapping is not None else None)
+        or checkpoint.job_title_mapping_content != job_title_mapping
+        or checkpoint.job_title_mapping_file != job_title_mapping_path
+    ):
+        raise ValueError(f"Stale job-title mapping for {checkpoint.persona_id}")
+    parse_attributes(
+        checkpoint.attributes.model_dump_json(),
+        demographic,
+        job_title_mapping=job_title_mapping,
+    )
+    if isinstance(checkpoint, PersonaCheckpoint):
+        parse_descriptions(
+            checkpoint.descriptions.model_dump_json(),
+            demographic,
+            checkpoint.attributes,
+        )
     if any(
         not models_match(configured=model, returned=response.model)
         for response in checkpoint.responses
@@ -474,7 +608,12 @@ def _write_output(
 
 
 def generation_context_sha256(
-    *, config: GenerationConfig, attributes_prompt: str, personas_prompt: str
+    *,
+    config: GenerationConfig,
+    attributes_prompt: str,
+    personas_prompt: str,
+    job_title_mapping: JobFunctionTitleMapping | None = None,
+    job_title_mapping_sha256: str | None = None,
 ) -> str:
     """Hash every effective input that controls LLM generation.
 
@@ -485,6 +624,10 @@ def generation_context_sha256(
             Prompt used for the structured attributes stage.
         personas_prompt:
             Prompt used for the persona descriptions stage.
+        job_title_mapping:
+            Validated reviewed title mapping.
+        job_title_mapping_sha256:
+            Checksum of the exact mapping file.
 
     Returns:
         SHA-256 digest for the prompts, schemas, validator, and configuration.
@@ -493,12 +636,25 @@ def generation_context_sha256(
         canonical_json(
             {
                 "config": config.model_dump(mode="json"),
+                "job_title_mapping": (
+                    job_title_mapping
+                    or load_job_title_mapping(
+                        config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
+                    )
+                ).model_dump(mode="json"),
+                "job_title_mapping_sha256": job_title_mapping_sha256
+                or mapping_file_sha256(
+                    config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
+                ),
                 "attributes_prompt_sha256": sha256_text(attributes_prompt),
                 "personas_prompt_sha256": sha256_text(personas_prompt),
                 "attributes_schema": GeneratedAttributes.model_json_schema(),
                 "personas_schema": PersonaDescriptions.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
-                "withheld_fields": sorted(AUDIT_FIELDS),
+                "prompt_fields": PROMPT_FIELDS,
+                "withheld_fields": sorted(
+                    set(DemographicRecord.model_fields) - set(PROMPT_FIELDS)
+                ),
             }
         )
     )

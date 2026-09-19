@@ -1,287 +1,313 @@
-"""Tests for deterministic persona-content validation."""
+"""Contextual tests for the generation-contract v2 validators."""
 
 import json
+from collections.abc import Mapping
 
 import pytest
 
+from danish_personas.generation.models import GeneratedAttributes
 from danish_personas.generation.validation import parse_attributes, parse_descriptions
 
+EDUCATION_RENDERINGS = {
+    "primary": "grundskole",
+    "upper_secondary": "gymnasial uddannelse",
+    "vocational": "erhvervsuddannelse",
+    "qualifying_programme": "kvalificerende uddannelse",
+    "short_cycle_higher": "kort videregående uddannelse",
+    "professional_bachelor": "professionsbacheloruddannelse",
+    "bachelor": "bacheloruddannelse",
+    "masters": "kandidatuddannelse",
+    "phd": "ph.d.-uddannelse",
+    "not_stated": "uddannelse ikke oplyst",
+}
 
-def test_danish_abbreviations_are_not_domains() -> None:
-    """Common dotted Danish abbreviations do not trigger the URL detector."""
-    payload = {
-        "cultural_context": (
-            "Personen deltager f.eks. i foreninger med naboer m.fl. i Danmark."
-        ),
+
+@pytest.mark.parametrize(("education", "rendering"), EDUCATION_RENDERINGS.items())
+def test_all_canonical_education_renderings(education: str, rendering: str) -> None:
+    """Every v2 education code has one required Danish rendering."""
+    context = demographic(education_level=education)
+    result = parse_descriptions(
+        json.dumps(descriptions(context=context)),
+        context,
+        GeneratedAttributes.model_validate(attributes()),
+    )
+    assert rendering in result.persona
+
+
+def attributes(*, job_title: str | None = "forretningsspecialist") -> dict[str, object]:
+    """Return a valid first-stage payload."""
+    return {
+        "cultural_context": "Personen har en dansk hverdag og deltager i fællesskaber.",
         "skills_and_expertise": ["planlægning", "samarbejde", "formidling"],
-        "hobbies_and_interests": ["at læse", "musik", "brætspil med venner"],
+        "hobbies_and_interests": ["at læse", "musik", "brætspil"],
         "career_goals_and_ambitions": None,
+        "job_title": job_title,
     }
-    assert parse_attributes(json.dumps(payload, ensure_ascii=False))
 
 
-@pytest.mark.parametrize(
-    "english_text",
-    [
-        "The person prefers a quiet walk and enjoys time outside with friends.",
-        "The person prefers a quiet walk and enjoys music with friends ø.",
-    ],
-)
-def test_english_description_fails_individually(english_text: str) -> None:
-    """One English description cannot hide among otherwise Danish fields."""
-    descriptions = _safe_descriptions()
-    descriptions["sports_persona"] = english_text
-    with pytest.raises(ValueError, match="natural Danish"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+def demographic(
+    *,
+    education_level: str = "masters",
+    sex: str = "female",
+    status: str = "employed",
+    job_title: str | None = "forretningsspecialist",
+) -> dict[str, object]:
+    """Return a small valid demographic context for validator tests."""
+    eligible = status == "employed"
+    return {
+        "persona_id": "persona-1",
+        "age": 35,
+        "sex": sex,
+        "municipality": "København",
+        "origin_country": "Danmark",
+        "education_level": education_level,
+        "labour_market_status": status,
+        "job_function": "24 Business and administration professionals"
+        if eligible
+        else None,
+        "job_function_resolution": "lons20_sex_marginal"
+        if eligible
+        else "not_applicable",
+        "openness_score": 50.0,
+        "openness_label": "average",
+        "conscientiousness_score": 50.0,
+        "conscientiousness_label": "average",
+        "extraversion_score": 50.0,
+        "extraversion_label": "average",
+        "agreeableness_score": 50.0,
+        "agreeableness_label": "average",
+        "neuroticism_score": 50.0,
+        "neuroticism_label": "average",
+        "job_title": job_title,
+    }
 
 
-def _safe_descriptions() -> dict[str, str]:
+def descriptions(
+    *, context: Mapping[str, object] | None = None, interests: list[str] | None = None
+) -> dict[str, str]:
+    """Return six distinct Danish fields with grounded summary facts."""
+    context = context or demographic()
+    interests = interests or ["at læse", "musik", "brætspil"]
+    education = EDUCATION_RENDERINGS[str(context["education_level"])]
+    sex = "kvinde" if context["sex"] == "female" else "mand"
+    status = "arbejder som forretningsspecialist"
+    if context["labour_market_status"] != "employed":
+        status = "er pensionist"
+    persona = (
+        f"Personen er {context['age']} år og {sex} fra {context['municipality']} "
+        f"i {context['origin_country']} med en {education} og {status}. "
+        f"Personen kan være rolig og holder af {', '.join(interests)}."
+    )
     return {
         "professional_persona": (
-            "På arbejdet er personen grundig og har fokus på et godt samarbejde "
-            "med andre."
+            "På hverdage kan personen lide tydelige opgaver og roligt "
+            "samarbejde med andre."
         ),
         "sports_persona": (
-            "Motion er en måde at få frisk luft på, og personen går gerne ture "
-            "i naturen."
+            "Motion kan være en enkel aktivitet, hvor personen ofte finder "
+            "tid til bevægelse."
         ),
         "arts_persona": (
-            "Personen holder af at læse og er nysgerrig på fortællinger fra "
-            "forskellige miljøer."
+            "Kunst og musik kan give personen en rolig stund med plads til fordybelse."
         ),
         "travel_persona": (
-            "Rejser planlægges i god tid, og der er plads til både ro og nye "
-            "oplevelser undervejs."
+            "På rejser kan personen foretrække en enkel plan og tid til nye oplevelser."
         ),
         "culinary_persona": (
-            "I køkkenet prøver personen enkle retter og deler gerne et måltid "
-            "med venner."
+            "I køkkenet kan personen lide enkle retter og hyggelige måltider "
+            "i hverdagen."
         ),
-        "persona": (
-            "Personen trives med en rolig hverdag, men er også åben for at lære "
-            "nyt sammen med andre."
-        ),
-        "visual_persona": (
-            "Personen vælger en blå trøje og et grønt tørklæde. "
-            "Baggrunden er et roligt atelier."
-        ),
+        "persona": persona,
     }
-
-
-def test_english_skills_cannot_hide_behind_danish_hobbies() -> None:
-    """Language validation treats each generated list as a separate field."""
-    payload = {
-        "cultural_context": (
-            "Personen bor i Danmark og deltager gerne i lokale fællesskaber."
-        ),
-        "skills_and_expertise": [
-            "project management",
-            "written communication",
-            "data analysis",
-        ],
-        "hobbies_and_interests": ["at læse", "gåture i naturen", "brætspil med venner"],
-        "career_goals_and_ambitions": None,
-    }
-    with pytest.raises(ValueError, match="natural Danish"):
-        parse_attributes(json.dumps(payload, ensure_ascii=False))
 
 
 @pytest.mark.parametrize(
-    ("text", "error"),
+    "field",
     [
-        ("Personen kan kontaktes på test@example.dk og bor i Danmark.", "email"),
-        (
-            "Personen bor på Nørrebrogade 12 og deltager i lokale fællesskaber.",
-            "address",
-        ),
-        ("Personen skriver på eksempel.eu og deltager i lokale fællesskaber.", "URL"),
-        ("Personen deler nyt på x.dk og deltager i lokale fællesskaber.", "URL"),
-        ("Personen deler nyt på t.co/tekst og deltager i fællesskaber.", "URL"),
-        ("Personen deler nyt på eksempel.xn--p1ai og deltager i fællesskaber.", "URL"),
-        ("Personen har diabetes og deltager også i lokale fællesskaber.", "sensitive"),
-        (
-            "Personen genopladеr batterierne og deltager i fællesskaber.",
-            "foreign-script",
-        ),
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
     ],
 )
-def test_prohibited_attribute_content_fails(text: str, error: str) -> None:
-    """Identifying and sensitive details are rejected before release."""
-    payload = {
-        "cultural_context": text,
-        "skills_and_expertise": ["planlægning", "samarbejde", "madlavning"],
-        "hobbies_and_interests": ["at læse", "gåture", "brætspil"],
-        "career_goals_and_ambitions": None,
-    }
-    with pytest.raises(ValueError, match=error):
-        parse_attributes(json.dumps(payload, ensure_ascii=False))
-
-
-def test_safe_danish_content_passes() -> None:
-    """Natural non-identifying Danish attributes and descriptions pass."""
-    attributes = {
-        "cultural_context": (
-            "Personen bor i Danmark og deltager gerne i lokale fællesskaber."
-        ),
-        "skills_and_expertise": ["praktisk planlægning", "samarbejde", "madlavning"],
-        "hobbies_and_interests": ["at læse", "gåture i naturen", "brætspil med venner"],
-        "career_goals_and_ambitions": (
-            "Vil gerne udvikle sine færdigheder på en rolig måde."
-        ),
-    }
-    assert parse_attributes(json.dumps(attributes, ensure_ascii=False))
-    assert parse_descriptions(json.dumps(_safe_descriptions(), ensure_ascii=False))
-
-
-def test_unsafe_visual_claim_fails() -> None:
-    """Visual guidance cannot encode sensitive or identifying traits."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        "Personen har mørk hud og en slank kropsbygning. "
-        "Portrættet kan placeres i København."
-    )
-    with pytest.raises(ValueError, match="Visual persona"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
-
-
-def test_visual_persona_accepts_controlled_vocabulary() -> None:
-    """Controlled clothing, accessory, colour, and background choices pass."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        "Personen vælger en rød kjole og en sort taske. "
-        "Baggrunden er en neutral flade. Lyset er diffust. Rammen er neutral."
-    )
-    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
-
-
-@pytest.mark.parametrize("colour", ["blåt", "turkist"])
-def test_visual_persona_accepts_neuter_colour_forms(colour: str) -> None:
-    """Neuter clothing and accessories use the correct colour forms."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
-        "Baggrunden er en neutral flade."
-    )
-    parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
-
-
-def test_visual_persona_duplicates_are_rejected() -> None:
-    """Visual guidance participates in the generic duplicate gate."""
-    descriptions = _safe_descriptions()
-    descriptions["persona"] = descriptions["visual_persona"]
+def test_all_six_description_fields_must_be_distinct(field: str) -> None:
+    """Exact normalised duplicate text is rejected for every field."""
+    context = demographic()
+    text = descriptions(context=context)
+    text[field] = text["persona"]
     with pytest.raises(ValueError, match="exact duplicates"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+        parse_descriptions(json.dumps(text), context, attributes())
 
 
-def test_visual_persona_is_required() -> None:
-    """The second-stage schema requires visual portrait guidance."""
-    descriptions = _safe_descriptions()
-    del descriptions["visual_persona"]
-    with pytest.raises(ValueError, match="visual_persona"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+def test_appearance_boundary_does_not_reject_hardt() -> None:
+    """A longer word containing hår is not an appearance claim."""
+    context = demographic(status="retired", job_title=None)
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["professional_persona"] += " Personen arbejder hårdt."
+    parse_descriptions(json.dumps(text), context, attributes(job_title=None))
+
+
+def test_current_title_or_non_employee_status_is_required() -> None:
+    """The summary names the exact current title or canonical status."""
+    context = demographic()
+    text = descriptions(context=context)
+    text["persona"] = text["persona"].replace("forretningsspecialist", "analytiker")
+    with pytest.raises(ValueError, match="current work status"):
+        parse_descriptions(json.dumps(text), context, attributes())
 
 
 @pytest.mark.parametrize(
-    "visual",
+    "claim",
     [
-        (
-            "Personen er 72 år og vælger en blå trøje. "
-            "Et lyst atelier giver en neutral portrætramme."
-        ),
-        (
-            "Personen er en ældre kvinde med en blå trøje. "
-            "Et lyst atelier giver en neutral portrætramme."
-        ),
-        (
-            "Personen er svensk og taler svensk. "
-            "Et lyst atelier giver en neutral portrætramme."
-        ),
-        (
-            "Personen har blå øjne og naturligt blondt hår. "
-            "Et lyst atelier giver en neutral portrætramme."
-        ),
-        (
-            "Personen har høj åbenhed og en blå trøje. "
-            "Et lyst atelier giver en neutral portrætramme."
-        ),
-        (
-            "Personen er amerikansk og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
-        (
-            "Personen er spansk og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
-        (
-            "Personen er midaldrende og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
-        (
-            "Personen er rødhåret og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
-        (
-            "Personen har fregner og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
-        (
-            "Personen er jødisk og vælger en blå skjorte. "
-            "Baggrunden er en neutral flade."
-        ),
+        "familie",
+        "børn",
+        "børnenes",
+        "barnet",
+        "ansigter",
+        "ansigtstræk",
+        "hårene",
+        "hudfarve",
+        "arbejdede tidligere",
+        "udseende",
     ],
 )
-def test_visual_persona_rejects_demographic_and_physical_claims(visual: str) -> None:
-    """Visual guidance cannot repeat demographic or immutable input."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = visual
-    with pytest.raises(ValueError, match="Visual persona"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
-
-
-def test_visual_persona_rejects_free_form_visual_text() -> None:
-    """Words outside the closed visual grammar are rejected."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        "Personen vælger en blå skjorte og et grønt tørklæde. "
-        "Et lyst atelier med høj kontrast giver en neutral portrætramme."
+def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
+    """Unsupported family, former-work, and appearance claims are rejected."""
+    context = demographic(status="retired", job_title=None)
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["persona"] = text["persona"].replace(
+        "Personen kan være rolig", f"Personen kan være rolig og {claim}"
     )
-    with pytest.raises(ValueError, match="controlled Danish format"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+    with pytest.raises(ValueError):
+        parse_descriptions(json.dumps(text), context, attributes(job_title=None))
 
 
-@pytest.mark.parametrize("colour", ["blå", "turkis"])
-def test_visual_persona_rejects_malformed_neuter_colour_forms(colour: str) -> None:
-    """Common-gender colour forms are rejected before neuter nouns."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        f"Personen vælger et {colour} tørklæde og et {colour} armbånd. "
-        "Baggrunden er en neutral flade."
+@pytest.mark.parametrize("eligible", [True, False])
+def test_job_title_eligibility_is_contextual(eligible: bool) -> None:
+    """Only eligible job-function contexts may contain a title."""
+    context = demographic(
+        status="employed" if eligible else "retired",
+        job_title="forretningsspecialist" if eligible else None,
     )
-    with pytest.raises(ValueError, match="controlled Danish format"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
-
-
-@pytest.mark.parametrize(
-    "unsafe_word",
-    ["amerikansk", "spansk", "midaldrende", "rødhåret", "fregner", "jødisk"],
-)
-def test_visual_persona_rejects_reviewer_examples(unsafe_word: str) -> None:
-    """Reviewer examples cannot be smuggled into a controlled sentence."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        f"Personen vælger en {unsafe_word} skjorte og et grønt armbånd. "
-        "Baggrunden er en neutral flade."
+    content = attributes(job_title="forretningsspecialist" if eligible else None)
+    assert (
+        parse_attributes(json.dumps(content), context).job_title == content["job_title"]
     )
-    with pytest.raises(ValueError, match="controlled Danish format"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+
+    invalid = attributes(job_title=None if eligible else "forretningsspecialist")
+    with pytest.raises(ValueError, match="title|job_title"):
+        parse_attributes(json.dumps(invalid), context)
 
 
-def test_visual_persona_sentence_count_is_checked() -> None:
-    """Visual guidance has the requested two-to-four sentence form."""
-    descriptions = _safe_descriptions()
-    descriptions["visual_persona"] = (
-        "Personen vælger en blå trøje og et enkelt tørklæde uden at knytte det "
-        "til andre egenskaber."
+@pytest.mark.parametrize("punctuation", ["- ", "1. ", "[", ";"])
+def test_list_syntax_is_rejected(punctuation: str) -> None:
+    """The summary must remain prose rather than list syntax."""
+    context = demographic()
+    text = descriptions(context=context)
+    text["persona"] = punctuation + text["persona"]
+    with pytest.raises(ValueError, match="prose"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_ocean_tendency_requires_compatibility_and_hedging() -> None:
+    """A compatible tendency is allowed only with cautious wording."""
+    context = demographic()
+    text = descriptions(context=context)
+    text["persona"] = text["persona"].replace("kan være rolig", "er altid rolig")
+    with pytest.raises(ValueError, match="cautious|hedged"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+    context["openness_label"] = "high"
+    text["persona"] = text["persona"].replace("er altid rolig", "kan være praktisk")
+    with pytest.raises(ValueError, match="compatible"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
+@pytest.mark.parametrize("count", [1, 4])
+def test_one_or_four_literal_interests_fail(count: int) -> None:
+    """Too few or too many literal interests fail the contract."""
+    context = demographic()
+    selected = ["at læse", "musik", "brætspil", "vandring"][:count]
+    generated = attributes()
+    generated["hobbies_and_interests"] = selected
+    with pytest.raises(ValueError, match="interests|at least"):
+        parse_descriptions(
+            json.dumps(descriptions(context=context, interests=selected)),
+            context,
+            generated,
+        )
+
+
+@pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country"])
+def test_required_demographic_facts_are_literal(missing: str) -> None:
+    """Changing any required demographic fact is rejected."""
+    context = demographic()
+    text = descriptions(context=context)
+    replacements = {
+        "age": "34 år",
+        "sex": "mand",
+        "municipality": "Roskilde",
+        "origin_country": "Sverige",
+    }
+    original = "kvinde" if missing == "sex" else str(context[missing])
+    text["persona"] = text["persona"].replace(original, replacements[missing])
+    with pytest.raises(
+        ValueError, match=missing if missing != "origin_country" else "origin"
+    ):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_status_ten_allows_only_grounded_phrase_in_persona() -> None:
+    """Status 10 permits its canonical phrase, but not related claims."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code="10",
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
     )
-    with pytest.raises(ValueError, match="2-4 sentences"):
-        parse_descriptions(json.dumps(descriptions, ensure_ascii=False))
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["persona"] = text["persona"].replace(
+        "arbejder som forretningsspecialist", "er medarbejdende ægtefælle"
+    )
+    assert (
+        parse_descriptions(
+            json.dumps(text), context, attributes(job_title=None)
+        ).persona
+        == text["persona"]
+    )
+
+    for field in ("professional_persona", "sports_persona"):
+        rejected = dict(text)
+        rejected[field] = "Personen er medarbejdende ægtefælle i hverdagen."
+        with pytest.raises(ValueError):
+            parse_descriptions(
+                json.dumps(rejected), context, attributes(job_title=None)
+            )
+
+    rejected = dict(text)
+    rejected["persona"] += " Personen har børnene med sig."
+    with pytest.raises(ValueError):
+        parse_descriptions(json.dumps(rejected), context, attributes(job_title=None))
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_two_or_three_literal_interests_pass(count: int) -> None:
+    """The summary embeds exactly two or three complete interest values."""
+    context = demographic()
+    selected = ["at læse", "musik", "brætspil"][:count]
+    assert parse_descriptions(
+        json.dumps(descriptions(context=context, interests=selected)),
+        context,
+        attributes(),
+    )
+
+
+def test_valid_v2_attributes_and_description() -> None:
+    """A complete employee record passes both contextual stages."""
+    context = demographic()
+    parsed = parse_attributes(json.dumps(attributes()), context)
+    assert parse_descriptions(
+        json.dumps(descriptions(context=context)), context, parsed
+    )

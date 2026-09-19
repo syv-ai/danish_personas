@@ -57,6 +57,30 @@ class ReleaseCase:
 
 
 @pytest.fixture
+def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
+    """Return a v2 row with a non-employee status and null job title."""
+    return (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.lit("unemployed").alias("labour_market_status"),
+            pl.lit("50").alias("detailed_status_code"),
+            pl.lit("Ledig").alias("detailed_status"),
+            pl.lit("status").alias("detailed_status_resolution"),
+            pl.lit(None, dtype=pl.String).alias("job_function_code"),
+            pl.lit(None, dtype=pl.String).alias("job_function"),
+            pl.lit("not_applicable").alias("job_function_resolution"),
+            pl.lit(None, dtype=pl.String).alias("job_title"),
+            pl.lit(
+                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
+                "erhvervsuddannelse er ledig. Han kan være nysgerrig og nyder "
+                "vandring og musik i hverdagen."
+            ).alias("persona"),
+        )
+    )
+
+
+@pytest.fixture
 def packaged_release(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ReleaseCase, Path, str]:
@@ -137,6 +161,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         name: sha256_file(case.repository / "config" / name)
         for name in (
             "generation.yaml",
+            "job-function-titles.yaml",
             "sources.lock.yaml",
             "categories.yaml",
             "sampling.yaml",
@@ -215,9 +240,12 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         destination = repository / "config/prompts" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "config/prompts" / relative, destination)
+    mapping_path = repository / "config/job-function-titles.yaml"
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "config/job-function-titles.yaml", mapping_path)
 
     generation_config = GenerationConfig(
-        version=1,
+        version=2,
         llm_generation_enabled=True,
         base_url="https://llm.example/v1",
         model=MODEL,
@@ -231,6 +259,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         response_format="json_schema",
         attributes_prompt=Path("config/prompts/attributes-da.md"),
         personas_prompt=Path("config/prompts/personas-da.md"),
+        job_title_mapping=Path("config/job-function-titles.yaml"),
     )
     pilot = tmp_path / "pilot"
     pilot.mkdir()
@@ -254,6 +283,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             * 10_000,
             "hobbies_and_interests": [["vandring", "musik", "madlavning"]] * 10_000,
             "career_goals_and_ambitions": ["At udvikle nye færdigheder."] * 10_000,
+            "job_title": ["forretningsspecialist"] * 10_000,
             "professional_persona": [sentence + "Arbejdet giver plads til læring."]
             * 10_000,
             "sports_persona": [sentence + "Motion passer naturligt ind."] * 10_000,
@@ -261,9 +291,10 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             "travel_persona": [sentence + "Nye steder opleves i roligt tempo."]
             * 10_000,
             "culinary_persona": [sentence + "Måltider deles gerne med andre."] * 10_000,
-            "persona": [sentence + "Hverdagen rummer nysgerrighed og nærvær."] * 10_000,
-            "visual_persona": [
-                sentence + "Et neutralt motiv uden personlige kendetegn."
+            "persona": [
+                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
+                "erhvervsuddannelse arbejder som forretningsspecialist. "
+                "Han kan være nysgerrig og nyder vandring og musik i hverdagen."
             ]
             * 10_000,
         }
@@ -271,15 +302,41 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     for name in DemographicRecord.model_fields:
         if name not in output_frame.columns:
             fixture_values: dict[str, object] = {
+                "country": "Danmark",
+                "origin_country_code": "DK",
+                "origin_country": "Danmark",
+                "age": 35,
+                "age_resolution": "municipality_age_band",
+                "age_band": "30-39",
+                "sex": "male",
+                "marital_status": "single",
+                "marital_resolution": "municipality",
+                "municipality_code": "0751",
+                "municipality": "Aarhus",
+                "region_code": "1084",
+                "region": "Midtjylland",
+                "education_level": "vocational",
+                "education_source_code": "h30",
+                "education_resolution": "ras209_age_band",
+                "labour_market_status": "employed",
                 "detailed_status_code": "30",
+                "detailed_status": "Beskæftiget",
+                "detailed_status_resolution": "status",
                 "job_function_code": "24",
                 "job_function": "24 Business and administration professionals",
                 "job_function_resolution": "lons20_sex_marginal",
+                "openness_score": 70.0,
+                "openness_label": "high",
+                "conscientiousness_score": 50.0,
+                "conscientiousness_label": "average",
+                "extraversion_score": 50.0,
+                "extraversion_label": "average",
+                "agreeableness_score": 50.0,
+                "agreeableness_label": "average",
+                "neuroticism_score": 50.0,
+                "neuroticism_label": "average",
             }
-            value: object = fixture_values.get(
-                name,
-                35 if name == "age" else 50.0 if name.endswith("_score") else "Danmark",
-            )
+            value: object = fixture_values.get(name, "Danmark")
             output_frame = output_frame.with_columns(pl.lit(value).alias(name))
     output_frame = output_frame.select(
         [
@@ -309,6 +366,8 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         personas_prompt=(repository / "config/prompts/personas-da.md").read_text(
             encoding="utf-8"
         ),
+        job_title_mapping=packager.load_job_title_mapping(mapping_path),
+        job_title_mapping_sha256=sha256_file(mapping_path),
     )
     manifest = PilotManifest(
         pilot_id=PILOT_ID,
@@ -324,6 +383,9 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context,
         validator_version="validator-1",
+        job_title_mapping_file=Path("config/job-function-titles.yaml"),
+        job_title_mapping_sha256=sha256_file(mapping_path),
+        job_title_mapping_version=1,
         attributes_prompt_sha256=sha256_file(
             repository / "config/prompts/attributes-da.md"
         ),

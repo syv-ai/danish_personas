@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 
 from ..models import StrictModel
+from .job_titles import JobFunctionTitleMapping
 
 
 class FrozenSampleManifest(StrictModel):
@@ -27,7 +28,33 @@ class GeneratedAttributes(StrictModel):
     cultural_context: str = Field(min_length=20, max_length=600)
     skills_and_expertise: list[str] = Field(min_length=3, max_length=6)
     hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
-    career_goals_and_ambitions: str | None = Field(max_length=500)
+    career_goals_and_ambitions: str | None = Field(default=None, max_length=500)
+    job_title: str | None = Field(default=None, max_length=80)
+
+    @field_validator("job_title")
+    @classmethod
+    def require_stripped_single_line_title(_cls, value: str | None) -> str | None:
+        """Normalise an optional title while rejecting multiline output.
+
+        Args:
+            value:
+                Candidate generated title.
+
+        Returns:
+            The validated title or null.
+
+        Raises:
+            ValueError:
+                If the title is not a short, stripped, single-line string.
+        """
+        if value is None:
+            return None
+        stripped = value.strip()
+        if stripped != value or "\n" in value or "\r" in value:
+            raise ValueError("job_title must be a stripped single-line string")
+        if not 2 <= len(stripped) <= 80:
+            raise ValueError("job_title must contain 2-80 characters")
+        return stripped
 
     @field_validator("skills_and_expertise", "hobbies_and_interests")
     @classmethod
@@ -58,7 +85,7 @@ class GeneratedAttributes(StrictModel):
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: int
+    version: t.Literal[2]
     llm_generation_enabled: bool
     base_url: str | None
     model: str | None
@@ -75,6 +102,7 @@ class GenerationConfig(StrictModel):
     response_format: t.Literal["json_schema", "json_object"]
     attributes_prompt: Path
     personas_prompt: Path
+    job_title_mapping: Path | None = None
 
 
 class GenerationManifest(StrictModel):
@@ -90,6 +118,10 @@ class GenerationManifest(StrictModel):
     generation_config_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     model: str
@@ -131,6 +163,10 @@ class AttributeCheckpoint(StrictModel):
     input_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes: GeneratedAttributes
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
@@ -144,8 +180,7 @@ class PersonaDescriptions(StrictModel):
     arts_persona: str = Field(min_length=40, max_length=1_200)
     travel_persona: str = Field(min_length=40, max_length=1_200)
     culinary_persona: str = Field(min_length=40, max_length=1_200)
-    persona: str = Field(min_length=60, max_length=1_500)
-    visual_persona: str = Field(min_length=40, max_length=1_200)
+    persona: str = Field(min_length=60, max_length=600)
 
 
 class PersonaCheckpoint(StrictModel):
@@ -155,6 +190,10 @@ class PersonaCheckpoint(StrictModel):
     input_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
@@ -172,6 +211,10 @@ class PilotBatchReference(StrictModel):
     manifest_sha256: str
     validation_report_file: Path
     validation_report_sha256: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
 
 
 class PilotManifest(StrictModel):
@@ -190,6 +233,10 @@ class PilotManifest(StrictModel):
     generation_config_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)

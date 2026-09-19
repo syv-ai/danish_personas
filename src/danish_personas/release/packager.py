@@ -28,18 +28,24 @@ else:
 import polars as pl
 import yaml
 
+from ..generation.job_titles import load_job_title_mapping
 from ..generation.models import (
-    GeneratedAttributes,
     GenerationConfig,
     GenerationManifest,
     PersonaCheckpoint,
-    PersonaDescriptions,
     PilotManifest,
 )
+from ..generation.pipeline import generation_context_sha256
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, sha256_file, write_json
-from ..models import DemographicRecord, RunManifest, StrictModel, ValidationReport
-from .common import persona_output_dtypes_are_valid, release_id, role
+from ..models import RunManifest, StrictModel, ValidationReport
+from .common import (
+    PERSONA_OUTPUT_COLUMNS,
+    persona_output_dtypes_are_valid,
+    release_id,
+    role,
+    validate_persona_output_rows,
+)
 from .models import (
     Accounting,
     Artifact,
@@ -138,6 +144,7 @@ _PUBLIC_FILES = (
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
     "provenance/config/generation.yaml",
+    "provenance/config/job-function-titles.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -210,6 +217,11 @@ def package_release(
     config = _load_captured_yaml(
         inventory=inventory, path=config_path, model=GenerationConfig
     )
+    mapping_path = _repository_path(
+        repository_root,
+        config.job_title_mapping or Path("config/job-function-titles.yaml"),
+    )
+    _capture_path(path=mapping_path, inventory=inventory)
     attributes_path = _repository_path(repository_root, config.attributes_prompt)
     personas_path = _repository_path(repository_root, config.personas_prompt)
     _capture_path(path=attributes_path, inventory=inventory)
@@ -273,8 +285,11 @@ def package_release(
             attestation=attestation,
             config=config,
             config_path=snapshot_repository / config_path.relative_to(repository_root),
-            attributes_path=snapshot_repository
-            / attributes_path.relative_to(repository_root),
+            mapping_path=snapshot_repository
+            / mapping_path.relative_to(repository_root),
+            attributes_path=(
+                snapshot_repository / attributes_path.relative_to(repository_root)
+            ),
             personas_path=(
                 snapshot_repository / personas_path.relative_to(repository_root)
             ),
@@ -325,6 +340,7 @@ def package_release(
             evidence=evidence,
             report=report,
             config_path=_snapshot_path(inventory, config_path),
+            mapping_path=_snapshot_path(inventory, mapping_path),
             attributes_path=_snapshot_path(inventory, attributes_path),
             personas_path=_snapshot_path(inventory, personas_path),
             repository_root=snapshot_repository,
@@ -910,6 +926,7 @@ def _install_files(**kwargs: object) -> None:
     report = t.cast(ValidationReport, kwargs["report"])
     attributes_path = t.cast(Path, kwargs["attributes_path"])
     personas_path = t.cast(Path, kwargs["personas_path"])
+    mapping_path = t.cast(Path, kwargs["mapping_path"])
     repository_root = t.cast(Path, kwargs["repository_root"])
     config_path = t.cast(Path, kwargs["config_path"])
     inventory = t.cast(list[_InventoryItem], kwargs["inventory"])
@@ -941,6 +958,9 @@ def _install_files(**kwargs: object) -> None:
             inventory, attributes_path
         ),
         "provenance/prompts/personas-da.md": _captured_bytes(inventory, personas_path),
+        "provenance/config/job-function-titles.yaml": _captured_bytes(
+            inventory, mapping_path
+        ),
     }
     for name in (
         "generation.yaml",
@@ -1236,6 +1256,7 @@ def _validate_pilot_for_release(
     attestation: ReviewAttestation,
     config: GenerationConfig,
     config_path: Path,
+    mapping_path: Path,
     attributes_path: Path,
     personas_path: Path,
     policy_path: Path,
@@ -1269,17 +1290,22 @@ def _validate_pilot_for_release(
         or sha256_file(output_path) != pilot_manifest.output_sha256
     ):
         raise ReleasePackagingError("Pilot output does not match its manifest")
-    expected_columns = (
-        *DemographicRecord.model_fields,
-        *GeneratedAttributes.model_fields,
-        *PersonaDescriptions.model_fields,
-    )
-    if set(output.columns) != set(expected_columns) or len(output.columns) != len(
-        expected_columns
+    if set(output.columns) != set(PERSONA_OUTPUT_COLUMNS) or len(output.columns) != len(
+        PERSONA_OUTPUT_COLUMNS
     ):
-        raise ReleasePackagingError("Persona output schema must match exactly")
+        raise ReleasePackagingError(
+            "Persona output schema must match generation contract v2"
+        )
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
+    try:
+        validate_persona_output_rows(
+            output, job_title_mapping=load_job_title_mapping(mapping_path)
+        )
+    except ValueError as error:
+        raise ReleasePackagingError(
+            "Persona output fails contextual generation-v2 validation"
+        ) from error
     validate_release_approval(
         policy=policy,
         attestation=attestation,
@@ -1293,6 +1319,7 @@ def _validate_pilot_for_release(
         manifest=pilot_manifest,
         config=config,
         config_path=config_path,
+        mapping_path=mapping_path,
         attributes_path=attributes_path,
         personas_path=personas_path,
     )
@@ -1320,6 +1347,7 @@ def _validate_pilot_for_release(
             canonical_json(report.model_dump(mode="json")).encode(),
             _captured_bytes(inventory, attributes_path),
             _captured_bytes(inventory, personas_path),
+            _captured_bytes(inventory, mapping_path),
         ]
     )
     _scan_dataframe(output)
@@ -1331,11 +1359,19 @@ def _assert_manifest_bindings(
     manifest: PilotManifest,
     config: GenerationConfig,
     config_path: Path,
+    mapping_path: Path,
     attributes_path: Path,
     personas_path: Path,
 ) -> None:
     if manifest.llm_generation is not True or not config.llm_generation_enabled:
         raise ReleasePackagingError("Release requires enabled LLM generation")
+    if not _mapping_binding_matches(
+        config=config,
+        mapping_path=mapping_path,
+        manifest=manifest,
+        config_path=config_path,
+    ):
+        raise ReleasePackagingError("Job-title mapping binding failed")
     if attributes_path != config_path.parent / "prompts/attributes-da.md":
         raise ReleasePackagingError("Generation attributes prompt path binding failed")
     if personas_path != config_path.parent / "prompts/personas-da.md":
@@ -1346,8 +1382,51 @@ def _assert_manifest_bindings(
         raise ReleasePackagingError("Attributes prompt binding failed")
     if sha256_file(personas_path) != manifest.personas_prompt_sha256:
         raise ReleasePackagingError("Personas prompt binding failed")
+    _require_generation_v2(config)
+    context = generation_context_sha256(
+        config=config,
+        attributes_prompt=attributes_path.read_text(encoding="utf-8"),
+        personas_prompt=personas_path.read_text(encoding="utf-8"),
+        job_title_mapping=load_job_title_mapping(mapping_path),
+        job_title_mapping_sha256=sha256_file(mapping_path),
+    )
+    if context != manifest.generation_context_sha256:
+        raise ReleasePackagingError("Generation context binding failed")
     if config.model != manifest.model:
         raise ReleasePackagingError("Generation model binding failed")
+
+
+def _mapping_binding_matches(
+    *,
+    config: GenerationConfig,
+    mapping_path: Path,
+    manifest: PilotManifest,
+    config_path: Path,
+) -> bool:
+    """Check the reviewed mapping path, version, and checksum binding.
+
+    Returns:
+        Whether the configured and manifest mapping contracts are bound.
+    """
+    expected_path = Path("config/job-function-titles.yaml")
+    if config.job_title_mapping != expected_path:
+        return False
+    if mapping_path != config_path.parent / expected_path.name:
+        return False
+    if manifest.job_title_mapping_file != expected_path:
+        return False
+    if manifest.job_title_mapping_sha256 != sha256_file(mapping_path):
+        return False
+    try:
+        mapping = load_job_title_mapping(mapping_path)
+    except OSError, UnicodeError, ValueError:
+        return False
+    return manifest.job_title_mapping_version == mapping.version
+
+
+def _require_generation_v2(config: GenerationConfig) -> None:
+    if config.version != 2:
+        raise ReleasePackagingError("Release requires generation contract v2")
 
 
 def _derive_evidence(
@@ -1460,6 +1539,9 @@ def _derive_evidence(
     )
     config_hashes = {
         "generation.yaml": _source_sha256(effective_config_path, inventory),
+        "job-function-titles.yaml": _source_sha256(
+            repository_root / "config/job-function-titles.yaml", inventory
+        ),
         **{
             name: _source_sha256(repository_root / "config" / name, inventory)
             for name in (

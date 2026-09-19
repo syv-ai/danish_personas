@@ -11,7 +11,10 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from danish_personas.io import sha256_file
+from danish_personas.generation.job_titles import load_job_title_mapping
+from danish_personas.generation.models import GenerationConfig
+from danish_personas.generation.pipeline import generation_context_sha256
+from danish_personas.io import load_yaml_model, sha256_file
 from danish_personas.release.common import release_id
 from danish_personas.release.verifier import ReleaseVerificationError, verify_release
 
@@ -231,7 +234,9 @@ def test_verify_release_rejects_joint_config_tamper_with_stale_context(
         verify_release(release_dir=release, expected_manifest_sha256=digest)
 
 
-@pytest.mark.parametrize("mutation", ["missing", "extra", "empty"])
+@pytest.mark.parametrize(
+    "mutation", ["missing", "extra", "empty", "title-map-missing", "title-map-extra"]
+)
 def test_verify_release_rejects_missing_extra_and_empty_paths(
     verifier_package: tuple[Path, str], mutation: str
 ) -> None:
@@ -241,6 +246,11 @@ def test_verify_release_rejects_missing_extra_and_empty_paths(
         (release / "README.md").unlink()
     elif mutation == "extra":
         (release / "unexpected.txt").write_text("extra", encoding="utf-8")
+    elif mutation == "title-map-missing":
+        (release / "provenance/config/job-function-titles.yaml").unlink()
+    elif mutation == "title-map-extra":
+        map_path = release / "provenance/config/job-function-titles.yaml"
+        map_path.rename(map_path.with_name("job-function-titles-extra.yaml"))
     else:
         (release / "empty").mkdir()
     with pytest.raises(ReleaseVerificationError, match="missing|extra|empty|paths"):
@@ -321,6 +331,76 @@ def test_verify_release_rejects_secret_and_local_path_text(
     target.write_bytes(replacement)
     digest = _refresh_artifact(release, relative)
     with pytest.raises(ReleaseVerificationError):
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+
+def test_verify_release_rejects_title_map_config_path_substitution(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """A re-signed config with a different title-map path cannot bypass binding."""
+    release, _ = verifier_package
+    config_path = release / "provenance/config/generation.yaml"
+    config_bytes = config_path.read_bytes()
+    posix_path = b"config/job-function-titles.yaml"
+    windows_path = b"config\\job-function-titles.yaml"
+    original_path = posix_path if posix_path in config_bytes else windows_path
+    assert original_path in config_bytes
+    config_path.write_bytes(
+        config_bytes.replace(original_path, b"config/other-titles.yaml")
+    )
+    config_sha = sha256_file(config_path)
+    evidence_path = release / "provenance/evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["config_hashes"]["generation.yaml"] = config_sha
+    evidence["generation_config_sha256"] = config_sha
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    digest = _refresh_artifact(release, "provenance/config/generation.yaml")
+    digest = _refresh_artifact(release, "provenance/evidence.json")
+    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest["evidence_sha256"] = sha256_file(evidence_path)
+    digest = _refresh_manifest(release, **manifest)
+    with pytest.raises(ReleaseVerificationError, match="path binding"):
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+
+def test_verify_release_rejects_title_map_substitution_even_with_recalculated_bindings(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """A valid substituted map cannot authorise a title from another mapping."""
+    release, _ = verifier_package
+    map_path = release / "provenance/config/job-function-titles.yaml"
+    map_path.write_bytes(
+        map_path.read_bytes().replace(b"forretningsspecialist", b"topchef")
+    )
+    map_sha = sha256_file(map_path)
+    config_path = release / "provenance/config/generation.yaml"
+    config = load_yaml_model(path=config_path, model=GenerationConfig)
+    context = generation_context_sha256(
+        config=config,
+        attributes_prompt=(release / "provenance/prompts/attributes-da.md").read_text(
+            encoding="utf-8"
+        ),
+        personas_prompt=(release / "provenance/prompts/personas-da.md").read_text(
+            encoding="utf-8"
+        ),
+        job_title_mapping=load_job_title_mapping(map_path),
+        job_title_mapping_sha256=map_sha,
+    )
+    evidence_path = release / "provenance/evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["config_hashes"]["job-function-titles.yaml"] = map_sha
+    evidence["generation_context_sha256"] = context
+    evidence_path.write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    digest = _refresh_artifact(release, "provenance/config/job-function-titles.yaml")
+    digest = _refresh_artifact(release, "provenance/evidence.json")
+    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest["evidence_sha256"] = sha256_file(evidence_path)
+    digest = _refresh_manifest(release, **manifest)
+    with pytest.raises(ReleaseVerificationError, match="contextual"):
         verify_release(release_dir=release, expected_manifest_sha256=digest)
 
 

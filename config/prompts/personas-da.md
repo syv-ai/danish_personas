@@ -1,52 +1,40 @@
 # Danske personabeskrivelser
 
-Du skriver syv korte, syntetiske personabeskrivelser på naturligt dansk ud fra faste
-strukturerede input.
+Du skriver seks korte, syntetiske tekster på naturligt dansk ud fra faste input:
+`professional_persona`, `sports_persona`, `arts_persona`, `travel_persona`,
+`culinary_persona` og `persona`. Returnér kun JSON efter skemaet. Hver tekst er
+sammenhængende prosa på 2-4 sætninger. `persona` er højst 600 tegn og er beregnet til
+senere billedprompting; den må ikke være en visuel beskrivelse.
 
-Returnér kun data, som passer til det krævede JSON-skema. Hver tekst skal være på
-2-4 sætninger, konkret uden at være identificerende og indbyrdes forskellig.
+`persona` skal indeholde alle følgende fakta i naturlige sætninger: alder i formen
+`[tal] år`, det danske kønsord, den nøjagtige kommune og oprindelsesetiket, den
+kanoniske danske uddannelsesbetegnelse samt den nøjagtige `job_title` for ansatte.
+Brug disse uddannelsesrenderinger: `primary` er `grundskole`, `upper_secondary` er
+`gymnasial uddannelse`, `vocational` er `erhvervsuddannelse`, `qualifying_programme`
+er `kvalificerende uddannelse`, `short_cycle_higher` er `kort videregående uddannelse`,
+`professional_bachelor` er `professionsbacheloruddannelse`, `bachelor` er
+`bacheloruddannelse`, `masters` er `kandidatuddannelse`, `phd` er `ph.d.-uddannelse`,
+og `not_stated` er `uddannelse ikke oplyst`. For ikke-ansatte er de aktuelle statusfraser
+`ledig`, `studerende`, `pensionist` eller `uden for arbejdsmarkedet`. For ansatte uden
+jobtitel er statusfraserne `selvstændig` eller `medarbejdende ægtefælle`. Brug altid den
+leverede kanoniske aktuelle statusfrase. Indlejr nøjagtigt
+2-3 forskellige interesser ordret fra `generated_attributes`. Medtag 1-2 forsigtige
+OCEAN-tendenser fra den lukkede ordliste; brug altid hedging som `kan`, `ofte` eller
+`muligvis`. Skriv aldrig punktlister, nummerering, parenteser, klammer eller
+semikolonlister.
 
 Regler:
 
-- Bevar demografi, personlighed og de allerede godkendte attributter i de
-  relevante beskrivelser, men gengiv dem ikke i `visual_persona`.
+- Bevar demografi, personlighed og godkendte attributter uden at opfinde fakta.
 - Opfind ikke navn, adresse, kontaktoplysninger, arbejdsplads eller institution.
-- Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
-- Udled ikke hudfarve, etnicitet, herkomst, nationalitet, kultur, sprog, religion,
-  helbred, handicap, seksualitet, politisk overbevisning, kropsmål, udseende,
-  tiltrækningskraft eller kriminalhistorik.
-- `visual_persona` skal følge denne lukkede danske form og være 2-4 sætninger:
-  `Personen vælger [farvet tøj] og [farvet tilbehør]. Baggrunden er [baggrund].`
-  Du kan derefter tilføje `Lyset er [lys].` og `Rammen er neutral.` i netop den
-  rækkefølge. Brug kun ét tilladt valg fra hver liste i
-  `docs/visual-persona-format.md`, og brug farvens korrekte danske bøjning.
-- Tøj er kun: bluse, cardigan, frakke, jakke, kjole, nederdel, skjorte, sweater,
-  trøje, vest, halstørklæde eller tørklæde. Tilbehør er kun: broche, halskæde,
-  hat, kasket, paraply, taske, armbånd, bælte, sjal, slips, tørklæde eller ur.
-  Farver er kun blå, brun, grå, grøn, hvid, lilla, orange, pink, rød, sort,
-  turkis eller gul. For intetkønsord skal `blå` bøjes til `blåt` og `turkis` til
-  `turkist`.
-- Baggrunden er kun en afdæmpet, enkel, ensfarvet, lys, neutral eller rolig flade
-  eller et afdæmpet, enkelt, lyst eller roligt atelier/studie. Tilladt lys er
-  kun blødt, klart, dæmpet, diffust, jævnt eller roligt.
-- Skriv ingen andre ord i `visual_persona` end formatets faste ord og de
-  allow-listede valg. Den kontrollerede form udelukker derfor nationalitet,
-  sprog, religion, alder, køn, sex, region, uddannelse, civilstand,
-  arbejdsmarkedsstatus, OCEAN, hår, øjne, hud, ansigt, krop, fysiske træk,
-  følsomme egenskaber, steder og institutioner. Det er ikke billedgenerering.
-- Undgå stereotyper og deterministiske forbindelser mellem demografi og personlighed.
-- Behandl OCEAN-scorer som svage tilbøjeligheder, ikke som fakta om evner, problemer
-  eller begrænsninger. Brug afbalancerede formuleringer som "kan foretrække" og
-  "har muligvis lettere ved", og beskriv aldrig en lav eller høj score som en mangel.
-- Undlad at gengive scoreetiketter eller psykologiske vurderinger i teksten.
-- Hvis et domæne ikke passer naturligt, skal teksten sige det neutralt frem for at
-  opfinde ekspertise.
-- Hold hver specialiseret tekst til sit eget domæne; sportsafsnittet må eksempelvis
-  ikke fyldes med kunstinteresser.
-- Omtal syntetiske færdigheder som interesser eller mulige styrker, ikke som
-  dokumenteret erfaring eller konkrete arbejdsopgaver.
-- Gengiv højst den angivne region i de relevante ikke-visuelle beskrivelser; opfind
-  ikke bystørrelse, lokale tilbud, rejsevaner eller andre stedsegenskaber. Nævn ingen
-  region eller placering i `visual_persona`.
-- Brug naturlige danske ord frem for unødige engelske sammensætninger.
-- `persona` skal samle helheden uden at gentage de fem specialiserede tekster ordret.
+- Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder ud
+  over den leverede kommune.
+- Udled ikke religion, etnicitet, helbred, seksualitet, politik eller kriminalitet.
+- Påstå ikke familie, husstand, diagnose eller fysisk udseende.
+- Giv aldrig tidligere eller tidligere formuleret arbejde, heller ikke for ansatte:
+  undgå `tidligere`, `førhen`, `arbejdede`, `har arbejdet`, `pensioneret fra` og
+  `forhenværende`.
+- Behandl OCEAN som svage tilbøjeligheder, aldrig som diagnoser, evner eller mangler.
+- Omtal færdigheder som mulige interesser eller styrker, ikke dokumenteret erfaring.
+- Brug naturlige danske ord og hold hvert specialiseret felt i sit eget domæne.
+- De seks tekster skal være forskellige; gentag ikke en hel tekst ordret.
