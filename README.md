@@ -59,8 +59,8 @@ make install
 ```
 
 Install the pre-commit hook separately when needed. This target also runs
-`pre-commit autoupdate`, which may modify the tracked hook configuration; it is not
-part of `make install`:
+`pre-commit autoupdate`, which may modify the tracked hook configuration; it is not part
+of `make install`:
 
 ```bash
 make install-pre-commit
@@ -85,9 +85,9 @@ tokens, or generated data artefacts.
 
 ### Unified CLI
 
-The installed CLI is the recommended interface for new workflows. It keeps every
-service boundary in one process, passes returned artefact paths directly, and stops
-before the next validation boundary when a report fails:
+The installed CLI is the recommended interface for new workflows. It keeps every service
+boundary in one process, passes returned artefact paths directly, and stops before the
+next validation boundary when a report fails:
 
 ```bash
 uv run danish-personas workflow deterministic --target smoke
@@ -101,9 +101,9 @@ then freezes a 1,000-row sample. Change that development sample size with
 `--sample-rows`. `--raw-parent` defaults to `data`; the workflow always restores and
 prepares `data/raw-hardened-20260919` (or the same fixed child below a custom parent).
 Configuration and output paths are also configurable. It is offline and makes no LLM
-calls. Source `resolve` and `fetch` need
-explicit `--network`, while persona shards are dry runs unless `--live` is supplied and
-pilots always require `--live`. See [`docs/cli.md`](docs/cli.md) for the command tree.
+calls. Source `resolve` and `fetch` need explicit `--network`, while persona shards are
+dry runs unless `--live` is supplied and pilots always require `--live`. See
+[`docs/cli.md`](docs/cli.md) for the command tree.
 
 The legacy script commands below remain supported and compatible.
 
@@ -111,9 +111,9 @@ The legacy script commands below remain supported and compatible.
 
 The following commands restore the seven exact Statistics Denmark aggregate snapshots
 and the official geography classification snapshot, prepare a local source bundle,
-generate
-2,000 deterministic smoke records, and validate every stage without network access. The
-archive and attribution are documented in [`data/README.md`](data/README.md).
+generate 2,000 deterministic smoke records, and validate every stage without network
+access. The archive and attribution are documented in
+[`data/README.md`](data/README.md).
 
 ```bash
 set -o pipefail
@@ -146,8 +146,8 @@ uv run src/scripts/validate_dataset.py demographics \
   --bundle "$BUNDLE"
 ```
 
-The assignments capture the exact paths printed by the CLI commands. They do not
-select an arbitrary newest directory, and fail if a command emits no path.
+The assignments capture the exact paths printed by the CLI commands. They do not select
+an arbitrary newest directory, and fail if a command emits no path.
 
 All generated run identifiers are derived from input checksums, row count, and seed.
 Repeating a valid command reuses the existing run; a checksum mismatch fails instead of
@@ -204,30 +204,31 @@ uv run src/scripts/freeze_demographic_sample.py \
   --output "$RUN/text-development-seeds.parquet"
 ```
 
-The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3,
-and RAS210. LONS20's title, dimension semantics, fixed selector labels, and all
-selected two-digit ARBF English labels are independently frozen in the reviewed
-`config/lons20-contract.yaml`; lock and raw snapshot metadata must each match it.
-The contract checksum and version are part of source provenance and bundle identity.
-LONS20 provides an optional sex-conditional synthetic broad job-function
-marginal for eligible employees only. Its incomplete earnings-statistics universe is
-not an all-worker representation, and the fields are withheld from both LLM payloads.
+The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and
+RAS210. LONS20's title, dimension semantics, fixed selector labels, and all selected
+two-digit ARBF English labels are independently frozen in the reviewed
+`config/lons20-contract.yaml`; lock and raw snapshot metadata must each match it. The
+contract checksum and version are part of source provenance and bundle identity. LONS20
+provides an optional sex-conditional synthetic broad job-function marginal for eligible
+employees only. Its incomplete earnings-statistics universe is not an all-worker
+representation. The human-readable job-function label reaches the provider so the model
+can produce a grounded synthetic job title; the job-function code and resolution do not.
 The allocation is conditioned on sex alone, not municipality, origin, education, age,
-OCEAN, or any unsupported joint.
-FOLK2 is an independent national marginal of official IELAND country-of-origin
-categories for adults. It preserves categories such as Stateless and Not stated, but is
-not ethnicity, citizenship, or residence. Each Phase 2 record receives an independently
-quota-sampled `origin_country_code` and `origin_country`; the fields are withheld from
-both LLM payloads.
-They cannot drive language, culture, religion, occupation, personality, or visual
-appearance. FOLK1A, RAS209, and RAS202 ground the distributions;
-BEFOLK3 and RAS210 are held-out aggregate diagnostics.
-Municipality aggregates remain municipality-keyed throughout source preparation and
-sampling; they are never grouped into regional person-sampling artefacts. Generated
-records retain mandatory `municipality_code` and `municipality` fields. Region is attached
-only as the official parent from the Statistics Denmark classification snapshot, and
-preparation fails unless the locked, hierarchy, and prepared RAS209 municipality sets
-match exactly. Municipality fields remain withheld from both LLM payloads.
+OCEAN, or any unsupported joint. FOLK2 is an independent national marginal of official
+IELAND country-of-origin categories for adults. It preserves categories such as
+Stateless and Not stated, but is not ethnicity, citizenship, residence, or appearance.
+Each Phase 2 record receives an independently quota-sampled `origin_country_code` and
+`origin_country`; the label reaches the provider, while the code and sampling resolution
+do not. Origin cannot drive language, culture, religion, occupation, personality, or
+visual appearance. FOLK1A, RAS209, and RAS202 ground the distributions; BEFOLK3 and
+RAS210 are held-out aggregate diagnostics. Municipality aggregates remain
+municipality-keyed throughout source preparation and sampling; they are never grouped
+into regional person-sampling artefacts. Generated records retain mandatory
+`municipality_code` and `municipality` fields. Region is attached only as the official
+parent from the Statistics Denmark classification snapshot, and preparation fails unless
+the locked, hierarchy, and prepared RAS209 municipality sets match exactly. The
+municipality label reaches the provider for grounded prose; its code and resolution do
+not.
 
 ## Optional LLM workflow
 
@@ -258,8 +259,8 @@ uv run src/scripts/generate_personas.py \
 For an approved smoke test, edit only the ignored local config: set
 `llm_generation_enabled: true`, `base_url`, and `model`. Set `api_key_env` to the name
 of a bearer-token variable if the endpoint requires authentication. Use a short-lived
-command-scoped token assignment and add `--live` explicitly. Replace
-`OPENAI_API_KEY` below with the configured `api_key_env` name when needed:
+command-scoped token assignment and add `--live` explicitly. Replace `OPENAI_API_KEY`
+below with the configured `api_key_env` name when needed:
 
 ```bash
 set -o pipefail
@@ -278,13 +279,16 @@ test -n "$PERSONA_RUN" || exit 1
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
-Each record uses two model stages: structured attributes, then seven Danish
-presentations: five domain descriptions, a general persona, and a required
-`visual_persona` for generic portrait guidance. The visual guidance is not image
-generation and follows the closed grammar and vocabulary in
-[`docs/visual-persona-format.md`](docs/visual-persona-format.md): it may only describe
-mutable clothing, accessories, colours, and a generic background. A repeated live
-command resumes valid per-record checkpoints and does not repeat completed calls. Each
+Each record uses two model stages: structured attributes, then six Danish texts: five
+specialised descriptions (`professional_persona`, `sports_persona`, `arts_persona`,
+`travel_persona`, and `culinary_persona`) plus one short, grounded `persona`. The v2
+persona includes age, statistical sex, municipality, education, origin, a synthetic job
+title grounded in the official job-function label (or the current nonemployee status),
+two or three interests in prose, and cautious OCEAN tendencies. It is not a visual
+description; `visual_persona` is removed. See
+[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
+repeated live command resumes valid v2 per-record checkpoints and does not repeat
+completed calls. v1 checkpoints and old pilots are not resumable under v2. Each
 `generate_personas.py` invocation is one shard capped at five rows, while a pilot can
 span multiple such shards. The default HTTP-attempt budget is 15 per shard.
 
@@ -326,8 +330,8 @@ provider reachability, and live commands can consume paid requests.
 
 ## Outputs and data handling
 
-The repository includes the compressed raw Statistics Denmark snapshot archive and
-its attribution. The source archive, lock, category mappings, sampling parameters,
+The repository includes the compressed raw Statistics Denmark snapshot archive and its
+attribution. The source archive, lock, category mappings, sampling parameters,
 validation thresholds, and code are version controlled. Restored and derived artefacts
 remain ignored and reproducible.
 
@@ -360,25 +364,26 @@ Statistics Denmark inputs are public aggregate tables, not individual-level reco
 pipeline must not be used to reconstruct or link people. Phase 2 emits synthetic adults
 aged 18-125 with the fixed residence value `Danmark`, independently sampled official
 FOLK2 origin fields, sex, age, marital status, municipality, its official region parent,
-broad education, labour status, detailed status, and independent OCEAN scores. Origin
-is not ethnicity, citizenship, or residence, and cannot drive language, culture,
-religion, occupation, personality, or
-visual appearance. It does not emit names, exact addresses, coordinates, CPR or other
-administrative identifiers, employers, observed occupations, income, household details,
-ancestry, citizenship, health, religion, sexuality, politics, criminal history, or free
-text. The sole occupation-related exception is the optional synthetic broad job
-function allocated from the incomplete LONS20 earnings-statistics universe; it is not
-conditioned on municipality, origin, education, age, OCEAN, or any unsupported joint.
-
-LLM prompts prohibit identifying and sensitive details, stereotypes, and deterministic
-claims about demographics or personality. Validators check strict schemas, Danish text,
-contact and identifying-number patterns, configured sensitive terms, duplicate
-descriptions (including visual guidance), upstream preservation, checksums, and
-checkpoint provenance. These are finite automated checks, not a guarantee of anonymity
-or safe use. Treat municipality-level combinations, accepted text, checkpoints, tokens,
-and provider telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for
-vulnerability reporting and
-[`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing outputs.
+broad education, labour status, detailed status, and independent OCEAN scores. Origin is
+not ethnicity, citizenship, or residence, and cannot drive language, culture, religion,
+occupation, personality, or visual appearance. It does not emit names, exact addresses,
+coordinates, CPR or other administrative identifiers, employers, observed occupations,
+income, household details, ancestry, citizenship, health, religion, sexuality, politics,
+criminal history, or free text. The sole occupation-related exception is the optional
+synthetic broad job function allocated from the incomplete LONS20 earnings-statistics
+universe; it is not conditioned on municipality, origin, education, age, OCEAN, or any
+unsupported joint. LLM prompts prohibit identifying and sensitive details, stereotypes,
+and deterministic claims about demographics or personality. Validators check strict
+schemas, Danish text, contact and identifying-number patterns, configured sensitive
+terms, duplicate descriptions, grounded persona facts, upstream preservation, checksums,
+and checkpoint provenance. Origin labels are not ethnicity or appearance; job titles are
+synthetic and must not imply unsupported work history or family claims. Downstream image
+models may still stereotype, so text validation is not a guarantee of safe image
+generation. These are finite automated checks, not a guarantee of anonymity or safe use.
+Treat municipality-level combinations, accepted text, checkpoints, tokens, and provider
+telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting
+and [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing
+outputs.
 
 ## Validation and development checks
 
@@ -412,7 +417,7 @@ required.
   harmonisation decisions;
 - [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md): design and deferred
   delivery phases;
-- [`docs/visual-persona-format.md`](docs/visual-persona-format.md): controlled Danish
-  visual-persona grammar and vocabulary;
+- [`docs/persona-prompt-format.md`](docs/persona-prompt-format.md): generation contract
+  v2 for the six Danish persona texts and provider input boundary;
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): project contribution process;
 - [`LICENSE`](LICENSE): project licence.

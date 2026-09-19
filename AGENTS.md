@@ -20,44 +20,44 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 
 ## Modules and packages
 
-| Path | Responsibility |
-| --- | --- |
-| `danish_personas/__init__.py` | Package metadata and module docstring. |
-| `danish_personas/io.py` | YAML, canonical JSON, atomic writes, SHA-256. |
-| `danish_personas/models.py` | Strict Pydantic source, sampling, record contracts. |
-| `danish_personas/generation/__init__.py` | LLM-generation package marker. |
-| `danish_personas/generation/client.py` | Retrying OpenAI client and accounting. |
-| `danish_personas/generation/models.py` | LLM, checkpoint, ledger, pilot contracts. |
-| `danish_personas/generation/pipeline.py` | Guarded generation, resume, provenance. |
-| `danish_personas/generation/report.py` | Persona-run and pilot integrity gates. |
-| `danish_personas/generation/validation.py` | JSON, Danish, safety, duplicate gates. |
-| `danish_personas/sampling/__init__.py` | Sampling package marker. |
-| `danish_personas/sampling/generator.py` | Deterministic demographics, back-off, OCEAN. |
-| `danish_personas/sources/__init__.py` | Source-acquisition package marker. |
-| `danish_personas/sources/http.py` | Retrying requests and header serialisation. |
-| `danish_personas/sources/statbank.py` | StatBank selectors and immutable snapshots. |
-| `danish_personas/sources/classification.py` | dst.dk classification attachment snapshots. |
-| `danish_personas/sources/prepare.py` | Aggregate normalisation and calibration. |
-| `danish_personas/validation/__init__.py` | Validation package marker. |
-| `danish_personas/validation/checks.py` | Source, structure, distribution, OCEAN. |
+| Path                                        | Responsibility                                      |
+| ------------------------------------------- | --------------------------------------------------- |
+| `danish_personas/__init__.py`               | Package metadata and module docstring.              |
+| `danish_personas/io.py`                     | YAML, canonical JSON, atomic writes, SHA-256.       |
+| `danish_personas/models.py`                 | Strict Pydantic source, sampling, record contracts. |
+| `danish_personas/generation/__init__.py`    | LLM-generation package marker.                      |
+| `danish_personas/generation/client.py`      | Retrying OpenAI client and accounting.              |
+| `danish_personas/generation/models.py`      | LLM, checkpoint, ledger, pilot contracts.           |
+| `danish_personas/generation/pipeline.py`    | Guarded generation, resume, provenance.             |
+| `danish_personas/generation/report.py`      | Persona-run and pilot integrity gates.              |
+| `danish_personas/generation/validation.py`  | JSON, Danish, safety, duplicate gates.              |
+| `danish_personas/sampling/__init__.py`      | Sampling package marker.                            |
+| `danish_personas/sampling/generator.py`     | Deterministic demographics, back-off, OCEAN.        |
+| `danish_personas/sources/__init__.py`       | Source-acquisition package marker.                  |
+| `danish_personas/sources/http.py`           | Retrying requests and header serialisation.         |
+| `danish_personas/sources/statbank.py`       | StatBank selectors and immutable snapshots.         |
+| `danish_personas/sources/classification.py` | dst.dk classification attachment snapshots.         |
+| `danish_personas/sources/prepare.py`        | Aggregate normalisation and calibration.            |
+| `danish_personas/validation/__init__.py`    | Validation package marker.                          |
+| `danish_personas/validation/checks.py`      | Source, structure, distribution, OCEAN.             |
 
 ## Scripts
 
 Run every script from the repository root with `uv run`. Paths in config files and
 prompts are interpreted relative to that working directory.
 
-| Script | Responsibility and invocation |
-| --- | --- |
-| `restore_raw_sources.py` | Safely restores the archive after validating its members. |
-| `build_raw_archive.py` | Packs restored raw snapshots into a byte-stable archive. |
-| `download_sources.py` | `resolve` locks selectors; `fetch` refreshes snapshots. |
-| `build_distributions.py` | Builds a checksummed offline bundle from raw snapshots. |
-| `generate_demographics.py` | Creates deterministic Phase 2 and OCEAN records. |
-| `validate_dataset.py` | Validates `sources`, `demographics`, or `personas`. |
-| `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample. |
-| `generate_personas.py` | Guarded two-stage LLM run, max five rows per shard. |
-| `generate_persona_pilot.py` | Merges validated shards; requires `--live`. |
-| `fix_dot_env_file.py` | Creates `.env`; non-interactive leaves Git identity blank. |
+| Script                         | Responsibility and invocation                              |
+| ------------------------------ | ---------------------------------------------------------- |
+| `restore_raw_sources.py`       | Safely restores the archive after validating its members.  |
+| `build_raw_archive.py`         | Packs restored raw snapshots into a byte-stable archive.   |
+| `download_sources.py`          | `resolve` locks selectors; `fetch` refreshes snapshots.    |
+| `build_distributions.py`       | Builds a checksummed offline bundle from raw snapshots.    |
+| `generate_demographics.py`     | Creates deterministic Phase 2 and OCEAN records.           |
+| `validate_dataset.py`          | Validates `sources`, `demographics`, or `personas`.        |
+| `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample.           |
+| `generate_personas.py`         | Guarded two-stage LLM run, max five rows per shard.        |
+| `generate_persona_pilot.py`    | Merges validated shards; requires `--live`.                |
+| `fix_dot_env_file.py`          | Creates `.env`; non-interactive leaves Git identity blank. |
 
 Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no
 `generate_attributes.py`; structured attributes are the first stage of
@@ -65,42 +65,43 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 
 ## Tests
 
-| Path | Coverage |
-| --- | --- |
-| `tests/test_models.py` | Source-selection contract validation. |
-| `tests/test_llm_guard.py` | Default LLM-disabled guard. |
-| `tests/test_non_llm_pipeline.py` | Deterministic fixture pipeline. |
-| `tests/test_source_validation.py` | Bundle and raw-snapshot checksum/query gates. |
-| `tests/test_raw_archive.py` | Archive integrity, safe restoration, byte-stable packing. |
-| `tests/test_classification.py` | Geography parsing and the StatBank cross-check. |
-| `tests/test_backoff.py` | Sparse-cell back-off, ladders, and smoothing. |
-| `tests/generation/test_client.py` | Request budgets, retries, rate limits, schemas. |
-| `tests/generation/test_pipeline.py` | Resume, provenance, tamper, pilot merging. |
-| `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates. |
+| Path                                  | Coverage                                                  |
+| ------------------------------------- | --------------------------------------------------------- |
+| `tests/test_models.py`                | Source-selection contract validation.                     |
+| `tests/test_llm_guard.py`             | Default LLM-disabled guard.                               |
+| `tests/test_non_llm_pipeline.py`      | Deterministic fixture pipeline.                           |
+| `tests/test_source_validation.py`     | Bundle and raw-snapshot checksum/query gates.             |
+| `tests/test_raw_archive.py`           | Archive integrity, safe restoration, byte-stable packing. |
+| `tests/test_classification.py`        | Geography parsing and the StatBank cross-check.           |
+| `tests/test_backoff.py`               | Sparse-cell back-off, ladders, and smoothing.             |
+| `tests/generation/test_client.py`     | Request budgets, retries, rate limits, schemas.           |
+| `tests/generation/test_pipeline.py`   | Resume, provenance, tamper, pilot merging.                |
+| `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates.                     |
 
 Tests must remain offline and must not call a provider. Mock HTTPX or the generation
 client when testing LLM paths.
 
 ## Configuration
 
-| Path | Responsibility |
-| --- | --- |
-| `config/sources.yaml` | Dynamic StatBank selectors, classifications, thresholds. |
-| `config/sources.lock.yaml` | Resolved codes, queries, URLs, periods, and timestamps. |
-| `config/categories.yaml` | Canonical demographic and labour-status mappings. |
-| `config/sampling.yaml` | Seed, rows, adult age range, region, OCEAN settings. |
-| `config/validation.yaml` | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config/generation.yaml` | Disabled endpoint, guards, response mode, prompt paths. |
-| `config/generation.local.yaml` | Ignored local LLM override and provider settings. |
-| `config/prompts/attributes-da.md` | Danish attributes schema and safety rules. |
-| `config/prompts/personas-da.md` | Danish seven-description schema and safety rules. |
+| Path                              | Responsibility                                            |
+| --------------------------------- | --------------------------------------------------------- |
+| `config/sources.yaml`             | Dynamic StatBank selectors, classifications, thresholds.  |
+| `config/sources.lock.yaml`        | Resolved codes, queries, URLs, periods, and timestamps.   |
+| `config/categories.yaml`          | Canonical demographic and labour-status mappings.         |
+| `config/sampling.yaml`            | Seed, rows, adult age range, region, OCEAN settings.      |
+| `config/validation.yaml`          | Distribution, expected-count, back-off, OCEAN thresholds. |
+| `config/generation.yaml`          | Disabled endpoint, guards, response mode, prompt paths.   |
+| `config/generation.local.yaml`    | Ignored local LLM override and provider settings.         |
+| `config/prompts/attributes-da.md` | Danish attributes schema and safety rules.                |
+| `config/prompts/personas-da.md`   | Danish six-description v2 schema and safety rules.        |
 
-`config/sources.yaml` and `config/sources.lock.yaml` carry a top-level `classifications:`
-list beside `sources:`, and their `version` is `2` to signal that lock schema. Statistics
-Denmark publishes classifications as attachments on dst.dk rather than through the
-StatBank data API, so they use `classification.py` instead of a StatBank selector.
-`download_sources.py resolve` warns and rewrites a lock that predates the current schema,
-and `download_sources.py fetch` fetches classifications as well as tables.
+`config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
+`classifications:` list beside `sources:`, and their `version` is `2` to signal that
+lock schema. Statistics Denmark publishes classifications as attachments on dst.dk
+rather than through the StatBank data API, so they use `classification.py` instead of a
+StatBank selector. `download_sources.py resolve` warns and rewrites a lock that predates
+the current schema, and `download_sources.py fetch` fetches classifications as well as
+tables.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
 or validator changes provenance and can change content-addressed run IDs. Do not adjust
@@ -154,8 +155,8 @@ Make target notes:
 - `setup-environment-variables` prompts for Git identity; its non-interactive variant
   leaves values blank. `setup-git` changes local Git settings.
 - `add-repo-to-git` may create an initial commit and add the GitHub origin remote.
-- `docker` runs the bootstrap, builds the image, and starts an interactive container.
-  It requires Docker and has the bootstrap side effects.
+- `docker` runs the bootstrap, builds the image, and starts an interactive container. It
+  requires Docker and has the bootstrap side effects.
 
 ## Pipeline ordering
 
@@ -167,8 +168,8 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 3. Generate deterministic demographic/OCEAN records.
 4. Validate the smoke run, then generate and validate the statistical run.
 5. Freeze the stratified text-development sample.
-6. Dry-run LLM planning; it needs no provider, and only an approved operator may
-   enable `--live`.
+6. Dry-run LLM planning; it needs no provider, and only an approved operator may enable
+   `--live`.
 7. Validate each persona run; each `generate_personas.py` shard is capped at five rows,
    while a pilot may span multiple validated shards before merge and pilot validation.
 
@@ -190,8 +191,8 @@ uv run src/scripts/validate_dataset.py demographics \
 Use the full copy-pasteable workflows in `README.md` to capture exact bundle/run paths,
 produce the 100,000-row run, and freeze a sample. Run `download_sources.py resolve` and
 `fetch` only for an intentional source refresh: both require network access to
-Statistics Denmark, and refreshed responses create a new provenance chain. Review changes
-to the lock and source register before accepting refreshed snapshots.
+Statistics Denmark, and refreshed responses create a new provenance chain. Review
+changes to the lock and source register before accepting refreshed snapshots.
 
 ## Outputs and provenance
 
@@ -204,28 +205,30 @@ snapshot's manifest, provenance, query, and file checksums.
 
 Table snapshots sit under `<table>/<query-hash>/`. Classification snapshots sit under
 `classifications/<classification-id>/<url-hash>/` and hold three files: `data.csv`,
-`response-headers.json`, and `snapshot-manifest.json`. `build_raw_archive.py` repacks the
-restored snapshots byte-stably, sorting members by archive path and fixing mode, owner,
-and timestamp, so an unchanged snapshot tree always produces identical archive bytes.
+`response-headers.json`, and `snapshot-manifest.json`. `build_raw_archive.py` repacks
+the restored snapshots byte-stably, sorting members by archive path and fixing mode,
+owner, and timestamp, so an unchanged snapshot tree always produces identical archive
+bytes.
 
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
-preparation reports. `normalized/geography_hierarchy.parquet` holds the official
-region, landsdel, and municipality hierarchy read from the `geography_hierarchy`
-classification. Preparation cross-checks it against FOLK1A and RAS209 metadata and
-requires exact equality of the locked, hierarchy, and prepared RAS209 municipality
-sets. Blank, missing, duplicate, or mismatched hierarchy values fail. Municipality code
-and name remain in generated records; landsdel stays inside the prepared bundle.
-Deterministic runs contain `structured-records.parquet`, `run-manifest.json`, and
-JSON/Markdown validation reports. Frozen samples have an
-adjacent `.manifest.json`. Persona runs contain `generated-personas.parquet`,
-`generation-manifest.json`, `request-ledger.json`, per-person attribute/final
-checkpoints, and `validation-report.json`. Pilots additionally contain merged output,
-a pilot manifest, shard references, and `pilot-validation-report.json`.
+preparation reports. `normalized/geography_hierarchy.parquet` holds the official region,
+landsdel, and municipality hierarchy read from the `geography_hierarchy` classification.
+Preparation cross-checks it against FOLK1A and RAS209 metadata and requires exact
+equality of the locked, hierarchy, and prepared RAS209 municipality sets. Blank,
+missing, duplicate, or mismatched hierarchy values fail. Municipality code and name
+remain in generated records; landsdel stays inside the prepared bundle. Deterministic
+runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
+validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
+contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
+per-person attribute/final checkpoints, and `validation-report.json`. Current v2 outputs
+retain five specialised texts plus one short grounded persona; they do not contain
+`visual_persona`. Pilots additionally contain merged output, a pilot manifest, shard
+references, and `pilot-validation-report.json`.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order, and
-request accounting. Deterministic run IDs derive from bundle/config/row/seed inputs;
-LLM run IDs include the frozen input and generation context. Existing checksum failures
-must fail loudly, not be repaired by overwriting files.
+request accounting. Deterministic run IDs derive from bundle/config/row/seed inputs; LLM
+run IDs include the frozen input and generation context. Existing checksum failures must
+fail loudly, not be repaired by overwriting files.
 
 ## Repository-specific conventions
 
@@ -252,31 +255,39 @@ must fail loudly, not be repaired by overwriting files.
   issue requests in parallel.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
-  validator context. Re-running a valid live run resumes completed records.
+  validator context. Human-readable municipality, origin, and job-function labels reach
+  the provider; source codes and resolution fields do not. Re-running a valid v2 live
+  run resumes completed records, but v1 checkpoints and old pilots are not resumable
+  under v2.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
 - LLM output must remain strict JSON, Danish, non-identifying, free of configured
-  sensitive terms, and free of exact duplicate descriptions, including visual guidance.
-  Automated validation is not a substitute for blinded human review.
-- The sampler backs off through ordered ladders when a conditional cell is missing,
-  and each record records the level that produced it. A ladder stops at the most
-  general cell that is still structurally valid, never a national one, so an age
-  cannot leave its band and a detailed status cannot leave its broad RAS209 status.
-  A cell missing at a ladder's final level is a structural zero and must keep failing
-  loudly. Back-off consumes one random draw at any level, so reordering the draws or
-  adding a ladder step changes every record for a given seed.
+  sensitive terms, and free of exact duplicate descriptions. The short persona must be
+  grounded in its supplied facts, use a synthetic job title or current nonemployee
+  status, avoid unsupported family claims, and treat OCEAN as cautious tendencies.
+  Automated validation is not a substitute for blinded human review; downstream image
+  models may still stereotype.
+- The sampler backs off through ordered ladders when a conditional cell is missing, and
+  each record records the level that produced it. A ladder stops at the most general
+  cell that is still structurally valid, never a national one, so an age cannot leave
+  its band and a detailed status cannot leave its broad RAS209 status. A cell missing at
+  a ladder's final level is a structural zero and must keep failing loudly. Back-off
+  consumes one random draw at any level, so reordering the draws or adding a ladder step
+  changes every record for a given seed.
 - Age and marital ladders may relax age or sex only within the same municipality; they
   never fall back to region or national geography. Education and broad status arrive
   together from the municipality-native RAS209 joint instead of from a ladder. RAS202
   detailed-status refinement is explicitly separate and national, but may never leave
   the sampled broad status. A missing terminal cell must fail loudly.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
-  individual records. Phase 2 retains official municipality fields but withholds them
-  from LLM payloads; treat municipality-level combinations as restricted. Do not add
-  names, addresses, occupations, employers, income, households, citizenship, ancestry,
-  health, religion, sexuality, politics, criminal history, or other sensitive fields
-  without a separate privacy review.
+  individual records. Phase 2 retains official municipality fields; the municipality
+  label may reach the LLM provider, but its code and resolution do not. Origin and
+  job-function labels are similarly allowed provider inputs, while their codes and
+  resolutions are withheld. Treat municipality-level combinations and provider payloads
+  as restricted. Do not add names, addresses, occupations, employers, income,
+  households, citizenship, ancestry, health, religion, sexuality, politics, criminal
+  history, or other sensitive fields without a separate privacy review.
 - Only lowercase `makefile` is tracked; case-insensitive systems may display it as
   `Makefile`. Make targets can mutate Git state; inspect `git status` before and after
   using them.
