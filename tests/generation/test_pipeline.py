@@ -57,10 +57,14 @@ class _MockClient:
         self._requests_made += 1
         if self._record_request is not None:
             self._record_request(self._requests_made)
+        demographics = t.cast(
+            dict[str, object], payload["demographics_and_personality"]
+        )
+        employed = demographics["job_function"] is not None
         content = (
-            _attributes_json()
+            _attributes_json(employed=employed)
             if schema_name == "generated_attributes"
-            else _descriptions_json()
+            else _descriptions_json(employed=employed, demographic=demographics)
         )
         return LLMResponse(
             response_id=f"response-{self.requests}",
@@ -95,7 +99,7 @@ class _InterruptingClient(_MockClient):
         return super().complete(schema_name=schema_name, **kwargs)
 
 
-def _attributes_json() -> str:
+def _attributes_json(*, employed: bool = True) -> str:
     return json.dumps(
         {
             "cultural_context": (
@@ -108,12 +112,46 @@ def _attributes_json() -> str:
                 "at spille brætspil med venner",
             ],
             "career_goals_and_ambitions": None,
+            "job_title": "forretningsspecialist" if employed else None,
         },
         ensure_ascii=False,
     )
 
 
-def _descriptions_json() -> str:
+def _descriptions_json(
+    *, employed: bool = True, demographic: dict[str, object] | None = None
+) -> str:
+    context = demographic or {
+        "age": 35,
+        "sex": "female",
+        "municipality": "København",
+        "origin_country": "Denmark",
+        "education_level": "masters",
+    }
+    sex = "kvinde" if context["sex"] == "female" else "mand"
+    education = {"masters": "kandidatuddannelse", "vocational": "erhvervsuddannelse"}[
+        str(context["education_level"])
+    ]
+    if employed:
+        persona = (
+            f"Personen er {context['age']} år gammel {sex} fra "
+            f"{context['municipality']} i {context['origin_country']} med en "
+            f"{education} og arbejder som forretningsspecialist. Personen "
+            "kan være rolig og holder af at læse danske romaner, at lytte til "
+            "musik i fritiden og at spille brætspil med venner."
+        )
+    else:
+        status = (
+            "pensionist"
+            if context.get("labour_market_status") == "retired"
+            else "uden for arbejdsmarkedet"
+        )
+        persona = (
+            f"Personen er {context['age']} år gammel {sex} fra "
+            f"{context['municipality']} i {context['origin_country']} med en "
+            f"{education} og er {status}. Personen kan være rolig og nyder "
+            "at læse danske romaner og at lytte til musik i fritiden."
+        )
     return json.dumps(
         {
             "professional_persona": (
@@ -136,14 +174,7 @@ def _descriptions_json() -> str:
                 "I køkkenet er der plads til enkle retter og hyggelige måltider "
                 "med andre."
             ),
-            "persona": (
-                "Personen har en rolig dansk hverdag med plads til læsning, musik "
-                "og venner. Nye opgaver mødes med nysgerrighed og samarbejde."
-            ),
-            "visual_persona": (
-                "Personen vælger en blå skjorte og et grønt armbånd. "
-                "Baggrunden er en neutral flade."
-            ),
+            "persona": persona,
         },
         ensure_ascii=False,
     )
@@ -190,9 +221,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "education_resolution",
         "detailed_status_resolution",
         "origin_country_code",
-        "origin_country",
         "job_function_code",
-        "job_function",
         "job_function_resolution",
         "municipality_code",
         "municipality",
@@ -204,8 +233,20 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
-    assert set(resolution_columns).isdisjoint(attributes_payload)
-    assert set(resolution_columns).isdisjoint(descriptions_payload)
+    withheld_fields = {
+        *set(resolution_columns) - {"municipality"},
+        "region_code",
+        "country",
+        "detailed_status_code",
+        "education_source_code",
+    }
+    assert withheld_fields.isdisjoint(attributes_payload)
+    assert withheld_fields.isdisjoint(descriptions_payload)
+    assert (
+        attributes_payload["job_function"]
+        == "Business and administration professionals"
+    )
+    assert attributes_payload["municipality"] == "København"
     assert attributes_payload["education_level"] == "masters"
     assert descriptions_payload["education_level"] == "masters"
     assert "generated_attributes" in _MockClient.payloads[1]
@@ -215,7 +256,6 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
-    assert "visual_persona" in output.columns
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
         sample.head(1).select(list(resolution_columns))
@@ -260,7 +300,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "neuroticism_score": [48.0, 47.0],
             "neuroticism_label": ["average", "average"],
             "origin_country_code": ["5100", "5103"],
-            "origin_country": ["Denmark", "Stateless"],
+            "origin_country": ["Denmark", "Denmark"],
         }
     )
     source_path = run_dir / "structured-records.parquet"
@@ -310,7 +350,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     personas_prompt.write_text("Danske personaer")
     config_path = root / "generation.yaml"
     config = {
-        "version": 1,
+        "version": 2,
         "llm_generation_enabled": True,
         "base_url": "http://test/v1",
         "model": "test-model",
@@ -532,7 +572,6 @@ def test_pilot_merges_validated_shards(
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
-    assert "visual_persona" in output.columns
     assert _MockClient.requests == 4
 
 

@@ -261,6 +261,10 @@ def _validate_text(text: str, require_danish: bool) -> None:
         _require_danish(text=text)
 
 
+def _contains_term(text: str, term: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+
+
 def _contains_url(text: str) -> bool:
     if EXPLICIT_URL.search(text):
         return True
@@ -362,10 +366,21 @@ def _validate_current_status(
 
 
 def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> None:
+    """Require two or three complete, literal interests in the summary prose.
+
+    Matching complete terms prevents a short interest such as ``art`` from being
+    accepted merely because it occurs inside an unrelated word.  The generated
+    value is normalised in the same way as the prose so capitalisation and
+    incidental whitespace do not change the contract.
+
+    Raises:
+        ValueError:
+            If the prose contains fewer than two or more than three interests.
+    """
     interests = {
-        interest.casefold()
+        _normalize(interest)
         for interest in attributes.hobbies_and_interests
-        if interest.casefold() in normalized
+        if _contains_term(normalized, _normalize(interest))
     }
     if len(interests) not in {2, 3}:
         raise ValueError("Persona must contain exactly 2-3 generated interests")
@@ -428,7 +443,3 @@ def _compatible_ocean_terms(context: dict[str, object]) -> tuple[str, ...]:
         for selected in levels:
             terms.extend(labels[selected])
     return tuple(dict.fromkeys(terms))
-
-
-def _contains_term(text: str, term: str) -> bool:
-    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None

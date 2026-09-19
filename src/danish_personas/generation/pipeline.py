@@ -382,7 +382,11 @@ def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
     payload = {name: row.get(name) for name in PROMPT_FIELDS}
     job_function = payload.get("job_function")
     if isinstance(job_function, str):
-        payload["job_function"] = re.sub(r"^\s*\d{1,3}\s+", "", job_function).strip()
+        # Official labels may be serialised as ``24 Label`` or ``24 - Label``;
+        # neither the code nor its separator is useful model context.
+        payload["job_function"] = re.sub(
+            r"^\s*\d{1,3}(?:\s*[-:]\s*|\s+)", "", job_function
+        ).strip()
     return payload
 
 
