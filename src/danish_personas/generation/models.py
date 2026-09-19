@@ -27,7 +27,33 @@ class GeneratedAttributes(StrictModel):
     cultural_context: str = Field(min_length=20, max_length=600)
     skills_and_expertise: list[str] = Field(min_length=3, max_length=6)
     hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
-    career_goals_and_ambitions: str | None = Field(max_length=500)
+    career_goals_and_ambitions: str | None = Field(default=None, max_length=500)
+    job_title: str | None = Field(default=None, max_length=80)
+
+    @field_validator("job_title")
+    @classmethod
+    def require_stripped_single_line_title(_cls, value: str | None) -> str | None:
+        """Normalise an optional title while rejecting multiline output.
+
+        Args:
+            value:
+                Candidate generated title.
+
+        Returns:
+            The validated title or null.
+
+        Raises:
+            ValueError:
+                If the title is not a short, stripped, single-line string.
+        """
+        if value is None:
+            return None
+        stripped = value.strip()
+        if stripped != value or "\n" in value or "\r" in value:
+            raise ValueError("job_title must be a stripped single-line string")
+        if not 2 <= len(stripped) <= 80:
+            raise ValueError("job_title must contain 2-80 characters")
+        return stripped
 
     @field_validator("skills_and_expertise", "hobbies_and_interests")
     @classmethod
@@ -58,7 +84,7 @@ class GeneratedAttributes(StrictModel):
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: int
+    version: t.Literal[2]
     llm_generation_enabled: bool
     base_url: str | None
     model: str | None
@@ -144,8 +170,7 @@ class PersonaDescriptions(StrictModel):
     arts_persona: str = Field(min_length=40, max_length=1_200)
     travel_persona: str = Field(min_length=40, max_length=1_200)
     culinary_persona: str = Field(min_length=40, max_length=1_200)
-    persona: str = Field(min_length=60, max_length=1_500)
-    visual_persona: str = Field(min_length=40, max_length=1_200)
+    persona: str = Field(min_length=60, max_length=600)
 
 
 class PersonaCheckpoint(StrictModel):

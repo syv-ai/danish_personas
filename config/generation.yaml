@@ -1,4 +1,4 @@
-version: 1
+version: 2
 llm_generation_enabled: false
 base_url: null
 model: null
