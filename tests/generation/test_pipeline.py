@@ -34,6 +34,7 @@ from scripts.generate_persona_pilot import main as pilot_main
 class _MockClient:
     requests = 0
     payloads: list[dict[str, object]] = []
+    job_title = "forretningsspecialist"
 
     def __init__(
         self,
@@ -62,9 +63,15 @@ class _MockClient:
         )
         employed = demographics["job_function"] is not None
         content = (
-            _attributes_json(employed=employed)
+            _attributes_json(
+                employed=employed, job_title=type(self).job_title if employed else None
+            )
             if schema_name == "generated_attributes"
-            else _descriptions_json(employed=employed, demographic=demographics)
+            else _descriptions_json(
+                employed=employed,
+                demographic=demographics,
+                job_title=type(self).job_title if employed else None,
+            )
         )
         return LLMResponse(
             response_id=f"response-{self.requests}",
@@ -99,7 +106,7 @@ class _InterruptingClient(_MockClient):
         return super().complete(schema_name=schema_name, **kwargs)
 
 
-def _attributes_json(*, employed: bool = True) -> str:
+def _attributes_json(*, employed: bool = True, job_title: str | None = None) -> str:
     return json.dumps(
         {
             "cultural_context": (
@@ -112,14 +119,17 @@ def _attributes_json(*, employed: bool = True) -> str:
                 "at spille brætspil med venner",
             ],
             "career_goals_and_ambitions": None,
-            "job_title": "forretningsspecialist" if employed else None,
+            "job_title": job_title if employed else None,
         },
         ensure_ascii=False,
     )
 
 
 def _descriptions_json(
-    *, employed: bool = True, demographic: dict[str, object] | None = None
+    *,
+    employed: bool = True,
+    demographic: dict[str, object] | None = None,
+    job_title: str | None = None,
 ) -> str:
     context = demographic or {
         "age": 35,
@@ -136,7 +146,7 @@ def _descriptions_json(
         persona = (
             f"Personen er {context['age']} år gammel {sex} fra "
             f"{context['municipality']} i {context['origin_country']} med en "
-            f"{education} og arbejder som forretningsspecialist. Personen "
+            f"{education} og arbejder som {job_title}. Personen "
             "kan være rolig og holder af at læse danske romaner, at lytte til "
             "musik i fritiden og at spille brætspil med venner."
         )
@@ -375,6 +385,65 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "config": config_path,
         "personas_prompt": personas_prompt,
     }
+
+
+def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Custom title mappings govern initial validation and checkpoint replay."""
+    paths = _write_inputs(root=tmp_path)
+    custom_title = "specialtilpasset forretningsrådgiver"
+    mapping_data = yaml.safe_load(
+        (Path(__file__).parents[2] / "config/job-function-titles.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    mapping_data["job_functions"]["24"]["titles"] = [custom_title]
+    mapping_path = tmp_path / "custom-job-function-titles.yaml"
+    mapping_path.write_text(yaml.safe_dump(mapping_data, allow_unicode=True))
+    config_data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
+    config_data["job_title_mapping"] = str(mapping_path)
+    paths["config"].write_text(yaml.safe_dump(config_data, allow_unicode=True))
+
+    class CustomMappingClient(_MockClient):
+        job_title = custom_title
+
+    mismatch_config = tmp_path / "default-job-title-config.yaml"
+    mismatch_data = dict(config_data)
+    mismatch_data.pop("job_title_mapping")
+    mismatch_config.write_text(yaml.safe_dump(mismatch_data, allow_unicode=True))
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", CustomMappingClient
+    )
+    with pytest.raises(ValueError, match="allowlisted"):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=mismatch_config,
+            output_dir=tmp_path / "mismatched-output",
+            rows=1,
+            live=True,
+        )
+
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    assert validate_persona_run(run_dir=run_dir).passed
+
+    default_config_data = dict(config_data)
+    default_config_data.pop("job_title_mapping")
+    paths["config"].write_text(yaml.safe_dump(default_config_data, allow_unicode=True))
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    paths["config"].write_text(yaml.safe_dump(config_data, allow_unicode=True))
+    mapping_data["job_functions"]["24"]["titles"] = ["anden forretningsrådgiver"]
+    mapping_path.write_text(yaml.safe_dump(mapping_data, allow_unicode=True))
+    assert not validate_persona_run(run_dir=run_dir).passed
 
 
 @pytest.mark.parametrize(

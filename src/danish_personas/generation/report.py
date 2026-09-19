@@ -176,7 +176,13 @@ def _build_persona_pilot_report(
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         merged_batches = pl.DataFrame()
-    content_errors = _count_content_errors(output=output)
+    config_path = _repository_path(repository_root, manifest.generation_config_file)
+    mapping_binding = _load_mapping_binding(
+        config_path=config_path, repository_root=repository_root
+    )
+    content_errors = _count_content_errors(
+        output=output, mapping_binding=mapping_binding
+    )
     provenance_passed = _pilot_provenance_matches(
         pilot_dir=pilot_dir, manifest=manifest, repository_root=repository_root
     )
@@ -289,25 +295,17 @@ def _build_persona_run_report(
             passed=_frames_equal(output=output, expected=upstream),
         ),
     ]
-    validation_errors = _count_content_errors(output=output)
     config_path = (
         _repository_path(repository_root, manifest.generation_config_file)
         if manifest.generation_config_file is not None
         else None
     )
-    try:
-        config = (
-            load_yaml_model(path=config_path, model=GenerationConfig)
-            if config_path is not None
-            else None
-        )
-        mapping_binding = (
-            _effective_mapping(config=config, repository_root=repository_root)
-            if config is not None
-            else None
-        )
-    except OSError, UnicodeError, ValueError:
-        mapping_binding = None
+    mapping_binding = _load_mapping_binding(
+        config_path=config_path, repository_root=repository_root
+    )
+    validation_errors = _count_content_errors(
+        output=output, mapping_binding=mapping_binding
+    )
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
         output=output,
@@ -406,7 +404,7 @@ def _count_checkpoint_errors(
             }
             output_values = {name: row[name] for name in checkpoint_values}
             replay_valid, stage_attempts = _responses_match_checkpoint(
-                checkpoint=checkpoint, demographic=row
+                checkpoint=checkpoint, demographic=row, mapping_binding=mapping_binding
             )
             if (
                 checkpoint.persona_id != persona_id
@@ -557,15 +555,22 @@ def _repository_path(root: Path | None, value: Path | None) -> Path:
 
 
 def _responses_match_checkpoint(
-    *, checkpoint: PersonaCheckpoint, demographic: dict[str, object]
+    *,
+    checkpoint: PersonaCheckpoint,
+    demographic: dict[str, object],
+    mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
 ) -> tuple[bool, tuple[int, int]]:
     """Replay the two response stages and bind accepted content to the checkpoint.
 
     Returns:
         Whether the sequence is valid and the number of responses for each stage.
     """
+    if mapping_binding is None:
+        return False, (0, 0)
     parsers = (
-        lambda content: parse_attributes(content, demographic),
+        lambda content: parse_attributes(
+            content, demographic, job_title_mapping=mapping_binding[1]
+        ),
         lambda content: parse_descriptions(content, demographic, checkpoint.attributes),
     )
     expected = (checkpoint.attributes, checkpoint.descriptions)
@@ -615,12 +620,18 @@ def _stage_attempts_within_config(
     )
 
 
-def _count_content_errors(output: pl.DataFrame) -> int:
+def _count_content_errors(
+    *,
+    output: pl.DataFrame,
+    mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
+) -> int:
     errors = 0
     required_columns = {
         *GeneratedAttributes.model_fields,
         *PersonaDescriptions.model_fields,
     }
+    if mapping_binding is None:
+        return max(1, output.height)
     if not required_columns.issubset(output.columns):
         return max(1, output.height)
     for row in output.iter_rows(named=True):
@@ -631,11 +642,43 @@ def _count_content_errors(output: pl.DataFrame) -> int:
             descriptions = PersonaDescriptions.model_validate(
                 {name: row[name] for name in PersonaDescriptions.model_fields}
             )
-            parse_attributes(attributes.model_dump_json(), row)
+            parse_attributes(
+                attributes.model_dump_json(), row, job_title_mapping=mapping_binding[1]
+            )
             parse_descriptions(descriptions.model_dump_json(), row, attributes)
         except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             errors += 1
     return errors
+
+
+def _frames_equal(*, output: pl.DataFrame, expected: pl.DataFrame) -> bool:
+    """Compare frames without allowing a malformed schema to raise.
+
+    Returns:
+        Whether the output preserves the expected frame.
+    """
+    try:
+        return output.select(expected.columns).equals(expected)
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return False
+
+
+def _load_mapping_binding(
+    *, config_path: Path | None, repository_root: Path | None
+) -> tuple[Path, JobFunctionTitleMapping, str] | None:
+    """Load the validated title mapping selected by a generation config.
+
+    Returns:
+        The effective mapping binding, or ``None`` when its config or mapping is
+        unavailable or invalid.
+    """
+    if config_path is None:
+        return None
+    try:
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        return _effective_mapping(config=config, repository_root=repository_root)
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return None
 
 
 def _effective_mapping(
@@ -651,18 +694,6 @@ def _effective_mapping(
     )
     mapping = load_job_title_mapping(path=path)
     return path, mapping, job_title_mapping_sha256(path=path)
-
-
-def _frames_equal(*, output: pl.DataFrame, expected: pl.DataFrame) -> bool:
-    """Compare frames without allowing a malformed schema to raise.
-
-    Returns:
-        Whether the output preserves the expected frame.
-    """
-    try:
-        return output.select(expected.columns).equals(expected)
-    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
-        return False
 
 
 def _metric(
