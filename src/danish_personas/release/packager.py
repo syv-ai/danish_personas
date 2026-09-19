@@ -29,17 +29,22 @@ import polars as pl
 import yaml
 
 from ..generation.models import (
-    GeneratedAttributes,
     GenerationConfig,
     GenerationManifest,
     PersonaCheckpoint,
-    PersonaDescriptions,
     PilotManifest,
 )
+from ..generation.pipeline import generation_context_sha256
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, sha256_file, write_json
-from ..models import DemographicRecord, RunManifest, StrictModel, ValidationReport
-from .common import persona_output_dtypes_are_valid, release_id, role
+from ..models import RunManifest, StrictModel, ValidationReport
+from .common import (
+    PERSONA_OUTPUT_COLUMNS,
+    persona_output_dtypes_are_valid,
+    release_id,
+    role,
+    validate_persona_output_rows,
+)
 from .models import (
     Accounting,
     Artifact,
@@ -1269,17 +1274,20 @@ def _validate_pilot_for_release(
         or sha256_file(output_path) != pilot_manifest.output_sha256
     ):
         raise ReleasePackagingError("Pilot output does not match its manifest")
-    expected_columns = (
-        *DemographicRecord.model_fields,
-        *GeneratedAttributes.model_fields,
-        *PersonaDescriptions.model_fields,
-    )
-    if set(output.columns) != set(expected_columns) or len(output.columns) != len(
-        expected_columns
+    if set(output.columns) != set(PERSONA_OUTPUT_COLUMNS) or len(output.columns) != len(
+        PERSONA_OUTPUT_COLUMNS
     ):
-        raise ReleasePackagingError("Persona output schema must match exactly")
+        raise ReleasePackagingError(
+            "Persona output schema must match generation contract v2"
+        )
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
+    try:
+        validate_persona_output_rows(output)
+    except ValueError as error:
+        raise ReleasePackagingError(
+            "Persona output fails contextual generation-v2 validation"
+        ) from error
     validate_release_approval(
         policy=policy,
         attestation=attestation,
@@ -1346,6 +1354,15 @@ def _assert_manifest_bindings(
         raise ReleasePackagingError("Attributes prompt binding failed")
     if sha256_file(personas_path) != manifest.personas_prompt_sha256:
         raise ReleasePackagingError("Personas prompt binding failed")
+    if config.version != 2:
+        raise ReleasePackagingError("Release requires generation contract v2")
+    context = generation_context_sha256(
+        config=config,
+        attributes_prompt=attributes_path.read_text(encoding="utf-8"),
+        personas_prompt=personas_path.read_text(encoding="utf-8"),
+    )
+    if context != manifest.generation_context_sha256:
+        raise ReleasePackagingError("Generation context binding failed")
     if config.model != manifest.model:
         raise ReleasePackagingError("Generation model binding failed")
 

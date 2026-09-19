@@ -10,15 +10,17 @@ from pathlib import Path
 
 import polars as pl
 
-from ..generation.models import (
-    GeneratedAttributes,
-    GenerationConfig,
-    PersonaDescriptions,
-)
+from ..generation.models import GenerationConfig
 from ..generation.pipeline import generation_context_sha256
 from ..io import load_yaml_model, sha256_file
-from ..models import DemographicRecord, StrictModel, ValidationReport
-from .common import persona_output_dtypes_are_valid, release_id, role
+from ..models import StrictModel, ValidationReport
+from .common import (
+    PERSONA_OUTPUT_COLUMNS,
+    persona_output_dtypes_are_valid,
+    release_id,
+    role,
+    validate_persona_output_rows,
+)
 from .models import ReleaseEvidence, ReleaseManifest, ReleasePolicy, ReviewAttestation
 from .policy import validate_release_approval
 
@@ -386,19 +388,22 @@ def _check_output(
     """
     if output.height != manifest.rows:
         raise ReleaseVerificationError("Output row count does not match manifest")
-    expected_columns = (
-        *DemographicRecord.model_fields,
-        *GeneratedAttributes.model_fields,
-        *PersonaDescriptions.model_fields,
-    )
-    if set(output.columns) != set(expected_columns) or len(output.columns) != len(
-        expected_columns
+    if set(output.columns) != set(PERSONA_OUTPUT_COLUMNS) or len(output.columns) != len(
+        PERSONA_OUTPUT_COLUMNS
     ):
-        raise ReleaseVerificationError("Persona output schema must match exactly")
+        raise ReleaseVerificationError(
+            "Persona output schema must match generation contract v2"
+        )
     if not persona_output_dtypes_are_valid(output):
         raise ReleaseVerificationError(
             "Persona output contains an invalid logical dtype"
         )
+    try:
+        validate_persona_output_rows(output)
+    except ValueError as error:
+        raise ReleaseVerificationError(
+            "Persona output fails contextual generation-v2 validation"
+        ) from error
     if not report.passed or report.kind != "persona_pilot":
         raise ReleaseVerificationError("Pilot validation report is not passing")
     if report.subject_id != manifest.pilot_id:
@@ -477,6 +482,8 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
     """
     config_path = release_dir / "provenance/config/generation.yaml"
     config = _load_yaml(config_path, GenerationConfig)
+    if config.version != 2:
+        raise ReleaseVerificationError("Release requires generation contract v2")
     if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
     attributes_path = release_dir / "provenance/prompts/attributes-da.md"
