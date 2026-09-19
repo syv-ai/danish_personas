@@ -29,10 +29,13 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
         SampleSizeError:
             If the requested sample is larger than the source run.
         ValueError:
-            If rows is less than one.
+            If rows is less than one or output leaves the validated run directory.
     """
     if rows < 1:
         raise ValueError("Requested sample must contain at least one row")
+    if output.parent.resolve() != run_dir.resolve():
+        message = "Frozen sample must remain inside its validated run directory"
+        raise ValueError(message)
     manifest = RunManifest.model_validate_json(
         (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )

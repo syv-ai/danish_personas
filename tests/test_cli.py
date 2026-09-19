@@ -444,7 +444,8 @@ def test_statistical_workflow_runs_only_after_smoke_and_freezes(
         "validate_sources",
         lambda **_: order.append("sources") or SimpleNamespace(passed=True),
     )
-    run_paths = iter((Path("smoke"), Path("statistical")))
+    statistical_dir = Path("statistical") / "content-addressed-run"
+    run_paths = iter((Path("smoke"), statistical_dir))
     monkeypatch.setattr(
         cli, "generate_records", lambda **_: order.append("generate") or next(run_paths)
     )
@@ -453,14 +454,27 @@ def test_statistical_workflow_runs_only_after_smoke_and_freezes(
         "validate_demographics",
         lambda **_: order.append("demographics") or SimpleNamespace(passed=True),
     )
-    monkeypatch.setattr(
-        cli, "freeze_sample", lambda **_: order.append("freeze") or Path("sample")
-    )
+
+    def freeze(**kwargs: object) -> Path:
+        order.append("freeze")
+        assert kwargs == {
+            "run_dir": statistical_dir,
+            "rows": 1000,
+            "output": statistical_dir / "text-development-seeds.parquet",
+        }
+        output = kwargs["output"]
+        assert isinstance(output, Path)
+        return output
+
+    monkeypatch.setattr(cli, "freeze_sample", freeze)
 
     result = RUNNER.invoke(
         cli.main, ["workflow", "deterministic", "--target", "statistical"]
     )
     assert result.exit_code == 0
+    assert result.output.splitlines()[-1] == str(
+        statistical_dir / "text-development-seeds.parquet"
+    )
     assert order == [
         "restore",
         "sources",
