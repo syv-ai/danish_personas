@@ -32,7 +32,7 @@ DEFAULT_SAMPLING = Path("config/sampling.yaml")
 DEFAULT_VALIDATION = Path("config/validation.yaml")
 DEFAULT_CATEGORIES = Path("config/categories.yaml")
 DEFAULT_LOCK = Path("config/sources.lock.yaml")
-DEFAULT_SAMPLE = Path("data") / "text-development-seeds.parquet"
+DEFAULT_SAMPLE_FILENAME = "text-development-seeds.parquet"
 
 
 @click.group()
@@ -505,8 +505,10 @@ def workflow() -> None:
     "--sample-output",
     "sample_path",
     type=click.Path(path_type=Path),
-    default=DEFAULT_SAMPLE,
-    show_default=True,
+    help=(
+        "Frozen sample path. Defaults to text-development-seeds.parquet inside the "
+        "returned statistical run directory."
+    ),
 )
 @click.option(
     "--sample-rows", type=click.IntRange(min=1), default=1000, show_default=True
@@ -524,7 +526,7 @@ def deterministic(
     processed_dir: Path,
     smoke_run_dir: Path,
     statistical_run_dir: Path,
-    sample_path: Path,
+    sample_path: Path | None,
     sample_rows: int,
     skip_restore: bool,
     force_restore: bool,
@@ -590,7 +592,13 @@ def deterministic(
             )
             _report_path(statistical_dir, "Generated and validated statistical run")
             frozen = freeze_sample(
-                run_dir=statistical_dir, rows=sample_rows, output=sample_path
+                run_dir=statistical_dir,
+                rows=sample_rows,
+                output=(
+                    sample_path
+                    if sample_path is not None
+                    else statistical_dir / DEFAULT_SAMPLE_FILENAME
+                ),
             )
             _report_path(frozen, "Frozen sample")
     except click.ClickException:
