@@ -22,6 +22,7 @@ from danish_personas.generation.pipeline import generation_context_sha256
 from danish_personas.io import load_yaml_model, sha256_file, write_json
 from danish_personas.models import ValidationReport
 from danish_personas.release import packager
+from danish_personas.release.common import validate_persona_output_rows
 from danish_personas.release.models import (
     ReleaseEvidence,
     ReleaseManifest,
@@ -219,6 +220,13 @@ def test_capture_uses_separate_windows_observer_stability(
     item = packager._capture_file(source)
 
     assert item.content == content
+
+
+def test_contextual_validation_accepts_nonemployee_null_title(
+    nonemployee_output: pl.DataFrame,
+) -> None:
+    """Generation v2 permits non-employees without a job title."""
+    validate_persona_output_rows(nonemployee_output)
 
 
 def test_evidence_derivation_fixture_is_strict_and_accounted(
@@ -785,16 +793,27 @@ def test_release_versions_require_exact_integer_one(
         ReleaseEvidence.model_validate(evidence_payload)
 
 
-def test_scanner_accepts_only_nullable_career_goals(release_case: ReleaseCase) -> None:
-    """Only the optional all-null career field may use Polars Null dtype."""
+def test_scanner_accepts_only_nullable_v2_fields(release_case: ReleaseCase) -> None:
+    """Only nullable v2 fields may use Polars Null dtype."""
     output = pl.read_parquet(release_case.output)
     safe = output.with_columns(
-        pl.lit(None, dtype=pl.Null).alias("career_goals_and_ambitions")
+        pl.lit(None, dtype=pl.Null).alias("career_goals_and_ambitions"),
+        pl.lit(None, dtype=pl.Null).alias("job_title"),
     )
     packager._scan_dataframe(safe)
     unsafe = output.with_columns(pl.lit(None, dtype=pl.Null).alias("cultural_context"))
     with pytest.raises(ReleasePackagingError, match="logical dtype"):
         packager._scan_dataframe(unsafe)
+    with pytest.raises(ReleasePackagingError, match="secret"):
+        packager._scan_dataframe(
+            output.with_columns(pl.lit("local file /tmp/secret").alias("job_title"))
+        )
+    with pytest.raises(ReleasePackagingError, match="logical dtype"):
+        packager._scan_dataframe(
+            output.with_columns(
+                pl.lit("legacy visual guidance").alias("visual_persona")
+            )
+        )
 
 
 def test_snapshot_materialisation_preserves_repository_and_pilot_paths(
