@@ -12,9 +12,65 @@ from danish_personas.sampling.generator import _attach_job_functions, generate_r
 from danish_personas.sources.prepare import (
     LONS20_DIMENSIONS,
     _job_function_sex_marginal,
+    _read_source,
 )
 from danish_personas.validation.checks import validate_demographics
 from tests.test_non_llm_pipeline import _write_bundle
+
+
+@pytest.mark.parametrize(
+    ("status_code", "resolution", "code", "label"),
+    [
+        ("15", "lons20_sex_marginal", "", "Function"),
+        ("15", "lons20_sex_marginal", "01", " "),
+        ("15", "not_applicable", None, None),
+        ("05", "lons20_sex_marginal", "01", "Function"),
+        ("05", "not_applicable", "01", None),
+    ],
+)
+def test_demographic_record_rejects_job_function_cross_field_tampering(
+    status_code: str, resolution: str, code: str | None, label: str | None
+) -> None:
+    """Eligibility, resolution, and paired values form one strict contract."""
+    payload = {
+        "persona_id": "p-1",
+        "country": "Danmark",
+        "origin_country_code": "5100",
+        "origin_country": "Denmark",
+        "age": 40,
+        "age_resolution": "municipality_age_band",
+        "age_band": "30-49",
+        "sex": "female",
+        "marital_status": "Ugift",
+        "marital_resolution": "municipality",
+        "municipality_code": "101",
+        "municipality": "København",
+        "region_code": "1081",
+        "region": "Region Hovedstaden",
+        "education_level": "Grundskole",
+        "education_source_code": "10",
+        "education_resolution": "ras209_age_band",
+        "labour_market_status": "Beskæftigede",
+        "detailed_status_code": status_code,
+        "detailed_status": "Status",
+        "detailed_status_resolution": "status",
+        "job_function_code": code,
+        "job_function": label,
+        "job_function_resolution": resolution,
+        "openness_score": 50,
+        "openness_label": "average",
+        "conscientiousness_score": 50,
+        "conscientiousness_label": "average",
+        "extraversion_score": 50,
+        "extraversion_label": "average",
+        "agreeableness_score": 50,
+        "agreeableness_label": "average",
+        "neuroticism_score": 50,
+        "neuroticism_label": "average",
+    }
+
+    with pytest.raises(ValueError):
+        DemographicRecord.model_validate(payload)
 
 
 def test_demographic_schema_requires_job_function_resolution() -> None:
@@ -194,12 +250,16 @@ def test_lons20_preparation_rejects_malformed_cells(failure: str) -> None:
             .drop("index")
         )
     elif failure == "label":
-        raw = raw.with_row_index().with_columns(
-            pl.when(pl.col("index") == 0)
-            .then(pl.lit("01 Altered label"))
-            .otherwise(pl.col("ARBF__label"))
-            .alias("ARBF__label")
-        ).drop("index")
+        raw = (
+            raw.with_row_index()
+            .with_columns(
+                pl.when(pl.col("index") == 0)
+                .then(pl.lit("01 Altered label"))
+                .otherwise(pl.col("ARBF__label"))
+                .alias("ARBF__label")
+            )
+            .drop("index")
+        )
     elif failure == "suppressed":
         raw = (
             raw.with_row_index()
@@ -229,3 +289,48 @@ def test_lons20_preparation_rejects_malformed_cells(failure: str) -> None:
             selected_codes=list(DISCO_TWO_DIGIT_CODES),
             sex_mapping={"M": "male", "K": "female"},
         )
+
+
+def test_parquet_validation_rejects_blank_eligible_job_function(tmp_path: Path) -> None:
+    """The Parquet validation gate rejects blank eligible job-function labels."""
+    bundle, sampling, validation, categories = _write_bundle(root=tmp_path)
+    run = generate_records(
+        bundle_dir=bundle,
+        sampling_config_path=sampling,
+        output_dir=tmp_path / "runs",
+        rows=200,
+        seed=42,
+    )
+    path = run / "structured-records.parquet"
+    frame = (
+        pl.read_parquet(path)
+        .with_row_index()
+        .with_columns(
+            pl.when(pl.col("index") == 0)
+            .then(pl.lit(""))
+            .otherwise(pl.col("job_function"))
+            .alias("job_function")
+        )
+        .drop("index")
+    )
+    frame.write_parquet(path)
+
+    report = validate_demographics(
+        run_dir=run,
+        bundle_dir=bundle,
+        validation_config_path=validation,
+        categories_path=categories,
+    )
+    metrics = {metric.name: metric for metric in report.metrics}
+    assert not metrics["job_function_eligibility_errors"].passed
+
+
+def test_source_reader_rejects_negative_counts_before_transforms(
+    tmp_path: Path,
+) -> None:
+    """Negative counts cannot be hidden by later source filtering or aggregation."""
+    path = tmp_path / "source.csv"
+    path.write_text("A;value\ncode;-1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Negative count"):
+        _read_source(csv_path=path, dimension_codes=["A"])

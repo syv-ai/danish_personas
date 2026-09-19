@@ -365,9 +365,13 @@ def _job_function_metrics(
     eligible = pl.col("detailed_status_code").is_in(
         sorted(ELIGIBLE_JOB_FUNCTION_STATUS_CODES)
     )
-    paired = (
-        pl.col("job_function_code").is_not_null() & pl.col("job_function").is_not_null()
+    code_present = pl.col("job_function_code").is_not_null() & (
+        pl.col("job_function_code").str.strip_chars() != ""
     )
+    label_present = pl.col("job_function").is_not_null() & (
+        pl.col("job_function").str.strip_chars() != ""
+    )
+    paired = code_present & label_present
     eligibility_errors = frame.filter(
         (
             eligible
@@ -376,8 +380,7 @@ def _job_function_metrics(
         | (
             ~eligible
             & (
-                paired
-                | pl.col("job_function_code").is_not_null()
+                pl.col("job_function_code").is_not_null()
                 | pl.col("job_function").is_not_null()
                 | (pl.col("job_function_resolution") != "not_applicable")
             )

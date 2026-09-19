@@ -9,6 +9,7 @@ from danish_personas.io import load_yaml_model
 from danish_personas.models import (
     SourceDefinition,
     SourceLock,
+    SourceMetadataExpectations,
     SourcesConfig,
     SourceSelection,
     StatBankMetadata,
@@ -18,6 +19,7 @@ from danish_personas.models import (
 from danish_personas.sources import statbank
 from danish_personas.sources.statbank import (
     MAX_CELLS,
+    _validate_metadata_expectations,
     estimate_query_cells,
     resolve_sources,
 )
@@ -32,6 +34,56 @@ def test_locked_non_bulk_sources_remain_below_api_limit() -> None:
         for source in lock.sources
         if source.format != "BULK"
     )
+
+
+def test_lons20_metadata_expectations_reject_label_drift() -> None:
+    """A changed table or selected-value label cannot pass source resolution."""
+    metadata = StatBankMetadata(
+        id="LONS20",
+        text="Earnings",
+        description="Earnings table",
+        unit="DKK",
+        updated="2026-01-01T00:00:00",
+        variables=[
+            StatBankVariable(
+                id="SEKTOR",
+                text="sector",
+                values=[StatBankValue(id="1000", text="All sectors")],
+            )
+        ],
+    )
+    expectations = SourceMetadataExpectations(
+        table_text="Earnings",
+        description="Earnings table",
+        unit="DKK",
+        dimensions={"SEKTOR": "sector"},
+        values={"SEKTOR": {"1000": "All sectors"}},
+    )
+
+    _validate_metadata_expectations(
+        table_id="LONS20",
+        metadata=metadata,
+        expectations=expectations,
+        dimensions={"SEKTOR": ["1000"]},
+    )
+    tampered = metadata.model_copy(
+        update={
+            "variables": [
+                StatBankVariable(
+                    id="SEKTOR",
+                    text="sector",
+                    values=[StatBankValue(id="1000", text="Changed")],
+                )
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="metadata label changed"):
+        _validate_metadata_expectations(
+            table_id="LONS20",
+            metadata=tampered,
+            expectations=expectations,
+            dimensions={"SEKTOR": ["1000"]},
+        )
 
 
 def test_over_limit_bulk_query_is_accepted(

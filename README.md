@@ -204,9 +204,11 @@ uv run src/scripts/freeze_demographic_sample.py \
 ```
 
 The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3,
-and RAS210. LONS20 provides a sex-conditional synthetic job-function marginal for
-eligible employees only; its earnings-statistics universe is not all-worker
-representation, and the fields are withheld from both LLM payloads.
+and RAS210. LONS20 provides an optional sex-conditional synthetic broad job-function
+marginal for eligible employees only. Its incomplete earnings-statistics universe is
+not an all-worker representation, and the fields are withheld from both LLM payloads.
+The allocation is conditioned on sex alone, not municipality, origin, education, age,
+OCEAN, or any unsupported joint.
 FOLK2 is an independent national marginal of official IELAND country-of-origin
 categories for adults. It preserves categories such as Stateless and Not stated, but is
 not ethnicity, citizenship, or residence. Each Phase 2 record receives an independently
@@ -357,9 +359,11 @@ broad education, labour status, detailed status, and independent OCEAN scores. O
 is not ethnicity, citizenship, or residence, and cannot drive language, culture,
 religion, occupation, personality, or
 visual appearance. It does not emit names, exact addresses, coordinates, CPR or other
-administrative identifiers, employers, occupations,
-income, household details, ancestry, citizenship, health, religion, sexuality, politics,
-criminal history, or free text.
+administrative identifiers, employers, observed occupations, income, household details,
+ancestry, citizenship, health, religion, sexuality, politics, criminal history, or free
+text. The sole occupation-related exception is the optional synthetic broad job
+function allocated from the incomplete LONS20 earnings-statistics universe; it is not
+conditioned on municipality, origin, education, age, OCEAN, or any unsupported joint.
 
 LLM prompts prohibit identifying and sensitive details, stereotypes, and deterministic
 claims about demographics or personality. Validators check strict schemas, Danish text,
