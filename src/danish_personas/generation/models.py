@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 
 from ..models import StrictModel
+from .job_titles import JobFunctionTitleMapping
 
 
 class FrozenSampleManifest(StrictModel):
@@ -120,6 +121,7 @@ class GenerationManifest(StrictModel):
     job_title_mapping_file: Path | None = None
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     model: str
@@ -163,6 +165,8 @@ class AttributeCheckpoint(StrictModel):
     validator_version: str
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes: GeneratedAttributes
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
@@ -188,6 +192,8 @@ class PersonaCheckpoint(StrictModel):
     validator_version: str
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
@@ -205,6 +211,10 @@ class PilotBatchReference(StrictModel):
     manifest_sha256: str
     validation_report_file: Path
     validation_report_sha256: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
 
 
 class PilotManifest(StrictModel):
@@ -226,6 +236,7 @@ class PilotManifest(StrictModel):
     job_title_mapping_file: Path | None = None
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)

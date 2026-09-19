@@ -47,12 +47,16 @@ SENSITIVE_PATTERNS = (
     r"stemme\s+på|sygdom\w*|transkønnet\w*",
 )
 UNSUPPORTED_PATTERNS = (
-    r"familie\w*|barn(?:et|ene|s|er)?|ægtefælle\w*|partner\w*",
-    r"forældre\w*|søskende\w*|husstand\w*|bor\s+sammen",
-    r"diagnos(?:e|er|en|erede)\w*|hår(?:et|et)?|øjne?\w*",
-    r"ansigt(?:et|stræk|strækkene)?|højde|vægt|krop(?:pen)?|udseende|ser\s+ud",
-    r"hud(?:en)?|kropsbygning",
+    r"familie(?:n|r|rne|s)?|ægtefælle(?:n|r|rne|s)?|partner(?:en|e|ne|s)?",
+    r"barn(?:et|ene|enes|s)?|børn(?:et|ene|enes|s)?|"
+    r"forældre(?:ne|s)?|søskende(?:ne|s)?|husstand(?:en|e|ene|s)?|bor\s+sammen",
+    r"diagnos(?:e|er|en|erede)\w*|hår(?:et|ene|enes)?|"
+    r"øjne?\w*",
+    r"ansigt(?:et|er|ene|enes|stræk(?:ket|kene)?)?|"
+    r"højde|vægt|krop(?:pen)?|udseende|ser\s+ud",
+    r"hud(?:en|ens|farve|farven|farves)?|kropsbygning",
 )
+ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
 FORMER_WORK = re.compile(
     r"(?<![\w])(?:tidligere|førhen|før|arbejdede|har\s+arbejdet|"
     r"var\s+ansat|forhenværende|pensioneret\s+fra)(?![\w])"
@@ -209,8 +213,12 @@ def _validate_job_title(
         raise ValueError("job_title must be a single plain Danish line")
 
 
-def _validate_text(text: str, require_danish: bool) -> None:
+def _validate_text(
+    text: str, require_danish: bool, allowed_unsupported_terms: tuple[str, ...] = ()
+) -> None:
     normalized = _normalize(text=text)
+    for term in allowed_unsupported_terms:
+        normalized = re.sub(rf"(?<![\w]){re.escape(term)}(?![\w])", " ", normalized)
     patterns = {
         "email": EMAIL,
         "CPR-like number": CPR,
@@ -302,9 +310,17 @@ def parse_descriptions(
     except ValidationError as error:
         raise ValueError(str(error)) from error
     context = _context_values(demographic)
-    texts = list(descriptions.model_dump().values())
-    _validate_texts(texts=texts, require_each_danish=True)
+    for field, text in descriptions.model_dump().items():
+        allowed_terms = (
+            (ALLOWED_STATUS_TEN_PHRASE,)
+            if field == "persona" and str(context.get("detailed_status_code")) == "10"
+            else ()
+        )
+        _validate_text(
+            text=text, require_danish=True, allowed_unsupported_terms=allowed_terms
+        )
     _validate_persona(text=descriptions.persona, context=context, attributes=generated)
+    texts = list(descriptions.model_dump().values())
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
         raise ValueError("Persona descriptions must not be exact duplicates")

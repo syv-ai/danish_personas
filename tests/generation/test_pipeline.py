@@ -453,6 +453,35 @@ def test_persona_validation_rejects_independent_tampering(
     assert not validate_persona_run(run_dir=run_dir).passed
 
 
+def test_persona_validation_rejects_mapping_binding_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay validation rejects forged checkpoint and manifest mapping fields."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    original_checkpoint = checkpoint_path.read_bytes()
+    checkpoint["job_title_mapping_content"]["version"] = 999
+    write_json(path=checkpoint_path, payload=checkpoint)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    checkpoint_path.write_bytes(original_checkpoint)
+    manifest_path = run_dir / "generation-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["job_title_mapping_sha256"] = "f" * 64
+    write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
 def test_persona_validation_reports_missing_manifest(tmp_path: Path) -> None:
     """A missing required manifest produces a failed report rather than an error."""
     run_dir = tmp_path / "missing-manifest"
@@ -701,6 +730,42 @@ def test_pilot_validation_rejects_independent_tampering(
             reference["validation_report_sha256"] = sha256_file(report_path)
         write_json(path=manifest_path, payload=manifest)
 
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+
+def test_pilot_validation_rejects_mapping_binding_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pilot validation rejects forged references and stored report bindings."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    pilot_dir = run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "pilot",
+        rows=1,
+        batch_size=1,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=5,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
+    )
+    manifest_path = pilot_dir / "pilot-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["batch_runs"][0]["job_title_mapping_version"] = 999
+    write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reference = manifest["batch_runs"][0]
+    report_path = pilot_dir / reference["validation_report_file"]
+    stored_report = json.loads(report_path.read_text(encoding="utf-8"))
+    stored_report["job_title_mapping_version"] = 999
+    write_json(path=report_path, payload=stored_report)
+    reference["validation_report_sha256"] = sha256_file(report_path)
+    write_json(path=manifest_path, payload=manifest)
     assert not validate_persona_pilot(pilot_dir=pilot_dir).passed
 
 

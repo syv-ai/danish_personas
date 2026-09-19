@@ -11,6 +11,12 @@ import polars as pl
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import MetricResult, ValidationReport
 from .identity import generation_run_id, persona_pilot_id
+from .job_titles import (
+    DEFAULT_JOB_TITLE_MAPPING_PATH,
+    JobFunctionTitleMapping,
+    job_title_mapping_sha256,
+    load_job_title_mapping,
+)
 from .models import (
     GeneratedAttributes,
     GenerationConfig,
@@ -108,6 +114,38 @@ def _build_persona_pilot_report(
                 or batch_manifest.base_url != manifest.base_url
                 or batch_manifest.generation_context_sha256
                 != manifest.generation_context_sha256
+                or (
+                    reference.job_title_mapping_file
+                    != batch_manifest.job_title_mapping_file
+                    or reference.job_title_mapping_sha256
+                    != batch_manifest.job_title_mapping_sha256
+                    or reference.job_title_mapping_version
+                    != batch_manifest.job_title_mapping_version
+                    or reference.job_title_mapping_content
+                    != batch_manifest.job_title_mapping_content
+                )
+                or (
+                    batch_report.job_title_mapping_file
+                    != batch_manifest.job_title_mapping_file
+                    or batch_report.job_title_mapping_sha256
+                    != batch_manifest.job_title_mapping_sha256
+                    or batch_report.job_title_mapping_version
+                    != batch_manifest.job_title_mapping_version
+                    or batch_report.job_title_mapping_content
+                    != (
+                        batch_manifest.job_title_mapping_content.model_dump(mode="json")
+                        if batch_manifest.job_title_mapping_content is not None
+                        else None
+                    )
+                )
+                or batch_manifest.job_title_mapping_file
+                != manifest.job_title_mapping_file
+                or batch_manifest.job_title_mapping_sha256
+                != manifest.job_title_mapping_sha256
+                or batch_manifest.job_title_mapping_version
+                != manifest.job_title_mapping_version
+                or batch_manifest.job_title_mapping_content
+                != manifest.job_title_mapping_content
                 or batch_manifest.requests > manifest.maximum_shard_requests
                 or batch_report.kind != "personas"
                 or not batch_report.passed
@@ -191,6 +229,14 @@ def _build_persona_pilot_report(
         created_at=datetime.now(tz=UTC).isoformat(),
         subject_id=manifest.pilot_id,
         metrics=checks,
+        job_title_mapping_file=manifest.job_title_mapping_file,
+        job_title_mapping_sha256=manifest.job_title_mapping_sha256,
+        job_title_mapping_version=manifest.job_title_mapping_version,
+        job_title_mapping_content=(
+            manifest.job_title_mapping_content.model_dump(mode="json")
+            if manifest.job_title_mapping_content is not None
+            else None
+        ),
     )
     return report
 
@@ -249,12 +295,27 @@ def _build_persona_run_report(
         if manifest.generation_config_file is not None
         else None
     )
+    try:
+        config = (
+            load_yaml_model(path=config_path, model=GenerationConfig)
+            if config_path is not None
+            else None
+        )
+        mapping_binding = (
+            _effective_mapping(config=config, repository_root=repository_root)
+            if config is not None
+            else None
+        )
+    except OSError, UnicodeError, ValueError:
+        mapping_binding = None
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
         output=output,
         upstream_columns=upstream.columns,
         manifest=manifest,
         config_path=config_path,
+        mapping_binding=mapping_binding,
+        repository_root=repository_root,
     )
     checks.append(
         MetricResult(
@@ -283,6 +344,14 @@ def _build_persona_run_report(
         created_at=datetime.now(tz=UTC).isoformat(),
         subject_id=manifest.run_id,
         metrics=checks,
+        job_title_mapping_file=manifest.job_title_mapping_file,
+        job_title_mapping_sha256=manifest.job_title_mapping_sha256,
+        job_title_mapping_version=manifest.job_title_mapping_version,
+        job_title_mapping_content=(
+            manifest.job_title_mapping_content.model_dump(mode="json")
+            if manifest.job_title_mapping_content is not None
+            else None
+        ),
     )
 
 
@@ -301,6 +370,8 @@ def _count_checkpoint_errors(
     upstream_columns: list[str],
     manifest: GenerationManifest,
     config_path: Path | None,
+    mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
+    repository_root: Path | None,
 ) -> int:
     """Count checkpoint, response-sequence, ledger, and accounting errors.
 
@@ -345,6 +416,17 @@ def _count_checkpoint_errors(
                 != manifest.generation_context_sha256
                 or checkpoint.validator_version != VALIDATOR_VERSION
                 or checkpoint.validator_version != manifest.validator_version
+                or mapping_binding is None
+                or not _mapping_binding_matches(
+                    path=checkpoint.job_title_mapping_file,
+                    sha256=checkpoint.job_title_mapping_sha256,
+                    version=checkpoint.job_title_mapping_version,
+                    content=checkpoint.job_title_mapping_content,
+                    expected_path=mapping_binding[0],
+                    expected_mapping=mapping_binding[1],
+                    expected_sha256=mapping_binding[2],
+                    repository_root=repository_root,
+                )
                 or checkpoint_values != output_values
                 or checkpoint.attempts != len(checkpoint.responses)
                 or checkpoint.http_requests
@@ -441,6 +523,39 @@ def _checkpoint_accounting_matches(
     )
 
 
+def _mapping_binding_matches(
+    *,
+    path: Path | None,
+    sha256: str | None,
+    version: int | None,
+    content: JobFunctionTitleMapping | None,
+    expected_path: Path,
+    repository_root: Path | None = None,
+    expected_mapping: JobFunctionTitleMapping,
+    expected_sha256: str,
+) -> bool:
+    """Check every persisted title-mapping binding against the effective input.
+
+    Returns:
+        Whether all persisted mapping fields match the effective allowlist.
+    """
+    return (
+        path is not None
+        and _repository_path(repository_root, path) == expected_path
+        and sha256 == expected_sha256
+        and version == expected_mapping.version
+        and content == expected_mapping
+    )
+
+
+def _repository_path(root: Path | None, value: Path | None) -> Path:
+    if value is None:
+        raise ValueError("A repository path is required")
+    base = Path.cwd() if root is None else root
+    candidate = value if value.is_absolute() else base / value
+    return Path(os.path.abspath(os.path.normpath(candidate)))
+
+
 def _responses_match_checkpoint(
     *, checkpoint: PersonaCheckpoint, demographic: dict[str, object]
 ) -> tuple[bool, tuple[int, int]]:
@@ -523,6 +638,21 @@ def _count_content_errors(output: pl.DataFrame) -> int:
     return errors
 
 
+def _effective_mapping(
+    config: GenerationConfig, repository_root: Path | None
+) -> tuple[Path, JobFunctionTitleMapping, str]:
+    """Load the exact title mapping selected by the effective configuration.
+
+    Returns:
+        Effective mapping path, parsed allowlist, and file checksum.
+    """
+    path = _repository_path(
+        repository_root, config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
+    )
+    mapping = load_job_title_mapping(path=path)
+    return path, mapping, job_title_mapping_sha256(path=path)
+
+
 def _frames_equal(*, output: pl.DataFrame, expected: pl.DataFrame) -> bool:
     """Compare frames without allowing a malformed schema to raise.
 
@@ -570,6 +700,9 @@ def _persona_provenance_matches(
             return False
         config_path = _repository_path(repository_root, manifest.generation_config_file)
         config = load_yaml_model(path=config_path, model=GenerationConfig)
+        mapping_path, mapping, mapping_sha256 = _effective_mapping(
+            config=config, repository_root=repository_root
+        )
         attributes_prompt = _repository_path(
             repository_root, config.attributes_prompt
         ).read_text(encoding="utf-8")
@@ -589,6 +722,8 @@ def _persona_provenance_matches(
             config=config,
             attributes_prompt=attributes_prompt,
             personas_prompt=personas_prompt,
+            job_title_mapping=mapping,
+            job_title_mapping_sha256=mapping_sha256,
         )
         input_sha256 = sha256_file(input_path)
         return (
@@ -606,6 +741,16 @@ def _persona_provenance_matches(
             and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
             and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
             and context_sha256 == manifest.generation_context_sha256
+            and _mapping_binding_matches(
+                path=manifest.job_title_mapping_file,
+                sha256=manifest.job_title_mapping_sha256,
+                version=manifest.job_title_mapping_version,
+                content=manifest.job_title_mapping_content,
+                expected_path=mapping_path,
+                expected_mapping=mapping,
+                expected_sha256=mapping_sha256,
+                repository_root=repository_root,
+            )
             and manifest.run_id
             == generation_run_id(
                 input_sha256=input_sha256,
@@ -615,14 +760,6 @@ def _persona_provenance_matches(
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
-
-
-def _repository_path(root: Path | None, value: Path | None) -> Path:
-    if value is None:
-        raise ValueError("A repository path is required")
-    base = Path.cwd() if root is None else root
-    candidate = value if value.is_absolute() else base / value
-    return Path(os.path.abspath(os.path.normpath(candidate)))
 
 
 def _pilot_aggregates_match(
@@ -670,6 +807,10 @@ def _pilot_aggregates_match(
             and item.generation_config_sha256 == manifest.generation_config_sha256
             and item.generation_context_sha256 == manifest.generation_context_sha256
             and item.validator_version == manifest.validator_version
+            and item.job_title_mapping_file == manifest.job_title_mapping_file
+            and item.job_title_mapping_sha256 == manifest.job_title_mapping_sha256
+            and item.job_title_mapping_version == manifest.job_title_mapping_version
+            and item.job_title_mapping_content == manifest.job_title_mapping_content
             and item.attributes_prompt_sha256 == manifest.attributes_prompt_sha256
             and item.personas_prompt_sha256 == manifest.personas_prompt_sha256
             and item.model == manifest.model
@@ -697,6 +838,9 @@ def _pilot_provenance_matches(
             input_path=input_path, sample_manifest_path=sample_manifest_path
         )
         config = load_yaml_model(path=config_path, model=GenerationConfig)
+        mapping_path, mapping, mapping_sha256 = _effective_mapping(
+            config=config, repository_root=repository_root
+        )
         attributes_prompt = _repository_path(
             repository_root, config.attributes_prompt
         ).read_text(encoding="utf-8")
@@ -709,6 +853,8 @@ def _pilot_provenance_matches(
             config=config,
             attributes_prompt=attributes_prompt,
             personas_prompt=personas_prompt,
+            job_title_mapping=mapping,
+            job_title_mapping_sha256=mapping_sha256,
         )
         sample_rows = pl.read_parquet(input_path).height
         expected_batches = math.ceil(manifest.rows / manifest.batch_size)
@@ -750,6 +896,16 @@ def _pilot_provenance_matches(
             and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
             and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
             and context_sha256 == manifest.generation_context_sha256
+            and _mapping_binding_matches(
+                path=manifest.job_title_mapping_file,
+                sha256=manifest.job_title_mapping_sha256,
+                version=manifest.job_title_mapping_version,
+                content=manifest.job_title_mapping_content,
+                expected_path=mapping_path,
+                expected_mapping=mapping,
+                expected_sha256=mapping_sha256,
+                repository_root=repository_root,
+            )
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False

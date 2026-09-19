@@ -113,8 +113,8 @@ def run_pilot(
         config=config,
         attributes_prompt=attributes_prompt,
         personas_prompt=personas_prompt,
-        job_title_mapping=mapping if config.job_title_mapping else None,
-        job_title_mapping_sha256=mapping_sha if config.job_title_mapping else None,
+        job_title_mapping=mapping,
+        job_title_mapping_sha256=mapping_sha,
     )
     worst_case_requests = len(offsets) * config.maximum_total_requests
     if worst_case_requests > maximum_total_requests:
@@ -226,6 +226,10 @@ def _merge_pilot(
                 pilot_dir
             ),
             validation_report_sha256=sha256_file(run_dir / "validation-report.json"),
+            job_title_mapping_file=manifest.job_title_mapping_file,
+            job_title_mapping_sha256=manifest.job_title_mapping_sha256,
+            job_title_mapping_version=manifest.job_title_mapping_version,
+            job_title_mapping_content=manifest.job_title_mapping_content,
         )
         for run_dir, manifest in zip(run_dirs, manifests, strict=True)
     ]
@@ -247,6 +251,7 @@ def _merge_pilot(
         job_title_mapping_file=first.job_title_mapping_file,
         job_title_mapping_sha256=first.job_title_mapping_sha256,
         job_title_mapping_version=first.job_title_mapping_version,
+        job_title_mapping_content=first.job_title_mapping_content,
         attributes_prompt_sha256=first.attributes_prompt_sha256,
         personas_prompt_sha256=first.personas_prompt_sha256,
         rows=output.height,

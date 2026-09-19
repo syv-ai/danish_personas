@@ -129,8 +129,8 @@ def generate_personas(
     mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
     job_title_mapping = load_job_title_mapping(mapping_path)
     mapping_sha = mapping_file_sha256(mapping_path)
-    context_mapping = job_title_mapping if config.job_title_mapping else None
-    context_mapping_sha = mapping_sha if config.job_title_mapping else None
+    context_mapping = job_title_mapping
+    context_mapping_sha = mapping_sha
     attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
     personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
     generation_context_sha = generation_context_sha256(
@@ -192,6 +192,7 @@ def generate_personas(
                     generation_context_sha=generation_context_sha,
                     job_title_mapping=job_title_mapping,
                     job_title_mapping_sha256=mapping_sha,
+                    job_title_mapping_path=mapping_path,
                 )
             )
     finally:
@@ -209,9 +210,10 @@ def generate_personas(
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context_sha,
         validator_version=VALIDATOR_VERSION,
-        job_title_mapping_file=config.job_title_mapping,
+        job_title_mapping_file=mapping_path,
         job_title_mapping_sha256=mapping_sha,
         job_title_mapping_version=job_title_mapping.version,
+        job_title_mapping_content=job_title_mapping,
         attributes_prompt_sha256=sha256_text(attributes_prompt),
         personas_prompt_sha256=sha256_text(personas_prompt),
         model=config.model or "",
@@ -252,6 +254,7 @@ def _generate_one(
     generation_context_sha: str,
     job_title_mapping: JobFunctionTitleMapping,
     job_title_mapping_sha256: str,
+    job_title_mapping_path: Path,
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
@@ -271,6 +274,7 @@ def _generate_one(
             demographic=row,
             job_title_mapping=job_title_mapping,
             job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_path=job_title_mapping_path,
         )
         parse_descriptions(
             checkpoint.descriptions.model_dump_json(), row, checkpoint.attributes
@@ -289,6 +293,7 @@ def _generate_one(
             demographic=row,
             job_title_mapping=job_title_mapping,
             job_title_mapping_sha256=job_title_mapping_sha256,
+            job_title_mapping_path=job_title_mapping_path,
         )
         attributes = attribute_checkpoint.attributes
         responses = list(attribute_checkpoint.responses)
@@ -321,6 +326,8 @@ def _generate_one(
             validator_version=VALIDATOR_VERSION,
             job_title_mapping_sha256=job_title_mapping_sha256,
             job_title_mapping_version=job_title_mapping.version,
+            job_title_mapping_file=job_title_mapping_path,
+            job_title_mapping_content=job_title_mapping,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests,
@@ -350,6 +357,8 @@ def _generate_one(
             validator_version=VALIDATOR_VERSION,
             job_title_mapping_sha256=job_title_mapping_sha256,
             job_title_mapping_version=job_title_mapping.version,
+            job_title_mapping_file=job_title_mapping_path,
+            job_title_mapping_content=job_title_mapping,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests + client.requests_made - request_start,
@@ -364,6 +373,8 @@ def _generate_one(
         validator_version=VALIDATOR_VERSION,
         job_title_mapping_sha256=job_title_mapping_sha256,
         job_title_mapping_version=job_title_mapping.version,
+        job_title_mapping_file=job_title_mapping_path,
+        job_title_mapping_content=job_title_mapping,
         attributes=attributes,
         descriptions=descriptions,
         responses=responses,
@@ -458,6 +469,7 @@ def _validate_checkpoint(
     demographic: dict[str, object],
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
+    job_title_mapping_path: Path | None = None,
 ) -> None:
     if checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
@@ -470,6 +482,10 @@ def _validate_checkpoint(
         raise ValueError(message)
     if job_title_mapping_sha256 is not None and (
         checkpoint.job_title_mapping_sha256 != job_title_mapping_sha256
+        or checkpoint.job_title_mapping_version
+        != (job_title_mapping.version if job_title_mapping is not None else None)
+        or checkpoint.job_title_mapping_content != job_title_mapping
+        or checkpoint.job_title_mapping_file != job_title_mapping_path
     ):
         raise ValueError(f"Stale job-title mapping for {checkpoint.persona_id}")
     parse_attributes(
@@ -621,21 +637,14 @@ def generation_context_sha256(
             {
                 "config": config.model_dump(mode="json"),
                 "job_title_mapping": (
-                    job_title_mapping.model_dump(mode="json")
-                    if job_title_mapping is not None
-                    else (
-                        load_job_title_mapping(config.job_title_mapping).model_dump(
-                            mode="json"
-                        )
-                        if config.job_title_mapping
-                        else None
+                    job_title_mapping
+                    or load_job_title_mapping(
+                        config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
                     )
-                ),
+                ).model_dump(mode="json"),
                 "job_title_mapping_sha256": job_title_mapping_sha256
-                or (
-                    mapping_file_sha256(config.job_title_mapping)
-                    if config.job_title_mapping
-                    else None
+                or mapping_file_sha256(
+                    config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
                 ),
                 "attributes_prompt_sha256": sha256_text(attributes_prompt),
                 "personas_prompt_sha256": sha256_text(personas_prompt),
