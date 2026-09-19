@@ -330,9 +330,9 @@ Phases 0-2 are implemented and validated. The source bundle prepares the officia
 FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
 deterministic quotas and retains its official code and label; origin is withheld from
 both LLM stages and cannot drive language, culture, religion, occupation, personality,
-or visual appearance. Prepared-bundle schema 4 produced municipality-native bundle `333a0a166ca0e030`.
-Sampler schema 5 produced passing canonical runs `c7387bc90e8896d5` (2,000-row smoke)
-and `6c288bd32f96e1f1` (100,000-row statistical). The LONS20 extension assigns broad
+or visual appearance. Prepared-bundle schema 5 produced municipality-native bundle `cfc1b56f5586a2d7`.
+Sampler schema 5 produced passing canonical runs `f449f1de01d18c08` (2,000-row smoke)
+and `3ebc00282c621ef2` (100,000-row statistical). The LONS20 extension assigns broad
 job functions within sex only to RAS202 employee codes 15, 20, 25, 30, 35, and 40,
 using deterministic largest-remainder quotas and an isolated fourth RNG stream. The
 fields remain withheld from both LLM stages.

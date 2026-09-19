@@ -30,9 +30,9 @@ for adults. Origin is not ethnicity, citizenship, or residence and cannot drive
 language, culture, religion, job function, personality, or appearance. RAS209 remains
 locked to all 99 official level-3 areas, including Christiansø.
 
-The canonical offline source bundle is `333a0a166ca0e030` (prepared-bundle schema 4).
+The canonical offline source bundle is `cfc1b56f5586a2d7` (prepared-bundle schema 5).
 It passed source validation. Sampler schema 5 and validation schema 5 produced passing
-runs `c7387bc90e8896d5` (2,000 rows) and `6c288bd32f96e1f1` (100,000 rows).
+runs `f449f1de01d18c08` (2,000 rows) and `3ebc00282c621ef2` (100,000 rows).
 
 Archive SHA-256 (reproducible from the restored snapshot tree):
 
