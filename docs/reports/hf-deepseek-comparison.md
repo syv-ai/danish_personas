@@ -2,10 +2,14 @@
 
 ## Scope
 
-`deepseek-ai/DeepSeek-V4.1-Flash` and
-`deepseek-ai/DeepSeek-V4-Flash-0731` generated the same five frozen records used in the
-previous four-model comparison. Each model ran through Baseten in batches of 2, 2, and 1
-records, with five HTTP attempts permitted per batch.
+This is a historical generation-contract v1 comparison. Its retained outputs and metrics
+are not resumable under generation contract v2; the experiment is evidence about the
+listed models and must not be treated as a current v2 validation.
+
+`deepseek-ai/DeepSeek-V4.1-Flash` and `deepseek-ai/DeepSeek-V4-Flash-0731` generated the
+same five frozen records used in the previous four-model comparison. Each model ran
+through Baseten in batches of 2, 2, and 1 records, with five HTTP attempts permitted per
+batch.
 
 Baseten supports strict structured output for both models. Initial V4.1 generation
 returned null content after consuming the output budget with reasoning. Setting
@@ -14,10 +18,10 @@ Qwen runs.
 
 ## Operational results
 
-| Model | Requests | Retries | Tokens | Cost | Cost/persona | Mean latency |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| DeepSeek V4.1 Flash | 11 | 1 | 13,716 | $0.008022 | $0.001604 | 4.89 s |
-| DeepSeek V4 Flash 0731 | 11 | 1 | 15,176 | $0.002634 | $0.000527 | 4.88 s |
+| Model                  | Requests | Retries | Tokens |      Cost | Cost/persona | Mean latency |
+| ---------------------- | -------: | ------: | -----: | --------: | -----------: | -----------: |
+| DeepSeek V4.1 Flash    |       11 |       1 | 13,716 | $0.008022 |    $0.001604 |       4.89 s |
+| DeepSeek V4 Flash 0731 |       11 |       1 | 15,176 | $0.002634 |    $0.000527 |       4.88 s |
 
 The costs use the HF router's Baseten rates at experiment time:
 
@@ -26,10 +30,10 @@ The costs use the HF router's Baseten rates at experiment time:
 
 Linear planning estimates are:
 
-| Model | 1,000 rows | 10,000 rows | 100,000 rows |
-| --- | ---: | ---: | ---: |
-| DeepSeek V4.1 Flash | $1.60 | $16.04 | $160.43 |
-| DeepSeek V4 Flash 0731 | $0.53 | $5.27 | $52.69 |
+| Model                  | 1,000 rows | 10,000 rows | 100,000 rows |
+| ---------------------- | ---------: | ----------: | -----------: |
+| DeepSeek V4.1 Flash    |      $1.60 |      $16.04 |      $160.43 |
+| DeepSeek V4 Flash 0731 |      $0.53 |       $5.27 |       $52.69 |
 
 ## Automated validation
 
@@ -42,15 +46,15 @@ JSON. Its low price therefore does not represent accepted-record cost.
 ## Blinded finalist review
 
 A fresh blinded file compared both DeepSeek variants with the earlier Qwen 397B and Qwen
-235B outputs. Two independent reviewers inspected all 20 records without model identities
-or cost data. Both ranked DeepSeek V4.1 first.
+235B outputs. Two independent reviewers inspected all 20 records without model
+identities or cost data. Both ranked DeepSeek V4.1 first.
 
-| Blinded label | Model | Language reviewer | Grounding/bias reviewer | Pilot result |
-| --- | --- | ---: | ---: | --- |
-| Y | DeepSeek V4.1 Flash | 3.85/5, rank 1 | 3.50/5, rank 1 | Pass with caveats |
-| W | DeepSeek V4 Flash 0731 | 3.55/5, rank 3 | 2.75/5, rank 2 | Fail |
-| X | Qwen 397B | 3.65/5, rank 2 | 2.25/5, rank 3 | Fail |
-| Z | Qwen 235B | 2.60/5, rank 4 | 1.75/5, rank 4 | Fail |
+| Blinded label | Model                  | Language reviewer | Grounding/bias reviewer | Pilot result      |
+| ------------- | ---------------------- | ----------------: | ----------------------: | ----------------- |
+| Y             | DeepSeek V4.1 Flash    |    3.85/5, rank 1 |          3.50/5, rank 1 | Pass with caveats |
+| W             | DeepSeek V4 Flash 0731 |    3.55/5, rank 3 |          2.75/5, rank 2 | Fail              |
+| X             | Qwen 397B              |    3.65/5, rank 2 |          2.25/5, rank 3 | Fail              |
+| Z             | Qwen 235B              |    2.60/5, rank 4 |          1.75/5, rank 4 | Fail              |
 
 Review scores are subjective and based on only five records. The previous Qwen-only
 review also scored the same Qwen outputs differently, reinforcing the need for more

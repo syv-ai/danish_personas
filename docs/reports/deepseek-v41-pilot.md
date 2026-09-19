@@ -3,7 +3,9 @@
 ## Status
 
 **Stopped incomplete at the user's request.** No merged pilot dataset was produced, and
-this run must not be described as a 1,000-person dataset.
+this run must not be described as a 1,000-person dataset. This is a historical
+generation-contract v1 pilot. Its partial checkpoints are retained for experiment
+evidence only and are not resumable under generation contract v2.
 
 The intended input was the complete 1,000-row frozen Phase-3 sample:
 
@@ -12,9 +14,9 @@ The intended input was the complete 1,000-row frozen Phase-3 sample:
 ## Guarded execution design
 
 The pilot runner keeps the existing five-row invocation ceiling. It partitions the
-ordered frozen input by offset, gives every shard its own HTTP-attempt budget and durable
-stage checkpoints, validates each completed shard, stops scheduling after a failure, and
-merges only after all expected persona IDs are present exactly once.
+ordered frozen input by offset, gives every shard its own HTTP-attempt budget and
+durable stage checkpoints, validates each completed shard, stops scheduling after a
+failure, and merges only after all expected persona IDs are present exactly once.
 
 The attempted pilot used:
 
@@ -55,8 +57,8 @@ Partial directory:
 - approximately `$0.01073` for successful retained tokens at the experiment-time rates.
 
 DeepInfra was stopped after four hours because only ten complete rows had reached
-validated shard manifests and two 504 responses had occurred. This route was too slow for
-the pilot.
+validated shard manifests and two 504 responses had occurred. This route was too slow
+for the pilot.
 
 Partial directory:
 
@@ -66,16 +68,19 @@ The two provider attempts overlap the beginning of the same frozen sample and th
 must not be added together as distinct personas. Provider billing records, rather than
 these token estimates, remain authoritative for actual charges.
 
-## Resume requirements
+## Historical resume context
 
-No generation process remains active. All retained checkpoints are Git-ignored and can be
-resumed only with the matching input, provider-qualified model, local configuration,
-prompts, schemas, and validator version. Baseten and DeepInfra checkpoints cannot be
-mixed because provider routing is part of the generation context.
+No generation process remains active. At the time, all retained checkpoints were
+Git-ignored and could be resumed only with the matching input, provider-qualified model,
+local configuration, prompts, schemas, and validator version. Baseten and DeepInfra
+checkpoints could not be mixed because provider routing was part of the generation
+context. Those v1 checkpoints are not resumable under v2, whose grounded persona has a
+different six-text contract and provider input boundary.
 
 Sustained capacity requires one of:
 
-1. enabling Hugging Face pay-as-you-go for a structured-output provider such as Fireworks;
+1. enabling Hugging Face pay-as-you-go for a structured-output provider such as
+   Fireworks;
 2. configuring a direct provider credential;
 3. accepting an impractically slow or intermittently rate-limited run.
 

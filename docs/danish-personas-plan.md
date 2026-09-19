@@ -1,6 +1,7 @@
 # Plan for a Danish synthetic persona dataset
 
 **Status:** Proposed
+
 **Research date:** 2026-09-14
 
 ## Executive summary
@@ -20,13 +21,13 @@ The initial release should:
 
 - cover people aged 18 and over;
 - use region or municipality, but not exact addresses or CPR numbers;
-- model age, sex, marital status, broad education, labour-market status, and
-  geography jointly where official cross-tabulations support it;
+- model age, sex, marital status, broad education, labour-market status, and geography
+  jointly where official cross-tabulations support it;
 - include only a broad synthetic job-function allocation calibrated by sex to LONS20's
   incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
-- produce Danish structured attributes and seven persona descriptions, including
-  mutable, non-identifying visual portrait guidance;
+- produce five Danish specialised texts plus one short, grounded persona under
+  generation contract v2;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
 - include reproducible source snapshots, prompts, model versions, validation reports,
@@ -40,14 +41,17 @@ must not ingest or link person-level registers for the first public release.
 ### Dataset artifact
 
 The public v1.1 dataset has 1,000,000 records and 0.94 billion tokens. NVIDIA changed
-its generation model from `mistralai/Mixtral-8x22B-v0.1` to
-`openai/gpt-oss-120b` for v1.1. The repository contains 11 Parquet shards and occupies
-approximately 2.83 GB on Hugging Face.
+its generation model from `mistralai/Mixtral-8x22B-v0.1` to `openai/gpt-oss-120b` for
+v1.1. The repository contains 11 Parquet shards and occupies approximately 2.83 GB on
+Hugging Face.
 
-The NVIDIA dataset card describes 22 historical content fields: six persona fields
-and 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
-physical columns. The current Danish design adds a seventh `visual_persona` field; the
-historical NVIDIA comparison must not be read as current Danish validation:
+The NVIDIA dataset card describes 22 historical content fields: six persona fields and
+16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
+physical columns. That historical count is not the current Danish contract. Generation
+contract v2 retains six text fields: five specialised texts and one short, grounded
+`persona`; `visual_persona` is removed. Historical v1 outputs and pilots are not
+resumable under v2. The historical NVIDIA comparison must not be read as current Danish
+validation:
 
 - `professional_persona`
 - `sports_persona`
@@ -85,8 +89,8 @@ the generated prose.
 NVIDIA documents the following common pipeline for its locale-specific persona data:
 
 1. **OCEAN personality sampling.** Each of the five Big Five traits is sampled as a
-   T-score from a normal distribution with mean 50 and standard deviation 10, clipped
-   to 20-80. Scores are mapped to five labels and curated prose descriptions.
+   T-score from a normal distribution with mean 50 and standard deviation 10, clipped to
+   20-80. Scores are mapped to five labels and curated prose descriptions.
 2. **Demographically grounded sampling.** A probabilistic graphical model (PGM) uses
    aggregate census, administrative, and survey distributions. It is intended to retain
    correlations between age, education, occupation, marital status, and geography that
@@ -98,8 +102,8 @@ NVIDIA documents the following common pipeline for its locale-specific persona d
    attributes into domain-specific and general persona narratives.
 
 For the U.S. data, NVIDIA identifies the American Community Survey and aggregate name
-statistics from Rosenman et al. as seed sources. The public card says the production
-PGM is proprietary. NVIDIA has since released [SDG-PGMs][sdg-pgms], which describes a
+statistics from Rosenman et al. as seed sources. The public card says the production PGM
+is proprietary. NVIDIA has since released [SDG-PGMs][sdg-pgms], which describes a
 similar cascaded PGM architecture and how to port it to another country.
 
 ### What is not reproducible from public information
@@ -137,12 +141,12 @@ healthcare, policing, or political targeting.
 
 ### Release sizes
 
-| Release | Rows | Purpose |
-| --- | ---: | --- |
-| Development sample | 1,000 | End-to-end plumbing and prompt iteration |
-| Pilot | 10,000 | Statistical, language, safety, and human evaluation |
-| v1 | 100,000 | Recommended public release |
-| Optional scale release | 1,000,000 | Only after measured downstream benefit |
+| Release                |      Rows | Purpose                                             |
+| ---------------------- | --------: | --------------------------------------------------- |
+| Development sample     |     1,000 | End-to-end plumbing and prompt iteration            |
+| Pilot                  |    10,000 | Statistical, language, safety, and human evaluation |
+| v1                     |   100,000 | Recommended public release                          |
+| Optional scale release | 1,000,000 | Only after measured downstream benefit              |
 
 NVIDIA's 0.94 billion tokens for one million rows implies roughly 940 released tokens
 per row. A comparable 10,000-row pilot would therefore contain about 9.4 million output
@@ -206,8 +210,8 @@ not be inferred from sex, ancestry, geography, education, or labour-market statu
 - `career_goals_and_ambitions`
 
 `cultural_context` should describe plausible everyday context without claiming a
-religion, ethnicity, political view, diagnosis, sexuality, or other sensitive trait.
-The field should be renamed from NVIDIA's `cultural_background` to discourage invented
+religion, ethnicity, political view, diagnosis, sexuality, or other sensitive trait. The
+field should be renamed from NVIDIA's `cultural_background` to discourage invented
 identity claims.
 
 #### Generated persona text
@@ -217,10 +221,17 @@ identity claims.
 - `arts_persona`
 - `travel_persona`
 - `culinary_persona`
-- `persona`
-- `visual_persona`: two to four Danish sentences of mutable visual presentation
-  and generic portrait-environment guidance; it must not encode sensitive or
-  identifying traits.
+- `persona`: one short, grounded Danish text containing age, statistical sex,
+  municipality, education, origin, a synthetic job title grounded in the official
+  job-function label or the current nonemployee status, two or three interests in prose,
+  and cautious OCEAN tendencies.
+
+The provider receives human-readable municipality, origin, and job-function labels for
+this grounding. It does not receive municipality, origin, or job-function codes, or
+resolution fields. Origin is not ethnicity, citizenship, residence, or appearance. A job
+title is synthetic and must not imply unsupported work history. The persona must not
+make unsupported family claims and is not a visual description; downstream image models
+may still stereotype.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -244,29 +255,28 @@ Use the [StatBank API][statbank-api] for machine-readable table metadata and agg
 counts. Freeze every source response used for a release and record its checksum,
 retrieval date, reference period, publisher, licence, and attribution requirement.
 
-| Variable | Candidate official sources | Notes |
-| --- | --- | --- |
-| Age, sex, geography | FOLK1A, BEFOLK3 | Select compatible reference dates |
-| Adult origin marginal | FOLK2 | National official IELAND categories; independent Phase 2 marginal |
-| Marital status | FOLK1A | Preserve official definitions |
-| Citizenship validation | FOLK1B | Uses broad age bands |
-| Ancestry validation | FOLK1E | Do not interpret as ethnicity |
-| Broad education and status | RAS209 | Municipality, age band, sex, education, status |
-| Detailed status and retirement | RAS202 | Exact age through 70, then `71+`; no region |
-| Municipality status validation | RAS210 | Three status groups; title says ages 13-70 |
-| Detailed education under 70 | HFUDD11, HFUDD16 | Both cover ages 15-69 only |
-| Synthetic job function | LONS20 `ANTAL`, DISCO-08 | Sex marginal in the incomplete earnings-statistics universe only |
-| Household extensions | FAM55N, FAM122N, FAM44N | Defer to a later release |
-| Names | Statistics Denmark name statistics | First first-name/final surname limits |
-| Geography codes | DST classification `NUTS_V1_2007_DK` | Region, landsdel, and municipality hierarchy |
-| Geography boundaries | DAGI | Needs Datafordeler credentials; not used |
-| Housing extensions | BOL103, BOL104, BBR aggregates | Do not link addresses to people |
+| Variable                       | Candidate official sources           | Notes                                                             |
+| ------------------------------ | ------------------------------------ | ----------------------------------------------------------------- |
+| Age, sex, geography            | FOLK1A, BEFOLK3                      | Select compatible reference dates                                 |
+| Adult origin marginal          | FOLK2                                | National official IELAND categories; independent Phase 2 marginal |
+| Marital status                 | FOLK1A                               | Preserve official definitions                                     |
+| Citizenship validation         | FOLK1B                               | Uses broad age bands                                              |
+| Ancestry validation            | FOLK1E                               | Do not interpret as ethnicity                                     |
+| Broad education and status     | RAS209                               | Municipality, age band, sex, education, status                    |
+| Detailed status and retirement | RAS202                               | Exact age through 70, then `71+`; no region                       |
+| Municipality status validation | RAS210                               | Three status groups; title says ages 13-70                        |
+| Detailed education under 70    | HFUDD11, HFUDD16                     | Both cover ages 15-69 only                                        |
+| Synthetic job function         | LONS20 `ANTAL`, DISCO-08             | Sex marginal in the incomplete earnings-statistics universe only  |
+| Household extensions           | FAM55N, FAM122N, FAM44N              | Defer to a later release                                          |
+| Names                          | Statistics Denmark name statistics   | First first-name/final surname limits                             |
+| Geography codes                | DST classification `NUTS_V1_2007_DK` | Region, landsdel, and municipality hierarchy                      |
+| Geography boundaries           | DAGI                                 | Needs Datafordeler credentials; not used                          |
+| Housing extensions             | BOL103, BOL104, BBR aggregates       | Do not link addresses to people                                   |
 
-Use RAS209 as the primary municipality-level joint calibration table for broad education,
-socioeconomic status, age band, and sex; attach the official region parent only through
-hierarchy lookup. Use RAS202 to refine detailed retirement and
-other status categories by age and sex. RAS is measured on the last working day of
-November.
+Use RAS209 as the primary municipality-level joint calibration table for broad
+education, socioeconomic status, age band, and sex; attach the official region parent
+only through hierarchy lookup. Use RAS202 to refine detailed retirement and other status
+categories by age and sex. RAS is measured on the last working day of November.
 
 No active public table found during this research combines DISCO-08 occupation counts
 with age, education, and geography. The limited extension therefore uses only LONS20
@@ -304,7 +314,8 @@ Important source limitations to carry into the dataset card include:
   produce 2,186,352 API cells, so the locked query uses the BULK exemption. It is not
   ethnicity, citizenship, or residence; official labels such as Stateless and Not stated
   are retained without custom country groups or inferred correlations. It is sampled
-  independently into Phase 2 origin fields and withheld from both LLM stages.
+  independently into Phase 2 origin fields. The human-readable origin label may reach
+  the provider for grounded prose, while its code and resolution do not.
 
 ## Required execution order
 
@@ -326,25 +337,28 @@ generation independently testable and restartable.
 
 ### Implementation status
 
-Phases 0-2 are implemented and validated. The source bundle prepares the official
-FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
-deterministic quotas and retains its official code and label; origin is withheld from
-both LLM stages and cannot drive language, culture, religion, occupation, personality,
-or visual appearance. Prepared-bundle schema 5 produced municipality-native bundle `cfc1b56f5586a2d7`.
-Sampler schema 5 produced passing canonical runs `f449f1de01d18c08` (2,000-row smoke)
-and `3ebc00282c621ef2` (100,000-row statistical). The LONS20 extension assigns broad
-job functions within sex only to RAS202 employee codes 15, 20, 25, 30, 35, and 40,
-using deterministic largest-remainder quotas and an isolated fourth RNG stream. The
-fields remain withheld from both LLM stages.
-See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics.
-LLM generation remains disabled in configuration and guarded by an executable failure.
+Phases 0-2 are implemented and validated. The source bundle prepares the official FOLK2
+adult origin marginal. Phase 2 samples this marginal independently with deterministic
+quotas and retains its official code and label; the human-readable origin label may
+reach the provider, while its code and resolution do not. Origin cannot drive language,
+culture, religion, occupation, personality, or visual appearance. Prepared-bundle schema
+5 produced municipality-native bundle `cfc1b56f5586a2d7`. Sampler schema 5 produced
+passing canonical runs `f449f1de01d18c08` (2,000-row smoke) and `3ebc00282c621ef2`
+(100,000-row statistical). The LONS20 extension assigns broad job functions within sex
+only to RAS202 employee codes 15, 20, 25, 30, 35, and 40, using deterministic
+largest-remainder quotas and an isolated fourth RNG stream. The human-readable
+job-function label may reach the provider for a synthetic title, while its code and
+resolution do not. See the [Phase 2 validation report][phase-2-report] for exact
+checksums and metrics. LLM generation remains disabled in configuration and guarded by
+an executable failure.
 
 The frozen text-development input remains a separate, deliberately stratified 1,000-row
 Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
-The first release-contract increment defines a disabled-by-default, pure eligibility gate:
-exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and populations of
-at least 100,000 require 500 (with stricter policy minima permitted). Other sizes fail
-closed. Packaging, publication, uploads, and release manifests remain unimplemented.
+The first release-contract increment defines a disabled-by-default, pure eligibility
+gate: exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and
+populations of at least 100,000 require 500 (with stricter policy minima permitted).
+Other sizes fail closed. Packaging, publication, uploads, and release manifests remain
+unimplemented.
 
 ## Generation architecture
 
@@ -440,11 +454,14 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for the seven persona fields. Separating
-attribute and prose generation makes failures easier to detect and permits regeneration
-of text without changing the demographic sample. `visual_persona` is textual portrait
-guidance only, not image generation, and must remain non-identifying and independent
-of any demographic, OCEAN, generated-attribute, or origin-country field.
+Use a second structured generation call for the six v2 persona fields: five specialised
+texts and one short, grounded `persona`. Separating attribute and prose generation makes
+failures easier to detect and permits regeneration of text without changing the
+demographic sample. The persona must include the supplied municipality, origin, and
+job-function labels as appropriate, but never their codes or resolution fields. It must
+use a synthetic job title or current nonemployee status, include two or three interests
+in prose, and express OCEAN only as cautious tendencies. `visual_persona` is removed;
+the persona is not a visual description, and downstream image models may stereotype.
 
 Evaluate at least two Danish-capable models on the same stratified development set. Pick
 the model using blinded human ratings for fluency, consistency, specificity, stereotype
@@ -498,8 +515,12 @@ Automated tests should require:
 - no impossible age-education-status combinations;
 - correct use and labelling of the `67+` education proxy;
 - consistency between structured attributes and all persona texts;
+- grounded age, statistical sex, municipality, education, origin, job title or current
+  nonemployee status, two or three interests, and cautious OCEAN tendencies in
+  `persona`;
 - no exact addresses, CPR-like values, phone numbers, or email addresses;
-- no disallowed sensitive-attribute claims;
+- no unsupported family or appearance claims and no disallowed sensitive-attribute
+  claims;
 - Danish language above a pre-registered classifier threshold.
 
 ### Diversity and duplication
@@ -651,7 +672,7 @@ complete. Full development-sample generation and evaluation remain pending.
 
 - Finalize Danish prompts, validators, and safety rules against the already defined
   typed schemas.
-- Generate attributes and the seven persona text fields for the frozen, stratified
+- Generate attributes and the six v2 persona text fields for the frozen, stratified
   1,000-row development sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
@@ -665,8 +686,8 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by the seven persona text fields,
-  including generic visual portrait guidance.
+- Generate structured attributes, followed by the six v2 persona text fields: five
+  specialised texts and one short, grounded persona.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 
@@ -762,8 +783,9 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    personas aged 70 and over; no unsupported detailed attainment for those ages.
 6. No observed occupation, household, income, ancestry, citizenship, full name, or
    sensitive fields in v1; broad job function is the documented synthetic exception.
-7. Seven persona text fields, with the six historical NVIDIA fields retained for
-   comparability and `visual_persona` added as current Danish guidance.
+7. Six v2 persona text fields: five specialised texts plus one short, grounded persona;
+   `visual_persona` is removed. Historical v1 outputs and old pilots cannot be resumed
+   under this contract.
 8. Native list columns and explicit provenance fields, even where this differs from the
    NVIDIA schema.
 9. Open generation code, prompts, source manifests, and validation results.
@@ -812,8 +834,10 @@ All sources were accessed on 2026-09-14.
 
 [nemotron-dataset]: https://huggingface.co/datasets/nvidia/Nemotron-Personas-USA
 [nemotron-api]: https://huggingface.co/api/datasets/nvidia/Nemotron-Personas-USA
-[nemotron-schema]: https://datasets-server.huggingface.co/first-rows?dataset=nvidia%2FNemotron-Personas-USA&config=default&split=train
-[nemotron-pipeline]: https://docs.nvidia.com/nemo/datadesigner/dev-notes/designing-nemotron-personas
+[nemotron-schema]:
+  https://datasets-server.huggingface.co/first-rows?dataset=nvidia%2FNemotron-Personas-USA&config=default&split=train
+[nemotron-pipeline]:
+  https://docs.nvidia.com/nemo/datadesigner/dev-notes/designing-nemotron-personas
 [sdg-pgms]: https://github.com/NVIDIA-NeMo/SDG-PGMs
 [sdg-us-example]: https://github.com/NVIDIA-NeMo/SDG-PGMs/tree/main/examples/us_person
 [nemotron-blog]: https://huggingface.co/blog/nvidia/nemotron-personas
@@ -833,10 +857,14 @@ All sources were accessed on 2026-09-14.
 [disco]: https://www.dst.dk/en/Statistik/dokumentation/nomenklaturer/disco
 [disced]: https://www.dst.dk/en/Statistik/dokumentation/nomenklaturer/disced15-audd
 [names]: https://www.dst.dk/en/Statistik/emner/borgere/navne
-[dagi]: https://datafordeler.dk/dataoversigt/danmarks-administrative-geografiske-inddeling-dagi/
+[dagi]:
+  https://datafordeler.dk/dataoversigt/danmarks-administrative-geografiske-inddeling-dagi/
 [dst-licence]: https://www.dst.dk/en/presse/kildeangivelse
-[personal-data]: https://www.datatilsynet.dk/english/fundamental-concepts/what-is-personal-data
-[anonymisation]: https://www.datatilsynet.dk/regler-og-vejledning/behandlingssikkerhed/katalog-over-foranstaltninger/pseudonymisering-og-anonymisering
+[personal-data]:
+  https://www.datatilsynet.dk/english/fundamental-concepts/what-is-personal-data
+[anonymisation]:
+  https://www.datatilsynet.dk/regler-og-vejledning/behandlingssikkerhed/katalog-over-foranstaltninger/pseudonymisering-og-anonymisering
 [gdpr]: https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng
 [data-protection-act]: https://www.retsinformation.dk/eli/lta/2024/289
-[microdata-rules]: https://www.dst.dk/en/TilSalg/data-til-forskning/regler-og-datasikkerhed/regler-for-arbejdet-med-mikrodata
+[microdata-rules]:
+  https://www.dst.dk/en/TilSalg/data-til-forskning/regler-og-datasikkerhed/regler-for-arbejdet-med-mikrodata
