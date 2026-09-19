@@ -1299,7 +1299,9 @@ def _validate_pilot_for_release(
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
     try:
-        validate_persona_output_rows(output)
+        validate_persona_output_rows(
+            output, job_title_mapping=load_job_title_mapping(mapping_path)
+        )
     except ValueError as error:
         raise ReleasePackagingError(
             "Persona output fails contextual generation-v2 validation"
@@ -1345,6 +1347,7 @@ def _validate_pilot_for_release(
             canonical_json(report.model_dump(mode="json")).encode(),
             _captured_bytes(inventory, attributes_path),
             _captured_bytes(inventory, personas_path),
+            _captured_bytes(inventory, mapping_path),
         ]
     )
     _scan_dataframe(output)
@@ -1400,15 +1403,25 @@ def _mapping_binding_matches(
     manifest: PilotManifest,
     config_path: Path,
 ) -> bool:
-    """Check the reviewed mapping path and checksum binding.
+    """Check the reviewed mapping path, version, and checksum binding.
 
     Returns:
-        Whether both the path and checksum are bound.
+        Whether the configured and manifest mapping contracts are bound.
     """
-    return mapping_path == config_path.parent / "job-function-titles.yaml" and (
-        not config.job_title_mapping
-        or sha256_file(mapping_path) == manifest.job_title_mapping_sha256
-    )
+    expected_path = Path("config/job-function-titles.yaml")
+    if config.job_title_mapping != expected_path:
+        return False
+    if mapping_path != config_path.parent / expected_path.name:
+        return False
+    if manifest.job_title_mapping_file != expected_path:
+        return False
+    if manifest.job_title_mapping_sha256 != sha256_file(mapping_path):
+        return False
+    try:
+        mapping = load_job_title_mapping(mapping_path)
+    except OSError, UnicodeError, ValueError:
+        return False
+    return manifest.job_title_mapping_version == mapping.version
 
 
 def _require_generation_v2(config: GenerationConfig) -> None:

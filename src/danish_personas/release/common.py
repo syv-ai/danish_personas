@@ -5,6 +5,7 @@ from datetime import datetime
 
 import polars as pl
 
+from ..generation.job_titles import JobFunctionTitleMapping
 from ..generation.models import GeneratedAttributes, PersonaDescriptions
 from ..generation.validation import parse_attributes, parse_descriptions
 from ..io import canonical_json
@@ -106,12 +107,17 @@ def role(path: str) -> str:
     return "attestation"
 
 
-def validate_persona_output_rows(output: pl.DataFrame) -> None:
+def validate_persona_output_rows(
+    output: pl.DataFrame, *, job_title_mapping: JobFunctionTitleMapping | None = None
+) -> None:
     """Replay generation-v2 contextual validation for every public output row.
 
     Args:
         output:
             The exact v2 persona output frame.
+        job_title_mapping (optional):
+            Reviewed title mapping bound to the release inputs. Defaults to the
+            production mapping when omitted.
 
     Raises:
         ValueError:
@@ -139,7 +145,11 @@ def validate_persona_output_rows(output: pl.DataFrame) -> None:
             descriptions = PersonaDescriptions.model_validate(
                 {name: row[name] for name in PersonaDescriptions.model_fields}
             )
-            parse_attributes(attributes.model_dump_json(), demographic)
+            parse_attributes(
+                attributes.model_dump_json(),
+                demographic,
+                job_title_mapping=job_title_mapping,
+            )
             parse_descriptions(descriptions.model_dump_json(), demographic, attributes)
             validated_rows.add(cache_key)
         except (TypeError, ValueError) as error:

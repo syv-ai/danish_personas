@@ -234,7 +234,9 @@ def _verify_contents(
     )
     output = _read_output(release_dir / "data/personas.parquet")
     ids = _output_ids(output)
-    _check_output(manifest=manifest, output=output, report=report)
+    _check_output(
+        release_dir=release_dir, manifest=manifest, output=output, report=report
+    )
     if evidence.pilot_id != manifest.pilot_id or evidence.rows != manifest.rows:
         raise ReleaseVerificationError("Evidence identity binding failed")
     if evidence.output_sha256 != _artifact_hash(manifest, "data/personas.parquet"):
@@ -380,7 +382,11 @@ def _check_shard_accounting(*, evidence: ReleaseEvidence) -> None:
 
 
 def _check_output(
-    *, manifest: ReleaseManifest, output: pl.DataFrame, report: ValidationReport
+    *,
+    release_dir: Path,
+    manifest: ReleaseManifest,
+    output: pl.DataFrame,
+    report: ValidationReport,
 ) -> None:
     """Check the public output schema and validation report.
 
@@ -401,8 +407,13 @@ def _check_output(
             "Persona output contains an invalid logical dtype"
         )
     try:
-        validate_persona_output_rows(output)
-    except ValueError as error:
+        validate_persona_output_rows(
+            output,
+            job_title_mapping=load_job_title_mapping(
+                release_dir / "provenance/config/job-function-titles.yaml"
+            ),
+        )
+    except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
             "Persona output fails contextual generation-v2 validation"
         ) from error
