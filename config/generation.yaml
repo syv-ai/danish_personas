@@ -15,3 +15,4 @@ reasoning_effort: null
 response_format: json_schema
 attributes_prompt: config/prompts/attributes-da.md
 personas_prompt: config/prompts/personas-da.md
+job_title_mapping: config/job-function-titles.yaml

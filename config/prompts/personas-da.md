@@ -15,8 +15,9 @@ er `kvalificerende uddannelse`, `short_cycle_higher` er `kort videregående udda
 `professional_bachelor` er `professionsbacheloruddannelse`, `bachelor` er
 `bacheloruddannelse`, `masters` er `kandidatuddannelse`, `phd` er `ph.d.-uddannelse`,
 og `not_stated` er `uddannelse ikke oplyst`. For ikke-ansatte er de aktuelle statusfraser
-`ledig`, `studerende`, `pensionist` eller `uden for arbejdsmarkedet`.
-For ikke-ansatte skal den bruge den kanoniske aktuelle statusfrase. Indlejr nøjagtigt
+`ledig`, `studerende`, `pensionist` eller `uden for arbejdsmarkedet`. For ansatte uden
+jobtitel er statusfraserne `selvstændig` eller `medarbejdende ægtefælle`. Brug altid den
+leverede kanoniske aktuelle statusfrase. Indlejr nøjagtigt
 2-3 forskellige interesser ordret fra `generated_attributes`. Medtag 1-2 forsigtige
 OCEAN-tendenser fra den lukkede ordliste; brug altid hedging som `kan`, `ofte` eller
 `muligvis`. Skriv aldrig punktlister, nummerering, parenteser, klammer eller
@@ -30,7 +31,9 @@ Regler:
   over den leverede kommune.
 - Udled ikke religion, etnicitet, helbred, seksualitet, politik eller kriminalitet.
 - Påstå ikke familie, husstand, diagnose eller fysisk udseende.
-- Giv ikke ikke-ansatte tidligere arbejde eller tidligere arbejdsgivere.
+- Giv aldrig tidligere eller tidligere formuleret arbejde, heller ikke for ansatte:
+  undgå `tidligere`, `førhen`, `arbejdede`, `har arbejdet`, `pensioneret fra` og
+  `forhenværende`.
 - Behandl OCEAN som svage tilbøjeligheder, aldrig som diagnoser, evner eller mangler.
 - Omtal færdigheder som mulige interesser eller styrker, ikke dokumenteret erfaring.
 - Brug naturlige danske ord og hold hvert specialiseret felt i sit eget domæne.

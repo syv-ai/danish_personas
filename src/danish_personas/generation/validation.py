@@ -9,9 +9,14 @@ from pydantic import ValidationError
 from tldextract import TLDExtract
 
 from ..models import DemographicRecord
+from .job_titles import (
+    DEFAULT_JOB_TITLE_MAPPING_PATH,
+    JobFunctionTitleMapping,
+    load_job_title_mapping,
+)
 from .models import GeneratedAttributes, PersonaDescriptions
 
-VALIDATOR_VERSION = "persona-safety-v7"
+VALIDATOR_VERSION = "persona-safety-v8"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -34,68 +39,26 @@ LANGUAGE_DETECTOR = LanguageDetectorBuilder.from_languages(
     Language.NYNORSK,
     Language.SWEDISH,
 ).build()
-SENSITIVE_TERMS = {
-    "adhd",
-    "angst",
-    "autisme",
-    "bipolar",
-    "blind",
-    "depression",
-    "diabetes",
-    "døv",
-    "etnicitet",
-    "handicap",
-    "helbred",
-    "heteroseksuel",
-    "homoseksuel",
-    "kræft",
-    "kristen",
-    "muslim",
-    "politisk parti",
-    "religion",
-    "seksualitet",
-    "skizofreni",
-    "stemme på",
-    "sygdom",
-    "transkønnet",
-}
-UNSUPPORTED_CLAIMS = (
-    "familie",
-    "børn",
-    "barn",
-    "ægtefælle",
-    "partner",
-    "forældre",
-    "søskende",
-    "husstand",
-    "bor sammen",
-    "diagnose",
-    "diagnosticeret",
-    "hår",
-    "øjne",
-    "ansigt",
-    "højde",
-    "vægt",
-    "krop",
-    "udseende",
-    "ser ud",
+SENSITIVE_PATTERNS = (
+    r"adhd|angst|autisme|bipolar(?:itet)?|blind(?:e|hed)?|depress(?:ion|iv)\w*",
+    r"diabet(?:es|iker)\w*|døv(?:hed|e)?|etnicitet|handicap(?:ped)?\w*",
+    r"helbred|heteroseksuel\w*|homoseksuel\w*|kræft|kristen\w*",
+    r"muslim\w*|politisk\s+parti|religion\w*|seksualitet|skizofreni",
+    r"stemme\s+på|sygdom\w*|transkønnet\w*",
+)
+UNSUPPORTED_PATTERNS = (
+    r"familie\w*|barn(?:et|ene|s|er)?|ægtefælle\w*|partner\w*",
+    r"forældre\w*|søskende\w*|husstand\w*|bor\s+sammen",
+    r"diagnos(?:e|er|en|erede)\w*|hår(?:et|et)?|øjne?\w*",
+    r"ansigt(?:et|stræk|strækkene)?|højde|vægt|krop(?:pen)?|udseende|ser\s+ud",
+    r"hud(?:en)?|kropsbygning",
 )
 FORMER_WORK = re.compile(
-    r"\b(?:tidligere|før|arbejdede|har arbejdet|var ansat|forhenværende)\b"
+    r"(?<![\w])(?:tidligere|førhen|før|arbejdede|har\s+arbejdet|"
+    r"var\s+ansat|forhenværende|pensioneret\s+fra)(?![\w])"
 )
-JOB_TITLE_SENIORITY = ("chef", "leder", "direktør", "senior", "junior", "ansvarlig")
-JOB_TITLE_DUTY_WORDS = re.compile(
-    r"\b(?:ansvar for|arbejder med|udfører|hjælper med|laver)\b"
-)
-JOB_ROLE_GROUPS = {
-    "administr": ("administr", "business", "office", "management"),
-    "software": ("software", "program", "developer", "it "),
-    "sundhed": ("health", "nurs", "medical", "sygeplej", "læge"),
-    "undervis": ("teach", "teacher", "education", "lærer", "undervis"),
-    "økonomi": ("account", "finance", "econom", "økonom", "revisor"),
-}
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
-HEDGE = re.compile(r"\b(?:kan|ofte|muligvis|gerne|typisk)\b")
+HEDGE = re.compile(r"(?<![\w])(?:kan|ofte|muligvis|gerne|typisk)(?![\w])")
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
 
 EDUCATION_DANISH = {
@@ -133,6 +96,26 @@ STATUS_DANISH = {
     "outside_labour_force": "uden for arbejdsmarkedet",
     "not_applicable": "uden for arbejdsmarkedet",
 }
+DETAILED_STATUS_DANISH = {
+    "05": "selvstændig",
+    "10": "medarbejdende ægtefælle",
+    "50": "ledig",
+    "85": "ledig",
+    "90": "ledig",
+    "95": "ledig",
+    "130": "studerende",
+    "154": "studerende",
+    "156": "studerende",
+    "158": "studerende",
+    "160": "studerende",
+    "135": "pensionist",
+    "138": "pensionist",
+    "139": "pensionist",
+    "140": "pensionist",
+    "145": "pensionist",
+    "150": "pensionist",
+    "155": "pensionist",
+}
 OCEAN_TERMS = {
     "openness": {
         "high": ("nysgerrig", "kreativ", "åben for nye ideer"),
@@ -158,7 +141,10 @@ OCEAN_TERMS = {
 
 
 def parse_attributes(
-    content: str, demographic: DemographicRecord | c.Mapping[str, object]
+    content: str,
+    demographic: DemographicRecord | c.Mapping[str, object],
+    *,
+    job_title_mapping: JobFunctionTitleMapping | None = None,
 ) -> GeneratedAttributes:
     """Parse first-stage output against its demographic input.
 
@@ -179,7 +165,12 @@ def parse_attributes(
     _validate_texts(texts=attributes.hobbies_and_interests, require_each_danish=False)
     if attributes.career_goals_and_ambitions:
         _validate_text(text=attributes.career_goals_and_ambitions, require_danish=True)
-    _validate_job_title(title=attributes.job_title, context=context)
+    _validate_job_title(
+        title=attributes.job_title,
+        context=context,
+        mapping=job_title_mapping
+        or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+    )
     return attributes
 
 
@@ -191,42 +182,31 @@ def _context_values(
     return dict(demographic)
 
 
-def _validate_job_title(title: str | None, context: dict[str, object]) -> None:
+def _validate_job_title(
+    *, title: str | None, context: dict[str, object], mapping: JobFunctionTitleMapping
+) -> None:
     resolution = context.get("job_function_resolution")
     if resolution not in {"lons20_sex_marginal", "not_applicable"}:
         raise ValueError("Unknown job-function resolution")
     eligible = resolution == "lons20_sex_marginal"
-    if eligible and not str(context.get("job_function", "")).strip():
-        raise ValueError("Eligible job-function context requires its official label")
     if eligible != (title is not None):
         expected = "a title" if eligible else "null job_title"
         raise ValueError(f"Eligible job-function context requires {expected}")
     if title is None:
         return
+    code = str(context.get("job_function_code", ""))
+    entry = mapping.job_functions.get(code)
+    if entry is None:
+        label = str(context.get("job_function", "")).strip()
+        entry = next(
+            (item for item in mapping.job_functions.values() if item.label == label),
+            None,
+        )
+    if entry is None or title not in entry.titles:
+        raise ValueError("job_title must equal an allowlisted reviewed title")
     _validate_text(text=title, require_danish=True)
     if LIST_FORM.search(title) or "\n" in title or "\r" in title:
         raise ValueError("job_title must be a single plain Danish line")
-    normalized = _normalize(title)
-    if any(
-        term in normalized for term in ("arbejdsplads", "virksomhed", "institution")
-    ):
-        raise ValueError("job_title must not invent an employer or institution")
-    if any(
-        term in normalized for term in JOB_TITLE_SENIORITY
-    ) or JOB_TITLE_DUTY_WORDS.search(normalized):
-        raise ValueError("job_title must not invent seniority or duties")
-    label = _normalize(str(context.get("job_function", "")))
-    for group, markers in JOB_ROLE_GROUPS.items():
-        if any(marker in normalized for marker in markers) and not any(
-            marker in label for marker in markers
-        ):
-            raise ValueError(
-                f"job_title is not grounded in the job-function label: {group}"
-            )
-
-
-def _normalize(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
 def _validate_text(text: str, require_danish: bool) -> None:
@@ -243,15 +223,21 @@ def _validate_text(text: str, require_danish: bool) -> None:
             raise ValueError(f"Generated content contains a prohibited {name}")
     if _contains_url(text=text):
         raise ValueError("Generated content contains a prohibited URL")
+    if FORMER_WORK.search(normalized):
+        raise ValueError("Generated content contains former or past-work wording")
     found_sensitive = sorted(
-        term for term in SENSITIVE_TERMS if _contains_term(normalized, term)
+        pattern
+        for pattern in SENSITIVE_PATTERNS
+        if _contains_pattern(normalized, pattern)
     )
     if found_sensitive:
         raise ValueError(
             f"Generated content contains sensitive terms: {found_sensitive}"
         )
     found_unsupported = sorted(
-        term for term in UNSUPPORTED_CLAIMS if _contains_term(normalized, term)
+        pattern
+        for pattern in UNSUPPORTED_PATTERNS
+        if _contains_pattern(normalized, pattern)
     )
     if found_unsupported:
         raise ValueError(
@@ -261,8 +247,8 @@ def _validate_text(text: str, require_danish: bool) -> None:
         _require_danish(text=text)
 
 
-def _contains_term(text: str, term: str) -> bool:
-    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+def _contains_pattern(text: str, pattern: str) -> bool:
+    return re.search(rf"(?<![\w])(?:{pattern})(?![\w])", text) is not None
 
 
 def _contains_url(text: str) -> bool:
@@ -274,6 +260,10 @@ def _contains_url(text: str) -> bool:
         if extracted.domain and extracted.suffix:
             return True
     return False
+
+
+def _normalize(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
 def _require_danish(text: str) -> None:
@@ -334,10 +324,8 @@ def _validate_persona(
     )
     _validate_interests(normalized=normalized, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
-    if str(
-        context.get("labour_market_status")
-    ).casefold() != "employed" and FORMER_WORK.search(normalized):
-        raise ValueError("Non-employees must not receive former-work claims")
+    if FORMER_WORK.search(normalized):
+        raise ValueError("Persona must not contain former or past-work claims")
 
 
 def _persona_sentences(text: str) -> list[str]:
@@ -357,12 +345,30 @@ def _validate_current_status(
     if attributes.job_title is not None:
         required_status = attributes.job_title
     else:
-        status = str(context.get("labour_market_status")).casefold()
-        required_status = STATUS_DANISH.get(status)
+        detailed_code = str(context.get("detailed_status_code", ""))
+        required_status = DETAILED_STATUS_DANISH.get(detailed_code)
+        if detailed_code not in {"05", "10"}:
+            status = str(context.get("labour_market_status")).casefold()
+            required_status = (
+                "lønmodtager" if status == "employed" else STATUS_DANISH.get(status)
+            )
         if required_status is None:
-            raise ValueError("Unknown non-employee labour status")
-    if not required_status or _normalize(required_status) not in normalized:
+            raise ValueError("Unknown current labour status")
+    if not required_status or not _contains_term(normalized, required_status):
         raise ValueError("Persona does not contain its exact current work status")
+
+
+def _contains_term(text: str, term: str) -> bool:
+    """Match a canonical Unicode token sequence, never a substring.
+
+    Returns:
+        Whether the complete token sequence occurs at Unicode word boundaries.
+    """
+    tokens = [token for token in _normalize(term).split(" ") if token]
+    if not tokens:
+        return False
+    expression = r"\s+".join(re.escape(token) for token in tokens)
+    return re.search(rf"(?<![\w]){expression}(?![\w])", _normalize(text)) is not None
 
 
 def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> None:
@@ -398,7 +404,7 @@ def _validate_persona_facts(*, normalized: str, context: dict[str, object]) -> N
         (_education_label(context), "education"),
     )
     for value, name in required:
-        if not value or _normalize(value) not in normalized:
+        if not value or not _contains_term(normalized, value):
             raise ValueError(f"Persona does not contain the exact {name} fact")
     age = str(context.get("age"))
     if not re.search(rf"(?<!\d){re.escape(age)}\s+år\b", normalized):
@@ -415,15 +421,34 @@ def _education_label(context: dict[str, object]) -> str:
 def _validate_personality(
     *, normalized: str, sentences: list[str], context: dict[str, object]
 ) -> None:
-    allowed_terms = _compatible_ocean_terms(context=context)
-    found_terms = [term for term in allowed_terms if _contains_term(normalized, term)]
-    if not 1 <= len(found_terms) <= 2:
+    compatible = set(_compatible_ocean_terms(context=context))
+    mentioned = {
+        term for term in _all_ocean_terms() if _contains_term(normalized, term)
+    }
+    incompatible = mentioned - compatible
+    if incompatible:
+        raise ValueError("Persona contains an incompatible personality tendency")
+    if not 1 <= len(mentioned) <= 2:
         raise ValueError("Persona must contain 1-2 compatible personality tendencies")
     for sentence in sentences:
-        if any(
-            _contains_term(sentence.casefold(), term) for term in found_terms
-        ) and not HEDGE.search(sentence):
-            raise ValueError("Personality tendencies must be hedged")
+        sentence_terms = [term for term in mentioned if _contains_term(sentence, term)]
+        for term in sentence_terms:
+            term_match = re.search(
+                rf"(?<![\w]){re.escape(term)}(?![\w])", _normalize(sentence)
+            )
+            if term_match is None or not _nearby_hedge(sentence, term_match.start()):
+                raise ValueError("Personality tendencies must be hedged nearby")
+
+
+def _all_ocean_terms() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            term
+            for levels in OCEAN_TERMS.values()
+            for terms in levels.values()
+            for term in terms
+        )
+    )
 
 
 def _compatible_ocean_terms(context: dict[str, object]) -> tuple[str, ...]:
@@ -443,3 +468,16 @@ def _compatible_ocean_terms(context: dict[str, object]) -> tuple[str, ...]:
         for selected in levels:
             terms.extend(labels[selected])
     return tuple(dict.fromkeys(terms))
+
+
+def _nearby_hedge(sentence: str, position: int) -> bool:
+    clause = re.split(r"[,;:]", _normalize(sentence))
+    offset = 0
+    for part in clause:
+        end = offset + len(part)
+        if offset <= position <= end:
+            return any(
+                abs(match.start() - position) <= 48 for match in HEDGE.finditer(part)
+            )
+        offset = end + 1
+    return False
