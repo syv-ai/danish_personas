@@ -280,6 +280,8 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         files=files,
         reference_periods={},
         assumptions=[],
+        lons20_contract_version=1,
+        lons20_contract_sha256="2" * 64,
     )
     write_json(path=bundle_dir / "bundle-manifest.json", payload=manifest)
     sampling_path = root / "sampling.yaml"

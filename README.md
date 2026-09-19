@@ -204,7 +204,11 @@ uv run src/scripts/freeze_demographic_sample.py \
 ```
 
 The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3,
-and RAS210. LONS20 provides an optional sex-conditional synthetic broad job-function
+and RAS210. LONS20's title, dimension semantics, fixed selector labels, and all
+selected two-digit ARBF English labels are independently frozen in the reviewed
+`config/lons20-contract.yaml`; lock and raw snapshot metadata must each match it.
+The contract checksum and version are part of source provenance and bundle identity.
+LONS20 provides an optional sex-conditional synthetic broad job-function
 marginal for eligible employees only. Its incomplete earnings-statistics universe is
 not an all-worker representation, and the fields are withheld from both LLM payloads.
 The allocation is conditioned on sex alone, not municipality, origin, education, age,

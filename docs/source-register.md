@@ -1,7 +1,12 @@
 # Source register
 
 Retrieved through the official Statistics Denmark StatBank API on 18 September 2026.
-The exact dimension selections are frozen in `config/sources.lock.yaml`. The immutable
+The exact dimension selections are frozen in `config/sources.lock.yaml`. LONS20's title,
+dimension labels, fixed selector labels, and selected two-digit ARBF English labels are
+also frozen independently in the separately reviewed `config/lons20-contract.yaml`.
+Preparation requires both the lock metadata and the raw snapshot metadata to match that
+contract; source resolution/fetch never generates or updates it. The contract version
+and SHA-256 are bound into every prepared bundle identity and manifest. The immutable
 snapshots are committed as `data/raw-hardened-20260919.tar.zst` under CC BY 4.0; its
 SHA-256 is `4b3715e193a5efb22001390d98bde53ab54b6049d710e06498e54afb8e94cda9`.
 Restoration creates content-addressed query subdirectories under

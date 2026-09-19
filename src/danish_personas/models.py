@@ -12,7 +12,7 @@ SAMPLER_SCHEMA_VERSION: int = 5
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 4
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 5
 FROZEN_SAMPLE_SCHEMA_VERSION: int = 2
 SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
 SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
@@ -132,6 +132,19 @@ class ClassificationManifest(StrictModel):
     response_headers_sha256: str
     retrieved_at: str
     data_bytes: int = Field(gt=0)
+
+
+class Lons20Contract(StrictModel):
+    """Separately reviewed canonical semantics for LONS20."""
+
+    version: int = Field(gt=0)
+    table_id: str
+    table_text: str
+    description: str
+    unit: str
+    dimensions: dict[str, str]
+    selectors: dict[str, dict[str, str]]
+    arbf: dict[str, str]
 
 
 class MetricResult(StrictModel):
@@ -312,6 +325,8 @@ class BundleManifest(StrictModel):
     files: dict[str, str]
     reference_periods: dict[str, str]
     assumptions: list[str]
+    lons20_contract_version: int = Field(ge=1)
+    lons20_contract_sha256: str
 
 
 class SourceMetadataExpectations(StrictModel):
