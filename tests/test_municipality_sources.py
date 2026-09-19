@@ -31,6 +31,8 @@ def test_existing_legacy_bundle_is_rejected(tmp_path: Path) -> None:
         files={report.name: sha256_file(report)},
         reference_periods={},
         assumptions=[],
+        lons20_contract_version=1,
+        lons20_contract_sha256="2" * 64,
     )
     write_json(path=tmp_path / "bundle-manifest.json", payload=manifest)
 

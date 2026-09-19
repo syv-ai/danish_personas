@@ -13,10 +13,15 @@ These gates apply before any LLM integration may be enabled.
 - Every selected table has a positive population total and zero unhandled suppressed
   cells.
 - LONS20 is fixed to 2024 `ANTAL`, all sectors, all forms of pay, the employee-group
-  total, M/K, and exactly the 42 two-digit DISCO-08 groups. Its required prepared
-  marginal preserves official code, label, sex, and positive count. Wrong hierarchy
-  levels, totals, duplicates, blank or changed labels, malformed or nonpositive counts,
-  suppression, and missing sex distributions fail.
+  total, M/K, and exactly the 42 two-digit DISCO-08 groups. Its separately reviewed,
+  versioned `config/lons20-contract.yaml` freezes the title, every required dimension
+  label, fixed selector code-label pairs, and every selected ARBF code-label pair.
+  Lock metadata and raw snapshot metadata must independently match that contract;
+  coordinated drift, missing or extra codes, and contract checksum changes fail or
+  produce a different bundle identity. Its required prepared marginal preserves
+  official code, label, sex, and positive count. Wrong hierarchy levels, totals,
+  duplicates, blank or changed labels, malformed or nonpositive counts, suppression,
+  and missing sex distributions fail.
 - FOLK2's prepared national origin marginal has a positive total, unique official
   IELAND codes and labels, an exact selected code-to-label mapping from official
   metadata, zero suppression, no unhandled values, and the expected official raw

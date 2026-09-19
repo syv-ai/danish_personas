@@ -33,6 +33,7 @@ from ..models import (
     StatBankVariable,
 )
 from .http import RETRY_ATTEMPTS, request_with_retries, response_headers_content
+from .lons20 import load_lons20_contract, lons20_dimensions, lons20_expectations
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://api.statbank.dk/v1"
@@ -327,6 +328,8 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
     """
     resolved_at = _now()
     locked_sources: list[LockedSource] = []
+    lons20_contract = load_lons20_contract()
+    lons20_contract_expectations = lons20_expectations(contract=lons20_contract)
     with httpx.Client(timeout=60.0, follow_redirects=True) as client:
         for source in config.sources:
             metadata, _ = _get_metadata(
@@ -339,6 +342,15 @@ def resolve_sources(config: SourcesConfig, lock_path: Path) -> SourceLock:
                 dimensions=None,
             )
             dimensions = _resolve_dimensions(source=source, metadata=metadata)
+            if source.table_id == "LONS20":
+                if source.metadata_expectations != lons20_contract_expectations:
+                    raise ValueError(
+                        "LONS20 source configuration does not match canonical contract"
+                    )
+                if dimensions != lons20_dimensions(contract=lons20_contract):
+                    raise ValueError(
+                        "LONS20 source selection does not match canonical contract"
+                    )
             estimated_cells = estimate_query_cells(dimensions=dimensions)
             if source.format != "BULK" and estimated_cells > MAX_CELLS:
                 message = (

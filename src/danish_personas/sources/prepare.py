@@ -19,10 +19,16 @@ from ..models import (
     LockedSource,
     SnapshotManifest,
     SourceLock,
+    SourceMetadataExpectations,
     StatBankMetadata,
 )
 from .bundle import verify_prepared_bundle
 from .classification import classification_snapshot_dir, verify_classification_snapshot
+from .lons20 import (
+    DEFAULT_LONS20_CONTRACT_PATH,
+    load_lons20_contract,
+    lons20_expectations,
+)
 from .statbank import (
     _validate_metadata_expectations,
     source_query_content,
@@ -62,7 +68,11 @@ def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, 
 
 
 def prepare_bundle(
-    lock_path: Path, categories_path: Path, raw_dir: Path, output_dir: Path
+    lock_path: Path,
+    categories_path: Path,
+    raw_dir: Path,
+    output_dir: Path,
+    contract_path: Path = DEFAULT_LONS20_CONTRACT_PATH,
 ) -> Path:
     """Build a validated, immutable source bundle.
 
@@ -75,6 +85,8 @@ def prepare_bundle(
             Root directory containing raw snapshots.
         output_dir:
             Root destination for prepared bundles.
+        contract_path:
+            Separately reviewed canonical LONS20 contract.
 
     Returns:
         Prepared bundle directory.
@@ -84,12 +96,19 @@ def prepare_bundle(
             If the lock has no geography classification.
     """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
-    job_source = _validate_lons20_source(lock=lock)
+    contract = load_lons20_contract(path=contract_path)
+    contract_expectations = lons20_expectations(contract=contract)
+    job_source = _validate_lons20_source(
+        lock=lock, contract_expectations=contract_expectations
+    )
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
-    bundle_id = sha256_text(
-        f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
-        f"{sha256_file(categories_path)}"
-    )[:16]
+    contract_sha256 = sha256_file(contract_path)
+    bundle_id = _bundle_id(
+        lock_path=lock_path,
+        categories_path=categories_path,
+        contract_path=contract_path,
+        contract_version=contract.version,
+    )
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
     if manifest_path.exists():
@@ -118,10 +137,15 @@ def prepare_bundle(
         metadata = StatBankMetadata.model_validate_json(
             (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
         )
+        expectations = (
+            contract_expectations
+            if source.table_id == "LONS20"
+            else source.metadata_expectations
+        )
         _validate_metadata_expectations(
             table_id=source.table_id,
             metadata=metadata,
-            expectations=source.metadata_expectations,
+            expectations=expectations,
             dimensions=source.dimensions,
         )
         metadata_by_table[source.table_id] = metadata
@@ -214,6 +238,8 @@ def prepare_bundle(
         frames=frames,
         geography_metrics=geography_metrics,
         origin_metrics=origin_metrics,
+        lons20_contract_version=contract.version,
+        lons20_contract_sha256=contract_sha256,
     )
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
@@ -237,6 +263,8 @@ def prepare_bundle(
         classification_snapshots=classification_snapshots,
         files=files,
         reference_periods={source.role: source.period for source in lock.sources},
+        lons20_contract_version=contract.version,
+        lons20_contract_sha256=contract_sha256,
         assumptions=[
             "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
             "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
@@ -286,6 +314,20 @@ def _build_region_map(metadata: StatBankMetadata) -> dict[str, tuple[str, str]]:
                 raise ValueError(message)
             mapping[value.id] = (region_code, region_name)
     return mapping
+
+
+def _bundle_id(
+    *,
+    lock_path: Path,
+    categories_path: Path,
+    contract_path: Path,
+    contract_version: int,
+) -> str:
+    """Return the content identity for a prepared source bundle."""
+    return sha256_text(
+        f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
+        f"{sha256_file(categories_path)}:{contract_version}:{sha256_file(contract_path)}"
+    )[:16]
 
 
 def _geography_metrics(
@@ -1082,6 +1124,8 @@ def _source_metrics(
     frames: dict[str, pl.DataFrame],
     geography_metrics: dict[str, object],
     origin_metrics: dict[str, object],
+    lons20_contract_version: int,
+    lons20_contract_sha256: str,
 ) -> dict[str, object]:
     """Summarise prepared tables and the geography cross-check.
 
@@ -1092,6 +1136,10 @@ def _source_metrics(
             Result of the geography hierarchy cross-check.
         origin_metrics:
             Checks specific to the FOLK2 origin marginal.
+        lons20_contract_version:
+            Version of the canonical LONS20 contract.
+        lons20_contract_sha256:
+            SHA-256 checksum of the canonical LONS20 contract.
 
     Returns:
         Report payload whose ``passed`` flag gates the prepared bundle.
@@ -1139,6 +1187,10 @@ def _source_metrics(
     )
     return {
         "passed": passed,
+        "lons20_contract": {
+            "version": lons20_contract_version,
+            "sha256": lons20_contract_sha256,
+        },
         "tables": table_metrics,
         "geography_hierarchy": geography_metrics,
         "origin_country_checks": origin_metrics,
@@ -1184,8 +1236,17 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
         for name, result in origin.items()
         if isinstance(result, dict) and "passed" in result
     }
+    contract = metrics["lons20_contract"]
+    if not isinstance(contract, dict):
+        message = "LONS20 contract metrics must be a mapping"
+        raise TypeError(message)
     lines.extend(
         [
+            "",
+            "## LONS20 canonical contract",
+            "",
+            f"- Version: **{contract.get('version')}**",
+            f"- SHA-256: `{contract.get('sha256')}`",
             "",
             "## FOLK2 origin-country marginal",
             "",
@@ -1223,7 +1284,11 @@ def _result_text(passed: object) -> str:
     return "PASS" if passed else "FAIL"
 
 
-def _validate_lons20_source(lock: SourceLock) -> LockedSource:
+def _validate_lons20_source(
+    lock: SourceLock, contract_expectations: SourceMetadataExpectations | None = None
+) -> LockedSource:
+    if contract_expectations is None:
+        contract_expectations = lons20_expectations(contract=load_lons20_contract())
     matches = [source for source in lock.sources if source.table_id == "LONS20"]
     if len(matches) != 1:
         raise ValueError("Source lock must contain exactly one LONS20 source")
@@ -1247,6 +1312,8 @@ def _validate_lons20_source(lock: SourceLock) -> LockedSource:
         for dimension, values in LONS20_DIMENSIONS.items()
     ):
         raise ValueError("LONS20 metadata expectations do not cover selected values")
+    if contract_expectations is not None and expectations != contract_expectations:
+        raise ValueError("LONS20 lock metadata does not match canonical contract")
     return source
 
 
