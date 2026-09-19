@@ -19,7 +19,10 @@ passing each service's returned path to the next boundary. `--raw-parent` defaul
 `data`; the restored and prepared path is always its fixed
 `raw-hardened-20260919` child. `statistical` runs the smoke stage first, then generates
 the configured statistical row count and freezes 1,000 rows by default. Use
-`--sample-rows` to change that development sample size.
+`--sample-rows` to change that development sample size. The frozen Parquet file and its
+manifest remain inside the returned content-addressed statistical run directory, beside
+`run-manifest.json` and `validation-report.json`; the workflow's final stdout line is
+the exact frozen-sample path accepted by `personas shard`.
 
 Source `resolve` and `fetch` refuse to run without explicit `--network`. Persona shards
 are dry runs unless `--live` is supplied; pilots always require `--live`. The command
