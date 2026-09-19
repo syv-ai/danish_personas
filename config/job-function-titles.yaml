@@ -1,0 +1,130 @@
+# Separately reviewed v2 allowlists for generated Danish job titles.
+# Codes and labels are the frozen two-digit LONS20 ARBF partition.
+version: 1
+job_functions:
+  "01":
+    label: "01 Commissioned armed forces officers"
+    titles: [officer i forsvaret]
+  "02":
+    label: "02 Non-commissioned armed forces officers"
+    titles: [befalingsmand]
+  "03":
+    label: "03 Armed forces occupations, other ranks"
+    titles: [militær medarbejder]
+  "11":
+    label: "11 Chief executives, senior officials and legislators"
+    titles: [topchef]
+  "12":
+    label: "12 Administrative and commercial managers"
+    titles: [administrativ leder]
+  "13":
+    label: "13 Production and specialised services managers"
+    titles: [produktionsleder]
+  "14":
+    label: "14 Hospitality, retail and other services managers"
+    titles: [serviceleder]
+  "21":
+    label: "21 Science and engineering professionals"
+    titles: [ingeniør]
+  "22":
+    label: "22 Health professionals"
+    titles: [sundhedsprofessionel]
+  "23":
+    label: "23 Teaching professionals"
+    titles: [underviser]
+  "24":
+    label: "24 Business and administration professionals"
+    titles: [forretningsspecialist, administrativ specialist]
+  "25":
+    label: "25 Information and communications technology professionals"
+    titles: [it-specialist]
+  "26":
+    label: "26 Legal, social and cultural professionals"
+    titles: [kulturprofessionel]
+  "31":
+    label: "31 Science and engineering associate professionals"
+    titles: [teknisk assistent]
+  "32":
+    label: "32 Health associate professionals"
+    titles: [sundhedsassistent]
+  "33":
+    label: "33 Business and administration associate professionals"
+    titles: [administrativ medarbejder]
+  "34":
+    label: "34 Legal, social, cultural and related associate professionals"
+    titles: [socialfaglig medarbejder]
+  "35":
+    label: "35 Information and communications technicians"
+    titles: [it-tekniker]
+  "41":
+    label: "41 General and keyboard clerks"
+    titles: [kontormedarbejder]
+  "42":
+    label: "42 Customer services clerks"
+    titles: [kundeservicemedarbejder]
+  "43":
+    label: "43 Numerical and material recording clerks"
+    titles: [registreringsmedarbejder]
+  "44":
+    label: "44 Other clerical support workers"
+    titles: [kontorassistent]
+  "51":
+    label: "51 Personal service workers"
+    titles: [personlig servicemedarbejder]
+  "52":
+    label: "52 Sales workers"
+    titles: [salgsmedarbejder]
+  "53":
+    label: "53 Personal care workers"
+    titles: [plejemedarbejder]
+  "54":
+    label: "54 Protective services workers"
+    titles: [sikkerhedsmedarbejder]
+  "61":
+    label: "61 Market-oriented skilled agricultural workers"
+    titles: [landbrugsmedarbejder]
+  "62":
+    label: "62 Market-oriented skilled forestry, fishery and hunting workers"
+    titles: [skovbrugsmedarbejder]
+  "71":
+    label: "71 Building and related trades workers, excluding electricians"
+    titles: [byggearbejder]
+  "72":
+    label: "72 Metal, machinery and related trades workers"
+    titles: [maskinarbejder]
+  "73":
+    label: "73 Handicraft and printing workers"
+    titles: [håndværker]
+  "74":
+    label: "74 Electrical and electronic trades workers"
+    titles: [elektriker]
+  "75":
+    label: "75 Food processing, wood working, garment and other craft and related trades workers"
+    titles: [produktionsmedarbejder]
+  "81":
+    label: "81 Stationary plant and machine operators"
+    titles: [maskinoperatør]
+  "82":
+    label: "82 Assemblers"
+    titles: [montør]
+  "83":
+    label: "83 Drivers and mobile plant operators"
+    titles: [chauffør]
+  "91":
+    label: "91 Cleaners and helpers"
+    titles: [rengøringsmedarbejder]
+  "92":
+    label: "92 Agricultural, forestry and fishery labourers"
+    titles: [landbrugsarbejder]
+  "93":
+    label: "93 Labourers in mining, construction, manufacturing and transport"
+    titles: [produktionsarbejder]
+  "94":
+    label: "94 Food preparation assistants"
+    titles: [køkkenmedarbejder]
+  "95":
+    label: "95 Street and related sales and service workers"
+    titles: [servicemedarbejder]
+  "96":
+    label: "96 Refuse workers and other elementary workers"
+    titles: [renovationsmedarbejder]

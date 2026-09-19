@@ -124,12 +124,14 @@ identity, so a legacy run cannot be silently reused.
   synthetic job title or current nonemployee status, two or three interests in prose,
   and cautious OCEAN tendencies. `visual_persona` is not a v2 field.
 - The provider receives human-readable municipality, origin, and job-function labels,
-  but not their source codes or resolution fields. The labels do not permit origin to be
-  interpreted as ethnicity or appearance, and a job title remains synthetic.
+  plus the reviewed allowlist of Danish titles for that label, but never source codes or
+  resolution fields. A generated title must equal an allowlist entry exactly.
+- The versioned 42-code title mapping is checksum-bound into generation context,
+  checkpoints, shards, pilots, and the offline release package.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
-  patterns, and does not contain the configured sensitive terms. It must make no
+  patterns, and does not contain inflectional sensitive terms. It must make no
   unsupported family claims or physical-appearance claims. Downstream image models may
   stereotype, so this contract does not make image generation safe.
 - Exact duplicate persona descriptions are rejected. The specialised texts remain

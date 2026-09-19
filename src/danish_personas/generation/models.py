@@ -101,6 +101,7 @@ class GenerationConfig(StrictModel):
     response_format: t.Literal["json_schema", "json_object"]
     attributes_prompt: Path
     personas_prompt: Path
+    job_title_mapping: Path | None = None
 
 
 class GenerationManifest(StrictModel):
@@ -116,6 +117,9 @@ class GenerationManifest(StrictModel):
     generation_config_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     model: str
@@ -157,6 +161,8 @@ class AttributeCheckpoint(StrictModel):
     input_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
     attributes: GeneratedAttributes
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
@@ -180,6 +186,8 @@ class PersonaCheckpoint(StrictModel):
     input_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
@@ -215,6 +223,9 @@ class PilotManifest(StrictModel):
     generation_config_sha256: str
     generation_context_sha256: str
     validator_version: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)

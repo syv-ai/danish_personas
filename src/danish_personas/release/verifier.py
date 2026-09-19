@@ -10,6 +10,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..generation.job_titles import load_job_title_mapping
 from ..generation.models import GenerationConfig
 from ..generation.pipeline import generation_context_sha256
 from ..io import load_yaml_model, sha256_file
@@ -42,6 +43,7 @@ _PUBLIC_FILES = {
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
     "provenance/config/generation.yaml",
+    "provenance/config/job-function-titles.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -459,6 +461,7 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
     """
     expected_names = {
         "generation.yaml",
+        "job-function-titles.yaml",
         "sources.lock.yaml",
         "categories.yaml",
         "sampling.yaml",
@@ -492,15 +495,21 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
         raise ReleaseVerificationError("Generation attributes prompt binding failed")
     if config.personas_prompt != Path("config/prompts/personas-da.md"):
         raise ReleaseVerificationError("Generation personas prompt binding failed")
+    if config.job_title_mapping != Path("config/job-function-titles.yaml"):
+        raise ReleaseVerificationError("Job-title mapping path binding failed")
     if sha256_file(attributes_path) != evidence.attributes_prompt_sha256:
         raise ReleaseVerificationError("Attributes prompt checksum mismatch")
     if sha256_file(personas_path) != evidence.personas_prompt_sha256:
         raise ReleaseVerificationError("Personas prompt checksum mismatch")
     try:
+        mapping_path = release_dir / "provenance/config/job-function-titles.yaml"
+        mapping = load_job_title_mapping(mapping_path)
         context = generation_context_sha256(
             config=config,
             attributes_prompt=attributes_path.read_text(encoding="utf-8"),
             personas_prompt=personas_path.read_text(encoding="utf-8"),
+            job_title_mapping=mapping,
+            job_title_mapping_sha256=sha256_file(mapping_path),
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
