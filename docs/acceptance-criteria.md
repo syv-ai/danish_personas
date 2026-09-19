@@ -37,7 +37,7 @@ These gates apply before any LLM integration may be enabled.
   validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with
   the official Statistics Denmark geography classification.
-- A shared boundary verifier requires prepared-bundle schema 4, all mandatory Parquet
+- A shared boundary verifier requires prepared-bundle schema 5, all mandatory Parquet
   schemas, successful source preparation, and every manifest checksum before either
   sampling or demographic validation. Legacy, malformed, and tampered bundles fail.
 - The locked RAS209 selection, official hierarchy, and prepared RAS209 joint have exactly

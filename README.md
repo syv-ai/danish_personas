@@ -17,8 +17,9 @@ rows, while a pilot can span multiple shards. Release-scale generation and human
 approval are not implemented release gates.
 
 The municipality-native canonical Phase 2 workflow passes at both 2,000-row smoke and
-100,000-row statistical sizes using prepared bundle `333a0a166ca0e030`, sampler schema
-5, and validation schema 5. Read the reports before making claims:
+100,000-row statistical sizes using prepared bundle `cfc1b56f5586a2d7`, prepared-bundle
+schema 5, sampler schema 5, and validation schema 5. Read the reports before making
+claims:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
