@@ -8,14 +8,62 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 4
+SAMPLER_SCHEMA_VERSION: int = 5
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 3
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 5
 FROZEN_SAMPLE_SCHEMA_VERSION: int = 2
-SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({2})
-SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({4})
+SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
+SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
+
+ELIGIBLE_JOB_FUNCTION_STATUS_CODES: frozenset[str] = frozenset(
+    {"15", "20", "25", "30", "35", "40"}
+)
+DISCO_TWO_DIGIT_CODES: tuple[str, ...] = (
+    "01",
+    "02",
+    "03",
+    "11",
+    "12",
+    "13",
+    "14",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "41",
+    "42",
+    "43",
+    "44",
+    "51",
+    "52",
+    "53",
+    "54",
+    "61",
+    "62",
+    "71",
+    "72",
+    "73",
+    "74",
+    "75",
+    "81",
+    "82",
+    "83",
+    "91",
+    "92",
+    "93",
+    "94",
+    "95",
+    "96",
+)
 
 
 class StatBankValue(BaseModel):
@@ -86,21 +134,17 @@ class ClassificationManifest(StrictModel):
     data_bytes: int = Field(gt=0)
 
 
-class LockedSource(StrictModel):
-    """Resolved source query with explicit values."""
+class Lons20Contract(StrictModel):
+    """Separately reviewed canonical semantics for LONS20."""
 
+    version: int = Field(gt=0)
     table_id: str
-    role: str
-    period: str
-    format: t.Literal["CSV", "BULK"] = "CSV"
-    metadata_url: str
-    data_url: str
-    retrieved_metadata_at: str
-    table_updated_at: str
+    table_text: str
+    description: str
     unit: str
-    dimensions: dict[str, list[str]]
-    expected_zero_codes: list[str] = Field(default_factory=list)
-    estimated_cells: int = Field(gt=0)
+    dimensions: dict[str, str]
+    selectors: dict[str, dict[str, str]]
+    arbf: dict[str, str]
 
 
 class MetricResult(StrictModel):
@@ -165,6 +209,44 @@ class DemographicRecord(OceanTraits):
     detailed_status_code: str
     detailed_status: str
     detailed_status_resolution: t.Literal["age_band_sex_status", "sex_status", "status"]
+    job_function_code: str | None = None
+    job_function: str | None = None
+    job_function_resolution: t.Literal["lons20_sex_marginal", "not_applicable"]
+
+    @model_validator(mode="after")
+    def validate_job_function(self) -> "DemographicRecord":
+        """Require paired job-function fields exactly for eligible employees.
+
+        Returns:
+            The validated record.
+
+        Raises:
+            ValueError:
+                If fields or resolution disagree with detailed-status eligibility.
+        """
+        eligible = self.detailed_status_code in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        expected = "lons20_sex_marginal" if eligible else "not_applicable"
+        if self.job_function_resolution != expected:
+            message = (
+                "Job-function resolution does not match detailed-status eligibility"
+            )
+            raise ValueError(message)
+        if self.job_function_resolution == "not_applicable":
+            if self.job_function_code is not None or self.job_function is not None:
+                raise ValueError(
+                    "Not-applicable job-function fields must both be exactly null"
+                )
+            return self
+        if (
+            self.job_function_code is None
+            or self.job_function is None
+            or not self.job_function_code.strip()
+            or not self.job_function.strip()
+        ):
+            raise ValueError(
+                "Eligible job-function fields must both be nonblank strings"
+            )
+        return self
 
 
 class RunManifest(StrictModel):
@@ -243,6 +325,36 @@ class BundleManifest(StrictModel):
     files: dict[str, str]
     reference_periods: dict[str, str]
     assumptions: list[str]
+    lons20_contract_version: int = Field(ge=1)
+    lons20_contract_sha256: str
+
+
+class SourceMetadataExpectations(StrictModel):
+    """Versioned metadata semantics expected for a source table."""
+
+    table_text: str
+    description: str
+    unit: str
+    dimensions: dict[str, str]
+    values: dict[str, dict[str, str]]
+
+
+class LockedSource(StrictModel):
+    """Resolved source query with explicit values."""
+
+    table_id: str
+    role: str
+    period: str
+    format: t.Literal["CSV", "BULK"] = "CSV"
+    metadata_url: str
+    data_url: str
+    retrieved_metadata_at: str
+    table_updated_at: str
+    unit: str
+    dimensions: dict[str, list[str]]
+    metadata_expectations: SourceMetadataExpectations | None = None
+    expected_zero_codes: list[str] = Field(default_factory=list)
+    estimated_cells: int = Field(gt=0)
 
 
 class SourceLock(StrictModel):
@@ -289,6 +401,7 @@ class SourceDefinition(StrictModel):
     period: str
     format: t.Literal["CSV", "BULK"] = "CSV"
     dimensions: dict[str, SourceSelection]
+    metadata_expectations: SourceMetadataExpectations | None = None
     expected_zero_codes: list[str] = Field(default_factory=list)
 
 
@@ -333,7 +446,7 @@ class ValidationConfig(StrictModel):
         if self.version not in SUPPORTED_VALIDATION_CONFIG_VERSIONS:
             message = f"Unsupported validation config version: {self.version}"
             raise ValueError(message)
-        required = {"origin_country", "municipality_code"}
+        required = {"origin_country", "municipality_code", "job_function"}
         missing = sorted(required - set(self.mandatory_marginals))
         if missing:
             message = f"Validation config is missing mandatory marginals: {missing}"

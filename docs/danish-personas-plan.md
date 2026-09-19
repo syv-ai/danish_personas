@@ -22,8 +22,8 @@ The initial release should:
 - use region or municipality, but not exact addresses or CPR numbers;
 - model age, sex, marital status, broad education, labour-market status, and
   geography jointly where official cross-tabulations support it;
-- defer a statistically representative occupation field until a suitable Danish count
-  source is available;
+- include only a broad synthetic job-function allocation calibrated by sex to LONS20's
+  incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
 - produce Danish structured attributes and seven persona descriptions, including
   mutable, non-identifying visual portrait guidance;
@@ -172,6 +172,9 @@ free-text values to be Danish.
 - `education_resolution`: source category or disclosed proxy level
 - `labour_market_status`: employed, unemployed, student, retired, or another documented
   RAS category
+- `job_function_code` and `job_function`: optional broad two-digit DISCO-08 synthetic
+  allocation for eligible employees only, calibrated by sex to LONS20
+- `job_function_resolution`: `lons20_sex_marginal` or `not_applicable`
 - `municipality_code`: official municipality code, subject to privacy review
 - `municipality`: official municipality name, subject to privacy review
 - `region`: one of the five Danish regions
@@ -252,7 +255,7 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Detailed status and retirement | RAS202 | Exact age through 70, then `71+`; no region |
 | Municipality status validation | RAS210 | Three status groups; title says ages 13-70 |
 | Detailed education under 70 | HFUDD11, HFUDD16 | Both cover ages 15-69 only |
-| Occupation research only | LONS20 `ANTAL`, DISCO-08 | Wage-statistics marginal only |
+| Synthetic job function | LONS20 `ANTAL`, DISCO-08 | Sex marginal in the incomplete earnings-statistics universe only |
 | Household extensions | FAM55N, FAM122N, FAM44N | Defer to a later release |
 | Names | Statistics Denmark name statistics | First first-name/final surname limits |
 | Geography codes | DST classification `NUTS_V1_2007_DK` | Region, landsdel, and municipality hierarchy |
@@ -266,11 +269,14 @@ other status categories by age and sex. RAS is measured on the last working day 
 November.
 
 No active public table found during this research combines DISCO-08 occupation counts
-with age, education, and geography. LONS20 can expose the `ANTAL` count component by
-occupation and sex, but its universe is the earnings statistics, not all employed
-residents. Therefore, v1 should not publish occupation as a statistically representative
-structured field. DISCO-08 and LONS20 remain candidates for a later, explicitly limited
-occupation extension.
+with age, education, and geography. The limited extension therefore uses only LONS20
+2024 `ANTAL`, all sectors, all forms of pay, the employee-group total, M/K, and exactly
+the 42 two-digit DISCO-08 groups. LONS20 covers all public employees and private
+organisations with at least 10 full-time-equivalent employees; smaller private
+organisations and other earnings-statistics exclusions are absent. The result is a
+synthetic sex-conditional allocation for eligible RAS202 employee statuses, not observed
+occupation or all-worker representation. It is not conditioned on geography, origin,
+age, education, OCEAN, or any unsupported joint.
 
 The exact source extracts must be selected after inspecting their dimensions and
 reference periods. Aggregate tables cannot be joined as if they were observations about
@@ -324,9 +330,12 @@ Phases 0-2 are implemented and validated. The source bundle prepares the officia
 FOLK2 adult origin marginal. Phase 2 samples this marginal independently with
 deterministic quotas and retains its official code and label; origin is withheld from
 both LLM stages and cannot drive language, culture, religion, occupation, personality,
-or visual appearance. Prepared-bundle schema 3 produced municipality-native bundle `a276e45eb987fb73`.
-Sampler schema 4 produced passing canonical runs `11a191f044aa245a` (2,000-row smoke)
-and `cd12e81f3de71f0d` (100,000-row statistical).
+or visual appearance. Prepared-bundle schema 5 produced municipality-native bundle `cfc1b56f5586a2d7`.
+Sampler schema 5 produced passing canonical runs `f449f1de01d18c08` (2,000-row smoke)
+and `3ebc00282c621ef2` (100,000-row statistical). The LONS20 extension assigns broad
+job functions within sex only to RAS202 employee codes 15, 20, 25, 30, 35, and 40,
+using deterministic largest-remainder quotas and an isolated fourth RNG stream. The
+fields remain withheld from both LLM stages.
 See the [Phase 2 validation report][phase-2-report] for exact checksums and metrics.
 LLM generation remains disabled in configuration and guarded by an executable failure.
 
@@ -751,8 +760,8 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    privacy review passes; otherwise publish region.
 5. Broad RAS209 education for all ages, with its `67+` band disclosed as a proxy for
    personas aged 70 and over; no unsupported detailed attainment for those ages.
-6. No occupation, household, income, ancestry, citizenship, full name, or sensitive
-   fields in v1.
+6. No observed occupation, household, income, ancestry, citizenship, full name, or
+   sensitive fields in v1; broad job function is the documented synthetic exception.
 7. Seven persona text fields, with the six historical NVIDIA fields retained for
    comparability and `visual_persona` added as current Danish guidance.
 8. Native list columns and explicit provenance fields, even where this differs from the

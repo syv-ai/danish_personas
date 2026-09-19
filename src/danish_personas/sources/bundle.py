@@ -139,6 +139,9 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
     "normalized/folk2_origin_country_marginal.parquet": frozenset(
         {"origin_country_code", "origin_country", "count"}
     ),
+    "normalized/job_function_sex_marginal.parquet": frozenset(
+        {"job_function_code", "job_function", "sex", "count"}
+    ),
     "normalized/geography_hierarchy.parquet": frozenset(
         {
             "municipality_code",

@@ -4,29 +4,51 @@ import csv
 import logging
 import math
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import polars as pl
 
 from ..io import load_yaml_model, sha256_file, sha256_text, verify_checksums, write_json
 from ..models import (
+    DISCO_TWO_DIGIT_CODES,
     PREPARED_BUNDLE_SCHEMA_VERSION,
     BundleManifest,
     CategoryConfig,
     ClassificationManifest,
+    LockedSource,
     SnapshotManifest,
     SourceLock,
+    SourceMetadataExpectations,
     StatBankMetadata,
 )
 from .bundle import verify_prepared_bundle
 from .classification import classification_snapshot_dir, verify_classification_snapshot
-from .statbank import source_query_content, source_snapshot_dir
+from .lons20 import (
+    DEFAULT_LONS20_CONTRACT_PATH,
+    load_lons20_contract,
+    lons20_expectations,
+)
+from .statbank import (
+    _validate_metadata_expectations,
+    source_query_content,
+    source_snapshot_dir,
+)
 
 LOGGER = logging.getLogger(__name__)
 REGION_PREFIX = "Region "
 REGION_LEVEL = "1"
 LANDSDEL_LEVEL = "2"
 MUNICIPALITY_LEVEL = "3"
+LONS20_DIMENSIONS = {
+    "ARBF": list(DISCO_TWO_DIGIT_CODES),
+    "SEKTOR": ["1000"],
+    "AFLOEN": ["TIFA"],
+    "LONGRP": ["LTOT"],
+    "LØNMÅL": ["ANTAL"],
+    "KØN": ["M", "K"],
+    "Tid": ["2024"],
+}
 
 
 def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, str]]:
@@ -46,7 +68,11 @@ def _region_map_from_geography(geography: pl.DataFrame) -> dict[str, tuple[str, 
 
 
 def prepare_bundle(
-    lock_path: Path, categories_path: Path, raw_dir: Path, output_dir: Path
+    lock_path: Path,
+    categories_path: Path,
+    raw_dir: Path,
+    output_dir: Path,
+    contract_path: Path = DEFAULT_LONS20_CONTRACT_PATH,
 ) -> Path:
     """Build a validated, immutable source bundle.
 
@@ -59,6 +85,8 @@ def prepare_bundle(
             Root directory containing raw snapshots.
         output_dir:
             Root destination for prepared bundles.
+        contract_path:
+            Separately reviewed canonical LONS20 contract.
 
     Returns:
         Prepared bundle directory.
@@ -68,11 +96,19 @@ def prepare_bundle(
             If the lock has no geography classification.
     """
     lock = load_yaml_model(path=lock_path, model=SourceLock)
+    contract = load_lons20_contract(path=contract_path)
+    contract_expectations = lons20_expectations(contract=contract)
+    job_source = _validate_lons20_source(
+        lock=lock, contract_expectations=contract_expectations
+    )
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
-    bundle_id = sha256_text(
-        f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
-        f"{sha256_file(categories_path)}"
-    )[:16]
+    contract_sha256 = sha256_file(contract_path)
+    bundle_id = _bundle_id(
+        lock_path=lock_path,
+        categories_path=categories_path,
+        contract_path=contract_path,
+        contract_version=contract.version,
+    )
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
     if manifest_path.exists():
@@ -100,6 +136,17 @@ def prepare_bundle(
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
             (snapshot_dir / "metadata-en.json").read_text(encoding="utf-8")
+        )
+        expectations = (
+            contract_expectations
+            if source.table_id == "LONS20"
+            else source.metadata_expectations
+        )
+        _validate_metadata_expectations(
+            table_id=source.table_id,
+            metadata=metadata,
+            expectations=expectations,
+            dimensions=source.dimensions,
         )
         metadata_by_table[source.table_id] = metadata
         source_frames[source.table_id] = _read_source(
@@ -150,6 +197,7 @@ def prepare_bundle(
         release_rows=lock.release_rows,
         minimum_source_count=lock.minimum_source_count,
         minimum_expected_release_count=lock.minimum_expected_release_count,
+        job_function_codes=job_source.dimensions["ARBF"],
     )
     _verify_ras209_municipality_sets(
         locked_codes=set(ras209_source.dimensions["OMRÅDE"]),
@@ -190,6 +238,8 @@ def prepare_bundle(
         frames=frames,
         geography_metrics=geography_metrics,
         origin_metrics=origin_metrics,
+        lons20_contract_version=contract.version,
+        lons20_contract_sha256=contract_sha256,
     )
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
@@ -213,6 +263,8 @@ def prepare_bundle(
         classification_snapshots=classification_snapshots,
         files=files,
         reference_periods={source.role: source.period for source in lock.sources},
+        lons20_contract_version=contract.version,
+        lons20_contract_sha256=contract_sha256,
         assumptions=[
             "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
             "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
@@ -228,6 +280,16 @@ def prepare_bundle(
             "and Not stated; no continents, regions, or correlations are inferred.",
             "FOLK2 is sampled independently into Phase 2 origin fields and "
             "withheld from both LLM stages.",
+            "LONS20 supplies only a 2024 sex-conditional marginal over exactly "
+            "the 42 two-digit DISCO-08 job-function groups.",
+            "LONS20 covers all public employees and private organisations with "
+            "at least 10 full-time-equivalent employees; smaller private "
+            "organisations and other earnings-statistics exclusions are absent.",
+            "Job function is a synthetic allocation for eligible RAS202 employee "
+            "statuses, not an observed occupation or an all-worker distribution.",
+            "Job function is not conditioned on municipality, origin, age, "
+            "education, OCEAN, or any unsupported joint and is withheld from both "
+            "LLM stages.",
             "OCEAN traits are a documented design distribution, not official "
             "statistics.",
         ],
@@ -252,6 +314,20 @@ def _build_region_map(metadata: StatBankMetadata) -> dict[str, tuple[str, str]]:
                 raise ValueError(message)
             mapping[value.id] = (region_code, region_name)
     return mapping
+
+
+def _bundle_id(
+    *,
+    lock_path: Path,
+    categories_path: Path,
+    contract_path: Path,
+    contract_version: int,
+) -> str:
+    """Return the content identity for a prepared source bundle."""
+    return sha256_text(
+        f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
+        f"{sha256_file(categories_path)}:{contract_version}:{sha256_file(contract_path)}"
+    )[:16]
 
 
 def _geography_metrics(
@@ -381,7 +457,9 @@ def _normalise_frames(
     release_rows: int,
     minimum_source_count: int,
     minimum_expected_release_count: int,
+    job_function_codes: list[str],
 ) -> dict[str, pl.DataFrame]:
+    _reject_negative_counts(raw_frames=raw_frames)
     labels = {
         table: _metadata_labels(metadata=metadata)
         for table, metadata in metadata_by_table.items()
@@ -390,6 +468,12 @@ def _normalise_frames(
 
     folk2 = _origin_country_marginal(
         raw_frame=raw_frames["FOLK2"], official_labels=labels["FOLK2"]["IELAND"]
+    )
+    job_function = _job_function_sex_marginal(
+        raw_frame=raw_frames["LONS20"],
+        official_labels=labels["LONS20"]["ARBF"],
+        selected_codes=job_function_codes,
+        sex_mapping=categories.sex,
     )
 
     folk_calibration = raw_frames["FOLK1A"].select(
@@ -532,6 +616,7 @@ def _normalise_frames(
     ras210 = _add_geography(frame=ras210, geography=geography)
     return {
         "folk2_origin_country_marginal": folk2,
+        "job_function_sex_marginal": job_function,
         "folk1a_base_unpooled": folk,
         "folk_age_sampling": folk_age_sampling,
         "folk_marital_sampling": folk_marital_sampling,
@@ -629,6 +714,90 @@ def _invert_status_mapping(categories: CategoryConfig) -> dict[str, str]:
         message = "Labour-market status codes must be unique"
         raise ValueError(message)
     return result
+
+
+def _job_function_sex_marginal(
+    raw_frame: pl.DataFrame,
+    official_labels: dict[str, str],
+    selected_codes: list[str],
+    sex_mapping: dict[str, str],
+) -> pl.DataFrame:
+    """Validate and prepare the official LONS20 sex marginal.
+
+    Returns:
+        Official code, label, sex, and positive count cells.
+
+    Raises:
+        ValueError:
+            If source coverage, hierarchy, labels, or counts violate the contract.
+    """
+    _validate_lons20_cells(raw_frame=raw_frame, selected_codes=selected_codes)
+    expected_codes = set(DISCO_TWO_DIGIT_CODES)
+    labels = {code: official_labels.get(code) for code in expected_codes}
+    if any(label is None or not label.strip() for label in labels.values()):
+        raise ValueError("LONS20 contains a blank or missing official label")
+    unexpected_labels = raw_frame.filter(
+        pl.col("ARBF__label")
+        != pl.col("ARBF").replace_strict(labels, return_dtype=pl.String)
+    )
+    if not unexpected_labels.is_empty():
+        raise ValueError("LONS20 contains an unexpected official code-label pair")
+    prepared = raw_frame.select(
+        pl.col("ARBF").alias("job_function_code"),
+        pl.col("ARBF").replace_strict(labels).alias("job_function"),
+        pl.col("KØN").replace_strict(sex_mapping).alias("sex"),
+        pl.col("count"),
+    ).sort("sex", "job_function_code")
+    if prepared.select("job_function_code", "job_function").unique().height != len(
+        DISCO_TWO_DIGIT_CODES
+    ):
+        raise ValueError("LONS20 contains an unexpected code-label mapping")
+    return prepared
+
+
+def _validate_lons20_cells(raw_frame: pl.DataFrame, selected_codes: list[str]) -> None:
+    if selected_codes != list(DISCO_TWO_DIGIT_CODES):
+        raise ValueError("LONS20 ARBF selection is not the fixed two-digit partition")
+    required = {*LONS20_DIMENSIONS, "ARBF__label", "count", "suppressed"}
+    missing = sorted(required - set(raw_frame.columns))
+    if missing:
+        raise ValueError(f"LONS20 response is missing columns: {missing}")
+    if raw_frame.height != len(DISCO_TWO_DIGIT_CODES) * 2:
+        raise ValueError("LONS20 must contain one row per job-function code and sex")
+    counts = raw_frame.get_column("count")
+    integer_types = {
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+    }
+    if counts.dtype not in integer_types or bool((counts <= 0).any()):
+        raise ValueError("LONS20 counts must be positive integers")
+    if bool(raw_frame.get_column("suppressed").any()):
+        raise ValueError("LONS20 contains suppressed values")
+    _validate_lons20_partition(raw_frame=raw_frame)
+
+
+def _validate_lons20_partition(raw_frame: pl.DataFrame) -> None:
+    for dimension, expected in LONS20_DIMENSIONS.items():
+        if dimension not in {"ARBF", "KØN"} and set(
+            raw_frame.get_column(dimension).unique()
+        ) != set(expected):
+            raise ValueError(f"LONS20 has unexpected {dimension} coverage")
+    codes = raw_frame.get_column("ARBF")
+    if set(codes.unique()) != set(DISCO_TWO_DIGIT_CODES) or any(
+        len(str(code)) != 2 or not str(code).isdigit() for code in codes
+    ):
+        raise ValueError("LONS20 contains totals or mixed DISCO-08 hierarchy levels")
+    if raw_frame.select("ARBF", "KØN").n_unique() != raw_frame.height:
+        raise ValueError("LONS20 contains duplicate code-sex cells")
+    coverage = raw_frame.group_by("ARBF").agg(pl.col("KØN").unique().sort())
+    if any(set(sexes) != {"M", "K"} for sexes in coverage.get_column("KØN")):
+        raise ValueError("LONS20 is missing a sex distribution")
 
 
 def _origin_country_marginal(
@@ -758,6 +927,18 @@ def _ras_age_band_expression() -> pl.Expr:
         .then(pl.lit("50-66"))
         .otherwise(pl.lit("67+"))
     )
+
+
+def _reject_negative_counts(raw_frames: dict[str, pl.DataFrame]) -> None:
+    """Reject negative source counts before any source transformation.
+
+    Raises:
+        ValueError:
+            If any source contains a negative count.
+    """
+    for table_id, frame in raw_frames.items():
+        if bool((frame.get_column("count") < 0).any()):
+            raise ValueError(f"{table_id} contains negative counts")
 
 
 def _now() -> str:
@@ -915,9 +1096,26 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
             row: dict[str, object] = {}
             for code, value in zip(dimension_codes, raw_row[:-1], strict=True):
                 row[code] = value.partition(" ")[0]
+                row[f"{code}__label"] = value
             raw_count = raw_row[-1].strip()
             row["suppressed"] = raw_count in {"", "..", "."}
-            row["count"] = 0 if row["suppressed"] else int(raw_count)
+            if row["suppressed"]:
+                row["count"] = 0
+            else:
+                try:
+                    parsed_count = Decimal(raw_count)
+                except InvalidOperation as error:
+                    raise ValueError(
+                        f"Malformed count in {csv_path}: {raw_count}"
+                    ) from error
+                if (
+                    not parsed_count.is_finite()
+                    or parsed_count != parsed_count.to_integral_value()
+                ):
+                    raise ValueError(f"Non-integral count in {csv_path}: {raw_count}")
+                if parsed_count < 0:
+                    raise ValueError(f"Negative count in {csv_path}: {raw_count}")
+                row["count"] = int(parsed_count)
             rows.append(row)
     return pl.DataFrame(rows)
 
@@ -926,6 +1124,8 @@ def _source_metrics(
     frames: dict[str, pl.DataFrame],
     geography_metrics: dict[str, object],
     origin_metrics: dict[str, object],
+    lons20_contract_version: int,
+    lons20_contract_sha256: str,
 ) -> dict[str, object]:
     """Summarise prepared tables and the geography cross-check.
 
@@ -936,6 +1136,10 @@ def _source_metrics(
             Result of the geography hierarchy cross-check.
         origin_metrics:
             Checks specific to the FOLK2 origin marginal.
+        lons20_contract_version:
+            Version of the canonical LONS20 contract.
+        lons20_contract_sha256:
+            SHA-256 checksum of the canonical LONS20 contract.
 
     Returns:
         Report payload whose ``passed`` flag gates the prepared bundle.
@@ -957,13 +1161,40 @@ def _source_metrics(
             "suppressed_cells": suppressed,
             "passed": valid,
         }
+    job_function = frames["job_function_sex_marginal"]
+    job_function_checks = {
+        "two_digit_partition": {
+            "passed": set(job_function.get_column("job_function_code"))
+            == set(DISCO_TWO_DIGIT_CODES),
+            "codes": job_function.get_column("job_function_code").n_unique(),
+        },
+        "sex_coverage": {
+            "passed": job_function.group_by("job_function_code")
+            .len()
+            .filter(pl.col("len") != 2)
+            .is_empty(),
+            "sexes": job_function.get_column("sex").n_unique(),
+        },
+        "positive_counts": {
+            "passed": bool((job_function.get_column("count") > 0).all()),
+            "total": int(job_function.get_column("count").sum()),
+        },
+    }
     passed = passed and bool(geography_metrics["passed"])
     passed = passed and bool(origin_metrics["passed"])
+    passed = passed and all(
+        bool(check["passed"]) for check in job_function_checks.values()
+    )
     return {
         "passed": passed,
+        "lons20_contract": {
+            "version": lons20_contract_version,
+            "sha256": lons20_contract_sha256,
+        },
         "tables": table_metrics,
         "geography_hierarchy": geography_metrics,
         "origin_country_checks": origin_metrics,
+        "job_function_checks": job_function_checks,
     }
 
 
@@ -1005,8 +1236,17 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
         for name, result in origin.items()
         if isinstance(result, dict) and "passed" in result
     }
+    contract = metrics["lons20_contract"]
+    if not isinstance(contract, dict):
+        message = "LONS20 contract metrics must be a mapping"
+        raise TypeError(message)
     lines.extend(
         [
+            "",
+            "## LONS20 canonical contract",
+            "",
+            f"- Version: **{contract.get('version')}**",
+            f"- SHA-256: `{contract.get('sha256')}`",
             "",
             "## FOLK2 origin-country marginal",
             "",
@@ -1042,6 +1282,39 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
 
 def _result_text(passed: object) -> str:
     return "PASS" if passed else "FAIL"
+
+
+def _validate_lons20_source(
+    lock: SourceLock, contract_expectations: SourceMetadataExpectations | None = None
+) -> LockedSource:
+    if contract_expectations is None:
+        contract_expectations = lons20_expectations(contract=load_lons20_contract())
+    matches = [source for source in lock.sources if source.table_id == "LONS20"]
+    if len(matches) != 1:
+        raise ValueError("Source lock must contain exactly one LONS20 source")
+    source = matches[0]
+    if source.role != "job_function_sex_marginal" or source.period != "2024":
+        raise ValueError("LONS20 must be the 2024 job-function sex marginal")
+    if source.dimensions != LONS20_DIMENSIONS:
+        raise ValueError(
+            "LONS20 must select only the fixed 42 two-digit DISCO-08 groups and "
+            "approved coverage dimensions"
+        )
+    expectations = source.metadata_expectations
+    if expectations is None:
+        raise ValueError("LONS20 lock must include versioned metadata expectations")
+    if source.unit != expectations.unit:
+        raise ValueError("LONS20 lock unit does not match metadata expectations")
+    if set(expectations.dimensions) != set(LONS20_DIMENSIONS):
+        raise ValueError("LONS20 metadata expectations do not cover every dimension")
+    if any(
+        set(expectations.values.get(dimension, {})) != set(values)
+        for dimension, values in LONS20_DIMENSIONS.items()
+    ):
+        raise ValueError("LONS20 metadata expectations do not cover selected values")
+    if contract_expectations is not None and expectations != contract_expectations:
+        raise ValueError("LONS20 lock metadata does not match canonical contract")
+    return source
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:

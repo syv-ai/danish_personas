@@ -12,6 +12,16 @@ These gates apply before any LLM integration may be enabled.
 - Existing raw snapshots are never overwritten.
 - Every selected table has a positive population total and zero unhandled suppressed
   cells.
+- LONS20 is fixed to 2024 `ANTAL`, all sectors, all forms of pay, the employee-group
+  total, M/K, and exactly the 42 two-digit DISCO-08 groups. Its separately reviewed,
+  versioned `config/lons20-contract.yaml` freezes the title, every required dimension
+  label, fixed selector code-label pairs, and every selected ARBF code-label pair.
+  Lock metadata and raw snapshot metadata must independently match that contract;
+  coordinated drift, missing or extra codes, and contract checksum changes fail or
+  produce a different bundle identity. Its required prepared marginal preserves
+  official code, label, sex, and positive count. Wrong hierarchy levels, totals,
+  duplicates, blank or changed labels, malformed or nonpositive counts, suppression,
+  and missing sex distributions fail.
 - FOLK2's prepared national origin marginal has a positive total, unique official
   IELAND codes and labels, an exact selected code-to-label mapping from official
   metadata, zero suppression, no unhandled values, and the expected official raw
@@ -27,7 +37,7 @@ These gates apply before any LLM integration may be enabled.
   validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with
   the official Statistics Denmark geography classification.
-- A shared boundary verifier requires prepared-bundle schema 3, all mandatory Parquet
+- A shared boundary verifier requires prepared-bundle schema 5, all mandatory Parquet
   schemas, successful source preparation, and every manifest checksum before either
   sampling or demographic validation. Legacy, malformed, and tampered bundles fail.
 - The locked RAS209 selection, official hierarchy, and prepared RAS209 joint have exactly
@@ -49,7 +59,7 @@ These gates apply before any LLM integration may be enabled.
   records on a coarser cell. Age and marital back-off can relax age or sex only while
   retaining the same municipality; no region or national fallback exists. RAS202's
   national detailed-status refinement remains a separate ladder. The validation
-  configuration is schema version 4.
+  configuration is schema version 5.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
@@ -76,13 +86,23 @@ These gates apply before any LLM integration may be enabled.
   fitted categories fail explicitly and remain included in distribution accounting.
   The mapping and origin marginal meet the same statistical gates as other mandatory
   marginals.
+- Eligible RAS202 employee status codes 15, 20, 25, 30, 35, and 40 receive paired
+  `job_function_code` and `job_function` values with `lons20_sex_marginal` resolution.
+  Every other detailed status receives paired nulls and `not_applicable`. Within each
+  sex, deterministic largest-remainder quotas use sorted-code ties and a fourth isolated
+  RNG stream. Changing LONS20 weights cannot perturb any existing field or RNG stream.
+  Exact code-label, eligibility, and sex-conditional distribution gates are mandatory.
+- Job function is a synthetic allocation calibrated to LONS20's incomplete
+  earnings-statistics universe, not observed occupation or all-worker representation.
+  It is never conditioned on municipality, origin, age, education, OCEAN, or an
+  unsupported joint.
 - `country` remains the residence value `Danmark`; mandatory municipality code and name,
   official region parent, and `education_level` are retained.
   Origin is not ethnicity, citizenship, or residence and cannot drive language,
   culture, religion, occupation, personality, or visual appearance.
-- Both origin fields remain in upstream/generated outputs and input/checkpoint hashes,
-  but are withheld from both LLM payloads; municipality and all resolution fields are
-  also withheld.
+- Origin and job-function fields remain in upstream/generated outputs and
+  input/checkpoint hashes, but are withheld from both LLM payloads; municipality and all
+  resolution fields are also withheld.
 
 `SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. It is part of the

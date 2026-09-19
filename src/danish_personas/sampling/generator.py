@@ -12,7 +12,13 @@ import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import SAMPLED_ATTRIBUTES, Ladder
-from ..models import SAMPLER_SCHEMA_VERSION, RunManifest, SamplingConfig
+from ..models import (
+    DISCO_TWO_DIGIT_CODES,
+    ELIGIBLE_JOB_FUNCTION_STATUS_CODES,
+    SAMPLER_SCHEMA_VERSION,
+    RunManifest,
+    SamplingConfig,
+)
 from ..sources.bundle import verify_prepared_bundle
 
 LOGGER = logging.getLogger(__name__)
@@ -94,16 +100,22 @@ def generate_records(
             "municipality_code", "municipality", "region_code", "region"
         ).iter_rows(named=True)
     }
-    demographic_seed, ocean_seed, origin_seed = np.random.SeedSequence(seed).spawn(3)
+    demographic_seed, ocean_seed, origin_seed, job_function_seed = (
+        np.random.SeedSequence(seed).spawn(4)
+    )
     demographic_rng = np.random.default_rng(demographic_seed)
     ocean_rng = np.random.default_rng(ocean_seed)
     origin_rng = np.random.default_rng(origin_seed)
+    job_function_rng = np.random.default_rng(job_function_seed)
 
     sampled_joint = _municipality_quota_sample(
         frame=joint_frame, rows=rows, rng=demographic_rng
     )
     origin_frame = pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet")
     sampled_origin = _origin_quota_sample(frame=origin_frame, rows=rows, rng=origin_rng)
+    job_function_frame = pl.read_parquet(
+        source_dir / "job_function_sex_marginal.parquet"
+    )
     ladders = {
         attribute.resolution_column: _ladder_index(
             frame=pl.read_parquet(source_dir / attribute.prepared_file),
@@ -123,10 +135,15 @@ def generate_records(
     )
     _add_ocean(records=records, config=config, rng=ocean_rng)
     _attach_origin(records=records, sampled_origin=sampled_origin)
+    _attach_job_functions(
+        records=records, marginal=job_function_frame, rng=job_function_rng
+    )
 
     run_dir.mkdir(parents=True, exist_ok=True)
     data_path = run_dir / "structured-records.parquet"
-    frame = pl.DataFrame(records)
+    frame = pl.DataFrame(records).cast(
+        {"job_function_code": pl.String, "job_function": pl.String}
+    )
     frame.write_parquet(data_path, compression="zstd")
     manifest = RunManifest(
         run_id=run_id,
@@ -162,6 +179,91 @@ def _add_ocean(
             label_index = int(np.searchsorted(boundaries, score, side="right"))
             record[f"{trait}_score"] = score
             record[f"{trait}_label"] = ocean.labels[label_index]
+
+
+def _attach_job_functions(
+    records: list[dict[str, object]], marginal: pl.DataFrame, rng: np.random.Generator
+) -> None:
+    """Allocate LONS20 job functions within sex to eligible employees only."""
+    _validate_job_function_marginal(frame=marginal)
+    for record in records:
+        record["job_function_code"] = None
+        record["job_function"] = None
+        record["job_function_resolution"] = "not_applicable"
+    for sex in ("female", "male"):
+        eligible_indices = [
+            index
+            for index, record in enumerate(records)
+            if record["sex"] == sex
+            and str(record["detailed_status_code"])
+            in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        ]
+        sampled = _job_function_quota_sample(
+            frame=marginal.filter(pl.col("sex") == sex),
+            rows=len(eligible_indices),
+            rng=rng,
+        )
+        for index, job_function in zip(
+            eligible_indices, sampled.iter_rows(named=True), strict=True
+        ):
+            records[index]["job_function_code"] = job_function["job_function_code"]
+            records[index]["job_function"] = job_function["job_function"]
+            records[index]["job_function_resolution"] = "lons20_sex_marginal"
+
+
+def _job_function_quota_sample(
+    frame: pl.DataFrame, rows: int, rng: np.random.Generator
+) -> pl.DataFrame:
+    """Return exact largest-remainder LONS20 quotas with code-sorted ties."""
+    selected = frame.select("job_function_code", "job_function", "sex", "count").sort(
+        "job_function_code"
+    )
+    if rows == 0:
+        return selected.head(0)
+    weights = selected.get_column("count").to_numpy().astype(np.float64)
+    expected = weights / weights.sum() * rows
+    allocations = np.floor(expected).astype(np.int64)
+    remainder = rows - int(allocations.sum())
+    fractions = expected - allocations
+    allocations[np.argsort(-fractions, kind="stable")[:remainder]] += 1
+    indices = np.repeat(np.arange(selected.height), allocations)
+    rng.shuffle(indices)
+    return selected[indices]
+
+
+def _validate_job_function_marginal(frame: pl.DataFrame) -> None:
+    required = {"job_function_code", "job_function", "sex", "count"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"LONS20 marginal is missing columns: {missing}")
+    selected = frame.select(sorted(required))
+    if selected.height != len(DISCO_TWO_DIGIT_CODES) * 2:
+        raise ValueError("LONS20 marginal must contain 42 codes for both sexes")
+    if selected.null_count().sum_horizontal().item() > 0:
+        raise ValueError("LONS20 marginal contains null values")
+    if set(selected.get_column("job_function_code")) != set(DISCO_TWO_DIGIT_CODES):
+        raise ValueError("LONS20 marginal contains a wrong DISCO-08 hierarchy level")
+    if set(selected.get_column("sex")) != {"female", "male"}:
+        raise ValueError("LONS20 marginal must contain female and male distributions")
+    if selected.select("job_function_code", "sex").n_unique() != selected.height:
+        raise ValueError("LONS20 marginal contains duplicate code-sex cells")
+    mappings = selected.select("job_function_code", "job_function").unique()
+    if mappings.height != len(DISCO_TWO_DIGIT_CODES):
+        raise ValueError("LONS20 marginal contains inconsistent code-label pairs")
+    if any(not str(label).strip() for label in mappings.get_column("job_function")):
+        raise ValueError("LONS20 marginal contains blank labels")
+    counts = selected.get_column("count")
+    if counts.dtype not in {
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+    } or bool((counts <= 0).any()):
+        raise ValueError("LONS20 marginal counts must be positive integers")
 
 
 def _attach_origin(
