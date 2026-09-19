@@ -340,10 +340,13 @@ def test_verify_release_rejects_title_map_config_path_substitution(
     """A re-signed config with a different title-map path cannot bypass binding."""
     release, _ = verifier_package
     config_path = release / "provenance/config/generation.yaml"
+    config_bytes = config_path.read_bytes()
+    posix_path = b"config/job-function-titles.yaml"
+    windows_path = b"config\\job-function-titles.yaml"
+    original_path = posix_path if posix_path in config_bytes else windows_path
+    assert original_path in config_bytes
     config_path.write_bytes(
-        config_path.read_bytes().replace(
-            b"config/job-function-titles.yaml", b"config/other-titles.yaml"
-        )
+        config_bytes.replace(original_path, b"config/other-titles.yaml")
     )
     config_sha = sha256_file(config_path)
     evidence_path = release / "provenance/evidence.json"

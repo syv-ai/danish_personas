@@ -400,10 +400,14 @@ def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
     )
     mapping_data["job_functions"]["24"]["titles"] = [custom_title]
     mapping_path = tmp_path / "custom-job-function-titles.yaml"
-    mapping_path.write_text(yaml.safe_dump(mapping_data, allow_unicode=True))
+    mapping_path.write_text(
+        yaml.safe_dump(mapping_data, allow_unicode=True), encoding="utf-8"
+    )
     config_data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
     config_data["job_title_mapping"] = str(mapping_path)
-    paths["config"].write_text(yaml.safe_dump(config_data, allow_unicode=True))
+    paths["config"].write_text(
+        yaml.safe_dump(config_data, allow_unicode=True), encoding="utf-8"
+    )
 
     class CustomMappingClient(_MockClient):
         job_title = custom_title
@@ -411,7 +415,9 @@ def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
     mismatch_config = tmp_path / "default-job-title-config.yaml"
     mismatch_data = dict(config_data)
     mismatch_data.pop("job_title_mapping")
-    mismatch_config.write_text(yaml.safe_dump(mismatch_data, allow_unicode=True))
+    mismatch_config.write_text(
+        yaml.safe_dump(mismatch_data, allow_unicode=True), encoding="utf-8"
+    )
     monkeypatch.setattr(
         "danish_personas.generation.pipeline.OpenAIClient", CustomMappingClient
     )
@@ -437,12 +443,18 @@ def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
 
     default_config_data = dict(config_data)
     default_config_data.pop("job_title_mapping")
-    paths["config"].write_text(yaml.safe_dump(default_config_data, allow_unicode=True))
+    paths["config"].write_text(
+        yaml.safe_dump(default_config_data, allow_unicode=True), encoding="utf-8"
+    )
     assert not validate_persona_run(run_dir=run_dir).passed
 
-    paths["config"].write_text(yaml.safe_dump(config_data, allow_unicode=True))
+    paths["config"].write_text(
+        yaml.safe_dump(config_data, allow_unicode=True), encoding="utf-8"
+    )
     mapping_data["job_functions"]["24"]["titles"] = ["anden forretningsrådgiver"]
-    mapping_path.write_text(yaml.safe_dump(mapping_data, allow_unicode=True))
+    mapping_path.write_text(
+        yaml.safe_dump(mapping_data, allow_unicode=True), encoding="utf-8"
+    )
     assert not validate_persona_run(run_dir=run_dir).passed
 
 
