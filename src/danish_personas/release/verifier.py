@@ -182,7 +182,7 @@ def _load_json(path: Path, model: type[ModelType]) -> ModelType:
         return model.model_validate_json(path.read_text(encoding="utf-8"))
     except ValidationError as error:
         diagnostics = "; ".join(
-            f"{'.'.join(str(part) for part in item['loc']) or '<model>'}: "
+            f"{_safe_validation_location(item=item, model=model)}: "
             f"{_safe_validation_error_type(item)}"
             for item in error.errors(
                 include_url=False, include_context=False, include_input=False
@@ -220,6 +220,19 @@ def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
             if fragment in message:
                 return diagnostic
     return str(item.get("type", "validation_error"))
+
+
+def _safe_validation_location(
+    *, item: t.Mapping[str, object], model: type[ModelType]
+) -> str:
+    """Return only an allowlisted top-level model field."""
+    location = item.get("loc")
+    if not isinstance(location, tuple) or not location:
+        return "<model>"
+    field = location[0]
+    if isinstance(field, str) and field in model.model_fields:
+        return field
+    return "<model>"
 
 
 def _require_no_symlink_components(path: Path) -> None:

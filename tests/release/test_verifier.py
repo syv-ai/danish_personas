@@ -121,16 +121,16 @@ def test_validation_diagnostic_does_not_echo_contract_input(
     )
     labels = manifest["origin_label_contract_content"]["labels_da"]
     first_code = next(iter(labels))
-    label = labels.pop(first_code)
+    labels.pop(first_code)
     marker = "SECRET-MARKER"
-    labels[marker] = label
+    labels[marker] = 123
     digest = _refresh_manifest(release, **manifest)
 
     with pytest.raises(ReleaseVerificationError) as exc_info:
         verify_release(release_dir=release, expected_manifest_sha256=digest)
 
     diagnostic = str(exc_info.value)
-    assert "origin_label_contract_content: origin_code" in diagnostic
+    assert "origin_label_contract_content: string_type" in diagnostic
     assert marker not in diagnostic
 
 
