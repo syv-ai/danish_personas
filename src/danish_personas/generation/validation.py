@@ -22,7 +22,7 @@ from .personality import (
     allowed_personality_tendencies,
 )
 
-VALIDATOR_VERSION = "persona-safety-v12"
+VALIDATOR_VERSION = "persona-safety-v13"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -127,8 +127,8 @@ def parse_attributes(
     )
     _validate_field(
         field="hobbies_and_interests",
-        validator=lambda: _validate_texts(
-            texts=attributes.hobbies_and_interests, require_each_danish=False
+        validator=lambda: _validate_hobbies_and_interests(
+            texts=attributes.hobbies_and_interests
         ),
     )
     career_goals = attributes.career_goals_and_ambitions
@@ -201,31 +201,63 @@ def _validate_field(*, field: str, validator: c.Callable[[], None]) -> None:
         raise ValueError(f"{field}: {error}") from error
 
 
-def _validate_job_title(
-    *, title: str | None, context: dict[str, object], mapping: JobFunctionTitleMapping
-) -> None:
-    resolution = context.get("job_function_resolution")
-    if resolution not in {"lons20_sex_marginal", "not_applicable"}:
-        raise ValueError("Unknown job-function resolution")
-    eligible = resolution == "lons20_sex_marginal"
-    if eligible != (title is not None):
-        expected = "a title" if eligible else "null job_title"
-        raise ValueError(f"Eligible job-function context requires {expected}")
-    if title is None:
-        return
-    code = str(context.get("job_function_code", ""))
-    entry = mapping.job_functions.get(code)
-    if entry is None:
-        label = str(context.get("job_function", "")).strip()
-        entry = next(
-            (item for item in mapping.job_functions.values() if item.label == label),
-            None,
-        )
-    if entry is None or title not in entry.titles:
-        raise ValueError("job_title must equal an allowlisted reviewed title")
-    _validate_text(text=title, require_danish=False)
-    if LIST_FORM.search(title) or "\n" in title or "\r" in title:
-        raise ValueError("job_title must be a single plain Danish line")
+def _validate_hobbies_and_interests(*, texts: list[str]) -> None:
+    """Require interests to describe activities or topics, not OCEAN language.
+
+    Personality terms are reserved for the grounded persona's separately validated
+    tendency phrases. Matching against the shared term and phrase APIs also rejects
+    a tendency when it is embedded in a longer interest, while preserving ordinary
+    words that merely contain the same letters.
+
+    Raises:
+        ValueError:
+            If an interest contains a reviewed personality term or phrase.
+    """
+    _validate_texts(texts=texts, require_each_danish=False)
+    personality_terms = (*all_personality_tendencies(), *all_personality_phrases())
+    if any(
+        _contains_term(text=interest, term=term)
+        for interest in texts
+        for term in personality_terms
+    ):
+        raise ValueError("Every interest must be an activity or topic")
+
+
+def _contains_term(text: str, term: str) -> bool:
+    """Match a canonical Unicode token sequence, never a substring.
+
+    Returns:
+        Whether the complete token sequence occurs at Unicode word boundaries.
+    """
+    return bool(_term_spans(text=text, term=term))
+
+
+def _term_spans(*, text: str, term: str) -> list[tuple[int, int]]:
+    """Return token-boundary spans for a canonical phrase in normalised text."""
+    tokens = [token for token in _normalize(term).split(" ") if token]
+    if not tokens:
+        return []
+    expression = r"\s+".join(re.escape(token) for token in tokens)
+    return [
+        match.span()
+        for match in re.finditer(rf"(?<![\w]){expression}(?![\w])", _normalize(text))
+    ]
+
+
+def _normalize(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
+    for text in texts:
+        _validate_text(text=text, require_danish=require_each_danish)
+    if not require_each_danish:
+        _require_danish(text=" ".join(texts))
+
+
+def _require_danish(text: str) -> None:
+    if LANGUAGE_DETECTOR.detect_language_of(text) != Language.DANISH:
+        raise ValueError("Generated content does not appear to be natural Danish")
 
 
 def _validate_text(
@@ -285,20 +317,31 @@ def _contains_url(text: str) -> bool:
     return False
 
 
-def _normalize(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
-
-
-def _require_danish(text: str) -> None:
-    if LANGUAGE_DETECTOR.detect_language_of(text) != Language.DANISH:
-        raise ValueError("Generated content does not appear to be natural Danish")
-
-
-def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
-    for text in texts:
-        _validate_text(text=text, require_danish=require_each_danish)
-    if not require_each_danish:
-        _require_danish(text=" ".join(texts))
+def _validate_job_title(
+    *, title: str | None, context: dict[str, object], mapping: JobFunctionTitleMapping
+) -> None:
+    resolution = context.get("job_function_resolution")
+    if resolution not in {"lons20_sex_marginal", "not_applicable"}:
+        raise ValueError("Unknown job-function resolution")
+    eligible = resolution == "lons20_sex_marginal"
+    if eligible != (title is not None):
+        expected = "a title" if eligible else "null job_title"
+        raise ValueError(f"Eligible job-function context requires {expected}")
+    if title is None:
+        return
+    code = str(context.get("job_function_code", ""))
+    entry = mapping.job_functions.get(code)
+    if entry is None:
+        label = str(context.get("job_function", "")).strip()
+        entry = next(
+            (item for item in mapping.job_functions.values() if item.label == label),
+            None,
+        )
+    if entry is None or title not in entry.titles:
+        raise ValueError("job_title must equal an allowlisted reviewed title")
+    _validate_text(text=title, require_danish=False)
+    if LIST_FORM.search(title) or "\n" in title or "\r" in title:
+        raise ValueError("job_title must be a single plain Danish line")
 
 
 def parse_descriptions(
@@ -403,27 +446,6 @@ def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> 
     }
     if len(interests) not in {2, 3}:
         raise ValueError("Persona must contain exactly 2-3 generated interests")
-
-
-def _contains_term(text: str, term: str) -> bool:
-    """Match a canonical Unicode token sequence, never a substring.
-
-    Returns:
-        Whether the complete token sequence occurs at Unicode word boundaries.
-    """
-    return bool(_term_spans(text=text, term=term))
-
-
-def _term_spans(*, text: str, term: str) -> list[tuple[int, int]]:
-    """Return token-boundary spans for a canonical phrase in normalised text."""
-    tokens = [token for token in _normalize(term).split(" ") if token]
-    if not tokens:
-        return []
-    expression = r"\s+".join(re.escape(token) for token in tokens)
-    return [
-        match.span()
-        for match in re.finditer(rf"(?<![\w]){expression}(?![\w])", _normalize(text))
-    ]
 
 
 def _validate_persona_facts(
