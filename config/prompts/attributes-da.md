@@ -24,7 +24,9 @@ Regler:
 - Undgå stereotyper baseret på køn, alder, region, uddannelse eller arbejdsstatus.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
-- Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser.
+- Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser som
+  aktiviteter eller emner. Interesser må ikke være OCEAN-personlighedstræk eller
+  formuleringer som `kan være rolig`.
 - Brug null til karrieremål, hvis et konkret mål ikke er naturligt ud fra inputtet.
 - Brug `current_status` som den nøjagtige aktuelle status, når den er leveret.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring. Undgå konkrete

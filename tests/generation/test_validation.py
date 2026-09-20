@@ -202,6 +202,14 @@ def test_attribute_list_diagnostics_identify_category_without_content(
     assert "SENTINEL_REJECTED_TEXT" not in message
 
 
+def test_benign_interests_are_activities_or_topics() -> None:
+    """Ordinary activity and topic interests remain valid."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = ["at fotografere", "musik", "brætspil"]
+
+    parse_attributes(json.dumps(payload), demographic())
+
+
 def test_current_title_or_non_employee_status_is_required() -> None:
     """The summary names the exact current title or canonical status."""
     context = demographic()
@@ -296,6 +304,33 @@ def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
     )
     with pytest.raises(ValueError):
         parse_descriptions(json.dumps(text), context, attributes(job_title=None))
+
+
+@pytest.mark.parametrize(
+    "interest",
+    [
+        "kan være rolig",
+        "rolig",
+        "åben for nye ideer",
+        "kan være rolig i naturen",
+        "glad for det velkendte",
+    ],
+)
+def test_interests_reject_ocean_terms_and_phrases(interest: str) -> None:
+    """Interests cannot reserve or smuggle OCEAN language into the persona."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = [interest, "musik", "brætspil"]
+
+    with pytest.raises(ValueError, match="hobbies_and_interests"):
+        parse_attributes(json.dumps(payload), demographic())
+
+
+def test_interests_use_boundaries_for_ocean_terms() -> None:
+    """A word containing an OCEAN term's letters is not itself a match."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = ["roligere", "musik", "brætspil"]
+
+    parse_attributes(json.dumps(payload), demographic())
 
 
 @pytest.mark.parametrize("eligible", [True, False])
@@ -399,6 +434,18 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
             context,
             generated,
         )
+
+
+def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
+    """Copied interests cannot satisfy the separate OCEAN phrase contract."""
+    context = demographic()
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["persona"] = text["persona"].replace(
+        "Personen kan være rolig og ", "Personen "
+    )
+
+    with pytest.raises(ValueError, match="personality"):
+        parse_descriptions(json.dumps(text), context, attributes())
 
 
 @pytest.mark.parametrize(

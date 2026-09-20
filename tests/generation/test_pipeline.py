@@ -676,7 +676,7 @@ def test_persona_validation_rejects_stale_validator_version(
         else run_dir / "generation-manifest.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["validator_version"] = "persona-safety-v10"
+    payload["validator_version"] = "persona-safety-v12"
     write_json(path=path, payload=payload)
 
     assert not validate_persona_run(run_dir=run_dir).passed
