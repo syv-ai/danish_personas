@@ -325,8 +325,15 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert {"municipality", "origin_country", "job_function"} <= set(
         descriptions_payload
     )
-    assert descriptions_request["allowed_personality_tendencies"] == list(
+    allowed_phrases = descriptions_request["allowed_personality_tendencies"]
+    assert isinstance(allowed_phrases, list)
+    assert allowed_phrases == list(
         allowed_personality_tendencies(context=attributes_payload)
+    )
+    assert allowed_phrases
+    assert all(
+        isinstance(phrase, str) and phrase.startswith("kan være ")
+        for phrase in allowed_phrases
     )
     assert (
         attributes_payload["job_function"]

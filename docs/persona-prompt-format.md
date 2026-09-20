@@ -44,8 +44,9 @@ The short `persona` must state the following in natural Danish prose when applic
 - a short synthetic job title grounded only in the official job-function label, or the
   current canonical nonemployee status;
 - two or three different interests copied from the generated attributes; and
-- one or two cautious OCEAN tendencies, using hedging such as “kan”, “ofte”, or
-  “muligvis”.
+- one or two complete, cautious OCEAN phrases copied literally from the supplied
+  `allowed_personality_tendencies` list. The phrases must not be composed from a
+  tendency term and a separate hedge.
 
 The job title is synthetic. It is not an observed occupation and must not invent an
 employer, institution, duties, seniority, qualifications, or previous work. A

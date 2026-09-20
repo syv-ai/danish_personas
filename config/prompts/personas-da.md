@@ -15,12 +15,13 @@ den leverede jobtitel for en ansat, ellers den leverede kanoniske statusfrase.
 `education_level` er en sammenlagt kategori: udled eller opfind aldrig et mere
 specifikt uddannelsesniveau eller en uddannelsesinstitution. Returnér altid alle
 skemafelter; ingen felter må udelades. Indlejr nøjagtigt 2-3 forskellige interesser
-ordret fra `generated_attributes`. Medtag nøjagtigt 1-2 forskellige OCEAN-tendenser
-som bogstavelige termer fra den leverede liste `allowed_personality_tendencies`, og
-brug ikke andre personlighedstermer. Hver term skal hedges i nærheden i samme
-ledsætning med et af de tilladte ord `kan`, `ofte`, `muligvis`, `gerne` eller `typisk`.
-Rå OCEAN-scorer og labels hører ikke til dette trin: fortolk dem ikke, og opfind ikke
-andre personlighedstermer end den leverede liste. Skriv aldrig punktlister,
+ordret fra `generated_attributes`. Medtag nøjagtigt 1-2 forskellige
+OCEAN-tendenser som komplette, bogstavelige fraser fra den leverede liste
+`allowed_personality_tendencies`. Kopiér hver hel frase
+ordret; sammensæt aldrig en term med en separat hedge, og brug ikke andre
+personlighedstermer. Rå OCEAN-scorer og labels hører ikke til dette trin: fortolk dem
+ikke, og opfind ikke andre personlighedstermer end de leverede fraser. Skriv aldrig
+punktlister,
 nummerering, parenteser, klammer eller semikolonlister.
 
 Regler:

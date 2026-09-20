@@ -2,7 +2,11 @@
 
 import pytest
 
-from danish_personas.generation.personality import allowed_personality_tendencies
+from danish_personas.generation.personality import (
+    all_personality_phrases,
+    all_personality_tendencies,
+    allowed_personality_tendencies,
+)
 
 
 @pytest.mark.parametrize(
@@ -20,21 +24,21 @@ from danish_personas.generation.personality import allowed_personality_tendencie
                 )
             },
             (
-                "nysgerrig",
-                "kreativ",
-                "åben for nye ideer",
-                "struktureret",
-                "omhyggelig",
-                "planlagt",
-                "social",
-                "udadvendt",
-                "snakkesalig",
-                "samarbejdende",
-                "hensynsfuld",
-                "venlig",
-                "opmærksom",
-                "varsom",
-                "følsom",
+                "kan være nysgerrig",
+                "kan være kreativ",
+                "kan være åben for nye ideer",
+                "kan være struktureret",
+                "kan være omhyggelig",
+                "kan være målrettet",
+                "kan være social",
+                "kan være udadvendt",
+                "kan være snakkesalig",
+                "kan være samarbejdende",
+                "kan være hensynsfuld",
+                "kan være venlig",
+                "kan være opmærksom",
+                "kan være varsom",
+                "kan være følsom",
             ),
         ),
         (
@@ -49,17 +53,17 @@ from danish_personas.generation.personality import allowed_personality_tendencie
                 )
             },
             (
-                "praktisk",
-                "jordnær",
-                "glad for det velkendte",
-                "fleksibel",
-                "spontan",
-                "rolig",
-                "eftertænksom",
-                "reserveret",
-                "selvstændig",
-                "direkte",
-                "afbalanceret",
+                "kan være praktisk",
+                "kan være jordnær",
+                "kan være glad for det velkendte",
+                "kan være fleksibel",
+                "kan være spontan",
+                "kan være rolig",
+                "kan være eftertænksom",
+                "kan være reserveret",
+                "kan være ligefrem",
+                "kan være direkte",
+                "kan være afbalanceret",
             ),
         ),
         (
@@ -74,32 +78,32 @@ from danish_personas.generation.personality import allowed_personality_tendencie
                 )
             },
             (
-                "nysgerrig",
-                "kreativ",
-                "åben for nye ideer",
-                "praktisk",
-                "jordnær",
-                "glad for det velkendte",
-                "struktureret",
-                "omhyggelig",
-                "planlagt",
-                "fleksibel",
-                "spontan",
-                "social",
-                "udadvendt",
-                "snakkesalig",
-                "rolig",
-                "eftertænksom",
-                "reserveret",
-                "samarbejdende",
-                "hensynsfuld",
-                "venlig",
-                "selvstændig",
-                "direkte",
-                "opmærksom",
-                "varsom",
-                "følsom",
-                "afbalanceret",
+                "kan være nysgerrig",
+                "kan være kreativ",
+                "kan være åben for nye ideer",
+                "kan være praktisk",
+                "kan være jordnær",
+                "kan være glad for det velkendte",
+                "kan være struktureret",
+                "kan være omhyggelig",
+                "kan være målrettet",
+                "kan være fleksibel",
+                "kan være spontan",
+                "kan være social",
+                "kan være udadvendt",
+                "kan være snakkesalig",
+                "kan være rolig",
+                "kan være eftertænksom",
+                "kan være reserveret",
+                "kan være samarbejdende",
+                "kan være hensynsfuld",
+                "kan være venlig",
+                "kan være ligefrem",
+                "kan være direkte",
+                "kan være opmærksom",
+                "kan være varsom",
+                "kan være følsom",
+                "kan være afbalanceret",
             ),
         ),
     ],
@@ -117,6 +121,16 @@ def test_allowed_personality_tendencies_are_exact_and_deduplicated(
     assert len(expected) == len(set(expected))
 
 
+def test_every_personality_tendency_has_one_deduplicated_phrase() -> None:
+    """The public lexicon maps every term to one complete hedge phrase."""
+    terms = all_personality_tendencies()
+    phrases = all_personality_phrases()
+
+    assert len(terms) == len(phrases) == len(set(phrases))
+    assert all(phrase == f"kan være {term}" for term, phrase in zip(terms, phrases))
+    assert "selvstændig" not in terms
+
+
 def test_scores_select_levels_when_labels_are_not_informative() -> None:
     """Scores provide the same level selection as labels."""
     context = {
@@ -128,5 +142,9 @@ def test_scores_select_levels_when_labels_are_not_informative() -> None:
 
     terms = allowed_personality_tendencies(context=context)
 
-    assert terms[:3] == ("nysgerrig", "kreativ", "åben for nye ideer")
-    assert terms[3:5] == ("fleksibel", "spontan")
+    assert terms[:3] == (
+        "kan være nysgerrig",
+        "kan være kreativ",
+        "kan være åben for nye ideer",
+    )
+    assert terms[3:5] == ("kan være fleksibel", "kan være spontan")

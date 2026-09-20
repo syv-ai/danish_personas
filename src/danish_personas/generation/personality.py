@@ -8,7 +8,7 @@ OCEAN_TERMS: dict[str, dict[str, tuple[str, ...]]] = {
         "low": ("praktisk", "jordnær", "glad for det velkendte"),
     },
     "conscientiousness": {
-        "high": ("struktureret", "omhyggelig", "planlagt"),
+        "high": ("struktureret", "omhyggelig", "målrettet"),
         "low": ("fleksibel", "spontan"),
     },
     "extraversion": {
@@ -17,13 +17,27 @@ OCEAN_TERMS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "agreeableness": {
         "high": ("samarbejdende", "hensynsfuld", "venlig"),
-        "low": ("selvstændig", "direkte"),
+        "low": ("ligefrem", "direkte"),
     },
     "neuroticism": {
         "high": ("opmærksom", "varsom", "følsom"),
         "low": ("rolig", "afbalanceret"),
     },
 }
+
+# These are deliberately closed phrases rather than terms that a caller can combine
+# with an arbitrary hedge.  The wording is shared by the prompt and the validator.
+PERSONALITY_PHRASES = {
+    term: f"kan være {term}"
+    for levels in OCEAN_TERMS.values()
+    for terms in levels.values()
+    for term in terms
+}
+
+
+def all_personality_phrases() -> tuple[str, ...]:
+    """Return every distinct complete phrase in lexicon order."""
+    return tuple(PERSONALITY_PHRASES[term] for term in all_personality_tendencies())
 
 
 def all_personality_tendencies() -> tuple[str, ...]:
@@ -41,11 +55,11 @@ def all_personality_tendencies() -> tuple[str, ...]:
 def allowed_personality_tendencies(
     *, context: c.Mapping[str, object]
 ) -> tuple[str, ...]:
-    """Return terms compatible with one row's OCEAN labels and scores.
+    """Return deduplicated complete phrases compatible with one row's OCEAN labels.
 
-    Average scores intentionally allow both the high and low term sets. Terms are
-    returned in lexicon order with duplicates removed, so overlapping terms such
-    as ``rolig`` are supplied exactly once.
+    Average scores intentionally allow both the high and low term sets. Phrases are
+    returned in lexicon order with duplicates removed, so overlapping terms such as
+    ``rolig`` are supplied exactly once.
 
     Args:
         context:
@@ -53,7 +67,7 @@ def allowed_personality_tendencies(
             fields.
 
     Returns:
-        The deduplicated literal terms that may be used for the row.
+        The complete Danish phrases that may be copied for the row.
     """
     terms: list[str] = []
     for trait, labels in OCEAN_TERMS.items():
@@ -68,6 +82,9 @@ def allowed_personality_tendencies(
             else "average"
         )
         levels = ("high", "low") if level == "average" else (level,)
-        for selected in levels:
-            terms.extend(labels[selected])
+        terms.extend(
+            PERSONALITY_PHRASES[term]
+            for selected in levels
+            for term in labels[selected]
+        )
     return tuple(dict.fromkeys(terms))

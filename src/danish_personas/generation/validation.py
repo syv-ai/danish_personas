@@ -16,9 +16,13 @@ from .job_titles import (
     load_job_title_mapping,
 )
 from .models import GeneratedAttributes, PersonaDescriptions
-from .personality import all_personality_tendencies, allowed_personality_tendencies
+from .personality import (
+    all_personality_phrases,
+    all_personality_tendencies,
+    allowed_personality_tendencies,
+)
 
-VALIDATOR_VERSION = "persona-safety-v11"
+VALIDATOR_VERSION = "persona-safety-v12"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -84,7 +88,6 @@ FORMER_WORK = re.compile(
     r"var\s+ansat|forhenværende|pensioneret\s+fra)(?![\w])"
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
-HEDGE = re.compile(r"(?<![\w])(?:kan|ofte|muligvis|gerne|typisk)(?![\w])")
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
 
 
@@ -408,11 +411,19 @@ def _contains_term(text: str, term: str) -> bool:
     Returns:
         Whether the complete token sequence occurs at Unicode word boundaries.
     """
+    return bool(_term_spans(text=text, term=term))
+
+
+def _term_spans(*, text: str, term: str) -> list[tuple[int, int]]:
+    """Return token-boundary spans for a canonical phrase in normalised text."""
     tokens = [token for token in _normalize(term).split(" ") if token]
     if not tokens:
-        return False
+        return []
     expression = r"\s+".join(re.escape(token) for token in tokens)
-    return re.search(rf"(?<![\w]){expression}(?![\w])", _normalize(text)) is not None
+    return [
+        match.span()
+        for match in re.finditer(rf"(?<![\w]){expression}(?![\w])", _normalize(text))
+    ]
 
 
 def _validate_persona_facts(
@@ -437,35 +448,45 @@ def _validate_persona_facts(
 def _validate_personality(
     *, normalized: str, sentences: list[str], context: dict[str, object]
 ) -> None:
+    """Require one or two compatible, complete phrases copied from the API.
+
+    ``sentences`` remains part of the signature because the persona prose contract
+    validates sentence structure before this check. Personality matching itself is
+    deliberately whole-persona based: a phrase may occur in any one sentence, but a
+    bare term elsewhere must not satisfy the contract.
+
+    Raises:
+        ValueError:
+            If the persona contains an incompatible or incomplete phrase set.
+    """
+    del sentences
     compatible = set(allowed_personality_tendencies(context=context))
-    mentioned = {
-        term
-        for term in all_personality_tendencies()
-        if _contains_term(normalized, term)
+    all_phrases = set(all_personality_phrases())
+    incompatible = {
+        phrase
+        for phrase in all_phrases - compatible
+        if _contains_term(normalized, phrase)
     }
-    incompatible = mentioned - compatible
     if incompatible:
         raise ValueError("Persona contains an incompatible personality tendency")
-    if not 1 <= len(mentioned) <= 2:
+
+    matched_phrases = {
+        phrase for phrase in compatible if _contains_term(normalized, phrase)
+    }
+    phrase_spans = [
+        span
+        for phrase in matched_phrases
+        for span in _term_spans(text=normalized, term=phrase)
+    ]
+    if not 1 <= len(matched_phrases) <= 2:
         raise ValueError("Persona must contain 1-2 compatible personality tendencies")
-    for sentence in sentences:
-        sentence_terms = [term for term in mentioned if _contains_term(sentence, term)]
-        for term in sentence_terms:
-            term_match = re.search(
-                rf"(?<![\w]){re.escape(term)}(?![\w])", _normalize(sentence)
-            )
-            if term_match is None or not _nearby_hedge(sentence, term_match.start()):
-                raise ValueError("Personality tendencies must be hedged nearby")
 
-
-def _nearby_hedge(sentence: str, position: int) -> bool:
-    clause = re.split(r"[,;:]", _normalize(sentence))
-    offset = 0
-    for part in clause:
-        end = offset + len(part)
-        if offset <= position <= end:
-            return any(
-                abs(match.start() - position) <= 48 for match in HEDGE.finditer(part)
-            )
-        offset = end + 1
-    return False
+    for term in all_personality_tendencies():
+        for start, end in _term_spans(text=normalized, term=term):
+            if not any(
+                phrase_start <= start and end <= phrase_end
+                for phrase_start, phrase_end in phrase_spans
+            ):
+                raise ValueError(
+                    "Personality terms must occur inside supplied complete phrases"
+                )
