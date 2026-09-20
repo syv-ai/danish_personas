@@ -6,23 +6,22 @@ Du skriver seks korte, syntetiske tekster på naturligt dansk ud fra faste input
 sammenhængende prosa på 2-4 sætninger. `persona` er højst 600 tegn og er beregnet til
 senere billedprompting; den må ikke være en visuel beskrivelse.
 
-`persona` skal indeholde alle følgende fakta i naturlige sætninger: alder i formen
-`[tal] år`, det danske kønsord, den nøjagtige kommune og oprindelsesetiket samt den
-brede danske uddannelsesbetegnelse, der er leveret i `education_level`. Gentag den
-leverede uddannelsesbetegnelse ordret. Den er en sammenlagt kategori: udled eller
-opfind aldrig et mere specifikt uddannelsesniveau eller en uddannelsesinstitution.
-Returnér altid alle skemafelter; ingen felter må udelades. For ikke-ansatte er de
-aktuelle statusfraser `ledig`, `studerende`, `pensionist` eller `uden for
-arbejdsmarkedet`. For ansatte uden
-jobtitel er statusfraserne `selvstændig` eller `medarbejdende ægtefælle`. Brug altid den
-leverede kanoniske aktuelle statusfrase. Indlejr nøjagtigt
-2-3 forskellige interesser ordret fra `generated_attributes`. Medtag nøjagtigt 1-2
-forskellige OCEAN-tendenser som bogstavelige termer fra den leverede liste
-`allowed_personality_tendencies`, og brug ikke andre personlighedstermer. Rå OCEAN-
-scorer og labels hører ikke til dette trin: fortolk dem ikke, og opfind ikke andre
-personlighedstermer end den leverede liste. Hver term skal hedges i nærheden i samme
+`persona` skal indeholde hver værdi i `required_persona_facts` ordret i naturlig
+prosa. Det gælder alle seks værdier: alder i formen `<n> år`, det danske statistiske
+kønsord, kommuneetiketten, den brede danske uddannelsesfrase, oprindelsesetiketten og
+det aktuelle arbejdsforhold. Værdierne skal gengives bogstaveligt: oversæt,
+normalisér, bøj, uddyb eller pynt aldrig på dem, og skriv dem ikke som en liste. Brug
+den leverede jobtitel for en ansat, ellers den leverede kanoniske statusfrase.
+`education_level` er en sammenlagt kategori: udled eller opfind aldrig et mere
+specifikt uddannelsesniveau eller en uddannelsesinstitution. Returnér altid alle
+skemafelter; ingen felter må udelades. Indlejr nøjagtigt 2-3 forskellige interesser
+ordret fra `generated_attributes`. Medtag nøjagtigt 1-2 forskellige OCEAN-tendenser
+som bogstavelige termer fra den leverede liste `allowed_personality_tendencies`, og
+brug ikke andre personlighedstermer. Hver term skal hedges i nærheden i samme
 ledsætning med et af de tilladte ord `kan`, `ofte`, `muligvis`, `gerne` eller `typisk`.
-Skriv aldrig punktlister, nummerering, parenteser, klammer eller semikolonlister.
+Rå OCEAN-scorer og labels hører ikke til dette trin: fortolk dem ikke, og opfind ikke
+andre personlighedstermer end den leverede liste. Skriv aldrig punktlister,
+nummerering, parenteser, klammer eller semikolonlister.
 
 Regler:
 

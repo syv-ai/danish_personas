@@ -310,6 +310,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     }
     assert set(descriptions_request) == {
         "demographics_and_personality",
+        "required_persona_facts",
         "allowed_personality_tendencies",
         "generated_attributes",
     }
@@ -334,6 +335,14 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert attributes_payload["municipality"] == "København"
     assert attributes_payload["education_level"] == "videregående uddannelse"
     assert descriptions_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_request["required_persona_facts"] == {
+        "age": "35 år",
+        "sex": "kvinde",
+        "municipality": "København",
+        "education_level": "videregående uddannelse",
+        "origin_country": "Denmark",
+        "current_employment": "forretningsspecialist",
+    }
     assert "generated_attributes" in _MockClient.payloads[1]
 
     generation_manifest = json.loads(

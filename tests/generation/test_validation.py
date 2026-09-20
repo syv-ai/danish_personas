@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from danish_personas.generation.grounding import build_persona_grounding_facts
 from danish_personas.generation.models import GeneratedAttributes
 from danish_personas.generation.validation import (
     EDUCATION_DANISH,
@@ -246,6 +247,71 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
             context,
             generated,
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("unemployed", "ledig"),
+        ("student", "studerende"),
+        ("retired", "pensionist"),
+        ("other", "uden for arbejdsmarkedet"),
+    ),
+)
+def test_public_grounding_facts_render_canonical_status(
+    status: str, expected: str
+) -> None:
+    """Non-employees use the exact canonical current-status phrase."""
+    context = demographic(status=status, job_title=None)
+    facts = build_persona_grounding_facts(
+        demographic=context, attributes=attributes(job_title=None)
+    )
+
+    assert facts.current_employment == expected
+
+
+@pytest.mark.parametrize(
+    ("education", "expected"), EXPECTED_EDUCATION_RENDERINGS.items()
+)
+def test_public_grounding_facts_render_pool_and_labels(
+    education: str, expected: str
+) -> None:
+    """The public renderer preserves labels and every pooled education phrase."""
+    context = demographic(education_level=education)
+    context.update(municipality="Hjørring", origin_country="Côte d’Ivoire")
+    facts = build_persona_grounding_facts(demographic=context, attributes=attributes())
+
+    assert facts.model_dump() == {
+        "age": "35 år",
+        "sex": "kvinde",
+        "municipality": "Hjørring",
+        "education_level": expected,
+        "origin_country": "Côte d’Ivoire",
+        "current_employment": "forretningsspecialist",
+    }
+
+
+@pytest.mark.parametrize(
+    ("detailed_code", "expected"),
+    (("05", "selvstændig"), ("10", "medarbejdende ægtefælle")),
+)
+def test_public_grounding_facts_render_special_employee_status(
+    detailed_code: str, expected: str
+) -> None:
+    """Special employee statuses remain canonical when no title is eligible."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code=detailed_code,
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
+    )
+
+    facts = build_persona_grounding_facts(
+        demographic=context, attributes=attributes(job_title=None)
+    )
+
+    assert facts.current_employment == expected
 
 
 @pytest.mark.parametrize("education", EDUCATION_POOLING_VALUES)

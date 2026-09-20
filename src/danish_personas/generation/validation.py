@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from tldextract import TLDExtract
 
 from ..models import DemographicRecord
+from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
     JobFunctionTitleMapping,
@@ -17,7 +18,8 @@ from .job_titles import (
 from .models import GeneratedAttributes, PersonaDescriptions
 from .personality import all_personality_tendencies, allowed_personality_tendencies
 
-VALIDATOR_VERSION = "persona-safety-v9"
+VALIDATOR_VERSION = "persona-safety-v10"
+__all__ = ["EDUCATION_DANISH"]
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -65,42 +67,6 @@ FORMER_WORK = re.compile(
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
 HEDGE = re.compile(r"(?<![\w])(?:kan|ofte|muligvis|gerne|typisk)(?![\w])")
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
-
-EDUCATION_DANISH = {
-    "primary": "grundskole",
-    "secondary_or_vocational": "ungdomsuddannelse eller erhvervsuddannelse",
-    "higher_education": "videregående uddannelse",
-    "not_stated": "uddannelse ikke oplyst",
-}
-SEX_DANISH = {"male": "mand", "female": "kvinde", "m": "mand", "k": "kvinde"}
-STATUS_DANISH = {
-    "unemployed": "ledig",
-    "student": "studerende",
-    "retired": "pensionist",
-    "other": "uden for arbejdsmarkedet",
-    "outside_labour_force": "uden for arbejdsmarkedet",
-    "not_applicable": "uden for arbejdsmarkedet",
-}
-DETAILED_STATUS_DANISH = {
-    "05": "selvstændig",
-    "10": "medarbejdende ægtefælle",
-    "50": "ledig",
-    "85": "ledig",
-    "90": "ledig",
-    "95": "ledig",
-    "130": "studerende",
-    "154": "studerende",
-    "156": "studerende",
-    "158": "studerende",
-    "160": "studerende",
-    "135": "pensionist",
-    "138": "pensionist",
-    "139": "pensionist",
-    "140": "pensionist",
-    "145": "pensionist",
-    "150": "pensionist",
-    "155": "pensionist",
-}
 
 
 def parse_attributes(
@@ -293,9 +259,8 @@ def _validate_persona(
     if DETERMINISTIC_CLAIMS.search(normalized):
         raise ValueError("Persona must use cautious, non-deterministic language")
     sentences = _persona_sentences(text=text)
-    _validate_persona_facts(normalized=normalized, context=context)
-    _validate_current_status(
-        normalized=normalized, context=context, attributes=attributes
+    _validate_persona_facts(
+        normalized=normalized, demographic=context, attributes=attributes
     )
     _validate_interests(normalized=normalized, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
@@ -312,38 +277,6 @@ def _persona_sentences(text: str) -> list[str]:
     if not 2 <= len(sentences) <= 4 or not text.rstrip().endswith((".", "!", "?")):
         raise ValueError("persona must contain 2-4 prose sentences")
     return sentences
-
-
-def _validate_current_status(
-    *, normalized: str, context: dict[str, object], attributes: GeneratedAttributes
-) -> None:
-    if attributes.job_title is not None:
-        required_status = attributes.job_title
-    else:
-        detailed_code = str(context.get("detailed_status_code", ""))
-        required_status = DETAILED_STATUS_DANISH.get(detailed_code)
-        if detailed_code not in {"05", "10"}:
-            status = str(context.get("labour_market_status")).casefold()
-            required_status = (
-                "lønmodtager" if status == "employed" else STATUS_DANISH.get(status)
-            )
-        if required_status is None:
-            raise ValueError("Unknown current labour status")
-    if not required_status or not _contains_term(normalized, required_status):
-        raise ValueError("Persona does not contain its exact current work status")
-
-
-def _contains_term(text: str, term: str) -> bool:
-    """Match a canonical Unicode token sequence, never a substring.
-
-    Returns:
-        Whether the complete token sequence occurs at Unicode word boundaries.
-    """
-    tokens = [token for token in _normalize(term).split(" ") if token]
-    if not tokens:
-        return False
-    expression = r"\s+".join(re.escape(token) for token in tokens)
-    return re.search(rf"(?<![\w]){expression}(?![\w])", _normalize(text)) is not None
 
 
 def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> None:
@@ -367,30 +300,36 @@ def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> 
         raise ValueError("Persona must contain exactly 2-3 generated interests")
 
 
-def _validate_persona_facts(*, normalized: str, context: dict[str, object]) -> None:
-    required = (
-        (str(context.get("age")), "age"),
-        (
-            SEX_DANISH.get(str(context.get("sex")).casefold(), str(context.get("sex"))),
-            "sex",
-        ),
-        (str(context.get("municipality")), "municipality"),
-        (str(context.get("origin_country")), "origin"),
-        (_education_label(context), "education"),
+def _contains_term(text: str, term: str) -> bool:
+    """Match a canonical Unicode token sequence, never a substring.
+
+    Returns:
+        Whether the complete token sequence occurs at Unicode word boundaries.
+    """
+    tokens = [token for token in _normalize(term).split(" ") if token]
+    if not tokens:
+        return False
+    expression = r"\s+".join(re.escape(token) for token in tokens)
+    return re.search(rf"(?<![\w]){expression}(?![\w])", _normalize(text)) is not None
+
+
+def _validate_persona_facts(
+    *, normalized: str, demographic: dict[str, object], attributes: GeneratedAttributes
+) -> None:
+    facts = build_persona_grounding_facts(
+        demographic=demographic, attributes=attributes
     )
-    for value, name in required:
-        if not value or not _contains_term(normalized, value):
-            raise ValueError(f"Persona does not contain the exact {name} fact")
-    age = str(context.get("age"))
-    if not re.search(rf"(?<!\d){re.escape(age)}\s+år\b", normalized):
-        raise ValueError("Persona age must use the fixed '<age> år' form")
-
-
-def _education_label(context: dict[str, object]) -> str:
-    value = str(context.get("education_level", "")).casefold()
-    if value not in EDUCATION_DANISH:
-        raise ValueError("Unknown education mapping")
-    return EDUCATION_DANISH[value]
+    names = {
+        "age": "age",
+        "sex": "sex",
+        "municipality": "municipality",
+        "education_level": "education",
+        "origin_country": "origin",
+        "current_employment": "current work status",
+    }
+    for field, value in facts.model_dump().items():
+        if not _contains_term(normalized, value):
+            raise ValueError(f"Persona does not contain the exact {names[field]} fact")
 
 
 def _validate_personality(

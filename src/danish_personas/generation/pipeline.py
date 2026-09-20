@@ -20,6 +20,7 @@ from ..models import (
     ValidationReport,
 )
 from .client import OpenAIClient, RequestBudgetExceeded
+from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
 from .identity import generation_run_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
@@ -39,12 +40,7 @@ from .models import (
     RequestLedger,
 )
 from .personality import allowed_personality_tendencies
-from .validation import (
-    EDUCATION_DANISH,
-    VALIDATOR_VERSION,
-    parse_attributes,
-    parse_descriptions,
-)
+from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
 # Codes and sampler provenance are withheld from prompts. Human-readable labels are
@@ -544,10 +540,14 @@ def _stage_two_payload(
     Returns:
         The second-stage demographics, compatible terms, and generated attributes.
     """
+    grounding_facts = build_persona_grounding_facts(
+        demographic=row, attributes=attributes
+    )
     return {
         "demographics_and_personality": _prompt_demographics(
             row=row, fields=STAGE_TWO_PROMPT_FIELDS
         ),
+        "required_persona_facts": grounding_facts.model_dump(mode="json"),
         "allowed_personality_tendencies": list(personality_tendencies),
         "generated_attributes": attributes.model_dump(mode="json"),
     }
