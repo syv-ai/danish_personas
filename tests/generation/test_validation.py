@@ -1,4 +1,4 @@
-"""Contextual tests for the generation-contract v2 validators."""
+"""Contextual tests for the generation-contract v3 validators."""
 
 import json
 from collections.abc import Mapping
@@ -18,7 +18,8 @@ from danish_personas.generation.validation import (
     parse_descriptions,
 )
 
-CATEGORIES_PATH = Path(__file__).parents[2] / "config" / "categories.yaml"
+ROOT = Path(__file__).parents[2]
+CATEGORIES_PATH = ROOT / "config" / "categories.yaml"
 CATEGORIES = yaml.safe_load(CATEGORIES_PATH.read_text(encoding="utf-8"))
 EDUCATION_POOLING_VALUES = tuple(
     dict.fromkeys(CATEGORIES["education_pooling"].values())
@@ -28,6 +29,12 @@ EXPECTED_EDUCATION_RENDERINGS = {
     "secondary_or_vocational": "ungdomsuddannelse eller erhvervsuddannelse",
     "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
+}
+EXPECTED_EDUCATION_CLAUSES = {
+    "primary": "har ingen uddannelse efter folkeskolen",
+    "secondary_or_vocational": "har en ungdoms- eller erhvervsuddannelse",
+    "higher_education": "har en videregående uddannelse",
+    "not_stated": "uddannelsen er ikke oplyst",
 }
 JOB_TITLE_CASES = tuple(
     (code, entry.label, title)
@@ -80,7 +87,9 @@ def demographic(
         "age": 35,
         "sex": sex,
         "municipality": "København",
-        "origin_country": "Danmark",
+        "origin_country_code": "5100",
+        "origin_country": "Denmark",
+        "origin_country_da": "Danmark",
         "education_level": education_level,
         "labour_market_status": status,
         "job_function": "24 Business and administration professionals"
@@ -109,17 +118,18 @@ def descriptions(
     """Return six distinct Danish fields with grounded summary facts."""
     context = context or demographic()
     interests = interests or ["at læse", "musik", "brætspil"]
-    education = EXPECTED_EDUCATION_RENDERINGS[str(context["education_level"])]
-    sex = "kvinde" if context["sex"] == "female" else "mand"
+    education = EXPECTED_EDUCATION_CLAUSES[str(context["education_level"])]
+    pronoun = "hun" if context["sex"] == "female" else "han"
     status = "arbejder som forretningsspecialist"
     if context.get("detailed_status_code") == "05":
         status = "er selvstændig"
     elif context["labour_market_status"] != "employed":
         status = "er pensionist"
     persona = (
-        f"Personen er {context['age']} år og {sex} fra {context['municipality']} "
-        f"i {context['origin_country']} med en {education} og {status}. "
-        f"Personen kan være rolig og holder af {', '.join(interests)}."
+        f"{pronoun.capitalize()} er {context['age']} år, bor i "
+        f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
+        f"{education} og {status}. {pronoun.capitalize()} kan være rolig og "
+        f"holder af {', '.join(interests)}."
     )
     return {
         "professional_persona": (
@@ -219,6 +229,14 @@ def test_current_title_or_non_employee_status_is_required() -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
+def test_danish_prompts_use_skema_not_schema() -> None:
+    """Danish provider instructions consistently use the Danish word skema."""
+    for prompt in ("attributes-da.md", "personas-da.md"):
+        content = (ROOT / "config" / "prompts" / prompt).read_text(encoding="utf-8")
+        assert "skema" in content.casefold()
+        assert "schema" not in content.casefold()
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -300,10 +318,33 @@ def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
     context = demographic(status="retired", job_title=None)
     text = descriptions(context=context, interests=["at læse", "musik"])
     text["persona"] = text["persona"].replace(
-        "Personen kan være rolig", f"Personen kan være rolig og {claim}"
+        "Hun kan være rolig", f"Hun kan være rolig og {claim}"
     )
     with pytest.raises(ValueError):
         parse_descriptions(json.dumps(text), context, attributes(job_title=None))
+
+
+@pytest.mark.parametrize(
+    ("sentence", "passes"),
+    (
+        ("Hun kan være rolig. Musik fylder i fritiden sammen med brætspil.", True),
+        ("Hun kan være rolig og holder af Musik og brætspil.", False),
+    ),
+)
+def test_interest_capitalisation_is_allowed_only_at_sentence_start(
+    sentence: str, passes: bool
+) -> None:
+    """Copied interests preserve lowercase except at the start of a sentence."""
+    context = demographic()
+    payload = descriptions(context=context, interests=["musik", "brætspil"])
+    first_sentence = payload["persona"].split(". ", maxsplit=1)[0]
+    payload["persona"] = f"{first_sentence}. {sentence}"
+
+    if passes:
+        assert parse_descriptions(json.dumps(payload), context, attributes())
+    else:
+        with pytest.raises(ValueError, match="generated interests"):
+            parse_descriptions(json.dumps(payload), context, attributes())
 
 
 @pytest.mark.parametrize(
@@ -318,6 +359,18 @@ def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
 )
 def test_interests_reject_ocean_terms_and_phrases(interest: str) -> None:
     """Interests cannot reserve or smuggle OCEAN language into the persona."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = [interest, "musik", "brætspil"]
+
+    with pytest.raises(ValueError, match="hobbies_and_interests"):
+        parse_attributes(json.dumps(payload), demographic())
+
+
+@pytest.mark.parametrize("interest", ("Musik", "AT læse", "brætspil.", "madlavning!"))
+def test_interests_require_lowercase_phrases_without_terminal_punctuation(
+    interest: str,
+) -> None:
+    """Stage-one interests remain lowercase phrases without sentence punctuation."""
     payload = attributes()
     payload["hobbies_and_interests"] = [interest, "musik", "brætspil"]
 
@@ -436,16 +489,142 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("municipality", "origin"), (("Mandø", "Normandiet"), ("Kvindestrup", "Kvindeland"))
+)
+def test_persona_allows_sex_noun_letters_inside_grounded_labels(
+    municipality: str, origin: str
+) -> None:
+    """Grounded municipality and country labels are matched as complete tokens."""
+    context = demographic()
+    context["municipality"] = municipality
+    context["origin_country_da"] = origin
+    payload = descriptions(context=context)
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert municipality in result.persona
+    assert origin in result.persona
+
+
+@pytest.mark.parametrize(
+    "compound", ("brandmand", "romandebut", "mandolin", "kvindelig", "kvindekamp")
+)
+def test_persona_allows_words_that_embed_sex_noun_letters(compound: str) -> None:
+    """Unicode token boundaries do not turn embedded letters into sex nouns."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "Hun kan være rolig", f"Ordet {compound} står her. Hun kan være rolig"
+    )
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert compound in result.persona
+
+
 def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
     """Copied interests cannot satisfy the separate OCEAN phrase contract."""
     context = demographic()
     text = descriptions(context=context, interests=["at læse", "musik"])
-    text["persona"] = text["persona"].replace(
-        "Personen kan være rolig og ", "Personen "
-    )
+    text["persona"] = text["persona"].replace("Hun kan være rolig og ", "Hun ")
 
     with pytest.raises(ValueError, match="personality"):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "noun",
+    (
+        "MAND",
+        "mandens",
+        "mænd",
+        "MÆNDENE",
+        "KVINDE",
+        "kvindens",
+        "kvinder",
+        "KVINDERNES",
+    ),
+)
+def test_persona_rejects_case_and_inflected_sex_nouns(noun: str) -> None:
+    """Case-folded standalone singular, plural, and genitive nouns are rejected."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "Hun kan være rolig", f"{noun} står som ord her. Hun kan være rolig"
+    )
+
+    with pytest.raises(ValueError, match="statistical sex only through its pronoun"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    (
+        "oprindelsesland",
+        "oprindelsesetiket",
+        "brede uddannelsesbaggrund",
+        "uddannelsesniveau",
+        "aktuelle arbejdsforhold",
+    ),
+)
+def test_persona_rejects_redundant_and_technical_phrases(phrase: str) -> None:
+    """Dan's reviewed redundant and data-model wording fails closed."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "Hun kan være rolig", f"Hun kan være rolig, og {phrase}"
+    )
+
+    with pytest.raises(ValueError, match="redundant or technical wording"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    ("sex", "forbidden_sentence"),
+    (("female", "Hun er en mand."), ("male", "Han er en kvinde.")),
+)
+def test_persona_rejects_standalone_sex_nouns_despite_pronoun(
+    sex: str, forbidden_sentence: str
+) -> None:
+    """A valid pronoun clause never permits a standalone statistical-sex noun."""
+    context = demographic(sex=sex)
+    payload = descriptions(context=context)
+    pronoun = "Hun" if sex == "female" else "Han"
+    payload["persona"] = payload["persona"].replace(
+        f"{pronoun} kan være rolig", f"{forbidden_sentence} {pronoun} kan være rolig"
+    )
+
+    with pytest.raises(ValueError, match="statistical sex only through its pronoun"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+def test_persona_sex_noun_fix_remains_validator_v15() -> None:
+    """The boundary fix closes v15's existing sex-noun rule, not a new contract."""
+    prompt = (ROOT / "config" / "prompts" / "personas-da.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert validation_module.VALIDATOR_VERSION == "persona-safety-v15"
+    assert "Brug aldrig `mand` eller `kvinde` som selvstændige" in prompt
+
+
+@pytest.mark.parametrize(
+    ("sex", "origin", "expected_pronoun"),
+    (("female", "Danmark", "Hun"), ("male", "Libanon", "Han")),
+)
+def test_pronoun_and_origin_clauses_are_natural(
+    sex: str, origin: str, expected_pronoun: str
+) -> None:
+    """Danish and Lebanese origins use the same exact natural clause contract."""
+    context = demographic(sex=sex)
+    context["origin_country_da"] = origin
+    payload = descriptions(context=context)
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert result.persona.startswith(f"{expected_pronoun} er 35 år")
+    assert f"kommer fra {origin}" in result.persona
 
 
 @pytest.mark.parametrize(
@@ -460,33 +639,30 @@ def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
 def test_public_grounding_facts_render_canonical_status(
     status: str, expected: str
 ) -> None:
-    """Non-employees use the exact canonical current-status phrase."""
+    """Non-employees use the exact canonical current-status clause."""
     context = demographic(status=status, job_title=None)
     facts = build_persona_grounding_facts(
         demographic=context, attributes=attributes(job_title=None)
     )
 
-    assert facts.current_employment == expected
+    assert facts.employment == f"er {expected}"
 
 
-@pytest.mark.parametrize(
-    ("education", "expected"), EXPECTED_EDUCATION_RENDERINGS.items()
-)
+@pytest.mark.parametrize(("education", "expected"), EXPECTED_EDUCATION_CLAUSES.items())
 def test_public_grounding_facts_render_pool_and_labels(
     education: str, expected: str
 ) -> None:
-    """The public renderer preserves labels and every pooled education phrase."""
+    """The public renderer preserves labels and every pooled education clause."""
     context = demographic(education_level=education)
-    context.update(municipality="Hjørring", origin_country="Côte d’Ivoire")
+    context.update(municipality="Hjørring", origin_country_da="Côte d’Ivoire")
     facts = build_persona_grounding_facts(demographic=context, attributes=attributes())
 
     assert facts.model_dump() == {
-        "age": "35 år",
-        "sex": "kvinde",
-        "municipality": "Hjørring",
-        "education_level": expected,
-        "origin_country": "Côte d’Ivoire",
-        "current_employment": "forretningsspecialist",
+        "pronoun_age": "hun er 35 år",
+        "municipality": "bor i Hjørring",
+        "origin": "kommer fra Côte d’Ivoire",
+        "education": expected,
+        "employment": "arbejder som forretningsspecialist",
     }
 
 
@@ -510,7 +686,7 @@ def test_public_grounding_facts_render_special_employee_status(
         demographic=context, attributes=attributes(job_title=None)
     )
 
-    assert facts.current_employment == expected
+    assert facts.employment == f"er {expected}"
 
 
 @pytest.mark.parametrize("education", EDUCATION_POOLING_VALUES)
@@ -522,25 +698,26 @@ def test_real_sample_education_values_parse_contextually(education: str) -> None
         context,
         GeneratedAttributes.model_validate(attributes()),
     )
-    assert EXPECTED_EDUCATION_RENDERINGS[education] in result.persona
+    assert EXPECTED_EDUCATION_CLAUSES[education] in result.persona
 
 
-@pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country"])
-def test_required_demographic_facts_are_literal(missing: str) -> None:
-    """Changing any required demographic fact is rejected."""
+@pytest.mark.parametrize(
+    ("missing", "original", "replacement"),
+    (
+        ("pronoun and age", "Hun er 35 år", "Hun er 34 år"),
+        ("pronoun and age", "Hun er 35 år", "Han er 35 år"),
+        ("municipality", "bor i København", "bor i Roskilde"),
+        ("origin", "kommer fra Danmark", "kommer fra Sverige"),
+    ),
+)
+def test_required_demographic_facts_are_literal(
+    missing: str, original: str, replacement: str
+) -> None:
+    """Changing any required demographic clause is rejected."""
     context = demographic()
     text = descriptions(context=context)
-    replacements = {
-        "age": "34 år",
-        "sex": "mand",
-        "municipality": "Roskilde",
-        "origin_country": "Sverige",
-    }
-    original = "kvinde" if missing == "sex" else str(context[missing])
-    text["persona"] = text["persona"].replace(original, replacements[missing])
-    with pytest.raises(
-        ValueError, match=missing if missing != "origin_country" else "origin"
-    ):
+    text["persona"] = text["persona"].replace(original, replacement)
+    with pytest.raises(ValueError, match=missing):
         parse_descriptions(json.dumps(text), context, attributes())
 
 
@@ -554,6 +731,17 @@ def test_schema_diagnostics_identify_attribute_field_without_raw_input() -> None
     message = str(error.value)
     assert message.startswith("cultural_context:")
     assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_standalone_sex_noun_rule_applies_only_to_persona() -> None:
+    """The pronoun-only statistical-sex contract is scoped to the short persona."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["professional_persona"] += " Hun er en kvinde."
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert result.professional_persona.endswith("Hun er en kvinde.")
 
 
 def test_status_05_does_not_count_as_personality_tendency() -> None:
@@ -617,7 +805,7 @@ def test_two_or_three_literal_interests_pass(count: int) -> None:
     )
 
 
-def test_valid_v2_attributes_and_description() -> None:
+def test_valid_v3_attributes_and_description() -> None:
     """A complete employee record passes both contextual stages."""
     context = demographic()
     parsed = parse_attributes(json.dumps(attributes()), context)

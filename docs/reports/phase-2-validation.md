@@ -1,8 +1,15 @@
-# Phase 2 validation report
+# Historical Phase 2 validation report
 
-The canonical deterministic sampler schema is version 5 and the prepared-bundle schema
-is version 5. Both municipality-native runs were regenerated offline from the
-20260919 archive with seed `20260914`, with no LLM calls and no threshold changes.
+This report records the previous schema-5 regeneration only. Its bundle and run IDs are
+historical evidence and are non-resumable under the current contracts. The current
+architecture requires prepared-bundle schema 6, sampler schema 6, frozen-sample schema
+3, generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
+schema 2. Regenerate before recording current canonical IDs; use placeholders until
+then.
+
+The historical deterministic sampler schema is version 5 and the prepared-bundle schema
+is version 5. Both municipality-native runs were regenerated offline from the 20260919
+archive with seed `20260914`, with no LLM calls and no threshold changes.
 
 ## Regeneration commands
 
@@ -37,10 +44,9 @@ uv run src/scripts/validate_dataset.py demographics \
 
 ## Artefacts
 
-- Source archive: `data/raw-hardened-20260919.tar.zst` (45 files; seven official
-  tables and one official classification snapshot).
-- Archive SHA-256:
-  `4b3715e193a5efb22001390d98bde53ab54b6049d710e06498e54afb8e94cda9`
+- Source archive: `data/raw-hardened-20260919.tar.zst` (45 files; seven official tables
+  and one official classification snapshot).
+- Archive SHA-256: `4b3715e193a5efb22001390d98bde53ab54b6049d710e06498e54afb8e94cda9`
 - Archive size: 1,510,378 bytes.
 - Source bundle: `cfc1b56f5586a2d7` (prepared-bundle schema 5; **PASS**).
 - Bundle manifest SHA-256:
@@ -61,10 +67,11 @@ uv run src/scripts/validate_dataset.py demographics \
   `691d1a90b9a704f13af68cab7ef804f5e0fd6d75949e0e412630f8d2f00c8320`
 - Statistical logical-content SHA-256:
   `28201b12b916b1fffc8b7bcfcb98bdb4dbcce1744385eb7f63efea3b880add35`
-- Both run manifests record sampler schema 5, seed `20260914`, and exactly zero LLM
-  calls.
-- The frozen text-development input remains a separate 1,000-row local artefact. Sample
-  provenance schema 2 uses municipality, education, and labour status as strata.
+- Both historical run manifests record sampler schema 5, seed `20260914`, and exactly
+  zero LLM calls. They are not current canonical runs.
+- The frozen text-development input remains a separate 1,000-row local artefact. Its
+  historical sample provenance schema 2 is not resumable; current frozen samples use
+  schema 3 and must be regenerated.
 
 The compressed raw snapshots are committed with attribution. Restored and generated
 artefacts remain ignored by Git and are reproducible from the source archive, lock,
@@ -79,36 +86,41 @@ mappings, configurations, and code.
 - The lock, hierarchy, and prepared RAS209 joint contain the same 99 municipalities.
 - FOLK1A and RAS209 remain municipality-keyed; no regional reaggregation is used by the
   sampler.
+- The historical run carried the English FOLK2 origin label as provenance. Current runs
+  additionally require Danish `origin_country_da` from the archived official metadata-da
+  241-code contract (source metadata SHA-256
+  `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`). Only that Danish
+  label may reach both provider stages and exact persona grounding.
 - RAS202 remains a separate national detailed-status refinement.
 - Shared integrity, schema, and successful-preparation verification passed.
 - Source validation: **PASS**.
 
 ## Deterministic run results
 
-| Metric | 2,000-row smoke | 100,000-row statistical | Threshold |
-| --- | ---: | ---: | ---: |
-| Rows | 2,000 | 100,000 | exact |
-| Schema errors | 0 | 0 | 0 |
-| Municipality hierarchy errors | 0 | 0 | 0 |
-| Maximum fitted marginal TV | 1.5148% | 0.2903% | 5% / 2% |
-| Municipality marginal TV | 0.6321% | 0.0137% | 5% / 2% |
-| FOLK2 origin marginal TV | 0.8430% | 0.0256% | 5% / 2% |
-| LONS20 job function TV, women | 0.9350% | 0.0186% | 5% / 2% |
-| LONS20 job function TV, men | 0.9535% | 0.0181% | 5% / 2% |
-| Job-function mapping/eligibility errors | 0 | 0 | 0 |
-| Municipality RAS209 joint TV | 49.2167% | 8.9276% | info / 10% |
-| Held-out municipality population TV | 21.8453% | 2.9804% | 25% / 5% |
-| Held-out status-by-sex TV | 1.8680% | 0.3806% | 25% / 5% |
-| Age back-off | 0% | 0% | 1% |
-| Marital back-off | 0% | 0% | 1% |
-| Detailed-status back-off | 0% | 0.003% | 1% |
-| Maximum OCEAN correlation | 0.040965 | 0.004863 | info / 0.02 |
-| LLM calls | 0 | 0 | 0 |
+| Metric                                  | 2,000-row smoke | 100,000-row statistical |   Threshold |
+| --------------------------------------- | --------------: | ----------------------: | ----------: |
+| Rows                                    |           2,000 |                 100,000 |       exact |
+| Schema errors                           |               0 |                       0 |           0 |
+| Municipality hierarchy errors           |               0 |                       0 |           0 |
+| Maximum fitted marginal TV              |         1.5148% |                 0.2903% |     5% / 2% |
+| Municipality marginal TV                |         0.6321% |                 0.0137% |     5% / 2% |
+| FOLK2 origin marginal TV                |         0.8430% |                 0.0256% |     5% / 2% |
+| LONS20 job function TV, women           |         0.9350% |                 0.0186% |     5% / 2% |
+| LONS20 job function TV, men             |         0.9535% |                 0.0181% |     5% / 2% |
+| Job-function mapping/eligibility errors |               0 |                       0 |           0 |
+| Municipality RAS209 joint TV            |        49.2167% |                 8.9276% |  info / 10% |
+| Held-out municipality population TV     |        21.8453% |                 2.9804% |    25% / 5% |
+| Held-out status-by-sex TV               |         1.8680% |                 0.3806% |    25% / 5% |
+| Age back-off                            |              0% |                      0% |          1% |
+| Marital back-off                        |              0% |                      0% |          1% |
+| Detailed-status back-off                |              0% |                  0.003% |          1% |
+| Maximum OCEAN correlation               |        0.040965 |                0.004863 | info / 0.02 |
+| LLM calls                               |               0 |                       0 |           0 |
 
-The 2,000-row municipality joint has more populated source cells than observations,
-so its joint TV is explicitly informational at smoke size. Its marginal, hierarchy,
-and held-out municipality gates are mandatory. Every mandatory gate passed in both
-runs. Overall Phase 2 result: **PASS**.
+The 2,000-row municipality joint has more populated source cells than observations, so
+its joint TV is explicitly informational at smoke size. Its marginal, hierarchy, and
+held-out municipality gates are mandatory. Every mandatory gate passed in both runs.
+Overall Phase 2 result: **PASS**.
 
 The machine-readable reports remain beside the local source bundle and generated runs
 while the regeneration root is present locally; all generated artefacts are ignored by

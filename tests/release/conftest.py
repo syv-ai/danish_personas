@@ -73,9 +73,9 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit("not_applicable").alias("job_function_resolution"),
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
-                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "ungdomsuddannelse eller erhvervsuddannelse er ledig. "
-                "Han kan være nysgerrig og nyder vandring og musik i hverdagen."
+                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
+                "ungdoms- eller erhvervsuddannelse og er ledig. Han kan være "
+                "nysgerrig og nyder vandring og musik i hverdagen."
             ).alias("persona"),
         )
     )
@@ -149,6 +149,11 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         manifest_sha256="a" * 64,
         report_sha256="b" * 64,
         output_sha256=manifest.output_sha256,
+        generation_config_sha256=manifest.generation_config_sha256,
+        generation_context_sha256=manifest.generation_context_sha256,
+        origin_label_contract_file=manifest.origin_label_contract_file,
+        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+        origin_label_contract_version=manifest.origin_label_contract_version,
         requests=20_000,
         retries=0,
         rejected_validation_responses=0,
@@ -167,10 +172,11 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
             "categories.yaml",
             "sampling.yaml",
             "validation.yaml",
+            "folk2-ieland-labels-da.yaml",
         )
     }
     return ReleaseEvidence(
-        version=1,
+        version=2,
         pilot_id=manifest.pilot_id,
         model=manifest.model,
         rows=manifest.rows,
@@ -179,6 +185,10 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         sample_manifest_sha256=manifest.sample_manifest_sha256,
         generation_config_sha256=manifest.generation_config_sha256,
         generation_context_sha256=manifest.generation_context_sha256,
+        origin_label_contract_file=manifest.origin_label_contract_file,
+        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+        origin_label_contract_version=manifest.origin_label_contract_version,
+        origin_label_contract_content=manifest.origin_label_contract_content,
         validator_version=manifest.validator_version,
         attributes_prompt_sha256=manifest.attributes_prompt_sha256,
         personas_prompt_sha256=manifest.personas_prompt_sha256,
@@ -224,12 +234,14 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     repository = tmp_path / "repository"
     repository.mkdir()
     for relative in (
+        ".gitattributes",
         "uv.lock",
         "LICENSE",
         "config/sources.lock.yaml",
         "config/categories.yaml",
         "config/sampling.yaml",
         "config/validation.yaml",
+        "config/folk2-ieland-labels-da.yaml",
         "docs/source-register.md",
         "docs/privacy-risk-register.md",
         "docs/acceptance-criteria.md",
@@ -246,7 +258,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     shutil.copyfile(ROOT / "config/job-function-titles.yaml", mapping_path)
 
     generation_config = GenerationConfig(
-        version=2,
+        version=3,
         llm_generation_enabled=True,
         base_url="https://llm.example/v1",
         model=MODEL,
@@ -261,6 +273,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         attributes_prompt=Path("config/prompts/attributes-da.md"),
         personas_prompt=Path("config/prompts/personas-da.md"),
         job_title_mapping=Path("config/job-function-titles.yaml"),
+        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
     )
     pilot = tmp_path / "pilot"
     pilot.mkdir()
@@ -293,8 +306,8 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             * 10_000,
             "culinary_persona": [sentence + "Måltider deles gerne med andre."] * 10_000,
             "persona": [
-                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "ungdomsuddannelse eller erhvervsuddannelse arbejder som "
+                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
+                "ungdoms- eller erhvervsuddannelse og arbejder som "
                 "forretningsspecialist. Han kan være nysgerrig og nyder vandring "
                 "og musik i hverdagen."
             ]
@@ -305,8 +318,9 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         if name not in output_frame.columns:
             fixture_values: dict[str, object] = {
                 "country": "Danmark",
-                "origin_country_code": "DK",
-                "origin_country": "Danmark",
+                "origin_country_code": "5100",
+                "origin_country": "Denmark",
+                "origin_country_da": "Danmark",
                 "age": 35,
                 "age_resolution": "municipality_age_band",
                 "age_band": "30-39",
@@ -359,6 +373,16 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         "manifest_sha256": zero_hash,
         "validation_report_file": "shard/report.json",
         "validation_report_sha256": zero_hash,
+        "origin_label_contract_file": "config/folk2-ieland-labels-da.yaml",
+        "origin_label_contract_sha256": sha256_file(
+            repository / "config/folk2-ieland-labels-da.yaml"
+        ),
+        "origin_label_contract_version": 1,
+        "origin_label_contract_content": yaml.safe_load(
+            (repository / "config/folk2-ieland-labels-da.yaml").read_text(
+                encoding="utf-8"
+            )
+        ),
     }
     generation_context = generation_context_sha256(
         config=generation_config,
@@ -370,6 +394,12 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         ),
         job_title_mapping=packager.load_job_title_mapping(mapping_path),
         job_title_mapping_sha256=sha256_file(mapping_path),
+        origin_label_contract=packager.load_origin_label_contract(
+            repository / "config/folk2-ieland-labels-da.yaml"
+        ),
+        origin_label_contract_sha256=sha256_file(
+            repository / "config/folk2-ieland-labels-da.yaml"
+        ),
     )
     manifest = PilotManifest(
         pilot_id=PILOT_ID,
@@ -388,6 +418,14 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         job_title_mapping_file=Path("config/job-function-titles.yaml"),
         job_title_mapping_sha256=sha256_file(mapping_path),
         job_title_mapping_version=1,
+        origin_label_contract_file=Path("config/folk2-ieland-labels-da.yaml"),
+        origin_label_contract_sha256=sha256_file(
+            repository / "config/folk2-ieland-labels-da.yaml"
+        ),
+        origin_label_contract_version=1,
+        origin_label_contract_content=packager.load_origin_label_contract(
+            repository / "config/folk2-ieland-labels-da.yaml"
+        ),
         attributes_prompt_sha256=sha256_file(
             repository / "config/prompts/attributes-da.md"
         ),

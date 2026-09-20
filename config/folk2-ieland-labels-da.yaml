@@ -1,0 +1,490 @@
+version: 1
+table_id: FOLK2
+dimension: IELAND
+language: da
+source_metadata_en_sha256: cb2558d35bee7b3eed451984f457cc4dc7b683f71e67022d6767f3415d04884a
+source_metadata_da_sha256: f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213
+labels_en:
+  '5100': Denmark
+  '5122': Albania
+  '5124': Andorra
+  '5706': Belarus
+  '5126': Belgium
+  '5754': Bosnia and Herzegovina
+  '5128': Bulgaria
+  '5422': Cyprus
+  '5184': GDR
+  '5607': Estonia
+  '5104': Finland
+  '5130': France
+  '5134': Greece
+  '5142': Ireland
+  '5105': Iceland
+  '5150': Italy
+  '5152': Yugoslavia
+  '5758': Yugoslavia, Federal Republic
+  '5761': Kosovo
+  '5750': Croatia
+  '5609': Latvia
+  '5107': Liechtenstein
+  '5611': Lithuania
+  '5108': Luxembourg
+  '5153': Malta
+  '5712': Moldova
+  '5109': Monaco
+  '5759': Montenegro
+  '5140': Netherlands
+  '5111': Northern Ireland
+  '5756': Republic of North Macedonia
+  '5110': Norway
+  '5154': Poland
+  '5156': Portugal
+  '5158': Romania
+  '5700': Russia
+  '5159': San Marino
+  '5160': Switzerland
+  '5757': Serbia
+  '5151': Serbia and Montenegro
+  '5778': Slovakia
+  '5752': Slovenia
+  '5162': Soviet Union
+  '5164': Spain
+  '5170': United Kingdom
+  '5120': Sweden
+  '5776': Czech Republic
+  '5129': Czechoslovakia
+  '5172': Turkey
+  '5180': Germany
+  '5704': Ukraine
+  '5174': Hungary
+  '5176': Vatican City State
+  '5182': Austria
+  '5114': Europe not stated
+  '5202': Algeria
+  '5204': Angola
+  '5281': Benin
+  '5207': Botswana
+  '5294': Burkina Faso
+  '5213': Burundi
+  '5277': Cameroon
+  '5276': Central African Republic
+  '5215': Comoros
+  '5278': Congo, Democratic Republic
+  '5279': Congo, Republic
+  '5525': Djibouti
+  '5272': Egypt
+  '5282': Ivory Coast
+  '5216': Eritrea
+  '5259': Eswatini
+  '5214': Ethiopia
+  '5283': Gabon
+  '5222': Gambia, The
+  '5228': Ghana
+  '5232': Guinea
+  '5231': Guinea-Bissau
+  '5233': Cape Verde
+  '5234': Kenya
+  '5235': Lesotho
+  '5236': Liberia
+  '5238': Libya
+  '5242': Madagascar
+  '5297': Malawi
+  '5243': Mali
+  '5244': Morocco
+  '5284': Mauritania
+  '5245': Mauritius
+  '5240': Mozambique
+  '5247': Namibia
+  '5285': Niger
+  '5246': Nigeria
+  '5286': Reunion
+  '5287': Rwanda
+  '5621': Sao Tome and Principe
+  '5288': Senegal
+  '5298': Seychelles
+  '5255': Sierra Leone
+  '5253': Saint Helena
+  '5289': Somalia
+  '5256': Spanish territories in Africa
+  '5258': Sudan
+  '5262': South Africa
+  '5260': South Sudan
+  '5264': Southwest Africa
+  '5266': Tanzania
+  '5292': Chad
+  '5293': Togo
+  '5268': Tunisia
+  '5269': Uganda
+  '5296': Zambia
+  '5295': Zimbabwe
+  '5230': 'Equatorial Guinea '
+  '5299': Africa not stated
+  '5314': Canada
+  '5390': USA
+  '5397': North America not stated
+  '5309': Antigua and Barbuda
+  '5302': Argentina
+  '5301': Aruba
+  '5303': Bahamas
+  '5305': Barbados
+  '5526': Belize
+  '5307': Bermuda
+  '5304': Bolivia
+  '5306': Brazil
+  '5394': British West Indies
+  '5316': Chile
+  '5318': Colombia
+  '5322': Costa Rica
+  '5324': Cuba
+  '5325': Curacao
+  '5345': Dominica
+  '5326': Dominican Republic
+  '5328': Ecuador
+  '5372': El Salvador
+  '5530': Falkland Islands
+  '5529': French Guiana
+  '5336': French West Indies
+  '5339': Grenada
+  '5528': Guadeloupe
+  '5338': Guatemala
+  '5308': Guyana
+  '5342': Haiti
+  '5348': Honduras
+  '5352': Jamaica
+  '5353': Martinique
+  '5354': Mexico
+  '5310': Nauru
+  '5346': Netherlands Antilles
+  '5356': Nicaragua
+  '5358': Panama
+  '5364': Paraguay
+  '5366': Peru
+  '5527': Puerto Rico
+  '5625': Saint Kitts and Nevis
+  '5347': Saint Lucia
+  '5311': Saint Vincent and the Grenadines
+  '5344': Suriname
+  '5374': Trinidad and Tobago
+  '5376': Uruguay
+  '5392': Venezuela
+  '5395': West Indies
+  '5319': South and central America not stated
+  '5535': Abu Dhabi
+  '5404': Afghanistan
+  '5708': Armenia
+  '5710': Azerbaijan
+  '5406': Bahrain
+  '5410': Bangladesh
+  '5408': Bhutan
+  '5412': Brunei
+  '5416': Cambodia
+  '5531': Dubai
+  '5474': Philippines
+  '5403': United Arab Emirates
+  '5223': Gaza
+  '5724': Georgia
+  '5428': Hong Kong
+  '5432': India
+  '5498': Indochina
+  '5434': Indonesia
+  '5436': Iraq
+  '5438': Iran
+  '5442': Israel
+  '5444': Japan
+  '5446': Jordan
+  '5716': Kazakhstan
+  '5448': China
+  '5720': Kyrgyzstan
+  '5452': Kuwait
+  '5454': Laos
+  '5456': Lebanon
+  '5533': Macao
+  '5458': Malaysia
+  '5457': Maldives
+  '5487': Middle East not stated
+  '5459': Mongolia
+  '5414': Myanmar
+  '5464': Nepal
+  '5466': North Korea
+  '5494': North Yemen
+  '5462': Oman
+  '5472': Pakistan
+  '5157': Palestine
+  '5496': Qatar
+  '5478': Saudi Arabia
+  '5480': Sikkim
+  '5482': Singapore
+  '5418': Sri Lanka
+  '5484': South Korea
+  '5486': Syria
+  '5722': Tajikistan
+  '5424': Taiwan
+  '5492': Thailand
+  '5493': Trucial Oman
+  '5718': Turkmenistan
+  '5714': Uzbekistan
+  '5393': West Bank
+  '5473': West bank and Gaza
+  '5468': Vietnam
+  '5402': Yemen
+  '5437': East Jerusalem
+  '5471': Asia not stated
+  '5502': Australia
+  '5516': Cook Islands
+  '5508': Fiji
+  '5506': French territories in the Pacific
+  '5274': Kiribati
+  '5248': Marshall Islands
+  '5514': New Zealand
+  '5534': Papua New Guinea
+  '5623': Solomon Islands
+  '5522': Samoa
+  '5505': Tonga
+  '5273': Tuvalu
+  '5275': Vanuatu
+  '5532': East Timor
+  '5599': Pacific Islands
+  '5103': Stateless
+  '5999': Not stated
+labels_da:
+  '5100': Danmark
+  '5122': Albanien
+  '5124': Andorra
+  '5706': Belarus
+  '5126': Belgien
+  '5754': Bosnien-Hercegovina
+  '5128': Bulgarien
+  '5422': Cypern
+  '5184': DDR
+  '5607': Estland
+  '5104': Finland
+  '5130': Frankrig
+  '5134': "Gr\xE6kenland"
+  '5142': Irland
+  '5105': Island
+  '5150': Italien
+  '5152': Jugoslavien
+  '5758': Jugoslavien, Forbundsrepublikken
+  '5761': Kosovo
+  '5750': Kroatien
+  '5609': Letland
+  '5107': Liechtenstein
+  '5611': Litauen
+  '5108': Luxembourg
+  '5153': Malta
+  '5712': Moldova
+  '5109': Monaco
+  '5759': Montenegro
+  '5140': Nederlandene
+  '5111': Nordirland
+  '5756': Nordmakedonien
+  '5110': Norge
+  '5154': Polen
+  '5156': Portugal
+  '5158': "Rum\xE6nien"
+  '5700': Rusland
+  '5159': San Marino
+  '5160': Schweiz
+  '5757': Serbien
+  '5151': Serbien og Montenegro
+  '5778': Slovakiet
+  '5752': Slovenien
+  '5162': Sovjetunionen
+  '5164': Spanien
+  '5170': Storbritannien
+  '5120': Sverige
+  '5776': Tjekkiet
+  '5129': Tjekkoslovakiet
+  '5172': Tyrkiet
+  '5180': Tyskland
+  '5704': Ukraine
+  '5174': Ungarn
+  '5176': Vatikanstaten
+  '5182': "\xD8strig"
+  '5114': Europa uoplyst
+  '5202': Algeriet
+  '5204': Angola
+  '5281': Benin
+  '5207': Botswana
+  '5294': Burkina Faso
+  '5213': Burundi
+  '5277': Cameroun
+  '5276': Centralafrikanske Republik
+  '5215': Comorerne
+  '5278': Congo, Demokratiske Republik
+  '5279': Congo, Republikken
+  '5525': Djibouti
+  '5272': Egypten
+  '5282': Elfenbenskysten
+  '5216': Eritrea
+  '5259': Eswatini
+  '5214': Etiopien
+  '5283': Gabon
+  '5222': Gambia
+  '5228': Ghana
+  '5232': Guinea
+  '5231': Guinea-Bissau
+  '5233': Kap Verde
+  '5234': Kenya
+  '5235': Lesotho
+  '5236': Liberia
+  '5238': Libyen
+  '5242': Madagaskar
+  '5297': Malawi
+  '5243': Mali
+  '5244': Marokko
+  '5284': Mauretanien
+  '5245': Mauritius
+  '5240': Mozambique
+  '5247': Namibia
+  '5285': Niger
+  '5246': Nigeria
+  '5286': Reunion
+  '5287': Rwanda
+  '5621': Sao Tome og Principe
+  '5288': Senegal
+  '5298': Seychellerne
+  '5255': Sierra Leone
+  '5253': Skt. Helena
+  '5289': Somalia
+  '5256': Spanske besiddelser i Afrika
+  '5258': Sudan
+  '5262': Sydafrika
+  '5260': Sydsudan
+  '5264': Sydvestafrika
+  '5266': Tanzania
+  '5292': Tchad
+  '5293': Togo
+  '5268': Tunesien
+  '5269': Uganda
+  '5296': Zambia
+  '5295': Zimbabwe
+  '5230': "\xC6kvatorialguinea"
+  '5299': Afrika uoplyst
+  '5314': Canada
+  '5390': USA
+  '5397': Nordamerika uoplyst
+  '5309': Antigua og Barbuda
+  '5302': Argentina
+  '5301': Aruba
+  '5303': Bahamas
+  '5305': Barbados
+  '5526': Belize
+  '5307': Bermuda
+  '5304': Bolivia
+  '5306': Brasilien
+  '5394': Britisk Vestindien
+  '5316': Chile
+  '5318': Colombia
+  '5322': Costa Rica
+  '5324': Cuba
+  '5325': Curacao
+  '5345': Dominica
+  '5326': Dominikanske Republik
+  '5328': Ecuador
+  '5372': El Salvador
+  '5530': "Falklands\xF8erne"
+  '5529': Fransk Guyana
+  '5336': Fransk Vestindien
+  '5339': Grenada
+  '5528': Guadeloupe
+  '5338': Guatemala
+  '5308': Guyana
+  '5342': Haiti
+  '5348': Honduras
+  '5352': Jamaica
+  '5353': Martinique
+  '5354': Mexico
+  '5310': Nauru
+  '5346': Nederlandske Antiller
+  '5356': Nicaragua
+  '5358': Panama
+  '5364': Paraguay
+  '5366': Peru
+  '5527': Puerto Rico
+  '5625': Skt. Kitts og Nevis
+  '5347': Skt. Lucia
+  '5311': Skt. Vincent og Grenadinerne
+  '5344': Surinam
+  '5374': Trinidad og Tobago
+  '5376': Uruguay
+  '5392': Venezuela
+  '5395': "Vestindiske \xD8er"
+  '5319': Syd- og Mellemamerika uoplyst
+  '5535': Abu Dhabi
+  '5404': Afghanistan
+  '5708': Armenien
+  '5710': Aserbajdsjan
+  '5406': Bahrain
+  '5410': Bangladesh
+  '5408': Bhutan
+  '5412': Brunei
+  '5416': Cambodja
+  '5531': Dubai
+  '5474': Filippinerne
+  '5403': Forenede Arabiske Emirater
+  '5223': Gaza
+  '5724': Georgien
+  '5428': Hongkong
+  '5432': Indien
+  '5498': Indokina
+  '5434': Indonesien
+  '5436': Irak
+  '5438': Iran
+  '5442': Israel
+  '5444': Japan
+  '5446': Jordan
+  '5716': Kasakhstan
+  '5448': Kina
+  '5720': Kirgisistan
+  '5452': Kuwait
+  '5454': Laos
+  '5456': Libanon
+  '5533': Macao
+  '5458': Malaysia
+  '5457': Maldiverne
+  '5487': "Mellem\xF8sten uoplyst"
+  '5459': Mongoliet
+  '5414': Myanmar
+  '5464': Nepal
+  '5466': Nordkorea
+  '5494': Nordyemen
+  '5462': Oman
+  '5472': Pakistan
+  '5157': "Pal\xE6stina"
+  '5496': Qatar
+  '5478': Saudi-Arabien
+  '5480': Sikkim
+  '5482': Singapore
+  '5418': Sri Lanka
+  '5484': Sydkorea
+  '5486': Syrien
+  '5722': Tadsjikistan
+  '5424': Taiwan
+  '5492': Thailand
+  '5493': Trucial Oman
+  '5718': Turkmenistan
+  '5714': Usbekistan
+  '5393': Vestbredden
+  '5473': Vestbredden og Gaza
+  '5468': Vietnam
+  '5402': Yemen
+  '5437': "\xD8stjerusalem"
+  '5471': Asien uoplyst
+  '5502': Australien
+  '5516': "Cook\xF8erne"
+  '5508': Fiji
+  '5506': Franske besiddelser i Stillehavet
+  '5274': Kiribati
+  '5248': "Marshall\xF8erne"
+  '5514': New Zealand
+  '5534': Papua Ny Guinea
+  '5623': "Salomon\xF8erne"
+  '5522': Samoa
+  '5505': Tonga
+  '5273': Tuvalu
+  '5275': Vanuatu
+  '5532': "\xD8sttimor"
+  '5599': "\xD8er i Stillehavet"
+  '5103': "Statsl\xF8s"
+  '5999': Uoplyst

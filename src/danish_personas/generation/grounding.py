@@ -13,7 +13,13 @@ EDUCATION_DANISH = {
     "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
 }
-SEX_DANISH = {"male": "mand", "female": "kvinde", "m": "mand", "k": "kvinde"}
+EDUCATION_CLAUSES = {
+    "primary": "har ingen uddannelse efter folkeskolen",
+    "secondary_or_vocational": "har en ungdoms- eller erhvervsuddannelse",
+    "higher_education": "har en videregående uddannelse",
+    "not_stated": "uddannelsen er ikke oplyst",
+}
+PRONOUN_DANISH = {"male": "han", "female": "hun", "m": "han", "k": "hun"}
 STATUS_DANISH = {
     "unemployed": "ledig",
     "student": "studerende",
@@ -45,14 +51,13 @@ DETAILED_STATUS_DANISH = {
 
 
 class PersonaGroundingFacts(StrictModel):
-    """Exact strings that the short persona must reproduce literally."""
+    """Exact natural clauses that the short persona must reproduce literally."""
 
-    age: str = Field(min_length=3)
-    sex: str = Field(min_length=1)
+    pronoun_age: str = Field(min_length=3)
     municipality: str = Field(min_length=1)
-    education_level: str = Field(min_length=1)
-    origin_country: str = Field(min_length=1)
-    current_employment: str = Field(min_length=1)
+    origin: str = Field(min_length=1)
+    education: str = Field(min_length=1)
+    employment: str = Field(min_length=1)
 
 
 def build_persona_grounding_facts(
@@ -83,24 +88,43 @@ def build_persona_grounding_facts(
         else GeneratedAttributes.model_validate(attributes)
     )
     sex_key = str(context.get("sex", "")).casefold()
-    sex = SEX_DANISH.get(sex_key)
+    pronoun = PRONOUN_DANISH.get(sex_key)
     education_key = str(context.get("education_level", "")).casefold()
-    education = EDUCATION_DANISH.get(education_key)
+    education = EDUCATION_CLAUSES.get(education_key)
     resolution = context.get("job_function_resolution")
     if resolution == "lons20_sex_marginal" and generated.job_title is None:
         raise ValueError("Eligible job-function context requires a title")
     if resolution == "not_applicable" and generated.job_title is not None:
         raise ValueError("Not-applicable job-function context requires no title")
-    current_employment = generated.job_title or canonical_current_status(
+    status_or_title = generated.job_title or canonical_current_status(
         demographic=context
     )
+    employment = (
+        f"arbejder som {status_or_title}"
+        if generated.job_title is not None
+        else f"er {status_or_title}"
+    )
+    age = context.get("age")
+    municipality = context.get("municipality")
+    origin = context.get("origin_country_da")
     values = {
-        "age": f"{context.get('age')} år",
-        "sex": sex,
-        "municipality": context.get("municipality"),
-        "education_level": education,
-        "origin_country": context.get("origin_country"),
-        "current_employment": current_employment,
+        "pronoun_age": (
+            f"{pronoun} er {age} år"
+            if pronoun and isinstance(age, int) and not isinstance(age, bool)
+            else None
+        ),
+        "municipality": (
+            f"bor i {municipality}"
+            if isinstance(municipality, str) and municipality.strip()
+            else None
+        ),
+        "origin": (
+            f"kommer fra {origin}"
+            if isinstance(origin, str) and origin.strip()
+            else None
+        ),
+        "education": education,
+        "employment": employment,
     }
     if any(
         not isinstance(value, str) or not value.strip() for value in values.values()

@@ -706,6 +706,10 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         generation_config_file=Path("generation.yaml"),
         generation_config_sha256=release_case.manifest.generation_config_sha256,
         generation_context_sha256=release_case.manifest.generation_context_sha256,
+        origin_label_contract_file=release_case.manifest.origin_label_contract_file,
+        origin_label_contract_sha256=release_case.manifest.origin_label_contract_sha256,
+        origin_label_contract_version=release_case.manifest.origin_label_contract_version,
+        origin_label_contract_content=release_case.manifest.origin_label_contract_content,
         validator_version=VALIDATOR_VERSION,
         job_title_mapping_file=Path("config/job-function-titles.yaml"),
         job_title_mapping_sha256=release_case.manifest.job_title_mapping_sha256,
@@ -744,6 +748,10 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         manifest_sha256=sha256_file(shard_manifest_path),
         validation_report_file=Path("small-shard/report.json"),
         validation_report_sha256=sha256_file(report_path),
+        origin_label_contract_file=release_case.manifest.origin_label_contract_file,
+        origin_label_contract_sha256=release_case.manifest.origin_label_contract_sha256,
+        origin_label_contract_version=release_case.manifest.origin_label_contract_version,
+        origin_label_contract_content=release_case.manifest.origin_label_contract_content,
     )
     manifest = release_case.manifest.model_copy(
         update={

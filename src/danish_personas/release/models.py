@@ -14,11 +14,21 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
 from ..models import StrictModel
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    ORIGIN_LABEL_CONTRACT_VERSION,
+    OriginLabelContract,
+    OriginLabelContractPath,
+    canonical_origin_label_contract_path,
+    validate_origin_contract_reference,
+)
 
 
 class ReleasePolicyError(ValueError):
@@ -289,14 +299,14 @@ class ReleaseManifest(StrictModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: t.Literal[1]
+    version: t.Literal[2]
     release_id: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
 
     @field_validator("version", mode="before")
     @classmethod
     def _strict_version(_cls, value: object) -> object:
-        if type(value) is not int or value != 1:
-            raise ValueError("Release manifest version must be exactly integer 1")
+        if type(value) is not int or value != 2:
+            raise ValueError("Release manifest version must be exactly integer 2")
         return value
 
     created_at: datetime
@@ -307,6 +317,10 @@ class ReleaseManifest(StrictModel):
     origin_url: StrictStr = Field(min_length=1)
     uv_lock_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
+    origin_label_contract_content: OriginLabelContract
     artifacts: tuple[Artifact, ...] = Field(
         min_length=1, validation_alias=AliasChoices("artifacts", "files")
     )
@@ -315,7 +329,26 @@ class ReleaseManifest(StrictModel):
     def _require_aware_created_at(self) -> "ReleaseManifest":
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise ValueError("Manifest timestamp must be timezone-aware")
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
         return self
+
+    @field_serializer("origin_label_contract_file", when_used="json")
+    def _serialise_origin_label_contract_file(self, value: Path) -> str:
+        """Serialise the manifest contract path using portable separators.
+
+        Args:
+            value:
+                Runtime filesystem path for the origin-label contract.
+
+        Returns:
+            The canonical repository-relative contract path.
+        """
+        return canonical_origin_label_contract_path(value)
 
     @field_validator("created_at", mode="before")
     @classmethod
@@ -460,6 +493,11 @@ class ShardEvidence(StrictModel):
     manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     report_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     output_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
     requests: StrictInt = Field(ge=0)
     retries: StrictInt = Field(ge=0)
     rejected_validation_responses: StrictInt = Field(ge=0)
@@ -485,19 +523,29 @@ class ShardEvidence(StrictModel):
             raise ValueError("Provider names must be sorted and unique")
         return value
 
+    @model_validator(mode="after")
+    def _validate_origin_contract(self) -> "ShardEvidence":
+        if self.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+            raise ValueError("Shard origin-label contract path must be canonical")
+        if self.origin_label_contract_version != ORIGIN_LABEL_CONTRACT_VERSION:
+            raise ValueError("Shard origin-label contract version is not current")
+        if self.origin_label_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+            raise ValueError("Shard origin-label contract is not reviewed")
+        return self
+
 
 class ReleaseEvidence(StrictModel):
     """Portable provenance and accounting for a release."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: t.Literal[1]
+    version: t.Literal[2]
 
     @field_validator("version", mode="before")
     @classmethod
     def _strict_version(_cls, value: object) -> object:
-        if type(value) is not int or value != 1:
-            raise ValueError("Release evidence version must be exactly integer 1")
+        if type(value) is not int or value != 2:
+            raise ValueError("Release evidence version must be exactly integer 2")
         return value
 
     pilot_id: StrictStr = Field(min_length=1)
@@ -508,6 +556,10 @@ class ReleaseEvidence(StrictModel):
     sample_manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
+    origin_label_contract_content: OriginLabelContract
     validator_version: StrictStr = Field(min_length=1)
     attributes_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     personas_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
@@ -523,3 +575,13 @@ class ReleaseEvidence(StrictModel):
     config_hashes: dict[StrictStr, StrictStr] = Field(min_length=5)
     shards: tuple[ShardEvidence, ...] = Field(min_length=1)
     accounting: Accounting
+
+    @model_validator(mode="after")
+    def _validate_origin_contract(self) -> "ReleaseEvidence":
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self

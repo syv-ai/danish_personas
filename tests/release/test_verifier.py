@@ -38,7 +38,9 @@ def test_recalculated_manifest_digest_does_not_bypass_internal_bindings(
         )
     digest = _refresh_artifact(release, relative)
     if relative.endswith("evidence"):
-        manifest = json.loads((release / "release-manifest.json").read_text())
+        manifest = json.loads(
+            (release / "release-manifest.json").read_text(encoding="utf-8")
+        )
         manifest["evidence_sha256"] = sha256_file(path)
         digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError):
@@ -83,14 +85,76 @@ def _refresh_manifest(release: Path, **changes: object) -> str:
     path = release / "release-manifest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.update(changes)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    path.write_bytes(
+        (
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
     )
     digest = sha256_file(path)
-    (release / "release-manifest.sha256").write_text(
-        f"{digest}  release-manifest.json\n", encoding="ascii"
+    (release / "release-manifest.sha256").write_bytes(
+        f"{digest}  release-manifest.json\n".encode("ascii")
     )
     return digest
+
+
+def test_refresh_manifest_preserves_utf8_origin_labels(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Refreshing a manifest preserves canonical Unicode label values."""
+    release, _ = verifier_package
+    manifest_path = release / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    digest = _refresh_manifest(release, **manifest)
+
+    refreshed = manifest_path.read_bytes()
+    assert "Grækenland".encode() in refreshed
+    assert b"Gr\\u00e6kenland" not in refreshed
+    verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+
+def test_validation_diagnostic_does_not_echo_contract_input(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Contract diagnostics expose a field and type, but not hostile input."""
+    release, _ = verifier_package
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    labels = manifest["origin_label_contract_content"]["labels_da"]
+    first_code = next(iter(labels))
+    labels.pop(first_code)
+    marker = "SECRET-MARKER"
+    labels[marker] = 123
+    digest = _refresh_manifest(release, **manifest)
+
+    with pytest.raises(ReleaseVerificationError) as exc_info:
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+    diagnostic = str(exc_info.value)
+    assert "origin_label_contract_content: string_type" in diagnostic
+    assert marker not in diagnostic
+
+
+def test_verifier_rejects_duplicate_json_keys(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Public JSON contracts reject ambiguous duplicate object keys."""
+    release, _ = verifier_package
+    manifest_path = release / "release-manifest.json"
+    original = manifest_path.read_bytes()
+    needle = b'"version": 2\n'
+    assert original.count(needle) == 1
+    manifest_path.write_bytes(
+        original.replace(needle, b'"version": 2,\n  "version": 2\n', 1)
+    )
+    digest = sha256_file(manifest_path)
+    (release / "release-manifest.sha256").write_bytes(
+        f"{digest}  release-manifest.json\n".encode("ascii")
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="Invalid public contract"):
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
 
 
 def test_verify_release_accepts_external_digest_and_relocation(
@@ -133,7 +197,9 @@ def test_verify_release_rejects_filesystem_and_manifest_path_attacks(
     elif kind == "case":
         (release / "README.MD").write_text("collision", encoding="utf-8")
     else:
-        manifest = json.loads((release / "release-manifest.json").read_text())
+        manifest = json.loads(
+            (release / "release-manifest.json").read_text(encoding="utf-8")
+        )
         manifest["artifacts"][0]["path"] = "../escape.txt"
         digest = _refresh_manifest(release, **manifest)
     with pytest.raises(
@@ -220,7 +286,9 @@ def test_verify_release_rejects_joint_config_tamper_with_stale_context(
     evidence_path.write_text(
         json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     for artifact in manifest["artifacts"]:
         if artifact["path"] == "provenance/evidence.json":
@@ -272,7 +340,9 @@ def test_verify_release_rejects_model_and_review_binding_errors(
 ) -> None:
     """Manifest model and attested review identity cannot be changed independently."""
     release, _ = verifier_package
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["model"] = "other/model"
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="model|ID|approval"):
@@ -358,7 +428,9 @@ def test_verify_release_rejects_title_map_config_path_substitution(
     )
     digest = _refresh_artifact(release, "provenance/config/generation.yaml")
     digest = _refresh_artifact(release, "provenance/evidence.json")
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="path binding"):
@@ -397,7 +469,9 @@ def test_verify_release_rejects_title_map_substitution_even_with_recalculated_bi
     )
     digest = _refresh_artifact(release, "provenance/config/job-function-titles.yaml")
     digest = _refresh_artifact(release, "provenance/evidence.json")
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="contextual"):

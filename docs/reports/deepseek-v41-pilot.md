@@ -5,7 +5,9 @@
 **Stopped incomplete at the user's request.** No merged pilot dataset was produced, and
 this run must not be described as a 1,000-person dataset. This is a historical
 generation-contract v1 pilot. Its partial checkpoints are retained for experiment
-evidence only and are not resumable under generation contract v2.
+evidence only and are not resumable under generation contract 3. It predates the
+mandatory Danish `origin_country_da` provider boundary and validator
+`persona-safety-v15`.
 
 The intended input was the complete 1,000-row frozen Phase-3 sample:
 
@@ -74,8 +76,8 @@ No generation process remains active. At the time, all retained checkpoints were
 Git-ignored and could be resumed only with the matching input, provider-qualified model,
 local configuration, prompts, schemas, and validator version. Baseten and DeepInfra
 checkpoints could not be mixed because provider routing was part of the generation
-context. Those v1 checkpoints are not resumable under v2, whose grounded persona has a
-different six-text contract and provider input boundary.
+context. Those v1 checkpoints are not resumable under generation contract 3, whose
+grounded persona has a different six-text contract and provider input boundary.
 
 Sustained capacity requires one of:
 

@@ -5,15 +5,17 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .origin_labels import validate_origin_contract_reference
+
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 5
+SAMPLER_SCHEMA_VERSION: int = 6
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 5
-FROZEN_SAMPLE_SCHEMA_VERSION: int = 2
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 6
+FROZEN_SAMPLE_SCHEMA_VERSION: int = 3
 SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
 SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
 
@@ -134,6 +136,44 @@ class ClassificationManifest(StrictModel):
     data_bytes: int = Field(gt=0)
 
 
+class FrozenSampleManifest(StrictModel):
+    """Manifest proving the origin of a frozen Phase-3 sample."""
+
+    sample_schema_version: int
+    source_run_id: str
+    rows: int = Field(gt=0)
+    strata: list[str]
+    method: str
+    data_file: Path
+    sha256: str
+    llm_calls: int = Field(ge=0)
+    origin_labels_contract_path: str = Field(min_length=1)
+    origin_labels_contract_version: int = Field(ge=1)
+    origin_labels_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_labels_contract_content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "FrozenSampleManifest":
+        """Require all origin contract fields when a sample carries a binding.
+
+        Returns:
+            The validated sample manifest.
+
+        Raises:
+            ValueError:
+                If a partial contract binding is supplied.
+        """
+        if self.sample_schema_version != FROZEN_SAMPLE_SCHEMA_VERSION:
+            raise ValueError("Unsupported frozen sample schema version")
+        validate_origin_contract_reference(
+            path=self.origin_labels_contract_path,
+            version=self.origin_labels_contract_version,
+            sha256=self.origin_labels_contract_sha256,
+            content=self.origin_labels_contract_content,
+        )
+        return self
+
+
 class Lons20Contract(StrictModel):
     """Separately reviewed canonical semantics for LONS20."""
 
@@ -190,6 +230,7 @@ class DemographicRecord(OceanTraits):
     country: t.Literal["Danmark"]
     origin_country_code: str
     origin_country: str
+    origin_country_da: str
     age: int = Field(ge=18, le=125)
     age_resolution: t.Literal["municipality_age_band_sex", "municipality_age_band"]
     age_band: str
@@ -264,6 +305,31 @@ class RunManifest(StrictModel):
     data_sha256: str
     logical_content_sha256: str
     llm_calls: int = Field(ge=0)
+    origin_labels_contract_path: str = Field(min_length=1)
+    origin_labels_contract_version: int = Field(ge=1)
+    origin_labels_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_labels_contract_content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "RunManifest":
+        """Require all origin contract fields when a run carries a binding.
+
+        Returns:
+            The validated run manifest.
+
+        Raises:
+            ValueError:
+                If a partial contract binding is supplied.
+        """
+        if self.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
+            raise ValueError("Unsupported sampler schema version")
+        validate_origin_contract_reference(
+            path=self.origin_labels_contract_path,
+            version=self.origin_labels_contract_version,
+            sha256=self.origin_labels_contract_sha256,
+            content=self.origin_labels_contract_content,
+        )
+        return self
 
 
 class SamplingConfig(StrictModel):
@@ -327,6 +393,30 @@ class BundleManifest(StrictModel):
     assumptions: list[str]
     lons20_contract_version: int = Field(ge=1)
     lons20_contract_sha256: str
+    origin_labels_contract_path: str = Field(min_length=1)
+    origin_labels_contract_version: int = Field(ge=1)
+    origin_labels_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_labels_contract_content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "BundleManifest":
+        """Require origin-label provenance for source-backed schema-6 bundles.
+
+        Returns:
+            The validated bundle manifest.
+
+        Raises:
+            ValueError: If a source-backed manifest omits its contract binding.
+        """
+        if self.prepared_bundle_schema_version != PREPARED_BUNDLE_SCHEMA_VERSION:
+            raise ValueError("Unsupported prepared bundle schema version")
+        validate_origin_contract_reference(
+            path=self.origin_labels_contract_path,
+            version=self.origin_labels_contract_version,
+            sha256=self.origin_labels_contract_sha256,
+            content=self.origin_labels_contract_content,
+        )
+        return self
 
 
 class SourceMetadataExpectations(StrictModel):
@@ -462,6 +552,10 @@ class ValidationReport(StrictModel):
     created_at: str
     subject_id: str
     metrics: list[MetricResult]
+    origin_labels_contract_path: str = ""
+    origin_labels_contract_version: int = Field(default=0, ge=0)
+    origin_labels_contract_sha256: str = ""
+    origin_labels_contract_content: str = ""
     job_title_mapping_file: Path | None = None
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None

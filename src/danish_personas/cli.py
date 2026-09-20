@@ -12,6 +12,7 @@ from .generation.pipeline import generate_personas
 from .generation.report import validate_persona_pilot, validate_persona_run
 from .io import load_yaml_model
 from .models import SamplingConfig, SourceLock, SourcesConfig, ValidationReport
+from .origin_labels import DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
 from .release.cli import release
 from .sampling.freeze import freeze_sample
 from .sampling.generator import generate_records
@@ -281,8 +282,19 @@ def pack(raw_dir: Path, archive_path: Path) -> None:
 )
 @click.option("--raw-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--output-dir", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "--origin-labels-contract",
+    "origin_labels_contract_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    show_default=True,
+)
 def prepare(
-    lock_path: Path, categories_path: Path, raw_dir: Path, output_dir: Path
+    lock_path: Path,
+    categories_path: Path,
+    raw_dir: Path,
+    output_dir: Path,
+    origin_labels_contract_path: Path,
 ) -> None:
     """Prepare an offline demographic source bundle.
 
@@ -295,6 +307,7 @@ def prepare(
             categories_path=categories_path,
             raw_dir=raw_dir,
             output_dir=output_dir,
+            origin_labels_contract_path=origin_labels_contract_path,
         )
     except Exception as error:
         raise click.ClickException(str(error)) from error
@@ -515,6 +528,13 @@ def workflow() -> None:
 )
 @click.option("--skip-restore", is_flag=True)
 @click.option("--force-restore", is_flag=True)
+@click.option(
+    "--origin-labels-contract",
+    "origin_labels_contract_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    show_default=True,
+)
 def deterministic(
     target: str,
     archive_path: Path,
@@ -530,6 +550,7 @@ def deterministic(
     sample_rows: int,
     skip_restore: bool,
     force_restore: bool,
+    origin_labels_contract_path: Path,
 ) -> None:
     """Restore, prepare, validate, and generate deterministic artefacts.
 
@@ -550,6 +571,7 @@ def deterministic(
             categories_path=categories_path,
             raw_dir=raw_dir,
             output_dir=processed_dir,
+            origin_labels_contract_path=origin_labels_contract_path,
         )
         _report_path(bundle_dir, "Prepared bundle")
         _require_pass(

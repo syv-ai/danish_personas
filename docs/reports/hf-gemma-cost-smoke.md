@@ -3,8 +3,9 @@
 ## Scope
 
 This is a historical generation-contract v1 experiment. Its retained outputs and metrics
-are not resumable under generation contract v2 and do not establish the current v2
-quality gate.
+are not resumable under generation contract 3 and do not establish the current
+generation-3 quality gate. It predates the mandatory Danish `origin_country_da` provider
+boundary and validator `persona-safety-v15`.
 
 This was a deliberately small cost and quality experiment against Hugging Face's routed
 Inference Providers API. It used two frozen demographic records and four retained

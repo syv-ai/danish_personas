@@ -22,6 +22,15 @@ from ..models import (
     SourceMetadataExpectations,
     StatBankMetadata,
 )
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    ORIGIN_LABEL_COUNT,
+    OriginLabelContract,
+    bind_origin_triples,
+    canonical_origin_label_contract_path,
+    load_origin_label_contract,
+)
 from .bundle import verify_prepared_bundle
 from .classification import classification_snapshot_dir, verify_classification_snapshot
 from .lons20 import (
@@ -73,6 +82,7 @@ def prepare_bundle(
     raw_dir: Path,
     output_dir: Path,
     contract_path: Path = DEFAULT_LONS20_CONTRACT_PATH,
+    origin_labels_contract_path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
 ) -> Path:
     """Build a validated, immutable source bundle.
 
@@ -87,6 +97,8 @@ def prepare_bundle(
             Root destination for prepared bundles.
         contract_path:
             Separately reviewed canonical LONS20 contract.
+        origin_labels_contract_path:
+            Separately reviewed Danish FOLK2 label contract.
 
     Returns:
         Prepared bundle directory.
@@ -95,9 +107,25 @@ def prepare_bundle(
         ValueError:
             If the lock has no geography classification.
     """
+    if origin_labels_contract_path != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ValueError("Only the canonical origin-label contract is permitted")
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     contract = load_lons20_contract(path=contract_path)
+    origin_labels_contract = load_origin_label_contract(
+        path=origin_labels_contract_path
+    )
     contract_expectations = lons20_expectations(contract=contract)
+    origin_labels_contract_sha256 = sha256_file(origin_labels_contract_path)
+    if origin_labels_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+        raise ValueError(
+            "Origin-label contract bytes do not match the reviewed contract"
+        )
+    origin_labels_contract_content = origin_labels_contract_path.read_text(
+        encoding="utf-8"
+    )
+    origin_labels_contract_relative_path = _repository_relative_path(
+        origin_labels_contract_path
+    )
     job_source = _validate_lons20_source(
         lock=lock, contract_expectations=contract_expectations
     )
@@ -108,6 +136,9 @@ def prepare_bundle(
         categories_path=categories_path,
         contract_path=contract_path,
         contract_version=contract.version,
+        origin_labels_contract_path=origin_labels_contract_relative_path,
+        origin_labels_contract_version=origin_labels_contract.version,
+        origin_labels_contract_sha256=origin_labels_contract_sha256,
     )
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
@@ -159,6 +190,25 @@ def prepare_bundle(
     ras209_source = next(
         source for source in lock.sources if source.table_id == "RAS209"
     )
+    origin_metadata_da_path = (
+        source_snapshot_dir(source=origin_source, raw_dir=raw_dir) / "metadata-da.json"
+    )
+    origin_metadata_da_sha256 = sha256_file(origin_metadata_da_path)
+    origin_metadata_en_path = (
+        source_snapshot_dir(source=origin_source, raw_dir=raw_dir) / "metadata-en.json"
+    )
+    origin_metadata_en_sha256 = sha256_file(origin_metadata_en_path)
+    origin_metadata_da = StatBankMetadata.model_validate_json(
+        origin_metadata_da_path.read_bytes()
+    )
+    english_origin_labels, danish_origin_labels = _validate_origin_metadata(
+        lock_codes=origin_source.dimensions["IELAND"],
+        english_metadata=metadata_by_table["FOLK2"],
+        danish_metadata=origin_metadata_da,
+        contract=origin_labels_contract,
+        metadata_en_sha256=origin_metadata_en_sha256,
+        metadata_da_sha256=origin_metadata_da_sha256,
+    )
     prepared_source_frames = dict(source_frames)
     prepared_source_frames["FOLK2"] = _materialise_origin_zero_codes(
         raw_frame=source_frames["FOLK2"],
@@ -198,6 +248,8 @@ def prepare_bundle(
         minimum_source_count=lock.minimum_source_count,
         minimum_expected_release_count=lock.minimum_expected_release_count,
         job_function_codes=job_source.dimensions["ARBF"],
+        origin_labels=english_origin_labels,
+        origin_labels_da=danish_origin_labels,
     )
     _verify_ras209_municipality_sets(
         locked_codes=set(ras209_source.dimensions["OMRÅDE"]),
@@ -233,6 +285,7 @@ def prepare_bundle(
         official_labels=_metadata_labels(metadata_by_table["FOLK2"])["IELAND"],
         selected_codes=origin_source.dimensions["IELAND"],
         expected_zero_codes=origin_source.expected_zero_codes,
+        official_labels_da=danish_origin_labels,
     )
     source_metrics = _source_metrics(
         frames=frames,
@@ -240,6 +293,11 @@ def prepare_bundle(
         origin_metrics=origin_metrics,
         lons20_contract_version=contract.version,
         lons20_contract_sha256=contract_sha256,
+        origin_labels_contract=origin_labels_contract,
+        origin_labels_contract_path=origin_labels_contract_relative_path,
+        origin_labels_contract_sha256=origin_labels_contract_sha256,
+        origin_metadata_en_sha256=origin_metadata_en_sha256,
+        origin_metadata_da_sha256=origin_metadata_da_sha256,
     )
     source_report_path = bundle_dir / "source-preparation-report.json"
     write_json(path=source_report_path, payload=source_metrics)
@@ -265,6 +323,10 @@ def prepare_bundle(
         reference_periods={source.role: source.period for source in lock.sources},
         lons20_contract_version=contract.version,
         lons20_contract_sha256=contract_sha256,
+        origin_labels_contract_path=origin_labels_contract_relative_path,
+        origin_labels_contract_version=origin_labels_contract.version,
+        origin_labels_contract_sha256=origin_labels_contract_sha256,
+        origin_labels_contract_content=origin_labels_contract_content,
         assumptions=[
             "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
             "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
@@ -322,11 +384,16 @@ def _bundle_id(
     categories_path: Path,
     contract_path: Path,
     contract_version: int,
+    origin_labels_contract_path: str = "",
+    origin_labels_contract_version: int = 0,
+    origin_labels_contract_sha256: str = "",
 ) -> str:
     """Return the content identity for a prepared source bundle."""
     return sha256_text(
         f"{PREPARED_BUNDLE_SCHEMA_VERSION}:{sha256_file(lock_path)}:"
-        f"{sha256_file(categories_path)}:{contract_version}:{sha256_file(contract_path)}"
+        f"{sha256_file(categories_path)}:{contract_version}:{sha256_file(contract_path)}:"
+        f"{origin_labels_contract_path}:{origin_labels_contract_version}:"
+        f"{origin_labels_contract_sha256}"
     )[:16]
 
 
@@ -458,6 +525,8 @@ def _normalise_frames(
     minimum_source_count: int,
     minimum_expected_release_count: int,
     job_function_codes: list[str],
+    origin_labels: dict[str, str] | None = None,
+    origin_labels_da: dict[str, str] | None = None,
 ) -> dict[str, pl.DataFrame]:
     _reject_negative_counts(raw_frames=raw_frames)
     labels = {
@@ -467,7 +536,9 @@ def _normalise_frames(
     status_map = _invert_status_mapping(categories=categories)
 
     folk2 = _origin_country_marginal(
-        raw_frame=raw_frames["FOLK2"], official_labels=labels["FOLK2"]["IELAND"]
+        raw_frame=raw_frames["FOLK2"],
+        official_labels=origin_labels or labels["FOLK2"]["IELAND"],
+        official_labels_da=origin_labels_da,
     )
     job_function = _job_function_sex_marginal(
         raw_frame=raw_frames["LONS20"],
@@ -801,7 +872,9 @@ def _validate_lons20_partition(raw_frame: pl.DataFrame) -> None:
 
 
 def _origin_country_marginal(
-    raw_frame: pl.DataFrame, official_labels: dict[str, str]
+    raw_frame: pl.DataFrame,
+    official_labels: dict[str, str],
+    official_labels_da: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Aggregate FOLK2 to the official national origin marginal.
 
@@ -810,23 +883,36 @@ def _origin_country_marginal(
             Selected FOLK2 cells.
         official_labels:
             Official IELAND code-to-label mapping from table metadata.
+        official_labels_da (optional):
+            Official Danish IELAND code-to-label mapping.
 
     Returns:
         One row per official IELAND value, including zero-count categories.
+
+    Raises:
+        ValueError: If English and Danish code order differs.
     """
     counts = raw_frame.group_by("IELAND").agg(pl.col("count").sum())
-    categories = pl.DataFrame(
-        {
-            "origin_country_code": list(official_labels),
-            "origin_country": list(official_labels.values()),
-        }
-    )
+    categories_data: dict[str, list[str]] = {
+        "origin_country_code": list(official_labels),
+        "origin_country": list(official_labels.values()),
+    }
+    if official_labels_da is not None:
+        if tuple(official_labels) != tuple(official_labels_da):
+            raise ValueError("English and Danish FOLK2 label code order differs")
+        categories_data["origin_country_da"] = list(official_labels_da.values())
+    categories = pl.DataFrame(categories_data)
     return (
         categories.join(
             counts, left_on="origin_country_code", right_on="IELAND", how="left"
         )
         .with_columns(pl.col("count").fill_null(0).cast(pl.Int64))
-        .select("origin_country_code", "origin_country", "count")
+        .select(
+            "origin_country_code",
+            "origin_country",
+            *(["origin_country_da"] if official_labels_da is not None else []),
+            "count",
+        )
     )
 
 
@@ -951,6 +1037,7 @@ def _origin_country_metrics(
     official_labels: dict[str, str],
     selected_codes: list[str],
     expected_zero_codes: list[str] | None = None,
+    official_labels_da: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Validate the FOLK2 origin marginal and its official partition.
 
@@ -966,6 +1053,8 @@ def _origin_country_metrics(
         expected_zero_codes (optional):
             Reviewed selected IELAND values omitted as all-zero BULK partitions.
             Defaults to an empty set.
+        official_labels_da (optional):
+            Official Danish IELAND code-to-label mapping.
 
     Returns:
         FOLK2-specific validation metrics.
@@ -979,6 +1068,11 @@ def _origin_country_metrics(
     expected_zero_not_missing = sorted(approved_zero_codes & observed_codes)
     prepared_code_values = prepared_frame.get_column("origin_country_code").to_list()
     prepared_label_values = prepared_frame.get_column("origin_country").to_list()
+    prepared_da_values = (
+        prepared_frame.get_column("origin_country_da").to_list()
+        if official_labels_da is not None
+        else []
+    )
     prepared_codes = set(prepared_code_values)
     selected_metadata = {
         code: official_labels[code]
@@ -987,6 +1081,11 @@ def _origin_country_metrics(
     }
     prepared_mapping = dict(
         zip(prepared_code_values, prepared_label_values, strict=True)
+    )
+    prepared_da_mapping = (
+        dict(zip(prepared_code_values, prepared_da_values, strict=True))
+        if official_labels_da is not None
+        else {}
     )
     prepared_counts = dict(
         zip(
@@ -1009,6 +1108,12 @@ def _origin_country_metrics(
         for code in expected_codes | prepared_codes
         if prepared_mapping.get(code) != selected_metadata.get(code)
     )
+    danish_mapping_mismatches = sorted(
+        code
+        for code in expected_codes | prepared_codes
+        if official_labels_da is not None
+        and prepared_da_mapping.get(code) != official_labels_da.get(code)
+    )
     suppressed_cells = int(raw_frame.get_column("suppressed").sum())
     total = int(prepared_frame.get_column("count").sum())
     code_unique = prepared_frame.height == len(prepared_codes)
@@ -1026,7 +1131,13 @@ def _origin_country_metrics(
         and not extra_prepared
     )
     metadata_mapping = (
-        not missing_metadata and not mapping_mismatches and metadata_label_unique
+        not missing_metadata
+        and not mapping_mismatches
+        and not danish_mapping_mismatches
+        and metadata_label_unique
+        and (
+            official_labels_da is None or len(prepared_da_values) == len(prepared_codes)
+        )
     )
     zero_suppression = suppressed_cells == 0
     passed = (
@@ -1057,6 +1168,7 @@ def _origin_country_metrics(
             "prepared": prepared_mapping,
             "missing_metadata": missing_metadata,
             "mismatches": mapping_mismatches,
+            "danish_mismatches": danish_mapping_mismatches,
             "passed": metadata_mapping,
         },
         "zero_suppression": {
@@ -1120,12 +1232,44 @@ def _read_source(csv_path: Path, dimension_codes: list[str]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
+def _repository_relative_path(path: Path) -> str:
+    """Return a strict repository-relative POSIX path for a contract.
+
+    Raises:
+        ValueError: If the path is outside the repository or is an alias.
+    """
+    root = Path.cwd().resolve()
+    if ".." in path.parts or (
+        not path.is_absolute() and path.as_posix() != Path(*path.parts).as_posix()
+    ):
+        raise ValueError("Origin-label contract path is not canonical")
+    candidate = path if path.is_absolute() else root / path
+    resolved = candidate.resolve()
+    if candidate.absolute() != resolved:
+        raise ValueError("Origin-label contract path is an alias")
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as error:
+        raise ValueError(
+            "Origin-label contract must be inside the repository"
+        ) from error
+    relative_path = relative.as_posix()
+    if relative_path != Path(relative_path).as_posix() or ".." in relative.parts:
+        raise ValueError("Origin-label contract path is not canonical")
+    return canonical_origin_label_contract_path(relative_path)
+
+
 def _source_metrics(
     frames: dict[str, pl.DataFrame],
     geography_metrics: dict[str, object],
     origin_metrics: dict[str, object],
     lons20_contract_version: int,
     lons20_contract_sha256: str,
+    origin_labels_contract: OriginLabelContract,
+    origin_labels_contract_path: str,
+    origin_labels_contract_sha256: str,
+    origin_metadata_en_sha256: str,
+    origin_metadata_da_sha256: str,
 ) -> dict[str, object]:
     """Summarise prepared tables and the geography cross-check.
 
@@ -1140,6 +1284,16 @@ def _source_metrics(
             Version of the canonical LONS20 contract.
         lons20_contract_sha256:
             SHA-256 checksum of the canonical LONS20 contract.
+        origin_labels_contract:
+            Validated Danish FOLK2 label contract.
+        origin_labels_contract_path:
+            Repository-relative contract path.
+        origin_labels_contract_sha256:
+            Contract byte checksum.
+        origin_metadata_en_sha256:
+            Archived English metadata byte checksum.
+        origin_metadata_da_sha256:
+            Archived Danish metadata byte checksum.
 
     Returns:
         Report payload whose ``passed`` flag gates the prepared bundle.
@@ -1190,6 +1344,19 @@ def _source_metrics(
         "lons20_contract": {
             "version": lons20_contract_version,
             "sha256": lons20_contract_sha256,
+        },
+        "origin_labels_contract": {
+            "path": origin_labels_contract_path,
+            "version": origin_labels_contract.version,
+            "sha256": origin_labels_contract_sha256,
+            "source_metadata_en_sha256": (
+                origin_labels_contract.source_metadata_en_sha256
+            ),
+            "source_metadata_da_sha256": (
+                origin_labels_contract.source_metadata_da_sha256
+            ),
+            "metadata_en_sha256": origin_metadata_en_sha256,
+            "metadata_da_sha256": origin_metadata_da_sha256,
         },
         "tables": table_metrics,
         "geography_hierarchy": geography_metrics,
@@ -1315,6 +1482,51 @@ def _validate_lons20_source(
     if contract_expectations is not None and expectations != contract_expectations:
         raise ValueError("LONS20 lock metadata does not match canonical contract")
     return source
+
+
+def _validate_origin_metadata(
+    *,
+    lock_codes: list[str],
+    english_metadata: StatBankMetadata,
+    danish_metadata: StatBankMetadata,
+    contract: OriginLabelContract,
+    metadata_en_sha256: str,
+    metadata_da_sha256: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Validate the four-way FOLK2 IELAND partition and return both labels.
+
+    Returns:
+        English and Danish code-to-label mappings.
+
+    Raises:
+        ValueError: If the four code sets or Danish metadata binding differ.
+    """
+    if (
+        len(lock_codes) != ORIGIN_LABEL_COUNT
+        or len(set(lock_codes)) != ORIGIN_LABEL_COUNT
+    ):
+        raise ValueError("FOLK2 lock must contain exactly 241 unique IELAND codes")
+    english_labels, danish_labels = bind_origin_triples(
+        contract=contract,
+        english_metadata=english_metadata,
+        danish_metadata=danish_metadata,
+        english_metadata_sha256=metadata_en_sha256,
+        danish_metadata_sha256=metadata_da_sha256,
+    )
+    code_sets = {
+        "lock": set(lock_codes),
+        "English metadata": set(english_labels),
+        "Danish metadata": set(danish_labels),
+        "origin-label contract English": set(contract.labels_en),
+        "origin-label contract Danish": set(contract.labels_da),
+    }
+    if any(len(codes) != ORIGIN_LABEL_COUNT for codes in code_sets.values()):
+        raise ValueError("FOLK2 IELAND metadata and contract must contain 241 codes")
+    if len({frozenset(codes) for codes in code_sets.values()}) != 1:
+        raise ValueError("FOLK2 IELAND code sets differ across lock and metadata")
+    if english_labels != contract.labels_en or danish_labels != contract.labels_da:
+        raise ValueError("FOLK2 metadata labels differ from the reviewed triples")
+    return english_labels, danish_labels
 
 
 def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:

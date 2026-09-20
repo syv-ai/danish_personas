@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 import yaml
 from click.testing import CliRunner
+from manifest_helpers import origin_contract_fields
 
 from danish_personas.generation.client import RequestBudgetExceeded
 from danish_personas.generation.models import (
@@ -29,7 +30,12 @@ from danish_personas.generation.report import (
 )
 from danish_personas.generation.validation import EDUCATION_DANISH, VALIDATOR_VERSION
 from danish_personas.io import sha256_file, write_json
-from danish_personas.models import SAMPLER_SCHEMA_VERSION, RunManifest, ValidationReport
+from danish_personas.models import (
+    FROZEN_SAMPLE_SCHEMA_VERSION,
+    SAMPLER_SCHEMA_VERSION,
+    RunManifest,
+    ValidationReport,
+)
 from scripts.generate_persona_pilot import main as pilot_main
 
 
@@ -137,17 +143,26 @@ def _descriptions_json(
         "age": 35,
         "sex": "female",
         "municipality": "København",
-        "origin_country": "Denmark",
+        "origin_country_da": "Danmark",
         "education_level": "higher_education",
     }
-    sex = "kvinde" if context["sex"] == "female" else "mand"
+    pronoun = "hun" if context["sex"] == "female" else "han"
     education_level = str(context["education_level"])
-    education = EDUCATION_DANISH.get(education_level, education_level)
+    education_labels = {
+        "grundskole": "har ingen uddannelse efter folkeskolen",
+        "ungdomsuddannelse eller erhvervsuddannelse": (
+            "har en ungdoms- eller erhvervsuddannelse"
+        ),
+        "videregående uddannelse": "har en videregående uddannelse",
+        "uddannelse ikke oplyst": "uddannelsen er ikke oplyst",
+    }
+    rendered_education = EDUCATION_DANISH.get(education_level, education_level)
+    education = education_labels[rendered_education]
     if employed:
         persona = (
-            f"Personen er {context['age']} år gammel {sex} fra "
-            f"{context['municipality']} i {context['origin_country']} med en "
-            f"{education} og arbejder som {job_title}. Personen "
+            f"{pronoun.capitalize()} er {context['age']} år, bor i "
+            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
+            f"{education} og arbejder som {job_title}. {pronoun.capitalize()} "
             "kan være rolig og holder af at læse danske romaner, at lytte til "
             "musik i fritiden og at spille brætspil med venner."
         )
@@ -158,10 +173,10 @@ def _descriptions_json(
             else "uden for arbejdsmarkedet"
         )
         persona = (
-            f"Personen er {context['age']} år gammel {sex} fra "
-            f"{context['municipality']} i {context['origin_country']} med en "
-            f"{education} og er {status}. Personen kan være rolig og nyder "
-            "at læse danske romaner og at lytte til musik i fritiden."
+            f"{pronoun.capitalize()} er {context['age']} år, bor i "
+            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
+            f"{education} og er {status}. {pronoun.capitalize()} kan være rolig "
+            "og nyder at læse danske romaner og at lytte til musik i fritiden."
         )
     return json.dumps(
         {
@@ -208,160 +223,102 @@ class _RejectingClient(_MockClient):
         return response
 
 
-def test_generation_withholds_resolution_provenance_from_both_prompts(
+def test_generation_rejects_origin_contract_and_row_mismatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both LLM stages receive values without sampler resolution metadata."""
+    """V2 configs and stale, missing, or mismatched origin inputs fail closed."""
     paths = _write_inputs(root=tmp_path)
-    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
-    _MockClient.requests = 0
-    _MockClient.payloads = []
+    config = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
 
-    run_dir = generate_personas(
-        input_path=paths["sample"],
-        sample_manifest_path=paths["sample_manifest"],
-        config_path=paths["config"],
-        output_dir=tmp_path / "outputs",
-        rows=1,
-        live=True,
-    )
+    config["version"] = 2
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(ValueError):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=tmp_path / "v2",
+            rows=1,
+            live=False,
+        )
 
-    resolution_columns = (
-        "age_resolution",
-        "marital_resolution",
-        "education_resolution",
-        "detailed_status_resolution",
-        "origin_country_code",
-        "job_function_code",
-        "job_function_resolution",
-        "municipality_code",
-        "municipality",
-    )
-    sample = pl.read_parquet(paths["sample"])
-    assert set(resolution_columns) <= set(sample.columns)
-    assert len(_MockClient.payloads) == 2
-    attributes_request = _MockClient.payloads[0]
-    descriptions_request = _MockClient.payloads[1]
-    attributes_payload = attributes_request["demographics_and_personality"]
-    descriptions_payload = descriptions_request["demographics_and_personality"]
-    assert isinstance(attributes_payload, dict)
-    assert isinstance(descriptions_payload, dict)
+    config["version"] = 3
+    config.pop("origin_label_contract")
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(ValueError):
+        GenerationConfig.model_validate(config)
 
-    stage_one_allowed = {
-        "origin_country",
-        "municipality",
-        "job_function",
-        "age",
-        "sex",
-        "education_level",
-        "labour_market_status",
-        "openness_score",
-        "openness_label",
-        "conscientiousness_score",
-        "conscientiousness_label",
-        "extraversion_score",
-        "extraversion_label",
-        "agreeableness_score",
-        "agreeableness_label",
-        "neuroticism_score",
-        "neuroticism_label",
-        "current_status",
-    }
-    stage_two_allowed = {
-        "origin_country",
-        "municipality",
-        "job_function",
-        "age",
-        "sex",
-        "education_level",
-        "labour_market_status",
-        "current_status",
-    }
-    stage_one_forbidden = {
-        "age_resolution",
-        "marital_resolution",
-        "education_resolution",
-        "detailed_status_resolution",
-        "origin_country_code",
-        "job_function_code",
-        "job_function_resolution",
-        "municipality_code",
-        "region_code",
-        "country",
-        "detailed_status_code",
-        "education_source_code",
-        "persona_id",
-    }
-    ocean_fields = {
-        "openness_score",
-        "openness_label",
-        "conscientiousness_score",
-        "conscientiousness_label",
-        "extraversion_score",
-        "extraversion_label",
-        "agreeableness_score",
-        "agreeableness_label",
-        "neuroticism_score",
-        "neuroticism_label",
-    }
-    assert set(attributes_request) == {
-        "demographics_and_personality",
-        "allowed_job_titles",
-    }
-    assert set(descriptions_request) == {
-        "demographics_and_personality",
-        "required_persona_facts",
-        "allowed_personality_tendencies",
-        "generated_attributes",
-    }
-    assert set(attributes_payload) == stage_one_allowed
-    assert set(descriptions_payload) == stage_two_allowed
-    stage_two_forbidden = stage_one_forbidden | ocean_fields
-    assert stage_one_forbidden.isdisjoint(attributes_payload)
-    assert stage_two_forbidden.isdisjoint(descriptions_payload)
-    assert stage_one_allowed.isdisjoint(stage_one_forbidden)
-    assert stage_two_allowed.isdisjoint(stage_two_forbidden)
-    assert {"municipality", "origin_country", "job_function"} <= set(attributes_payload)
-    assert {"municipality", "origin_country", "job_function"} <= set(
-        descriptions_payload
+    config["origin_label_contract"] = str(
+        Path("config/folk2-ieland-labels-da.yaml").resolve()
     )
-    allowed_phrases = descriptions_request["allowed_personality_tendencies"]
-    assert isinstance(allowed_phrases, list)
-    assert allowed_phrases == list(
-        allowed_personality_tendencies(context=attributes_payload)
-    )
-    assert allowed_phrases
-    assert all(
-        isinstance(phrase, str) and phrase.startswith("kan være ")
-        for phrase in allowed_phrases
-    )
-    assert (
-        attributes_payload["job_function"]
-        == "Business and administration professionals"
-    )
-    assert attributes_payload["municipality"] == "København"
-    assert attributes_payload["education_level"] == "videregående uddannelse"
-    assert descriptions_payload["education_level"] == "videregående uddannelse"
-    assert descriptions_request["required_persona_facts"] == {
-        "age": "35 år",
-        "sex": "kvinde",
-        "municipality": "København",
-        "education_level": "videregående uddannelse",
-        "origin_country": "Denmark",
-        "current_employment": "forretningsspecialist",
-    }
-    assert "generated_attributes" in _MockClient.payloads[1]
+    with pytest.raises(ValueError, match="canonical path"):
+        GenerationConfig.model_validate(config)
 
-    generation_manifest = json.loads(
-        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    config["origin_label_contract"] = "missing-origin-labels.yaml"
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="canonical path"):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=tmp_path / "missing",
+            rows=1,
+            live=False,
+        )
+
+    tampered_contract = tmp_path / "tampered-origin-labels.yaml"
+    tampered = yaml.safe_load(
+        Path("config/folk2-ieland-labels-da.yaml").read_text(encoding="utf-8")
     )
-    assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
-    assert generation_manifest["validator_version"] == VALIDATOR_VERSION
-    output = pl.read_parquet(run_dir / "generated-personas.parquet")
-    assert set(resolution_columns) <= set(output.columns)
-    assert output.select(list(resolution_columns)).equals(
-        sample.head(1).select(list(resolution_columns))
+    tampered["labels_da"]["5100"] = "Libanon"
+    tampered_contract.write_text(
+        yaml.safe_dump(tampered, allow_unicode=True), encoding="utf-8"
     )
+    config["origin_label_contract"] = tampered_contract.name
+    config["job_title_mapping"] = str(Path("config/job-function-titles.yaml").resolve())
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.chdir(tmp_path)
+        with pytest.raises(ValueError):
+            generate_personas(
+                input_path=paths["sample"],
+                sample_manifest_path=paths["sample_manifest"],
+                config_path=paths["config"],
+                output_dir=tmp_path / "tampered",
+                rows=1,
+                live=False,
+            )
+
+    config["origin_label_contract"] = "config/folk2-ieland-labels-da.yaml"
+    config.pop("job_title_mapping")
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+    sample = pl.read_parquet(paths["sample"]).with_columns(
+        pl.when(pl.col("origin_country_code") == "5100")
+        .then(pl.lit("Libanon"))
+        .otherwise(pl.col("origin_country_da"))
+        .alias("origin_country_da")
+    )
+    sample.write_parquet(paths["sample"])
+    sample_manifest = FrozenSampleManifest.model_validate_json(
+        paths["sample_manifest"].read_text(encoding="utf-8")
+    ).model_copy(update={"sha256": sha256_file(paths["sample"])})
+    write_json(path=paths["sample_manifest"], payload=sample_manifest)
+    source_path = paths["sample"].parent / "structured-records.parquet"
+    sample.write_parquet(source_path)
+    run_manifest_path = source_path.parent / "run-manifest.json"
+    run_manifest = RunManifest.model_validate_json(
+        run_manifest_path.read_text(encoding="utf-8")
+    ).model_copy(update={"data_sha256": sha256_file(source_path)})
+    write_json(path=run_manifest_path, payload=run_manifest)
+    with pytest.raises(ValueError, match="triple"):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=tmp_path / "mismatch",
+            rows=1,
+            live=False,
+        )
 
 
 def _write_inputs(root: Path) -> dict[str, Path]:
@@ -401,8 +358,9 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "agreeableness_label": ["high", "high"],
             "neuroticism_score": [48.0, 47.0],
             "neuroticism_label": ["average", "average"],
-            "origin_country_code": ["5100", "5103"],
-            "origin_country": ["Denmark", "Denmark"],
+            "origin_country_code": ["5100", "5456"],
+            "origin_country": ["Denmark", "Lebanon"],
+            "origin_country_da": ["Danmark", "Libanon"],
         }
     )
     source_path = run_dir / "structured-records.parquet"
@@ -422,6 +380,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         data_sha256=sha256_file(source_path),
         logical_content_sha256="2" * 64,
         llm_calls=0,
+        **origin_contract_fields(),
     )
     write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
     write_json(
@@ -432,10 +391,11 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             created_at="2026-01-01T00:00:00+00:00",
             subject_id=run_manifest.run_id,
             metrics=[],
+            **origin_contract_fields(),
         ),
     )
     sample_manifest = FrozenSampleManifest(
-        sample_schema_version=2,
+        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
         source_run_id=run_manifest.run_id,
         rows=2,
         strata=[],
@@ -443,6 +403,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         data_file=Path(sample_path.name),
         sha256=sha256_file(sample_path),
         llm_calls=0,
+        **origin_contract_fields(),
     )
     sample_manifest_path = sample_path.with_suffix(".manifest.json")
     write_json(path=sample_manifest_path, payload=sample_manifest)
@@ -450,9 +411,16 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     personas_prompt = root / "personas.md"
     attributes_prompt.write_text("Danske attributter")
     personas_prompt.write_text("Danske personaer")
+    contract_path = root / "config" / "folk2-ieland-labels-da.yaml"
+    contract_path.parent.mkdir()
+    contract_path.write_bytes(
+        (Path("config") / "folk2-ieland-labels-da.yaml").read_bytes()
+    )
+    mapping_path = root / "config" / "job-function-titles.yaml"
+    mapping_path.write_bytes((Path("config") / "job-function-titles.yaml").read_bytes())
     config_path = root / "generation.yaml"
     config = {
-        "version": 2,
+        "version": 3,
         "llm_generation_enabled": True,
         "base_url": "http://test/v1",
         "model": "test-model",
@@ -469,6 +437,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "response_format": "json_schema",
         "attributes_prompt": str(attributes_prompt),
         "personas_prompt": str(personas_prompt),
+        "origin_label_contract": "config/folk2-ieland-labels-da.yaml",
     }
     config_path.write_text(yaml.safe_dump(config))
     return {
@@ -477,6 +446,181 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         "config": config_path,
         "personas_prompt": personas_prompt,
     }
+
+
+def test_generation_withholds_resolution_provenance_from_both_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both LLM stages receive values without sampler resolution metadata."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    _MockClient.requests = 0
+    _MockClient.payloads = []
+
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+
+    resolution_columns = (
+        "age_resolution",
+        "marital_resolution",
+        "education_resolution",
+        "detailed_status_resolution",
+        "origin_country_code",
+        "origin_country",
+        "job_function_code",
+        "job_function_resolution",
+        "municipality_code",
+        "municipality",
+    )
+    sample = pl.read_parquet(paths["sample"])
+    assert set(resolution_columns) <= set(sample.columns)
+    assert len(_MockClient.payloads) == 2
+    attributes_request = _MockClient.payloads[0]
+    descriptions_request = _MockClient.payloads[1]
+    attributes_payload = attributes_request["demographics_and_personality"]
+    descriptions_payload = descriptions_request["demographics_and_personality"]
+    assert isinstance(attributes_payload, dict)
+    assert isinstance(descriptions_payload, dict)
+
+    stage_one_allowed = {
+        "origin_country_da",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+        "current_status",
+    }
+    stage_two_allowed = {
+        "origin_country_da",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "current_status",
+    }
+    stage_one_forbidden = {
+        "age_resolution",
+        "marital_resolution",
+        "education_resolution",
+        "detailed_status_resolution",
+        "origin_country_code",
+        "origin_country",
+        "job_function_code",
+        "job_function_resolution",
+        "municipality_code",
+        "region_code",
+        "country",
+        "detailed_status_code",
+        "education_source_code",
+        "persona_id",
+    }
+    ocean_fields = {
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+    }
+    assert set(attributes_request) == {
+        "demographics_and_personality",
+        "allowed_job_titles",
+    }
+    assert set(descriptions_request) == {
+        "demographics_and_personality",
+        "required_persona_facts",
+        "allowed_personality_tendencies",
+        "generated_attributes",
+    }
+    assert set(attributes_payload) == stage_one_allowed
+    assert set(descriptions_payload) == stage_two_allowed
+    stage_two_forbidden = stage_one_forbidden | ocean_fields
+    assert stage_one_forbidden.isdisjoint(attributes_payload)
+    assert stage_two_forbidden.isdisjoint(descriptions_payload)
+    assert stage_one_allowed.isdisjoint(stage_one_forbidden)
+    assert stage_two_allowed.isdisjoint(stage_two_forbidden)
+    assert {"municipality", "origin_country_da", "job_function"} <= set(
+        attributes_payload
+    )
+    assert {"municipality", "origin_country_da", "job_function"} <= set(
+        descriptions_payload
+    )
+    allowed_phrases = descriptions_request["allowed_personality_tendencies"]
+    assert isinstance(allowed_phrases, list)
+    assert allowed_phrases == list(
+        allowed_personality_tendencies(context=attributes_payload)
+    )
+    assert allowed_phrases
+    assert all(
+        isinstance(phrase, str) and phrase.startswith("kan være ")
+        for phrase in allowed_phrases
+    )
+    assert (
+        attributes_payload["job_function"]
+        == "Business and administration professionals"
+    )
+    assert attributes_payload["municipality"] == "København"
+    assert attributes_payload["origin_country_da"] == "Danmark"
+    assert "origin_country" not in attributes_payload
+    assert "origin_country" not in descriptions_payload
+    assert attributes_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_request["required_persona_facts"] == {
+        "pronoun_age": "hun er 35 år",
+        "municipality": "bor i København",
+        "origin": "kommer fra Danmark",
+        "education": "har en videregående uddannelse",
+        "employment": "arbejder som forretningsspecialist",
+    }
+    assert "generated_attributes" in _MockClient.payloads[1]
+
+    generation_manifest = json.loads(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
+    assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
+    assert generation_manifest["validator_version"] == VALIDATOR_VERSION
+    assert generation_manifest["origin_label_contract_file"] == (
+        "config/folk2-ieland-labels-da.yaml"
+    )
+    assert generation_manifest["origin_label_contract_version"] == 1
+    assert generation_manifest["origin_label_contract_content"]["labels_da"][
+        "5100"
+    ] == ("Danmark")
+    assert validate_persona_run(run_dir=run_dir).passed
+    report = json.loads((run_dir / "validation-report.json").read_text())
+    assert (
+        report["origin_label_contract_sha256"]
+        == generation_manifest["origin_label_contract_sha256"]
+    )
+    output = pl.read_parquet(run_dir / "generated-personas.parquet")
+    assert set(resolution_columns) <= set(output.columns)
+    assert output.select(list(resolution_columns)).equals(
+        sample.head(1).select(list(resolution_columns))
+    )
 
 
 def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
@@ -655,6 +799,44 @@ def test_persona_validation_rejects_mapping_binding_tampering(
     assert not validate_persona_run(run_dir=run_dir).passed
 
 
+def test_persona_validation_rejects_origin_binding_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay rejects changed origin content, checksums, and path substitution."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
+    original_checkpoint = checkpoint_path.read_bytes()
+    checkpoint = json.loads(original_checkpoint)
+    checkpoint["origin_label_contract_content"]["labels_da"]["5100"] = "Libanon"
+    write_json(path=checkpoint_path, payload=checkpoint)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    checkpoint_path.write_bytes(original_checkpoint)
+    manifest_path = run_dir / "generation-manifest.json"
+    original_manifest = manifest_path.read_bytes()
+    manifest = json.loads(original_manifest)
+    manifest["origin_label_contract_sha256"] = "f" * 64
+    write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+    manifest_path.write_bytes(original_manifest)
+    alternate = tmp_path / "same-origin-contract.yaml"
+    alternate.write_bytes(Path("config/folk2-ieland-labels-da.yaml").read_bytes())
+    manifest = json.loads(original_manifest)
+    manifest["origin_label_contract_file"] = str(alternate)
+    write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
 @pytest.mark.parametrize("artifact", ["checkpoint", "manifest"])
 def test_persona_validation_rejects_stale_validator_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
@@ -676,7 +858,7 @@ def test_persona_validation_rejects_stale_validator_version(
         else run_dir / "generation-manifest.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["validator_version"] = "persona-safety-v12"
+    payload["validator_version"] = "persona-safety-v14"
     write_json(path=path, payload=payload)
 
     assert not validate_persona_run(run_dir=run_dir).passed
@@ -1006,8 +1188,12 @@ def test_pilot_validation_uses_repository_root_from_another_cwd(
         write_json(path=shard_path, payload=shard)
         reference["manifest_sha256"] = sha256_file(shard_path)
     write_json(path=manifest_path, payload=manifest)
-    (tmp_path / "elsewhere").mkdir()
-    monkeypatch.chdir(tmp_path / "elsewhere")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "config").mkdir(parents=True)
+    (elsewhere / "config" / "folk2-ieland-labels-da.yaml").write_bytes(
+        (tmp_path / "config" / "folk2-ieland-labels-da.yaml").read_bytes()
+    )
+    monkeypatch.chdir(elsewhere)
     assert validate_persona_pilot(pilot_dir=pilot_dir, repository_root=tmp_path).passed
 
 
@@ -1078,6 +1264,7 @@ def test_pipeline_selects_an_offset_range(
     paths = _write_inputs(root=tmp_path)
     monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
     _MockClient.requests = 0
+    _MockClient.payloads = []
     run_dir = generate_personas(
         input_path=paths["sample"],
         sample_manifest_path=paths["sample_manifest"],
@@ -1087,6 +1274,10 @@ def test_pipeline_selects_an_offset_range(
         live=True,
         offset=1,
     )
+    demographics = _MockClient.payloads[0]["demographics_and_personality"]
+    assert isinstance(demographics, dict)
+    assert demographics["origin_country_da"] == "Libanon"
+    assert "origin_country" not in demographics
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
     assert output.get_column("persona_id").to_list() == ["persona-2"]
     assert validate_persona_run(run_dir=run_dir).passed
@@ -1175,15 +1366,11 @@ def test_upstream_sample_rejects_legacy_sampler_schema(tmp_path: Path) -> None:
     """A validated legacy run cannot cross the current Phase-3 boundary."""
     paths = _write_inputs(root=tmp_path)
     manifest_path = paths["sample"].parent / "run-manifest.json"
-    manifest = RunManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    write_json(
-        path=manifest_path,
-        payload=manifest.model_copy(update={"sampler_schema_version": 2}),
-    )
+    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest["sampler_schema_version"] = 2
+    write_json(path=manifest_path, payload=legacy_manifest)
 
-    with pytest.raises(ValueError, match="unsupported sampler schema version"):
+    with pytest.raises(ValueError, match="Unsupported sampler schema version"):
         validate_upstream_sample(
             input_path=paths["sample"], sample_manifest_path=paths["sample_manifest"]
         )
@@ -1194,7 +1381,7 @@ def test_upstream_sample_rejects_origin_less_legacy_columns(tmp_path: Path) -> N
     paths = _write_inputs(root=tmp_path)
     sample_path = paths["sample"]
     pl.read_parquet(sample_path).drop(
-        "origin_country_code", "origin_country"
+        "origin_country_code", "origin_country", "origin_country_da"
     ).write_parquet(sample_path)
     sample_manifest = FrozenSampleManifest.model_validate_json(
         paths["sample_manifest"].read_text(encoding="utf-8")

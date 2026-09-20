@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import re
 import typing as t
 from pathlib import Path
 
 import polars as pl
+from pydantic import ValidationError
 
 from ..generation.job_titles import load_job_title_mapping
 from ..generation.models import GenerationConfig
 from ..generation.pipeline import generation_context_sha256
 from ..io import load_yaml_model, sha256_file
 from ..models import StrictModel, ValidationReport
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    OriginLabelContract,
+    load_origin_label_contract,
+)
 from .common import (
     PERSONA_OUTPUT_COLUMNS,
     persona_output_dtypes_are_valid,
@@ -44,6 +52,7 @@ _PUBLIC_FILES = {
     "provenance/prompts/personas-da.md",
     "provenance/config/generation.yaml",
     "provenance/config/job-function-titles.yaml",
+    "provenance/config/folk2-ieland-labels-da.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -63,6 +72,23 @@ _PUBLIC_DIRS = {
     "provenance/code",
     "data",
 }
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object while rejecting ambiguous duplicate keys.
+
+    Returns:
+        The object with every key present exactly once.
+
+    Raises:
+        ValueError: If a key occurs more than once.
+    """
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("Public JSON contract contains a duplicate key")
+        payload[key] = value
+    return payload
 
 
 def verify_release(
@@ -171,9 +197,69 @@ def _lexical_absolute(path: Path) -> Path:
 
 def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     try:
-        return model.model_validate_json(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+        return model.model_validate(payload)
+    except ValidationError as error:
+        diagnostics = "; ".join(
+            f"{_safe_validation_location(item=item, model=model)}: "
+            f"{_safe_validation_error_type(item)}"
+            for item in error.errors(
+                include_url=False, include_context=False, include_input=False
+            )
+        )
+        raise ReleaseVerificationError(
+            f"Invalid public contract: {path} ({diagnostics})"
+        ) from error
     except Exception as error:
         raise ReleaseVerificationError(f"Invalid public contract: {path}") from error
+
+
+def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
+    """Return a fixed diagnostic code without echoing validation input."""
+    location = item.get("loc")
+    message = str(item.get("msg", ""))
+    if location == ("origin_label_contract_content",):
+        origin_failures = (
+            ("Unsupported origin-label contract version", "origin_version"),
+            ("contract table_id must be FOLK2", "origin_table"),
+            ("contract dimension must be IELAND", "origin_dimension"),
+            ("contract language must be da", "origin_language"),
+            ("English metadata checksum does not match", "origin_metadata_en"),
+            ("Danish metadata checksum does not match", "origin_metadata_da"),
+            ("must contain 241 labels", "origin_label_count"),
+            ("Malformed FOLK2 IELAND code", "origin_code"),
+            ("label is blank or padded", "origin_label_padding"),
+            ("label is not NFC-normalised", "origin_label_nfc"),
+            ("labels must be unique", "origin_label_uniqueness"),
+            ("English keys differ from the reviewed contract", "origin_en_keys"),
+            ("English whitespace differs", "origin_en_whitespace"),
+            ("English values differ from the reviewed contract", "origin_en_values"),
+            ("Danish keys differ from the reviewed contract", "origin_da_keys"),
+            ("Danish whitespace differs", "origin_da_whitespace"),
+            ("Danish values differ from the reviewed contract", "origin_da_values"),
+            ("English and Danish code order differs", "origin_code_order"),
+            ("English labels must be unique", "origin_english_uniqueness"),
+        )
+        for fragment, diagnostic in origin_failures:
+            if fragment in message:
+                return diagnostic
+    return str(item.get("type", "validation_error"))
+
+
+def _safe_validation_location(
+    *, item: t.Mapping[str, object], model: type[ModelType]
+) -> str:
+    """Return only an allowlisted top-level model field."""
+    location = item.get("loc")
+    if not isinstance(location, tuple) or not location:
+        return "<model>"
+    field = location[0]
+    if isinstance(field, str) and field in model.model_fields:
+        return field
+    return "<model>"
 
 
 def _require_no_symlink_components(path: Path) -> None:
@@ -239,6 +325,16 @@ def _verify_contents(
     )
     if evidence.pilot_id != manifest.pilot_id or evidence.rows != manifest.rows:
         raise ReleaseVerificationError("Evidence identity binding failed")
+    if (
+        manifest.origin_label_contract_file != evidence.origin_label_contract_file
+        or manifest.origin_label_contract_sha256
+        != evidence.origin_label_contract_sha256
+        or manifest.origin_label_contract_version
+        != evidence.origin_label_contract_version
+        or manifest.origin_label_contract_content
+        != evidence.origin_label_contract_content
+    ):
+        raise ReleaseVerificationError("Origin-label contract identity binding failed")
     if evidence.output_sha256 != _artifact_hash(manifest, "data/personas.parquet"):
         raise ReleaseVerificationError("Evidence output binding failed")
     if evidence.pilot_validation_report_sha256 != sha256_file(
@@ -309,6 +405,19 @@ def _check_artifacts(release_dir: Path, manifest: ReleaseManifest) -> None:
 def _check_evidence(*, evidence: ReleaseEvidence, rows: int) -> None:
     if sum(item.rows for item in evidence.shards) != rows:
         raise ReleaseVerificationError("Shard row sums do not match output")
+    for shard in evidence.shards:
+        if (
+            shard.generation_config_sha256 != evidence.generation_config_sha256
+            or shard.generation_context_sha256 != evidence.generation_context_sha256
+            or shard.origin_label_contract_file != evidence.origin_label_contract_file
+            or shard.origin_label_contract_sha256
+            != evidence.origin_label_contract_sha256
+            or shard.origin_label_contract_version
+            != evidence.origin_label_contract_version
+        ):
+            raise ReleaseVerificationError(
+                "Shard generation contract bindings disagree"
+            )
     _check_shard_accounting(evidence=evidence)
     _check_accounting_values(evidence=evidence)
 
@@ -400,7 +509,7 @@ def _check_output(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleaseVerificationError(
-            "Persona output schema must match generation contract v2"
+            "Persona output schema must match generation contract v3"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleaseVerificationError(
@@ -412,10 +521,13 @@ def _check_output(
             job_title_mapping=load_job_title_mapping(
                 release_dir / "provenance/config/job-function-titles.yaml"
             ),
+            origin_label_contract=load_origin_label_contract(
+                release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
+            ),
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
-            "Persona output fails contextual generation-v2 validation"
+            "Persona output fails contextual generation-v3 validation"
         ) from error
     if not report.passed or report.kind != "persona_pilot":
         raise ReleaseVerificationError("Pilot validation report is not passing")
@@ -453,6 +565,9 @@ def _check_provenance_bindings(
         != evidence.personas_prompt_sha256
     ):
         raise ReleaseVerificationError("Personas prompt checksum mismatch")
+    _check_origin_contract(
+        release_dir=release_dir, manifest=manifest, evidence=evidence
+    )
     _check_config_hashes(release_dir=release_dir, evidence=evidence)
     policy = load_yaml_model(
         path=release_dir / "provenance/release-policy.yaml", model=ReleasePolicy
@@ -477,6 +592,7 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
         "categories.yaml",
         "sampling.yaml",
         "validation.yaml",
+        "folk2-ieland-labels-da.yaml",
     }
     if set(evidence.config_hashes) != expected_names:
         raise ReleaseVerificationError("Configuration hash set is incomplete")
@@ -495,9 +611,71 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
             If a packaged generation input or digest is inconsistent.
     """
     config_path = release_dir / "provenance/config/generation.yaml"
+    config, attributes_path, personas_path = _load_generation_inputs(
+        config_path=config_path, release_dir=release_dir, evidence=evidence
+    )
+    try:
+        mapping_path = release_dir / "provenance/config/job-function-titles.yaml"
+        mapping = load_job_title_mapping(mapping_path)
+        origin_contract = _load_bound_origin_contract(
+            release_dir=release_dir, evidence=evidence
+        )
+        origin_path = release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
+        context = generation_context_sha256(
+            config=config,
+            attributes_prompt=attributes_path.read_text(encoding="utf-8"),
+            personas_prompt=personas_path.read_text(encoding="utf-8"),
+            job_title_mapping=mapping,
+            job_title_mapping_sha256=sha256_file(mapping_path),
+            origin_label_contract=origin_contract,
+            origin_label_contract_sha256=sha256_file(origin_path),
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ReleaseVerificationError(
+            "Generation context cannot be computed"
+        ) from error
+    if context != evidence.generation_context_sha256:
+        raise ReleaseVerificationError("Generation context checksum binding failed")
+
+
+def _load_bound_origin_contract(
+    *, release_dir: Path, evidence: ReleaseEvidence
+) -> OriginLabelContract:
+    """Load the packaged contract and compare its portable evidence binding.
+
+    Returns:
+        The strictly validated packaged origin-label contract.
+
+    Raises:
+        ReleaseVerificationError:
+            If the contract content, version, or checksum differs from evidence.
+    """
+    path = release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
+    contract = load_origin_label_contract(path)
+    if (
+        contract != evidence.origin_label_contract_content
+        or contract.version != evidence.origin_label_contract_version
+        or sha256_file(path) != evidence.origin_label_contract_sha256
+    ):
+        raise ReleaseVerificationError("Origin-label contract content mismatch")
+    return contract
+
+
+def _load_generation_inputs(
+    *, release_dir: Path, config_path: Path, evidence: ReleaseEvidence
+) -> tuple[GenerationConfig, Path, Path]:
+    """Load and check the packaged v3 generation inputs.
+
+    Returns:
+        The effective config and the two packaged prompt paths.
+
+    Raises:
+        ReleaseVerificationError:
+            If a generation input is missing, changed, or misbound.
+    """
     config = _load_yaml(config_path, GenerationConfig)
-    if config.version != 2:
-        raise ReleaseVerificationError("Release requires generation contract v2")
+    if config.version != 3:
+        raise ReleaseVerificationError("Release requires generation contract v3")
     if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
     attributes_path = release_dir / "provenance/prompts/attributes-da.md"
@@ -508,26 +686,13 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
         raise ReleaseVerificationError("Generation personas prompt binding failed")
     if config.job_title_mapping != Path("config/job-function-titles.yaml"):
         raise ReleaseVerificationError("Job-title mapping path binding failed")
+    if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleaseVerificationError("Origin-label contract path binding failed")
     if sha256_file(attributes_path) != evidence.attributes_prompt_sha256:
         raise ReleaseVerificationError("Attributes prompt checksum mismatch")
     if sha256_file(personas_path) != evidence.personas_prompt_sha256:
         raise ReleaseVerificationError("Personas prompt checksum mismatch")
-    try:
-        mapping_path = release_dir / "provenance/config/job-function-titles.yaml"
-        mapping = load_job_title_mapping(mapping_path)
-        context = generation_context_sha256(
-            config=config,
-            attributes_prompt=attributes_path.read_text(encoding="utf-8"),
-            personas_prompt=personas_path.read_text(encoding="utf-8"),
-            job_title_mapping=mapping,
-            job_title_mapping_sha256=sha256_file(mapping_path),
-        )
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ReleaseVerificationError(
-            "Generation context cannot be computed"
-        ) from error
-    if context != evidence.generation_context_sha256:
-        raise ReleaseVerificationError("Generation context checksum binding failed")
+    return config, attributes_path, personas_path
 
 
 def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:
@@ -537,6 +702,38 @@ def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:
         raise ReleaseVerificationError(
             f"Invalid public YAML contract: {path}"
         ) from error
+
+
+def _check_origin_contract(
+    *, release_dir: Path, manifest: ReleaseManifest, evidence: ReleaseEvidence
+) -> None:
+    """Verify the immutable Danish origin-label contract bytes and identity.
+
+    Raises:
+        ReleaseVerificationError:
+            If the packaged contract is missing, altered, or misbound.
+    """
+    path = release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
+    if evidence.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleaseVerificationError("Origin-label contract path binding failed")
+    if manifest.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleaseVerificationError("Origin-label manifest path binding failed")
+    try:
+        contract = load_origin_label_contract(path)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ReleaseVerificationError("Invalid origin-label contract") from error
+    digest = sha256_file(path)
+    if digest != ORIGIN_LABEL_CONTRACT_SHA256:
+        raise ReleaseVerificationError("Origin-label contract checksum mismatch")
+    if (
+        digest != evidence.origin_label_contract_sha256
+        or digest != manifest.origin_label_contract_sha256
+        or contract != evidence.origin_label_contract_content
+        or contract != manifest.origin_label_contract_content
+        or contract.version != evidence.origin_label_contract_version
+        or contract.version != manifest.origin_label_contract_version
+    ):
+        raise ReleaseVerificationError("Origin-label contract binding failed")
 
 
 def _output_ids(output: pl.DataFrame) -> list[str]:

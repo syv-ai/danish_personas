@@ -23,10 +23,13 @@ Restoration creates content-addressed query subdirectories under
 | [RAS210][ras210]   | 2024   | Held-out status-by-municipality validation               |                32,076 |   192,456 |  2,072,366 | `d1eca1c04b11fba402a3cc18d0c44503dbadc2bbcb289170aa09e0e0dd66cefa` |
 
 For each table, the snapshot also contains English and Danish metadata, the exact POST
-query, response headers, and a machine-readable checksum manifest. Selected observations
-are the product of selected values; API cells multiply that count by every selected
-dimension plus the observation-value column. FOLK2 and RAS209 use StatBank's BULK
-streaming response because their 2,186,352 and 5,654,880 actual cells exceed the
+query, response headers, and a machine-readable checksum manifest. FOLK2's Danish IELAND
+display labels are additionally frozen in the reviewed 241-code contract
+`config/folk2-ieland-labels-da.yaml`, bound to source metadata SHA-256
+`f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Selected
+observations are the product of selected values; API cells multiply that count by every
+selected dimension plus the observation-value column. FOLK2 and RAS209 use StatBank's
+BULK streaming response because their 2,186,352 and 5,654,880 actual cells exceed the
 one-million limit for non-streaming formats. BULK is explicitly exempt from that limit
 and is streamed to disk in bounded chunks. StatBank omits zero-count BULK rows; the 31
 omitted IELAND partitions in this snapshot are recorded explicitly as reviewed
@@ -46,6 +49,11 @@ behind a redirect, retrieved on 17 September 2026 and frozen in
 | Classification                                              | Valid from | Pipeline role                                         | Raw bytes | CSV SHA-256                                                        |
 | ----------------------------------------------------------- | ---------- | ----------------------------------------------------- | --------: | ------------------------------------------------------------------ |
 | [Regioner, landsdele og kommuner][nuts] (`NUTS_V1_2007_DK`) | 2007-01-01 | Official region, landsdel, and municipality hierarchy |     5,748 | `67a193164777e61552daae0d52cb59bc4b589d16cc696365fc6c51a31f92f55f` |
+
+The archived FOLK2 `metadata-da` response is the authoritative display-label source for
+all 241 selected IELAND codes. The contract preserves the official code-to-label mapping
+for deterministic joins and audit, but only its Danish display label is permitted in
+provider payloads.
 
 Statistics Denmark marks this classification as still valid. The snapshot contains the
 attachment CSV, the response headers, and a machine-readable checksum manifest.
@@ -78,14 +86,18 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   codes and labels and rejects mapping changes. The raw BULK partition remains available
   to provenance checks before approved zero omissions are materialised. This marginal is
   not ethnicity or citizenship, and no country groups, correlations, or joint
-  associations are inferred.
+  associations are inferred. Its Danish display labels are checked against the archived
+  metadata-da 241-code contract with source metadata SHA-256
+  `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`.
 - FOLK2 is sampled independently as a national marginal into the Phase 2
-  `origin_country_code` and `origin_country` fields. Official unequal weights and
-  labels, including Stateless and Not stated, are retained; zero-weight categories are
-  excluded. The human-readable origin label reaches the provider as a grounding fact,
-  while its code and resolution are withheld. Origin cannot drive language, culture,
-  religion, occupation, personality, or visual appearance; it is not ethnicity,
-  citizenship, or residence.
+  `origin_country_code`, English `origin_country`, and mandatory Danish
+  `origin_country_da` fields. Official unequal weights and labels, including Stateless
+  and Not stated, are retained; zero-weight categories are excluded. The English label
+  remains official source/audit provenance. Only the Danish label reaches both provider
+  stages and exact persona grounding; code, English label, resolutions, and contract
+  metadata are withheld. Neither label is ethnicity, citizenship, residence, or
+  appearance. Origin cannot drive culture, religion, job, interests, personality, or
+  visual traits.
 - FOLK1A 2025Q1 is the closest demographic snapshot to the November 2024 RAS data.
 - FOLK1A ages 16-19 estimate the age-18-and-over share of RAS209's 16-19 band. Ages 16
   and 17 are excluded from generated records.

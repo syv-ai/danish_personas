@@ -3,23 +3,18 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_serializer, field_validator, model_validator
 
-from ..models import StrictModel
+from ..models import FrozenSampleManifest, StrictModel, ValidationReport
+from ..origin_labels import (
+    OriginLabelContract,
+    OriginLabelContractPath,
+    canonical_origin_label_contract_path,
+    validate_origin_contract_reference,
+)
 from .job_titles import JobFunctionTitleMapping
 
-
-class FrozenSampleManifest(StrictModel):
-    """Manifest proving the origin of a frozen Phase-3 sample."""
-
-    sample_schema_version: int
-    source_run_id: str
-    rows: int = Field(gt=0)
-    strata: list[str]
-    method: str
-    data_file: Path
-    sha256: str
-    llm_calls: int = Field(ge=0)
+__all__ = ["FrozenSampleManifest"]
 
 
 class GeneratedAttributes(StrictModel):
@@ -85,7 +80,7 @@ class GeneratedAttributes(StrictModel):
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: t.Literal[2]
+    version: t.Literal[3]
     llm_generation_enabled: bool
     base_url: str | None
     model: str | None
@@ -103,6 +98,40 @@ class GenerationConfig(StrictModel):
     attributes_prompt: Path
     personas_prompt: Path
     job_title_mapping: Path | None = None
+    origin_label_contract: OriginLabelContractPath
+
+    @field_validator("origin_label_contract")
+    @classmethod
+    def require_repository_relative_origin_contract(_cls, value: Path) -> Path:
+        """Require the origin-label contract to be repository-relative.
+
+        Args:
+            value:
+                Configured origin-label contract path.
+
+        Returns:
+            The validated relative path.
+
+        """
+        canonical_origin_label_contract_path(value)
+        return value
+
+    @field_serializer(
+        "attributes_prompt", "personas_prompt", "job_title_mapping", when_used="json"
+    )
+    def serialise_repository_path(self, value: Path | None) -> str | None:
+        """Serialise repository paths with portable separators.
+
+        Args:
+            value:
+                Runtime filesystem path to serialise.
+
+        Returns:
+            A repository path using forward slashes, or ``None``.
+        """
+        if value is None:
+            return None
+        return value.as_posix().replace("\\", "/")
 
 
 class GenerationManifest(StrictModel):
@@ -122,6 +151,10 @@ class GenerationManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     model: str
@@ -138,6 +171,45 @@ class GenerationManifest(StrictModel):
     output_file: Path
     output_sha256: str
     llm_generation: bool
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "GenerationManifest":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
+
+
+class GenerationValidationReport(ValidationReport):
+    """Generation report bound to the effective Danish origin-label contract."""
+
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "GenerationValidationReport":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
 
 
 class LLMResponse(StrictModel):
@@ -167,9 +239,28 @@ class AttributeCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes: GeneratedAttributes
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "AttributeCheckpoint":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
 
 
 class PersonaDescriptions(StrictModel):
@@ -194,11 +285,30 @@ class PersonaCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
     attempts: int = Field(ge=2)
     http_requests: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "PersonaCheckpoint":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
 
 
 class PilotBatchReference(StrictModel):
@@ -215,6 +325,10 @@ class PilotBatchReference(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
 
 
 class PilotManifest(StrictModel):
@@ -237,6 +351,10 @@ class PilotManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)
