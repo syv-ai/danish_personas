@@ -234,6 +234,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     repository = tmp_path / "repository"
     repository.mkdir()
     for relative in (
+        ".gitattributes",
         "uv.lock",
         "LICENSE",
         "config/sources.lock.yaml",
