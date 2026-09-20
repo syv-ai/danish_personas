@@ -3,14 +3,24 @@
 import hashlib
 import json
 import re
+import typing as t
 import unicodedata
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import yaml
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    PlainSerializer,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 DEFAULT_ORIGIN_LABEL_CONTRACT_PATH = Path("config/folk2-ieland-labels-da.yaml")
+ORIGIN_LABEL_CONTRACT_PATH = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.as_posix()
 ORIGIN_LABEL_CONTRACT_VERSION = 1
 ORIGIN_LABEL_COUNT = 241
 ORIGIN_LABEL_TABLE_ID = "FOLK2"
@@ -30,6 +40,49 @@ _CODE_PATTERN = re.compile(r"[0-9]{4}\Z")
 _CANONICAL_CONTRACT_FILE = (
     Path(__file__).parents[2] / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
 )
+
+
+def _serialise_origin_label_contract_path(value: Path) -> str:
+    """Serialise the origin-contract path independently of host path flavour.
+
+    Returns:
+        The exact portable repository-relative contract path.
+    """
+    return canonical_origin_label_contract_path(value)
+
+
+def canonical_origin_label_contract_path(value: object) -> str:
+    """Validate and return the portable origin-contract path string.
+
+    A repository-relative contract path is public provenance, not a filesystem path.
+    Accepting ``PurePath`` values keeps runtime path handling portable while checking
+    raw strings before a platform-specific path parser can turn backslashes into
+    separators.
+
+    Returns:
+        The exact portable repository-relative contract path.
+
+    Raises:
+        ValueError: If ``value`` is not the exact reviewed relative path.
+    """
+    if isinstance(value, PurePath):
+        candidate = value.as_posix()
+    elif isinstance(value, str):
+        candidate = value
+    else:
+        raise ValueError("Origin-label contract path must be a path or string")
+    if candidate != ORIGIN_LABEL_CONTRACT_PATH:
+        raise ValueError("Origin-label contract path must be the canonical path")
+    return ORIGIN_LABEL_CONTRACT_PATH
+
+
+OriginLabelContractPath = t.Annotated[
+    Path,
+    BeforeValidator(canonical_origin_label_contract_path),
+    PlainSerializer(
+        _serialise_origin_label_contract_path, return_type=str, when_used="json"
+    ),
+]
 
 
 class OriginLabelContract(BaseModel):
@@ -317,10 +370,7 @@ def validate_origin_contract_reference(
     Raises:
         ValueError: If any binding component is not the reviewed contract.
     """
-    if Path(path) != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH or str(path) != str(
-        DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
-    ):
-        raise ValueError("Origin-label contract path must be canonical")
+    canonical_origin_label_contract_path(path)
     if version != ORIGIN_LABEL_CONTRACT_VERSION:
         raise ValueError("Origin-label contract version is not current")
     if sha256 != ORIGIN_LABEL_CONTRACT_SHA256:

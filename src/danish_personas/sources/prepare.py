@@ -28,6 +28,7 @@ from ..origin_labels import (
     ORIGIN_LABEL_COUNT,
     OriginLabelContract,
     bind_origin_triples,
+    canonical_origin_label_contract_path,
     load_origin_label_contract,
 )
 from .bundle import verify_prepared_bundle
@@ -1255,7 +1256,7 @@ def _repository_relative_path(path: Path) -> str:
     relative_path = relative.as_posix()
     if relative_path != Path(relative_path).as_posix() or ".." in relative.parts:
         raise ValueError("Origin-label contract path is not canonical")
-    return relative_path
+    return canonical_origin_label_contract_path(relative_path)
 
 
 def _source_metrics(

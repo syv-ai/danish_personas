@@ -24,6 +24,7 @@ from ..origin_labels import (
     ORIGIN_LABEL_CONTRACT_SHA256,
     ORIGIN_LABEL_CONTRACT_VERSION,
     OriginLabelContract,
+    OriginLabelContractPath,
     validate_origin_contract_reference,
 )
 
@@ -314,7 +315,7 @@ class ReleaseManifest(StrictModel):
     origin_url: StrictStr = Field(min_length=1)
     uv_lock_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     origin_label_contract_version: StrictInt
     origin_label_contract_content: OriginLabelContract
@@ -479,7 +480,7 @@ class ShardEvidence(StrictModel):
     output_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     origin_label_contract_version: StrictInt
     requests: StrictInt = Field(ge=0)
@@ -540,7 +541,7 @@ class ReleaseEvidence(StrictModel):
     sample_manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     origin_label_contract_version: StrictInt
     origin_label_contract_content: OriginLabelContract
