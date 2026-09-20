@@ -38,7 +38,9 @@ def test_recalculated_manifest_digest_does_not_bypass_internal_bindings(
         )
     digest = _refresh_artifact(release, relative)
     if relative.endswith("evidence"):
-        manifest = json.loads((release / "release-manifest.json").read_text())
+        manifest = json.loads(
+            (release / "release-manifest.json").read_text(encoding="utf-8")
+        )
         manifest["evidence_sha256"] = sha256_file(path)
         digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError):
@@ -195,7 +197,9 @@ def test_verify_release_rejects_filesystem_and_manifest_path_attacks(
     elif kind == "case":
         (release / "README.MD").write_text("collision", encoding="utf-8")
     else:
-        manifest = json.loads((release / "release-manifest.json").read_text())
+        manifest = json.loads(
+            (release / "release-manifest.json").read_text(encoding="utf-8")
+        )
         manifest["artifacts"][0]["path"] = "../escape.txt"
         digest = _refresh_manifest(release, **manifest)
     with pytest.raises(
@@ -282,7 +286,9 @@ def test_verify_release_rejects_joint_config_tamper_with_stale_context(
     evidence_path.write_text(
         json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     for artifact in manifest["artifacts"]:
         if artifact["path"] == "provenance/evidence.json":
@@ -334,7 +340,9 @@ def test_verify_release_rejects_model_and_review_binding_errors(
 ) -> None:
     """Manifest model and attested review identity cannot be changed independently."""
     release, _ = verifier_package
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["model"] = "other/model"
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="model|ID|approval"):
@@ -420,7 +428,9 @@ def test_verify_release_rejects_title_map_config_path_substitution(
     )
     digest = _refresh_artifact(release, "provenance/config/generation.yaml")
     digest = _refresh_artifact(release, "provenance/evidence.json")
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="path binding"):
@@ -459,7 +469,9 @@ def test_verify_release_rejects_title_map_substitution_even_with_recalculated_bi
     )
     digest = _refresh_artifact(release, "provenance/config/job-function-titles.yaml")
     digest = _refresh_artifact(release, "provenance/evidence.json")
-    manifest = json.loads((release / "release-manifest.json").read_text())
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
     manifest["evidence_sha256"] = sha256_file(evidence_path)
     digest = _refresh_manifest(release, **manifest)
     with pytest.raises(ReleaseVerificationError, match="contextual"):

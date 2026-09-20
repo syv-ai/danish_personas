@@ -234,7 +234,12 @@ def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
             ("label is blank or padded", "origin_label_padding"),
             ("label is not NFC-normalised", "origin_label_nfc"),
             ("labels must be unique", "origin_label_uniqueness"),
-            ("triples differ from the reviewed contract", "origin_triples"),
+            ("English keys differ from the reviewed contract", "origin_en_keys"),
+            ("English whitespace differs", "origin_en_whitespace"),
+            ("English values differ from the reviewed contract", "origin_en_values"),
+            ("Danish keys differ from the reviewed contract", "origin_da_keys"),
+            ("Danish whitespace differs", "origin_da_whitespace"),
+            ("Danish values differ from the reviewed contract", "origin_da_values"),
             ("English and Danish code order differs", "origin_code_order"),
             ("English labels must be unique", "origin_english_uniqueness"),
         )

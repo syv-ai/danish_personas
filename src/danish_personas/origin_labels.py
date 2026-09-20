@@ -136,10 +136,16 @@ class OriginLabelContract(BaseModel):
         _validate_labels(self.labels_en, allow_official_padding=True)
         _validate_labels(self.labels_da)
         reviewed = _canonical_contract_payload()
-        if self.labels_en != reviewed.get(
-            "labels_en"
-        ) or self.labels_da != reviewed.get("labels_da"):
-            raise ValueError("Origin-label triples differ from the reviewed contract")
+        _validate_reviewed_labels(
+            observed=self.labels_en,
+            reviewed=t.cast(Mapping[str, str], reviewed.get("labels_en")),
+            language="English",
+        )
+        _validate_reviewed_labels(
+            observed=self.labels_da,
+            reviewed=t.cast(Mapping[str, str], reviewed.get("labels_da")),
+            language="Danish",
+        )
         if tuple(self.labels_en) != tuple(self.labels_da):
             raise ValueError("Origin-label English and Danish code order differs")
         if len(set(self.labels_en.values())) != ORIGIN_LABEL_COUNT:
@@ -200,6 +206,31 @@ def _validate_labels(
         if normalised in normalised_labels:
             raise ValueError("FOLK2 IELAND labels must be unique")
         normalised_labels.add(normalised)
+
+
+def _validate_reviewed_labels(
+    *, observed: Mapping[str, str], reviewed: Mapping[str, str], language: str
+) -> None:
+    """Classify a contract mismatch without exposing label content.
+
+    Raises:
+        ValueError: If keys, whitespace, or values differ from the reviewed labels.
+    """
+    if observed == reviewed:
+        return
+    if set(observed) != set(reviewed):
+        raise ValueError(
+            f"Origin-label {language} keys differ from the reviewed contract"
+        )
+    stripped_observed = {code: label.strip() for code, label in observed.items()}
+    stripped_reviewed = {code: label.strip() for code, label in reviewed.items()}
+    if stripped_observed == stripped_reviewed:
+        raise ValueError(
+            f"Origin-label {language} whitespace differs from the reviewed contract"
+        )
+    raise ValueError(
+        f"Origin-label {language} values differ from the reviewed contract"
+    )
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
