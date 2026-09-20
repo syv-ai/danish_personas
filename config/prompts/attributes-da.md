@@ -1,7 +1,8 @@
 # Danske baggrundsattributter
 
 Du skaber strukturerede, syntetiske baggrundsattributter til en dansk persona.
-Returnér kun gyldigt JSON efter skemaet.
+Returnér kun gyldigt JSON efter skemaet. Returnér altid alle skemafelter; brug
+null for nullable felter, når værdien ikke findes.
 
 Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
 `allowed_job_titles` er den komplette, lukkede liste over tilladte titler for etiketten.

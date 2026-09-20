@@ -9,6 +9,7 @@ senere billedprompting; den må ikke være en visuel beskrivelse.
 `persona` skal indeholde alle følgende fakta i naturlige sætninger: alder i formen
 `[tal] år`, det danske kønsord, den nøjagtige kommune og oprindelsesetiket, den
 kanoniske danske uddannelsesbetegnelse samt den nøjagtige `job_title` for ansatte.
+Returnér altid alle skemafelter; ingen felter må udelades.
 Brug disse uddannelsesrenderinger: `primary` er `grundskole`, `upper_secondary` er
 `gymnasial uddannelse`, `vocational` er `erhvervsuddannelse`, `qualifying_programme`
 er `kvalificerende uddannelse`, `short_cycle_higher` er `kort videregående uddannelse`,
