@@ -16,6 +16,7 @@ from pathlib import Path
 import polars as pl
 
 from ..models import PREPARED_BUNDLE_SCHEMA_VERSION, BundleManifest
+from ..origin_labels import ORIGIN_LABEL_CONTRACT_SHA256, load_origin_label_contract
 
 REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
     "normalized/folk1a_base_unpooled.parquet": frozenset(
@@ -137,7 +138,7 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
         }
     ),
     "normalized/folk2_origin_country_marginal.parquet": frozenset(
-        {"origin_country_code", "origin_country", "count"}
+        {"origin_country_code", "origin_country", "origin_country_da", "count"}
     ),
     "normalized/job_function_sex_marginal.parquet": frozenset(
         {"job_function_code", "job_function", "sex", "count"}
@@ -810,6 +811,7 @@ def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleM
             f"{manifest.prepared_bundle_schema_version}"
         )
         raise ValueError(message)
+    _verify_origin_contract_binding(manifest=manifest)
     canonical_files = _canonical_manifest_files(manifest.files, bundle_dir=bundle_dir)
     expected_inventory = {*canonical_files, BUNDLE_MANIFEST}
     actual_inventory = set(capture.files)
@@ -832,7 +834,7 @@ def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleM
         item = capture.files[relative_path]
         if _sha256_bytes(item.content) != checksum:
             raise ValueError(f"Prepared bundle verification failed: {relative_path}")
-    _verify_schemas(capture=capture)
+    _verify_bundle_tables(capture=capture, manifest=manifest)
     try:
         report = json.loads(capture.files[SOURCE_REPORT].content)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
@@ -932,8 +934,75 @@ def _sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _verify_schemas(*, capture: _BundleCapture) -> None:
-    for relative_path, expected_columns in REQUIRED_COLUMNS.items():
+def _verify_bundle_tables(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
+    """Verify schemas and semantic origin labels in a captured bundle."""
+    require_origin_danish = bool(manifest.origin_labels_contract_content)
+    _verify_schemas(capture=capture, require_origin_danish=require_origin_danish)
+    if require_origin_danish:
+        _verify_origin_table(capture=capture, manifest=manifest)
+
+
+def _verify_origin_table(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
+    """Verify the bound Danish labels and complete origin partition.
+
+    Raises:
+        ValueError: If the origin table is incomplete or mismatched.
+    """
+    try:
+        frame = pl.read_parquet(
+            io.BytesIO(
+                capture.files[
+                    "normalized/folk2_origin_country_marginal.parquet"
+                ].content
+            )
+        )
+        contract = load_origin_label_contract(
+            path=_bound_contract_path(manifest=manifest)
+        )
+    except (KeyError, OSError, ValueError, pl.exceptions.PolarsError) as error:
+        raise ValueError("Prepared FOLK2 origin table cannot be validated") from error
+    if (
+        frame.height != len(contract.labels)
+        or frame.null_count().sum_horizontal().item()
+    ):
+        raise ValueError("Prepared FOLK2 origin table is incomplete")
+    codes = frame.get_column("origin_country_code").to_list()
+    danish = dict(
+        zip(codes, frame.get_column("origin_country_da").to_list(), strict=True)
+    )
+    if set(codes) != set(contract.labels) or danish != contract.labels:
+        raise ValueError("Prepared FOLK2 Danish labels do not match the contract")
+
+
+def _bound_contract_path(*, manifest: BundleManifest) -> Path:
+    """Resolve and validate the manifest's repository-relative contract path.
+
+    Returns:
+        The contract path rooted at the repository working directory.
+
+    Raises:
+        ValueError: If the path contains an alias or escapes the repository.
+    """
+    relative = Path(manifest.origin_labels_contract_path)
+    if (
+        relative.is_absolute()
+        or relative.as_posix() != manifest.origin_labels_contract_path
+        or ".." in relative.parts
+        or "\\" in manifest.origin_labels_contract_path
+    ):
+        raise ValueError("Prepared bundle origin-label contract path is not canonical")
+    return Path.cwd() / relative
+
+
+def _verify_schemas(
+    *, capture: _BundleCapture, require_origin_danish: bool = False
+) -> None:
+    expected_schema = dict(REQUIRED_COLUMNS)
+    if not require_origin_danish:
+        expected_schema["normalized/folk2_origin_country_marginal.parquet"] = frozenset(
+            {"origin_country_code", "origin_country", "count"}
+        )
+    for relative_path, expected_columns in expected_schema.items():
         try:
             columns = frozenset(
                 pl.read_parquet(
@@ -952,3 +1021,64 @@ def _verify_schemas(*, capture: _BundleCapture) -> None:
                 f"missing={missing}, unexpected={unexpected}"
             )
             raise ValueError(message)
+
+
+def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
+    """Verify the repository contract bound into a schema-6 bundle.
+
+    Raises:
+        ValueError: If contract identity, bytes, or source binding changed.
+    """
+    fields = (
+        manifest.origin_labels_contract_path,
+        manifest.origin_labels_contract_sha256,
+        manifest.origin_labels_contract_content,
+    )
+    if not any(fields):
+        if manifest.source_snapshots:
+            raise ValueError(
+                "Prepared bundle is missing its origin-label contract binding"
+            )
+        return
+    if not all(fields) or manifest.origin_labels_contract_version < 1:
+        raise ValueError("Prepared bundle origin-label contract binding is incomplete")
+    contract_path = _bound_contract_path(manifest=manifest)
+    try:
+        contract_bytes = contract_path.read_bytes()
+    except OSError as error:
+        raise ValueError("Bound origin-label contract is unavailable") from error
+    contract_checksum = _sha256_bytes(contract_bytes)
+    if contract_checksum != manifest.origin_labels_contract_sha256:
+        raise ValueError("Bound origin-label contract checksum changed")
+    if contract_checksum != ORIGIN_LABEL_CONTRACT_SHA256:
+        raise ValueError("Bound origin-label contract is not the reviewed contract")
+    if manifest.origin_labels_contract_content.encode("utf-8") != contract_bytes:
+        raise ValueError("Bound origin-label contract content changed")
+    try:
+        contract = load_origin_label_contract(path=contract_path)
+    except (OSError, ValueError) as error:
+        raise ValueError("Bound origin-label contract is invalid") from error
+    if contract.version != manifest.origin_labels_contract_version:
+        raise ValueError("Bound origin-label contract version changed")
+    _verify_origin_snapshot_binding(
+        manifest=manifest, source_metadata_sha256=contract.source_metadata_sha256
+    )
+
+
+def _verify_origin_snapshot_binding(
+    *, manifest: BundleManifest, source_metadata_sha256: str
+) -> None:
+    """Verify the FOLK2 snapshot's Danish metadata checksum.
+
+    Raises:
+        ValueError: If the FOLK2 snapshot is missing or mismatched.
+    """
+    folk2 = [
+        snapshot
+        for snapshot in manifest.source_snapshots
+        if snapshot.table_id == "FOLK2"
+    ]
+    if len(folk2) != 1:
+        raise ValueError("Prepared bundle must contain one FOLK2 source snapshot")
+    if folk2[0].metadata_da_sha256 != source_metadata_sha256:
+        raise ValueError("FOLK2 Danish metadata is not bound to the contract")
