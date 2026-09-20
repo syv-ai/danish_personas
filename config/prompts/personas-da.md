@@ -7,16 +7,13 @@ sammenhængende prosa på 2-4 sætninger. `persona` er højst 600 tegn og er ber
 senere billedprompting; den må ikke være en visuel beskrivelse.
 
 `persona` skal indeholde alle følgende fakta i naturlige sætninger: alder i formen
-`[tal] år`, det danske kønsord, den nøjagtige kommune og oprindelsesetiket, den
-kanoniske danske uddannelsesbetegnelse samt den nøjagtige `job_title` for ansatte.
-Returnér altid alle skemafelter; ingen felter må udelades.
-Brug disse uddannelsesrenderinger: `primary` er `grundskole`, `upper_secondary` er
-`gymnasial uddannelse`, `vocational` er `erhvervsuddannelse`, `qualifying_programme`
-er `kvalificerende uddannelse`, `short_cycle_higher` er `kort videregående uddannelse`,
-`professional_bachelor` er `professionsbacheloruddannelse`, `bachelor` er
-`bacheloruddannelse`, `masters` er `kandidatuddannelse`, `phd` er `ph.d.-uddannelse`,
-og `not_stated` er `uddannelse ikke oplyst`. For ikke-ansatte er de aktuelle statusfraser
-`ledig`, `studerende`, `pensionist` eller `uden for arbejdsmarkedet`. For ansatte uden
+`[tal] år`, det danske kønsord, den nøjagtige kommune og oprindelsesetiket samt den
+brede danske uddannelsesbetegnelse, der er leveret i `education_level`. Gentag den
+leverede uddannelsesbetegnelse ordret. Den er en sammenlagt kategori: udled eller
+opfind aldrig et mere specifikt uddannelsesniveau eller en uddannelsesinstitution.
+Returnér altid alle skemafelter; ingen felter må udelades. For ikke-ansatte er de
+aktuelle statusfraser `ledig`, `studerende`, `pensionist` eller `uden for
+arbejdsmarkedet`. For ansatte uden
 jobtitel er statusfraserne `selvstændig` eller `medarbejdende ægtefælle`. Brug altid den
 leverede kanoniske aktuelle statusfrase. Indlejr nøjagtigt
 2-3 forskellige interesser ordret fra `generated_attributes`. Medtag 1-2 forsigtige

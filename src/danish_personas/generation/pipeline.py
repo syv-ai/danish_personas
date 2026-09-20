@@ -38,7 +38,12 @@ from .models import (
     PersonaDescriptions,
     RequestLedger,
 )
-from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
+from .validation import (
+    EDUCATION_DANISH,
+    VALIDATOR_VERSION,
+    parse_attributes,
+    parse_descriptions,
+)
 
 LOGGER = logging.getLogger(__name__)
 # Codes and sampler provenance are withheld from prompts. Human-readable labels are
@@ -439,6 +444,11 @@ def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
         Selected human-readable input fields with any leading DISCO code removed.
     """
     payload = {name: row.get(name) for name in PROMPT_FIELDS}
+    education_level = payload.get("education_level")
+    if isinstance(education_level, str):
+        payload["education_level"] = EDUCATION_DANISH.get(
+            education_level.casefold(), education_level
+        )
     detailed_status = str(row.get("detailed_status_code", ""))
     current_status = {"05": "selvstændig", "10": "medarbejdende ægtefælle"}.get(
         detailed_status

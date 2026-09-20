@@ -21,6 +21,7 @@ from danish_personas.generation.models import (
     PilotManifest,
 )
 from danish_personas.generation.pipeline import generation_context_sha256
+from danish_personas.generation.validation import VALIDATOR_VERSION
 from danish_personas.io import sha256_file
 from danish_personas.models import DemographicRecord, ValidationReport
 from danish_personas.release import packager
@@ -73,8 +74,8 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
                 "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "erhvervsuddannelse er ledig. Han kan være nysgerrig og nyder "
-                "vandring og musik i hverdagen."
+                "ungdomsuddannelse eller erhvervsuddannelse er ledig. "
+                "Han kan være nysgerrig og nyder vandring og musik i hverdagen."
             ).alias("persona"),
         )
     )
@@ -293,8 +294,9 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             "culinary_persona": [sentence + "Måltider deles gerne med andre."] * 10_000,
             "persona": [
                 "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "erhvervsuddannelse arbejder som forretningsspecialist. "
-                "Han kan være nysgerrig og nyder vandring og musik i hverdagen."
+                "ungdomsuddannelse eller erhvervsuddannelse arbejder som "
+                "forretningsspecialist. Han kan være nysgerrig og nyder vandring "
+                "og musik i hverdagen."
             ]
             * 10_000,
         }
@@ -315,7 +317,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
                 "municipality": "Aarhus",
                 "region_code": "1084",
                 "region": "Midtjylland",
-                "education_level": "vocational",
+                "education_level": "secondary_or_vocational",
                 "education_source_code": "h30",
                 "education_resolution": "ras209_age_band",
                 "labour_market_status": "employed",
@@ -382,7 +384,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         generation_config_file=Path("config/generation.yaml"),
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context,
-        validator_version="validator-1",
+        validator_version=VALIDATOR_VERSION,
         job_title_mapping_file=Path("config/job-function-titles.yaml"),
         job_title_mapping_sha256=sha256_file(mapping_path),
         job_title_mapping_version=1,

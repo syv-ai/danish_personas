@@ -19,6 +19,7 @@ from danish_personas.generation.models import (
     PilotBatchReference,
 )
 from danish_personas.generation.pipeline import generation_context_sha256
+from danish_personas.generation.validation import VALIDATOR_VERSION
 from danish_personas.io import load_yaml_model, sha256_file, write_json
 from danish_personas.models import ValidationReport
 from danish_personas.release import packager
@@ -705,7 +706,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         generation_config_file=Path("generation.yaml"),
         generation_config_sha256=release_case.manifest.generation_config_sha256,
         generation_context_sha256=release_case.manifest.generation_context_sha256,
-        validator_version="validator-1",
+        validator_version=VALIDATOR_VERSION,
         job_title_mapping_file=Path("config/job-function-titles.yaml"),
         job_title_mapping_sha256=release_case.manifest.job_title_mapping_sha256,
         job_title_mapping_version=release_case.manifest.job_title_mapping_version,

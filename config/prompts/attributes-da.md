@@ -14,6 +14,8 @@ ledelsesansvar.
 Regler:
 
 - Bevar de faste demografiske og OCEAN-input uden at ændre dem.
+- Brug `education_level` som den leverede brede uddannelsesbetegnelse; udled aldrig
+  et specifikt uddannelsesniveau eller en uddannelsesinstitution.
 - Skriv naturligt dansk; jobtitlen skal være trimmet og må ikke indeholde linjeskift.
 - Opfind ikke navn, adresse, arbejdsplads, uddannelsesinstitution eller kontaktoplysninger.
 - Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.

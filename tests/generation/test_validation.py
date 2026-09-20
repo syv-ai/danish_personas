@@ -2,36 +2,48 @@
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
+import yaml
 
 from danish_personas.generation.models import GeneratedAttributes
-from danish_personas.generation.validation import parse_attributes, parse_descriptions
+from danish_personas.generation.validation import (
+    EDUCATION_DANISH,
+    parse_attributes,
+    parse_descriptions,
+)
 
-EDUCATION_RENDERINGS = {
+CATEGORIES_PATH = Path(__file__).parents[2] / "config" / "categories.yaml"
+CATEGORIES = yaml.safe_load(CATEGORIES_PATH.read_text(encoding="utf-8"))
+EDUCATION_POOLING_VALUES = tuple(
+    dict.fromkeys(CATEGORIES["education_pooling"].values())
+)
+EXPECTED_EDUCATION_RENDERINGS = {
     "primary": "grundskole",
-    "upper_secondary": "gymnasial uddannelse",
-    "vocational": "erhvervsuddannelse",
-    "qualifying_programme": "kvalificerende uddannelse",
-    "short_cycle_higher": "kort videregående uddannelse",
-    "professional_bachelor": "professionsbacheloruddannelse",
-    "bachelor": "bacheloruddannelse",
-    "masters": "kandidatuddannelse",
-    "phd": "ph.d.-uddannelse",
+    "secondary_or_vocational": "ungdomsuddannelse eller erhvervsuddannelse",
+    "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
 }
 
 
-@pytest.mark.parametrize(("education", "rendering"), EDUCATION_RENDERINGS.items())
-def test_all_canonical_education_renderings(education: str, rendering: str) -> None:
-    """Every v2 education code has one required Danish rendering."""
-    context = demographic(education_level=education)
-    result = parse_descriptions(
-        json.dumps(descriptions(context=context)),
-        context,
-        GeneratedAttributes.model_validate(attributes()),
-    )
-    assert rendering in result.persona
+@pytest.mark.parametrize(
+    "field",
+    [
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+    ],
+)
+def test_all_six_description_fields_must_be_distinct(field: str) -> None:
+    """Exact normalised duplicate text is rejected for every field."""
+    context = demographic()
+    text = descriptions(context=context)
+    text[field] = text["persona"]
+    with pytest.raises(ValueError, match="exact duplicates"):
+        parse_descriptions(json.dumps(text), context, attributes())
 
 
 def attributes(*, job_title: str | None = "forretningsspecialist") -> dict[str, object]:
@@ -47,7 +59,7 @@ def attributes(*, job_title: str | None = "forretningsspecialist") -> dict[str, 
 
 def demographic(
     *,
-    education_level: str = "masters",
+    education_level: str = "higher_education",
     sex: str = "female",
     status: str = "employed",
     job_title: str | None = "forretningsspecialist",
@@ -88,7 +100,7 @@ def descriptions(
     """Return six distinct Danish fields with grounded summary facts."""
     context = context or demographic()
     interests = interests or ["at læse", "musik", "brætspil"]
-    education = EDUCATION_RENDERINGS[str(context["education_level"])]
+    education = EXPECTED_EDUCATION_RENDERINGS[str(context["education_level"])]
     sex = "kvinde" if context["sex"] == "female" else "mand"
     status = "arbejder som forretningsspecialist"
     if context["labour_market_status"] != "employed":
@@ -121,25 +133,6 @@ def descriptions(
     }
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "professional_persona",
-        "sports_persona",
-        "arts_persona",
-        "travel_persona",
-        "culinary_persona",
-    ],
-)
-def test_all_six_description_fields_must_be_distinct(field: str) -> None:
-    """Exact normalised duplicate text is rejected for every field."""
-    context = demographic()
-    text = descriptions(context=context)
-    text[field] = text["persona"]
-    with pytest.raises(ValueError, match="exact duplicates"):
-        parse_descriptions(json.dumps(text), context, attributes())
-
-
 def test_appearance_boundary_does_not_reject_hardt() -> None:
     """A longer word containing hår is not an appearance claim."""
     context = demographic(status="retired", job_title=None)
@@ -155,6 +148,12 @@ def test_current_title_or_non_employee_status_is_required() -> None:
     text["persona"] = text["persona"].replace("forretningsspecialist", "analytiker")
     with pytest.raises(ValueError, match="current work status"):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_education_renderings_cover_phase_two_pool_domain() -> None:
+    """The validator covers exactly the categories emitted by Phase 2 pooling."""
+    assert set(EXPECTED_EDUCATION_RENDERINGS) == set(EDUCATION_POOLING_VALUES)
+    assert EDUCATION_DANISH == EXPECTED_EDUCATION_RENDERINGS
 
 
 @pytest.mark.parametrize(
@@ -237,6 +236,18 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
             context,
             generated,
         )
+
+
+@pytest.mark.parametrize("education", EDUCATION_POOLING_VALUES)
+def test_real_sample_education_values_parse_contextually(education: str) -> None:
+    """Every pooled Phase-2 education value grounds a realistic persona summary."""
+    context = demographic(education_level=education, sex="male")
+    result = parse_descriptions(
+        json.dumps(descriptions(context=context)),
+        context,
+        GeneratedAttributes.model_validate(attributes()),
+    )
+    assert EXPECTED_EDUCATION_RENDERINGS[education] in result.persona
 
 
 @pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country"])

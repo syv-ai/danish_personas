@@ -16,7 +16,7 @@ from .job_titles import (
 )
 from .models import GeneratedAttributes, PersonaDescriptions
 
-VALIDATOR_VERSION = "persona-safety-v8"
+VALIDATOR_VERSION = "persona-safety-v9"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -67,30 +67,10 @@ DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b
 
 EDUCATION_DANISH = {
     "primary": "grundskole",
-    "upper_secondary": "gymnasial uddannelse",
-    "vocational": "erhvervsuddannelse",
-    "qualifying_programme": "kvalificerende uddannelse",
-    "short_cycle_higher": "kort videregående uddannelse",
-    "professional_bachelor": "professionsbacheloruddannelse",
-    "bachelor": "bacheloruddannelse",
-    "masters": "kandidatuddannelse",
-    "phd": "ph.d.-uddannelse",
+    "secondary_or_vocational": "ungdomsuddannelse eller erhvervsuddannelse",
+    "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
 }
-EDUCATION_DANISH.update(
-    {
-        "h10": "grundskole",
-        "h20": "gymnasial uddannelse",
-        "h30": "erhvervsuddannelse",
-        "h35": "kvalificerende uddannelse",
-        "h40": "kort videregående uddannelse",
-        "h50": "professionsbacheloruddannelse",
-        "h60": "bacheloruddannelse",
-        "h70": "kandidatuddannelse",
-        "h80": "ph.d.-uddannelse",
-        "h90": "uddannelse ikke oplyst",
-    }
-)
 SEX_DANISH = {"male": "mand", "female": "kvinde", "m": "mand", "k": "kvinde"}
 STATUS_DANISH = {
     "unemployed": "ledig",
