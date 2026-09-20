@@ -183,7 +183,7 @@ def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     except ValidationError as error:
         diagnostics = "; ".join(
             f"{'.'.join(str(part) for part in item['loc']) or '<model>'}: "
-            f"{item['type']}"
+            f"{_safe_validation_error_type(item)}"
             for item in error.errors(
                 include_url=False, include_context=False, include_input=False
             )
@@ -193,6 +193,33 @@ def _load_json(path: Path, model: type[ModelType]) -> ModelType:
         ) from error
     except Exception as error:
         raise ReleaseVerificationError(f"Invalid public contract: {path}") from error
+
+
+def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
+    """Return a fixed diagnostic code without echoing validation input."""
+    location = item.get("loc")
+    message = str(item.get("msg", ""))
+    if location == ("origin_label_contract_content",):
+        origin_failures = (
+            ("Unsupported origin-label contract version", "origin_version"),
+            ("contract table_id must be FOLK2", "origin_table"),
+            ("contract dimension must be IELAND", "origin_dimension"),
+            ("contract language must be da", "origin_language"),
+            ("English metadata checksum does not match", "origin_metadata_en"),
+            ("Danish metadata checksum does not match", "origin_metadata_da"),
+            ("must contain 241 labels", "origin_label_count"),
+            ("Malformed FOLK2 IELAND code", "origin_code"),
+            ("label is blank or padded", "origin_label_padding"),
+            ("label is not NFC-normalised", "origin_label_nfc"),
+            ("labels must be unique", "origin_label_uniqueness"),
+            ("triples differ from the reviewed contract", "origin_triples"),
+            ("English and Danish code order differs", "origin_code_order"),
+            ("English labels must be unique", "origin_english_uniqueness"),
+        )
+        for fragment, diagnostic in origin_failures:
+            if fragment in message:
+                return diagnostic
+    return str(item.get("type", "validation_error"))
 
 
 def _require_no_symlink_components(path: Path) -> None:

@@ -112,7 +112,7 @@ def test_validation_diagnostic_does_not_echo_contract_input(
         verify_release(release_dir=release, expected_manifest_sha256=digest)
 
     diagnostic = str(exc_info.value)
-    assert "origin_label_contract_content: value_error" in diagnostic
+    assert "origin_label_contract_content: origin_code" in diagnostic
     assert marker not in diagnostic
 
 
