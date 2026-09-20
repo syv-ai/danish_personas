@@ -18,6 +18,7 @@ from danish_personas.origin_labels import (
     validate_origin_contract_reference,
 )
 from danish_personas.sampling.generator import _origin_quota_sample
+from tests.generation.manifest_helpers import origin_contract_fields
 
 CONTRACT_TEXT = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.read_text(encoding="utf-8")
 
@@ -85,12 +86,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
 
 def _binding() -> OriginBinding:
     """Return the current embedded contract binding."""
-    return {
-        "origin_labels_contract_path": str(DEFAULT_ORIGIN_LABEL_CONTRACT_PATH),
-        "origin_labels_contract_version": 1,
-        "origin_labels_contract_sha256": ORIGIN_LABEL_CONTRACT_SHA256,
-        "origin_labels_contract_content": CONTRACT_TEXT,
-    }
+    return origin_contract_fields()
 
 
 def test_custom_contract_and_recalculated_outer_digest_do_not_bypass() -> None:

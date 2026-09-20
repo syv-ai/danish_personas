@@ -5,12 +5,15 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from danish_personas.origin_labels import (
     DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
-    ORIGIN_LABEL_SOURCE_METADATA_SHA256,
+    ORIGIN_LABEL_SOURCE_METADATA_DA_SHA256,
+    ORIGIN_LABEL_SOURCE_METADATA_EN_SHA256,
     OriginLabelContract,
+    _UniqueKeyLoader,
     bind_origin_labels,
     load_bound_origin_labels,
     load_origin_label_contract,
@@ -79,7 +82,9 @@ def test_contract_reconstructs_archived_folk2_metadata(tmp_path: Path) -> None:
 
     assert contract.labels == expected
     assert load_bound_origin_labels(metadata_path) == expected
-    assert source_metadata_sha256(metadata_path) == ORIGIN_LABEL_SOURCE_METADATA_SHA256
+    assert (
+        source_metadata_sha256(metadata_path) == ORIGIN_LABEL_SOURCE_METADATA_DA_SHA256
+    )
 
 
 def test_contract_rejects_duplicate_yaml_codes(tmp_path: Path) -> None:
@@ -90,27 +95,38 @@ def test_contract_rejects_duplicate_yaml_codes(tmp_path: Path) -> None:
         "table_id: FOLK2\n"
         "dimension: IELAND\n"
         "language: da\n"
-        f"source_metadata_sha256: {ORIGIN_LABEL_SOURCE_METADATA_SHA256}\n"
-        "labels:\n  '5100': Danmark\n  '5100': Danmark\n",
+        f"source_metadata_en_sha256: {ORIGIN_LABEL_SOURCE_METADATA_EN_SHA256}\n"
+        f"source_metadata_da_sha256: {ORIGIN_LABEL_SOURCE_METADATA_DA_SHA256}\n"
+        "labels_en:\n  '5100': Denmark\n  '5100': Denmark\n"
+        "labels_da:\n  '5100': Danmark\n",
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="Duplicate YAML key"):
-        load_origin_label_contract(path)
+        yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        lambda labels: labels.pop("5100"),
-        lambda labels: labels.__setitem__("6000", "New country"),
-        lambda labels: labels.__setitem__("bad", "Malformed code"),
-        lambda labels: labels.__setitem__("5100", ""),
-        lambda labels: labels.__setitem__("5100", " Danmark"),
-        lambda labels: labels.__setitem__("5100", "Danmark "),
-        lambda labels: labels.__setitem__("5100", "e\u0301land"),
-        lambda labels: labels.__setitem__("5122", "danmark"),
-        lambda labels: labels.__setitem__("5100", None),
+        lambda labels: (
+            labels["labels_en"].pop("5100"),
+            labels["labels_da"].pop("5100"),
+        ),
+        lambda labels: (
+            labels["labels_en"].__setitem__("6000", "New country"),
+            labels["labels_da"].__setitem__("6000", "Nyt land"),
+        ),
+        lambda labels: (
+            labels["labels_en"].__setitem__("bad", "Malformed code"),
+            labels["labels_da"].__setitem__("bad", "Misdannet kode"),
+        ),
+        lambda labels: labels["labels_da"].__setitem__("5100", ""),
+        lambda labels: labels["labels_da"].__setitem__("5100", " Danmark"),
+        lambda labels: labels["labels_da"].__setitem__("5100", "Danmark "),
+        lambda labels: labels["labels_da"].__setitem__("5100", "e\u0301land"),
+        lambda labels: labels["labels_da"].__setitem__("5122", "danmark"),
+        lambda labels: labels["labels_da"].__setitem__("5100", None),
     ],
 )
 def test_contract_rejects_malformed_or_duplicate_labels(
@@ -118,8 +134,7 @@ def test_contract_rejects_malformed_or_duplicate_labels(
 ) -> None:
     """Cardinality, codes, whitespace, NFC, types, and uniqueness are guarded."""
     payload = load_origin_label_contract().model_dump()
-    labels = payload["labels"]
-    change(labels)
+    change(payload)
 
     with pytest.raises((ValidationError, ValueError)):
         OriginLabelContract.model_validate(payload)
@@ -128,7 +143,7 @@ def test_contract_rejects_malformed_or_duplicate_labels(
 def test_contract_rejects_missing_and_extra_fields() -> None:
     """The contract schema cannot silently evolve or lose identity fields."""
     payload = load_origin_label_contract().model_dump()
-    payload.pop("labels")
+    payload.pop("labels_da")
     with pytest.raises(ValidationError):
         OriginLabelContract.model_validate(payload)
 
@@ -145,7 +160,7 @@ def test_contract_rejects_missing_and_extra_fields() -> None:
         ("table_id", "OTHER"),
         ("dimension", "OTHER"),
         ("language", "en"),
-        ("source_metadata_sha256", "0" * 64),
+        ("source_metadata_da_sha256", "0" * 64),
     ],
 )
 def test_contract_rejects_wrong_identity_fields(field: str, value: object) -> None:

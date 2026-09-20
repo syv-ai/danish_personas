@@ -148,13 +148,14 @@ def test_prepared_bundle_rechecks_path_after_capture(
     bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
     target = bundle_dir / "source-preparation-report.json"
     replacement = tmp_path / "replacement.json"
-    replacement.write_bytes(target.read_bytes())
+    target_content = target.read_bytes()
+    replacement.write_bytes(target_content)
     replaced = False
     original_hash = bundle_module._sha256_bytes
 
     def replace_during_hash(content: bytes) -> str:
         nonlocal replaced
-        if not replaced:
+        if not replaced and content == target_content:
             replaced = True
             target.unlink()
             if replacement_kind == "symlink":

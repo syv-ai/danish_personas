@@ -13,9 +13,12 @@ from danish_personas.models import (
     BundleManifest,
     DemographicRecord,
     RunManifest,
+    SnapshotManifest,
 )
+from danish_personas.origin_labels import load_origin_label_contract
 from danish_personas.sampling.generator import generate_records
 from danish_personas.validation.checks import validate_demographics
+from tests.generation.manifest_helpers import origin_contract_fields
 
 
 def test_generation_is_deterministic_and_valid(tmp_path: Path) -> None:
@@ -153,12 +156,16 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
             "region": ["Region Hovedstaden", "Region Hovedstaden"],
         }
     )
+    contract = load_origin_label_contract()
     origin = pl.DataFrame(
         {
-            "origin_country_code": ["5100", "5103", "5999"],
-            "origin_country": ["Denmark", "Stateless", "Not stated"],
-            "origin_country_da": ["Danmark", "Statsløse", "Uoplyst"],
-            "count": [107, 2, 0],
+            "origin_country_code": list(contract.labels_en),
+            "origin_country": list(contract.labels_en.values()),
+            "origin_country_da": list(contract.labels_da.values()),
+            "count": [
+                107 if code == "5100" else 2 if code == "5103" else 0
+                for code in contract.labels_en
+            ],
         }
     )
     job_function = pl.DataFrame(
@@ -276,13 +283,31 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         created_at="2026-09-14T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
-        source_snapshots=[],
+        source_snapshots=[
+            SnapshotManifest(
+                table_id="FOLK2",
+                role="origin",
+                period="2025",
+                metadata_sha256=(
+                    "cb2558d35bee7b3eed451984f457cc4dc7b683f71e67022d6767f3415d04884a"
+                ),
+                metadata_da_sha256=(
+                    "f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213"
+                ),
+                query_sha256="3" * 64,
+                data_sha256="4" * 64,
+                response_headers_sha256="5" * 64,
+                retrieved_at="2026-09-14T00:00:00+00:00",
+                data_bytes=1,
+            )
+        ],
         classification_snapshots=[],
         files=files,
         reference_periods={},
         assumptions=[],
         lons20_contract_version=1,
         lons20_contract_sha256="2" * 64,
+        **origin_contract_fields(),
     )
     write_json(path=bundle_dir / "bundle-manifest.json", payload=manifest)
     sampling_path = root / "sampling.yaml"
@@ -459,12 +484,16 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
     origin_path = (
         second_paths[0] / "normalized" / "folk2_origin_country_marginal.parquet"
     )
+    contract = load_origin_label_contract()
     pl.DataFrame(
         {
-            "origin_country_code": ["5100", "5103", "5999"],
-            "origin_country": ["Denmark", "Stateless", "Not stated"],
-            "origin_country_da": ["Danmark", "Statsløse", "Uoplyst"],
-            "count": [2, 107, 0],
+            "origin_country_code": list(contract.labels_en),
+            "origin_country": list(contract.labels_en.values()),
+            "origin_country_da": list(contract.labels_da.values()),
+            "count": [
+                2 if code == "5100" else 107 if code == "5103" else 0
+                for code in contract.labels_en
+            ],
         }
     ).write_parquet(origin_path)
     _refresh_bundle_manifest(bundle_dir=second_paths[0])

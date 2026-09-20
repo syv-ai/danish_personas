@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 import yaml
 from click.testing import CliRunner
+from manifest_helpers import origin_contract_fields
 
 from danish_personas.generation.client import RequestBudgetExceeded
 from danish_personas.generation.models import (
@@ -241,12 +242,12 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
     config["origin_label_contract"] = str(
         Path("config/folk2-ieland-labels-da.yaml").resolve()
     )
-    with pytest.raises(ValueError, match="repository-relative"):
+    with pytest.raises(ValueError, match="canonical path"):
         GenerationConfig.model_validate(config)
 
     config["origin_label_contract"] = "missing-origin-labels.yaml"
     paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(ValueError, match="canonical path"):
         generate_personas(
             input_path=paths["sample"],
             sample_manifest_path=paths["sample_manifest"],
@@ -260,7 +261,7 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
     tampered = yaml.safe_load(
         Path("config/folk2-ieland-labels-da.yaml").read_text(encoding="utf-8")
     )
-    tampered["labels"]["5100"] = "Libanon"
+    tampered["labels_da"]["5100"] = "Libanon"
     tampered_contract.write_text(
         yaml.safe_dump(tampered, allow_unicode=True), encoding="utf-8"
     )
@@ -370,6 +371,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         data_sha256=sha256_file(source_path),
         logical_content_sha256="2" * 64,
         llm_calls=0,
+        **origin_contract_fields(),
     )
     write_json(path=run_dir / "run-manifest.json", payload=run_manifest)
     write_json(
@@ -380,6 +382,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             created_at="2026-01-01T00:00:00+00:00",
             subject_id=run_manifest.run_id,
             metrics=[],
+            **origin_contract_fields(),
         ),
     )
     sample_manifest = FrozenSampleManifest(
@@ -391,6 +394,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
         data_file=Path(sample_path.name),
         sha256=sha256_file(sample_path),
         llm_calls=0,
+        **origin_contract_fields(),
     )
     sample_manifest_path = sample_path.with_suffix(".manifest.json")
     write_json(path=sample_manifest_path, payload=sample_manifest)
@@ -403,6 +407,8 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     contract_path.write_bytes(
         (Path("config") / "folk2-ieland-labels-da.yaml").read_bytes()
     )
+    mapping_path = root / "config" / "job-function-titles.yaml"
+    mapping_path.write_bytes((Path("config") / "job-function-titles.yaml").read_bytes())
     config_path = root / "generation.yaml"
     config = {
         "version": 3,
@@ -593,9 +599,9 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "config/folk2-ieland-labels-da.yaml"
     )
     assert generation_manifest["origin_label_contract_version"] == 1
-    assert generation_manifest["origin_label_contract_content"]["labels"]["5100"] == (
-        "Danmark"
-    )
+    assert generation_manifest["origin_label_contract_content"]["labels_da"][
+        "5100"
+    ] == ("Danmark")
     assert validate_persona_run(run_dir=run_dir).passed
     report = json.loads((run_dir / "validation-report.json").read_text())
     assert (
@@ -802,7 +808,7 @@ def test_persona_validation_rejects_origin_binding_tampering(
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     original_checkpoint = checkpoint_path.read_bytes()
     checkpoint = json.loads(original_checkpoint)
-    checkpoint["origin_label_contract_content"]["labels"]["5100"] = "Libanon"
+    checkpoint["origin_label_contract_content"]["labels_da"]["5100"] = "Libanon"
     write_json(path=checkpoint_path, payload=checkpoint)
     assert not validate_persona_run(run_dir=run_dir).passed
 
@@ -1174,8 +1180,12 @@ def test_pilot_validation_uses_repository_root_from_another_cwd(
         write_json(path=shard_path, payload=shard)
         reference["manifest_sha256"] = sha256_file(shard_path)
     write_json(path=manifest_path, payload=manifest)
-    (tmp_path / "elsewhere").mkdir()
-    monkeypatch.chdir(tmp_path / "elsewhere")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "config").mkdir(parents=True)
+    (elsewhere / "config" / "folk2-ieland-labels-da.yaml").write_bytes(
+        (tmp_path / "config" / "folk2-ieland-labels-da.yaml").read_bytes()
+    )
+    monkeypatch.chdir(elsewhere)
     assert validate_persona_pilot(pilot_dir=pilot_dir, repository_root=tmp_path).passed
 
 
@@ -1348,15 +1358,11 @@ def test_upstream_sample_rejects_legacy_sampler_schema(tmp_path: Path) -> None:
     """A validated legacy run cannot cross the current Phase-3 boundary."""
     paths = _write_inputs(root=tmp_path)
     manifest_path = paths["sample"].parent / "run-manifest.json"
-    manifest = RunManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    write_json(
-        path=manifest_path,
-        payload=manifest.model_copy(update={"sampler_schema_version": 2}),
-    )
+    legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest["sampler_schema_version"] = 2
+    write_json(path=manifest_path, payload=legacy_manifest)
 
-    with pytest.raises(ValueError, match="unsupported sampler schema version"):
+    with pytest.raises(ValueError, match="Unsupported sampler schema version"):
         validate_upstream_sample(
             input_path=paths["sample"], sample_manifest_path=paths["sample_manifest"]
         )
