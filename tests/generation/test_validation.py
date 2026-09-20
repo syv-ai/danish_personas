@@ -223,6 +223,16 @@ def test_ocean_tendency_requires_compatibility_and_hedging() -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
+def test_ocean_tendency_requires_literal_lexicon_terms() -> None:
+    """Inflected or otherwise nonliteral terms do not satisfy the contract."""
+    context = demographic()
+    text = descriptions(context=context)
+    text["persona"] = text["persona"].replace("kan være rolig", "kan være rolighed")
+
+    with pytest.raises(ValueError, match="1-2 compatible"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
 @pytest.mark.parametrize("count", [1, 4])
 def test_one_or_four_literal_interests_fail(count: int) -> None:
     """Too few or too many literal interests fail the contract."""

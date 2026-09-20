@@ -16,10 +16,12 @@ aktuelle statusfraser `ledig`, `studerende`, `pensionist` eller `uden for
 arbejdsmarkedet`. For ansatte uden
 jobtitel er statusfraserne `selvstændig` eller `medarbejdende ægtefælle`. Brug altid den
 leverede kanoniske aktuelle statusfrase. Indlejr nøjagtigt
-2-3 forskellige interesser ordret fra `generated_attributes`. Medtag 1-2 forsigtige
-OCEAN-tendenser fra den lukkede ordliste; brug altid hedging som `kan`, `ofte` eller
-`muligvis`. Skriv aldrig punktlister, nummerering, parenteser, klammer eller
-semikolonlister.
+2-3 forskellige interesser ordret fra `generated_attributes`. Medtag nøjagtigt 1-2
+forskellige OCEAN-tendenser som bogstavelige termer fra den leverede liste
+`allowed_personality_tendencies`, og brug ikke andre personlighedstermer. Hver term
+skal hedges i nærheden i samme ledsætning med et af de tilladte ord `kan`, `ofte`,
+`muligvis`, `gerne` eller `typisk`. Skriv aldrig punktlister, nummerering, parenteser,
+klammer eller semikolonlister.
 
 Regler:
 

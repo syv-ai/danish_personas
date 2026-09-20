@@ -38,6 +38,7 @@ from .models import (
     PersonaDescriptions,
     RequestLedger,
 )
+from .personality import allowed_personality_tendencies
 from .validation import (
     EDUCATION_DANISH,
     VALIDATOR_VERSION,
@@ -346,6 +347,9 @@ def _generate_one(
             prompt=personas_prompt,
             payload={
                 "demographics_and_personality": prompt_row,
+                "allowed_personality_tendencies": list(
+                    allowed_personality_tendencies(context=prompt_row)
+                ),
                 "generated_attributes": attributes.model_dump(mode="json"),
             },
             schema_name="persona_descriptions",
