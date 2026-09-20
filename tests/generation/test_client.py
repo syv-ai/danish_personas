@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from danish_personas.generation.client import OpenAIClient, RequestBudgetExceeded
-from danish_personas.generation.models import GenerationConfig
+from danish_personas.generation.models import GeneratedAttributes, GenerationConfig
 
 
 def test_client_enforces_total_request_budget_across_retries() -> None:
@@ -57,6 +57,68 @@ def _config() -> GenerationConfig:
         attributes_prompt=Path("attributes.md"),
         personas_prompt=Path("personas.md"),
     )
+
+
+def test_client_schema_is_accepted_by_strict_proxy_contract() -> None:
+    """A strict proxy accepts the generated schema instead of returning its 500."""
+    proxy_errors: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        response_format = body["response_format"]
+        schema = response_format["json_schema"]["schema"]
+        if _has_strict_schema_violation(schema):
+            message = (
+                "required must include every key in properties for strict JSON schema"
+            )
+            proxy_errors.append(message)
+            return httpx.Response(status_code=500, json={"error": {"message": message}})
+        return httpx.Response(
+            status_code=200,
+            json={
+                "id": "chatcmpl-strict-schema",
+                "model": "gpt-5.6-sol",
+                "choices": [{"message": {"content": "{}"}}],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "estimated_cost": 0.0,
+                },
+            },
+        )
+
+    client = OpenAIClient(
+        config=_config(), transport=httpx.MockTransport(handler=handler)
+    )
+    response = client.complete(
+        system_prompt="Svar på dansk.",
+        user_payload={"input": "test"},
+        schema_name="generated_attributes",
+        json_schema=GeneratedAttributes.model_json_schema(),
+    )
+    client.close()
+
+    assert response.model == "gpt-5.6-sol"
+    assert proxy_errors == []
+
+
+def _has_strict_schema_violation(schema: object) -> bool:
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            properties = schema.get("properties", {})
+            required = schema.get("required")
+            if not isinstance(properties, dict) or not isinstance(required, list):
+                return True
+            if (
+                set(required) != set(properties)
+                or schema.get("additionalProperties") is not False
+            ):
+                return True
+        return any(_has_strict_schema_violation(value) for value in schema.values())
+    if isinstance(schema, list):
+        return any(_has_strict_schema_violation(value) for value in schema)
+    return False
 
 
 def test_client_sends_supported_schema_request() -> None:
