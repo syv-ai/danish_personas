@@ -17,14 +17,15 @@ rows, while a pilot can span multiple shards. Release-scale generation and human
 approval remain pending; schema-2 package verification and evidence are required before
 any release claim.
 
-The previously regenerated municipality-native Phase 2 workflow used prepared bundle
-`cfc1b56f5586a2d7`, prepared-bundle schema 5, sampler schema 5, and validation schema 5.
-Those canonical IDs and reports are historical evidence only and are not resumable under
-the current contracts. The current architecture requires bundle schema 6, sampler schema
-6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v15`, and
-release manifest/evidence schema 2. Regenerate before making current claims; until then,
-use `<new-bundle-id>`, `<new-run-id>`, and `<new-sample-manifest>` placeholders rather
-than treating old IDs as current:
+The current municipality-native Phase 2 workflow uses prepared bundle
+`8a4133e5a0a52050` (prepared-bundle schema 6), smoke run `f4dffe214a2faf0b`
+(2,000 rows), and statistical run `55fb89fb303a67f0` (100,000 rows). Both runs use
+sampler schema 6 and passed validation offline. The adjacent 1,000-row development
+sample uses frozen-sample schema 3 and SHA-256
+`354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
+Generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
+schema 2 are current. Earlier schema-5 IDs remain historical evidence and are not
+resumable under these contracts:
 
 - [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
 - [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)

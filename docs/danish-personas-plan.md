@@ -358,10 +358,12 @@ culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
 schema 3, generation contract 3, validator `persona-safety-v15`, and release
-manifest/evidence schema 2. The previously documented bundle `cfc1b56f5586a2d7` and runs
-`f449f1de01d18c08` and `3ebc00282c621ef2` used schema 5 and are historical,
-non-resumable evidence only. Regenerate before recording current canonical IDs; use
-`<new-bundle-id>`, `<new-run-id>`, and `<new-release-id>` placeholders until then. The
+manifest/evidence schema 2. The current offline bundle is `8a4133e5a0a52050`; its
+passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
+The previous schema-5 bundle `cfc1b56f5586a2d7` and runs `f449f1de01d18c08` /
+`3ebc00282c621ef2` remain historical, non-resumable evidence. Release IDs remain
+placeholders until approved live generation, human review, packaging, and
+verification. The
 LONS20 extension assigns broad job functions within sex only to RAS202 employee codes
 15, 20, 25, 30, 35, and 40, using deterministic largest-remainder quotas and an isolated
 fourth RNG stream. The human-readable job-function label may reach the provider for a

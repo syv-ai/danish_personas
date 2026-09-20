@@ -37,13 +37,14 @@ citizenship, residence, or appearance. Origin cannot drive culture, religion, jo
 interests, personality, or visual traits. RAS209 remains locked to all 99 official
 level-3 areas, including Christiansø.
 
-The previously documented offline source bundle `cfc1b56f5586a2d7` used prepared-bundle
-schema 5, and its passing runs `f449f1de01d18c08` (2,000 rows) and `3ebc00282c621ef2`
-(100,000 rows) used sampler and validation schema 5. These IDs are historical and
-non-resumable. The current documentation requires prepared-bundle schema 6, sampler
-schema 6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v15`,
-and release manifest/evidence schema 2. Regenerate before claiming current canonical
-IDs; use `<new-bundle-id>` and `<new-run-id>` placeholders until then.
+The current offline source bundle is `8a4133e5a0a52050` (prepared-bundle schema 6).
+Its passing runs are `f4dffe214a2faf0b` (2,000 rows) and `55fb89fb303a67f0`
+(100,000 rows), both using sampler schema 6. The statistical run's adjacent 1,000-row
+sample uses frozen-sample schema 3 and SHA-256
+`354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
+Generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
+schema 2 are current. The former schema-5 bundle `cfc1b56f5586a2d7` and runs
+`f449f1de01d18c08` / `3ebc00282c621ef2` are historical and non-resumable.
 
 Archive SHA-256 (reproducible from the restored snapshot tree):
 
