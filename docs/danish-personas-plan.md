@@ -27,7 +27,8 @@ The initial release should:
   incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
 - produce five Danish specialised texts plus one short, grounded persona under
-  generation contract v2;
+  generation contract 3, with only the official Danish FOLK2 origin label reaching both
+  provider stages and exact persona grounding;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
 - include reproducible source snapshots, prompts, model versions, validation reports,
@@ -48,10 +49,10 @@ Hugging Face.
 The NVIDIA dataset card describes 22 historical content fields: six persona fields and
 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
 physical columns. That historical count is not the current Danish contract. Generation
-contract v2 retains six text fields: five specialised texts and one short, grounded
-`persona`; `visual_persona` is removed. Historical v1 outputs and pilots are not
-resumable under v2. The historical NVIDIA comparison must not be read as current Danish
-validation:
+contract 3 retains six text fields: five specialised texts and one short, grounded
+`persona`; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
+ten-person smoke, and old pilots are not resumable under generation contract 3. The
+historical NVIDIA comparison must not be read as current Danish validation:
 
 - `professional_persona`
 - `sports_persona`
@@ -183,6 +184,9 @@ free-text values to be Danish.
 - `municipality`: official municipality name, subject to privacy review
 - `region`: one of the five Danish regions
 - `country`: fixed to `Danmark`
+- `origin_country_code`: official FOLK2 code retained for source/audit provenance
+- `origin_country`: official English FOLK2 label retained for source/audit provenance
+- `origin_country_da`: mandatory official Danish FOLK2 IELAND display label
 
 Do not include a street address, exact workplace, CPR number, exact birth date, phone
 number, email, or a synthetic identifier that resembles an official identifier.
@@ -226,12 +230,15 @@ identity claims.
   job-function label or the current nonemployee status, two or three interests in prose,
   and cautious OCEAN tendencies.
 
-The provider receives human-readable municipality, origin, and job-function labels for
-this grounding. It does not receive municipality, origin, or job-function codes, or
-resolution fields. Origin is not ethnicity, citizenship, residence, or appearance. A job
-title is synthetic and must not imply unsupported work history. The persona must not
-make unsupported family claims and is not a visual description; downstream image models
-may still stereotype.
+The provider receives the human-readable municipality, official Danish
+`origin_country_da`, and job-function labels for this grounding. It does not receive
+municipality or job-function codes, the origin code, English `origin_country`, contract
+metadata, or resolution fields. The English label remains source/audit provenance only.
+Neither origin label is ethnicity, citizenship, residence, or appearance. Origin cannot
+drive culture, religion, job, interests, personality, or visual traits. A job title is
+synthetic and must not imply unsupported work history. The persona must not make
+unsupported family claims and is not a visual description; downstream image models may
+still stereotype.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -314,8 +321,12 @@ Important source limitations to carry into the dataset card include:
   produce 2,186,352 API cells, so the locked query uses the BULK exemption. It is not
   ethnicity, citizenship, or residence; official labels such as Stateless and Not stated
   are retained without custom country groups or inferred correlations. It is sampled
-  independently into Phase 2 origin fields. The human-readable origin label may reach
-  the provider for grounded prose, while its code and resolution do not.
+  independently into Phase 2 origin fields. The English label remains official
+  source/audit provenance. The mandatory Danish label comes from the archived
+  metadata-da 241-code contract (source metadata SHA-256
+  `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`). Only the Danish
+  label reaches both provider stages and exact persona grounding; code, English label,
+  resolutions, and contract metadata do not.
 
 ## Required execution order
 
@@ -339,26 +350,33 @@ generation independently testable and restartable.
 
 Phases 0-2 are implemented and validated. The source bundle prepares the official FOLK2
 adult origin marginal. Phase 2 samples this marginal independently with deterministic
-quotas and retains its official code and label; the human-readable origin label may
-reach the provider, while its code and resolution do not. Origin cannot drive language,
-culture, religion, occupation, personality, or visual appearance. Prepared-bundle schema
-5 produced municipality-native bundle `cfc1b56f5586a2d7`. Sampler schema 5 produced
-passing canonical runs `f449f1de01d18c08` (2,000-row smoke) and `3ebc00282c621ef2`
-(100,000-row statistical). The LONS20 extension assigns broad job functions within sex
-only to RAS202 employee codes 15, 20, 25, 30, 35, and 40, using deterministic
-largest-remainder quotas and an isolated fourth RNG stream. The human-readable
-job-function label may reach the provider for a synthetic title, while its code and
-resolution do not. See the [Phase 2 validation report][phase-2-report] for exact
-checksums and metrics. LLM generation remains disabled in configuration and guarded by
-an executable failure.
+quotas and retains the English code-label pair for source/audit provenance plus the
+mandatory Danish display label. Only the Danish label may reach both provider stages and
+exact persona grounding; code, English label, resolutions, and contract metadata do not.
+Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot drive
+culture, religion, job, interests, personality, or visual traits.
+
+The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
+schema 3, generation contract 3, validator `persona-safety-v14`, and release
+manifest/evidence schema 2. The previously documented bundle `cfc1b56f5586a2d7` and runs
+`f449f1de01d18c08` and `3ebc00282c621ef2` used schema 5 and are historical,
+non-resumable evidence only. Regenerate before recording current canonical IDs; use
+`<new-bundle-id>`, `<new-run-id>`, and `<new-release-id>` placeholders until then. The
+LONS20 extension assigns broad job functions within sex only to RAS202 employee codes
+15, 20, 25, 30, 35, and 40, using deterministic largest-remainder quotas and an isolated
+fourth RNG stream. The human-readable job-function label may reach the provider for a
+synthetic title, while its code and resolution do not. See the [Phase 2 validation
+report][phase-2-report] for exact checksums and metrics. LLM generation remains disabled
+in configuration and guarded by an executable failure.
 
 The frozen text-development input remains a separate, deliberately stratified 1,000-row
 Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
-The first release-contract increment defines a disabled-by-default, pure eligibility
-gate: exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and
-populations of at least 100,000 require 500 (with stricter policy minima permitted).
-Other sizes fail closed. Packaging, publication, uploads, and release manifests remain
-unimplemented.
+The current release contract is disabled by default and binds schema-2 release
+manifest/evidence, exact artefact checksums, provenance, and blinded human review.
+Exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and populations of
+at least 100,000 require 500 (with stricter policy minima permitted). Other sizes fail
+closed. Release IDs and checksums remain placeholders until a current package is
+regenerated.
 
 ## Generation architecture
 
@@ -454,14 +472,16 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for the six v2 persona fields: five specialised
-texts and one short, grounded `persona`. Separating attribute and prose generation makes
-failures easier to detect and permits regeneration of text without changing the
-demographic sample. The persona must include the supplied municipality, origin, and
-job-function labels as appropriate, but never their codes or resolution fields. It must
-use a synthetic job title or current nonemployee status, include two or three interests
-in prose, and express OCEAN only as cautious tendencies. `visual_persona` is removed;
-the persona is not a visual description, and downstream image models may stereotype.
+Use a second structured generation call for the six generation-3 persona fields: five
+specialised texts and one short, grounded `persona`. Separating attribute and prose
+generation makes failures easier to detect and permits regeneration of text without
+changing the demographic sample. Both provider stages may receive the municipality,
+official Danish `origin_country_da`, and job-function labels as appropriate, but never
+their codes, English origin label, contract metadata, or resolution fields. The exact
+Danish label must ground the persona. It must use a synthetic job title or current
+nonemployee status, include two or three interests in prose, and express OCEAN only as
+cautious tendencies. `visual_persona` is removed; the persona is not a visual
+description, and downstream image models may stereotype.
 
 Evaluate at least two Danish-capable models on the same stratified development set. Pick
 the model using blinded human ratings for fluency, consistency, specificity, stereotype
@@ -672,8 +692,8 @@ complete. Full development-sample generation and evaluation remain pending.
 
 - Finalize Danish prompts, validators, and safety rules against the already defined
   typed schemas.
-- Generate attributes and the six v2 persona text fields for the frozen, stratified
-  1,000-row development sample using candidate models.
+- Generate attributes and the six generation-3 persona text fields for the frozen,
+  stratified 1,000-row development sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
 
@@ -686,8 +706,8 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by the six v2 persona text fields: five
-  specialised texts and one short, grounded persona.
+- Generate structured attributes, followed by the six generation-3 persona text fields:
+  five specialised texts and one short, grounded persona.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 
@@ -764,6 +784,11 @@ A release is complete only when it includes:
 - code revision and environment lock file;
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
+- prepared-bundle 6, sampler 6, frozen-sample 3, generation 3, validator v14, and
+  release manifest/evidence 2 version bindings;
+- official FOLK2 English provenance label and Danish 241-code display-label contract,
+  including source metadata SHA-256
+  `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`;
 - token, retry, rejection, and drop counts;
 - statistical and qualitative validation reports;
 - known limitations and prohibited uses;
@@ -783,9 +808,9 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    personas aged 70 and over; no unsupported detailed attainment for those ages.
 6. No observed occupation, household, income, ancestry, citizenship, full name, or
    sensitive fields in v1; broad job function is the documented synthetic exception.
-7. Six v2 persona text fields: five specialised texts plus one short, grounded persona;
-   `visual_persona` is removed. Historical v1 outputs and old pilots cannot be resumed
-   under this contract.
+7. Six generation-3 persona text fields: five specialised texts plus one short, grounded
+   persona; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
+   ten-person smoke, and old pilots cannot be resumed under this contract.
 8. Native list columns and explicit provenance fields, even where this differs from the
    NVIDIA schema.
 9. Open generation code, prompts, source manifests, and validation results.
@@ -835,9 +860,9 @@ All sources were accessed on 2026-09-14.
 [nemotron-dataset]: https://huggingface.co/datasets/nvidia/Nemotron-Personas-USA
 [nemotron-api]: https://huggingface.co/api/datasets/nvidia/Nemotron-Personas-USA
 [nemotron-schema]:
-  https://datasets-server.huggingface.co/first-rows?dataset=nvidia%2FNemotron-Personas-USA&config=default&split=train
+ https://datasets-server.huggingface.co/first-rows?dataset=nvidia%2FNemotron-Personas-USA&config=default&split=train
 [nemotron-pipeline]:
-  https://docs.nvidia.com/nemo/datadesigner/dev-notes/designing-nemotron-personas
+ https://docs.nvidia.com/nemo/datadesigner/dev-notes/designing-nemotron-personas
 [sdg-pgms]: https://github.com/NVIDIA-NeMo/SDG-PGMs
 [sdg-us-example]: https://github.com/NVIDIA-NeMo/SDG-PGMs/tree/main/examples/us_person
 [nemotron-blog]: https://huggingface.co/blog/nvidia/nemotron-personas
@@ -858,13 +883,13 @@ All sources were accessed on 2026-09-14.
 [disced]: https://www.dst.dk/en/Statistik/dokumentation/nomenklaturer/disced15-audd
 [names]: https://www.dst.dk/en/Statistik/emner/borgere/navne
 [dagi]:
-  https://datafordeler.dk/dataoversigt/danmarks-administrative-geografiske-inddeling-dagi/
+ https://datafordeler.dk/dataoversigt/danmarks-administrative-geografiske-inddeling-dagi/
 [dst-licence]: https://www.dst.dk/en/presse/kildeangivelse
 [personal-data]:
-  https://www.datatilsynet.dk/english/fundamental-concepts/what-is-personal-data
+ https://www.datatilsynet.dk/english/fundamental-concepts/what-is-personal-data
 [anonymisation]:
-  https://www.datatilsynet.dk/regler-og-vejledning/behandlingssikkerhed/katalog-over-foranstaltninger/pseudonymisering-og-anonymisering
+ https://www.datatilsynet.dk/regler-og-vejledning/behandlingssikkerhed/katalog-over-foranstaltninger/pseudonymisering-og-anonymisering
 [gdpr]: https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng
 [data-protection-act]: https://www.retsinformation.dk/eli/lta/2024/289
 [microdata-rules]:
-  https://www.dst.dk/en/TilSalg/data-til-forskning/regler-og-datasikkerhed/regler-for-arbejdet-med-mikrodata
+ https://www.dst.dk/en/TilSalg/data-til-forskning/regler-og-datasikkerhed/regler-for-arbejdet-med-mikrodata

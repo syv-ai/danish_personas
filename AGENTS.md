@@ -83,17 +83,18 @@ client when testing LLM paths.
 
 ## Configuration
 
-| Path                              | Responsibility                                            |
-| --------------------------------- | --------------------------------------------------------- |
-| `config/sources.yaml`             | Dynamic StatBank selectors, classifications, thresholds.  |
-| `config/sources.lock.yaml`        | Resolved codes, queries, URLs, periods, and timestamps.   |
-| `config/categories.yaml`          | Canonical demographic and labour-status mappings.         |
-| `config/sampling.yaml`            | Seed, rows, adult age range, region, OCEAN settings.      |
-| `config/validation.yaml`          | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config/generation.yaml`          | Disabled endpoint, guards, response mode, prompt paths.   |
-| `config/generation.local.yaml`    | Ignored local LLM override and provider settings.         |
-| `config/prompts/attributes-da.md` | Danish attributes schema and safety rules.                |
-| `config/prompts/personas-da.md`   | Danish six-description v2 schema and safety rules.        |
+| Path                                 | Responsibility                                            |
+| ------------------------------------ | --------------------------------------------------------- |
+| `config/sources.yaml`                | Dynamic StatBank selectors, classifications, thresholds.  |
+| `config/sources.lock.yaml`           | Resolved codes, queries, URLs, periods, and timestamps.   |
+| `config/categories.yaml`             | Canonical demographic and labour-status mappings.         |
+| `config/sampling.yaml`               | Seed, rows, adult age range, region, OCEAN settings.      |
+| `config/validation.yaml`             | Distribution, expected-count, back-off, OCEAN thresholds. |
+| `config/generation.yaml`             | Disabled endpoint, guards, response mode, prompt paths.   |
+| `config/generation.local.yaml`       | Ignored local LLM override and provider settings.         |
+| `config/prompts/attributes-da.md`    | Danish attributes schema and safety rules.                |
+| `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
+| `config/prompts/personas-da.md`      | Danish six-description v3 schema and safety rules.        |
 
 `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that
@@ -179,7 +180,7 @@ The normal non-LLM stages are:
 uv run src/scripts/restore_raw_sources.py
 uv run src/scripts/build_distributions.py \
   --lock config/sources.lock.yaml --categories config/categories.yaml \
-  --raw-dir data/raw-hardened-20260917 --output-dir data/processed
+  --raw-dir data/raw-hardened-20260919 --output-dir data/processed
 uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
 uv run src/scripts/generate_demographics.py \
   --bundle "$BUNDLE" --rows 1000 --seed 20260914 \
@@ -196,10 +197,10 @@ changes to the lock and source register before accepting refreshed snapshots.
 
 ## Outputs and provenance
 
-`data/raw-hardened-20260917.tar.zst` and `data/README.md` are tracked. The restore
+`data/raw-hardened-20260919.tar.zst` and `data/README.md` are tracked. The restore
 script rejects empty archives and unsafe members, permits only regular files under the
 expected root, and stages extraction before installing the ignored, immutable snapshots
-into `data/raw-hardened-20260917/`. It does not compare the archive's top-level SHA-256
+into `data/raw-hardened-20260919/`. It does not compare the archive's top-level SHA-256
 or validate snapshot manifests and checksums; bundle preparation validates each locked
 snapshot's manifest, provenance, query, and file checksums.
 
@@ -220,15 +221,19 @@ remain in generated records; landsdel stays inside the prepared bundle. Determin
 runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
 contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
-per-person attribute/final checkpoints, and `validation-report.json`. Current v2 outputs
+per-person attribute/final checkpoints, and `validation-report.json`. Current v3 outputs
 retain five specialised texts plus one short grounded persona; they do not contain
 `visual_persona`. Pilots additionally contain merged output, a pilot manifest, shard
-references, and `pilot-validation-report.json`.
+references, and `pilot-validation-report.json`. Release packages use release manifest
+schema 2 and evidence schema 2.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order, and
-request accounting. Deterministic run IDs derive from bundle/config/row/seed inputs; LLM
-run IDs include the frozen input and generation context. Existing checksum failures must
-fail loudly, not be repaired by overwriting files.
+request accounting. The current versions are prepared bundle 6, sampler 6, frozen sample
+3, generation 3, validator `persona-safety-v14`, and release manifest/evidence 2.
+Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
+frozen input and generation context. Existing checksum failures must fail loudly, not be
+repaired by overwriting files. Do not document a canonical bundle or run ID until the
+current contracts have been regenerated; use placeholders in instructions.
 
 ## Repository-specific conventions
 
@@ -255,10 +260,13 @@ fail loudly, not be repaired by overwriting files.
   issue requests in parallel.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
-  validator context. Human-readable municipality, origin, and job-function labels reach
-  the provider; source codes and resolution fields do not. Re-running a valid v2 live
-  run resumes completed records, but v1 checkpoints and old pilots are not resumable
-  under v2.
+  validator context. Human-readable municipality, the official Danish
+  `origin_country_da`, and job-function labels reach both provider stages; the origin
+  code, English `origin_country`, resolution fields, and origin-contract metadata do
+  not. The Danish label is also the exact origin fact in the grounded persona.
+  Re-running a valid v3 live run resumes completed records, but v1/v2 checkpoints, the
+  previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
+  under v3.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
@@ -282,12 +290,18 @@ fail loudly, not be repaired by overwriting files.
   the sampled broad status. A missing terminal cell must fail loudly.
 - Statistics Denmark tables are aggregates. Do not link them to people or infer
   individual records. Phase 2 retains official municipality fields; the municipality
-  label may reach the LLM provider, but its code and resolution do not. Origin and
-  job-function labels are similarly allowed provider inputs, while their codes and
-  resolutions are withheld. Treat municipality-level combinations and provider payloads
-  as restricted. Do not add names, addresses, occupations, employers, income,
-  households, citizenship, ancestry, health, religion, sexuality, politics, criminal
-  history, or other sensitive fields without a separate privacy review.
+  label may reach the LLM provider, but its code and resolution do not. The English
+  `origin_country` remains official source/audit provenance, while the mandatory Danish
+  `origin_country_da` comes from the archived official FOLK2 metadata-da 241-code
+  contract (SHA-256 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`).
+  Only the Danish label reaches both provider stages and exact persona grounding; the
+  code, English label, resolutions, and contract metadata are withheld. Neither label is
+  ethnicity, citizenship, residence, or appearance, and origin cannot drive culture,
+  religion, job, interests, personality, or visual traits. Treat municipality-level
+  combinations and provider payloads as restricted. Do not add names, addresses,
+  occupations, employers, income, households, citizenship, ancestry, health, religion,
+  sexuality, politics, criminal history, or other sensitive fields without a separate
+  privacy review.
 - Only lowercase `makefile` is tracked; case-insensitive systems may display it as
   `Makefile`. Make targets can mutate Git state; inspect `git status` before and after
   using them.
