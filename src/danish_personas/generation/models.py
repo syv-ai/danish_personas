@@ -3,7 +3,7 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_serializer, field_validator, model_validator
 
 from ..models import FrozenSampleManifest, StrictModel, ValidationReport
 from ..origin_labels import (
@@ -115,6 +115,23 @@ class GenerationConfig(StrictModel):
         """
         canonical_origin_label_contract_path(value)
         return value
+
+    @field_serializer(
+        "attributes_prompt", "personas_prompt", "job_title_mapping", when_used="json"
+    )
+    def serialise_repository_path(self, value: Path | None) -> str | None:
+        """Serialise repository paths with portable separators.
+
+        Args:
+            value:
+                Runtime filesystem path to serialise.
+
+        Returns:
+            A repository path using forward slashes, or ``None``.
+        """
+        if value is None:
+            return None
+        return value.as_posix().replace("\\", "/")
 
 
 class GenerationManifest(StrictModel):

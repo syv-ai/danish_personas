@@ -14,6 +14,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -25,6 +26,7 @@ from ..origin_labels import (
     ORIGIN_LABEL_CONTRACT_VERSION,
     OriginLabelContract,
     OriginLabelContractPath,
+    canonical_origin_label_contract_path,
     validate_origin_contract_reference,
 )
 
@@ -334,6 +336,19 @@ class ReleaseManifest(StrictModel):
             content=self.origin_label_contract_content,
         )
         return self
+
+    @field_serializer("origin_label_contract_file", when_used="json")
+    def _serialise_origin_label_contract_file(self, value: Path) -> str:
+        """Serialise the manifest contract path using portable separators.
+
+        Args:
+            value:
+                Runtime filesystem path for the origin-label contract.
+
+        Returns:
+            The canonical repository-relative contract path.
+        """
+        return canonical_origin_label_contract_path(value)
 
     @field_validator("created_at", mode="before")
     @classmethod
