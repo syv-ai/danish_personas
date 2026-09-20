@@ -200,7 +200,17 @@ def _merge_pilot(
     pilot_dir.mkdir(parents=True, exist_ok=True)
     output_path = pilot_dir / "generated-personas.parquet"
     output.write_parquet(output_path, compression="zstd")
-    if len({manifest.generation_context_sha256 for manifest in manifests}) != 1:
+    shard_bindings = {
+        (
+            manifest.generation_context_sha256,
+            manifest.origin_label_contract_file,
+            manifest.origin_label_contract_sha256,
+            manifest.origin_label_contract_version,
+            manifest.origin_label_contract_content.model_dump_json(),
+        )
+        for manifest in manifests
+    }
+    if len(shard_bindings) != 1:
         message = "Pilot shards have inconsistent generation contexts"
         raise ValueError(message)
     prompt_tokens = sum(manifest.prompt_tokens for manifest in manifests)
@@ -230,6 +240,10 @@ def _merge_pilot(
             job_title_mapping_sha256=manifest.job_title_mapping_sha256,
             job_title_mapping_version=manifest.job_title_mapping_version,
             job_title_mapping_content=manifest.job_title_mapping_content,
+            origin_label_contract_file=manifest.origin_label_contract_file,
+            origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+            origin_label_contract_version=manifest.origin_label_contract_version,
+            origin_label_contract_content=manifest.origin_label_contract_content,
         )
         for run_dir, manifest in zip(run_dirs, manifests, strict=True)
     ]
@@ -252,6 +266,10 @@ def _merge_pilot(
         job_title_mapping_sha256=first.job_title_mapping_sha256,
         job_title_mapping_version=first.job_title_mapping_version,
         job_title_mapping_content=first.job_title_mapping_content,
+        origin_label_contract_file=first.origin_label_contract_file,
+        origin_label_contract_sha256=first.origin_label_contract_sha256,
+        origin_label_contract_version=first.origin_label_contract_version,
+        origin_label_contract_content=first.origin_label_contract_content,
         attributes_prompt_sha256=first.attributes_prompt_sha256,
         personas_prompt_sha256=first.personas_prompt_sha256,
         rows=output.height,

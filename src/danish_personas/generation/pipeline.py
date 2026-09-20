@@ -19,6 +19,10 @@ from ..models import (
     RunManifest,
     ValidationReport,
 )
+from ..origin_labels import OriginLabelContract, load_origin_label_contract
+from ..origin_labels import (
+    origin_label_contract_sha256 as origin_label_contract_sha256_file,
+)
 from .client import OpenAIClient, RequestBudgetExceeded
 from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
 from .identity import generation_run_id
@@ -50,6 +54,7 @@ AUDIT_FIELDS = frozenset(
         *MOST_SPECIFIC_RESOLUTION,
         "education_resolution",
         "origin_country_code",
+        "origin_country",
         "education_source_code",
         "detailed_status_code",
         "job_function_code",
@@ -60,7 +65,7 @@ AUDIT_FIELDS = frozenset(
     )
 )
 PROMPT_FIELDS = (
-    "origin_country",
+    "origin_country_da",
     "municipality",
     "job_function",
     "age",
@@ -93,7 +98,7 @@ OCEAN_PROMPT_FIELDS = (
 )
 STAGE_ONE_PROMPT_FIELDS = PROMPT_FIELDS
 STAGE_TWO_PROMPT_FIELDS = (
-    "origin_country",
+    "origin_country_da",
     "municipality",
     "job_function",
     "age",
@@ -154,16 +159,20 @@ def generate_personas(
     mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
     job_title_mapping = load_job_title_mapping(mapping_path)
     mapping_sha = mapping_file_sha256(mapping_path)
-    context_mapping = job_title_mapping
-    context_mapping_sha = mapping_sha
+    origin_contract_path = config.origin_label_contract
+    origin_contract = load_origin_label_contract(path=origin_contract_path)
+    origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
+    _validate_origin_labels(frame=sample, contract=origin_contract)
     attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
     personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
     generation_context_sha = generation_context_sha256(
         config=config,
         attributes_prompt=attributes_prompt,
         personas_prompt=personas_prompt,
-        job_title_mapping=context_mapping,
-        job_title_mapping_sha256=context_mapping_sha,
+        job_title_mapping=job_title_mapping,
+        job_title_mapping_sha256=mapping_sha,
+        origin_label_contract=origin_contract,
+        origin_label_contract_sha256=origin_contract_sha,
     )
     run_id = generation_run_id(
         input_sha256=sha256_file(input_path),
@@ -218,6 +227,9 @@ def generate_personas(
                     job_title_mapping=job_title_mapping,
                     job_title_mapping_sha256=mapping_sha,
                     job_title_mapping_path=mapping_path,
+                    origin_label_contract=origin_contract,
+                    origin_label_contract_sha256=origin_contract_sha,
+                    origin_label_contract_path=origin_contract_path,
                 )
             )
     finally:
@@ -239,6 +251,10 @@ def generate_personas(
         job_title_mapping_sha256=mapping_sha,
         job_title_mapping_version=job_title_mapping.version,
         job_title_mapping_content=job_title_mapping,
+        origin_label_contract_file=origin_contract_path,
+        origin_label_contract_sha256=origin_contract_sha,
+        origin_label_contract_version=origin_contract.version,
+        origin_label_contract_content=origin_contract,
         attributes_prompt_sha256=sha256_text(attributes_prompt),
         personas_prompt_sha256=sha256_text(personas_prompt),
         model=config.model or "",
@@ -280,6 +296,9 @@ def _generate_one(
     job_title_mapping: JobFunctionTitleMapping,
     job_title_mapping_sha256: str,
     job_title_mapping_path: Path,
+    origin_label_contract: OriginLabelContract,
+    origin_label_contract_sha256: str,
+    origin_label_contract_path: Path,
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
@@ -300,6 +319,9 @@ def _generate_one(
             job_title_mapping=job_title_mapping,
             job_title_mapping_sha256=job_title_mapping_sha256,
             job_title_mapping_path=job_title_mapping_path,
+            origin_label_contract=origin_label_contract,
+            origin_label_contract_sha256=origin_label_contract_sha256,
+            origin_label_contract_path=origin_label_contract_path,
         )
         parse_descriptions(
             checkpoint.descriptions.model_dump_json(), row, checkpoint.attributes
@@ -319,6 +341,9 @@ def _generate_one(
             job_title_mapping=job_title_mapping,
             job_title_mapping_sha256=job_title_mapping_sha256,
             job_title_mapping_path=job_title_mapping_path,
+            origin_label_contract=origin_label_contract,
+            origin_label_contract_sha256=origin_label_contract_sha256,
+            origin_label_contract_path=origin_label_contract_path,
         )
         attributes = attribute_checkpoint.attributes
         responses = list(attribute_checkpoint.responses)
@@ -353,6 +378,10 @@ def _generate_one(
             job_title_mapping_version=job_title_mapping.version,
             job_title_mapping_file=job_title_mapping_path,
             job_title_mapping_content=job_title_mapping,
+            origin_label_contract_file=origin_label_contract_path,
+            origin_label_contract_sha256=origin_label_contract_sha256,
+            origin_label_contract_version=origin_label_contract.version,
+            origin_label_contract_content=origin_label_contract,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests,
@@ -387,6 +416,10 @@ def _generate_one(
             job_title_mapping_version=job_title_mapping.version,
             job_title_mapping_file=job_title_mapping_path,
             job_title_mapping_content=job_title_mapping,
+            origin_label_contract_file=origin_label_contract_path,
+            origin_label_contract_sha256=origin_label_contract_sha256,
+            origin_label_contract_version=origin_label_contract.version,
+            origin_label_contract_content=origin_label_contract,
             attributes=attributes,
             responses=responses,
             http_requests=http_requests + client.requests_made - request_start,
@@ -403,6 +436,10 @@ def _generate_one(
         job_title_mapping_version=job_title_mapping.version,
         job_title_mapping_file=job_title_mapping_path,
         job_title_mapping_content=job_title_mapping,
+        origin_label_contract_file=origin_label_contract_path,
+        origin_label_contract_sha256=origin_label_contract_sha256,
+        origin_label_contract_version=origin_label_contract.version,
+        origin_label_contract_content=origin_label_contract,
         attributes=attributes,
         descriptions=descriptions,
         responses=responses,
@@ -562,6 +599,9 @@ def _validate_checkpoint(
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
     job_title_mapping_path: Path | None = None,
+    origin_label_contract: OriginLabelContract | None = None,
+    origin_label_contract_sha256: str | None = None,
+    origin_label_contract_path: Path | None = None,
 ) -> None:
     if checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
@@ -580,6 +620,14 @@ def _validate_checkpoint(
         or checkpoint.job_title_mapping_file != job_title_mapping_path
     ):
         raise ValueError(f"Stale job-title mapping for {checkpoint.persona_id}")
+    if origin_label_contract is None or (
+        checkpoint.origin_label_contract_sha256 != origin_label_contract_sha256
+        or checkpoint.origin_label_contract_version != origin_label_contract.version
+        or checkpoint.origin_label_contract_content != origin_label_contract
+        or checkpoint.origin_label_contract_file != origin_label_contract_path
+    ):
+        raise ValueError(f"Stale origin-label contract for {checkpoint.persona_id}")
+    _validate_origin_row(row=demographic, contract=origin_label_contract)
     parse_attributes(
         checkpoint.attributes.model_dump_json(),
         demographic,
@@ -597,6 +645,27 @@ def _validate_checkpoint(
     ):
         message = f"Checkpoint model mismatch for {checkpoint.persona_id}"
         raise ValueError(message)
+
+
+def _validate_origin_row(
+    *, row: c.Mapping[str, object], contract: OriginLabelContract
+) -> None:
+    """Validate one code-English-Danish origin tuple against the contract.
+
+    Raises:
+        ValueError:
+            If the row does not contain the exact contracted Danish display label.
+    """
+    code = row.get("origin_country_code")
+    english = row.get("origin_country")
+    danish = row.get("origin_country_da")
+    if (
+        not isinstance(code, str)
+        or not isinstance(english, str)
+        or not english.strip()
+        or contract.labels.get(code) != danish
+    ):
+        raise ValueError("Origin code-English-Danish triple does not match contract")
 
 
 def models_match(configured: str, returned: str) -> bool:
@@ -679,6 +748,14 @@ def _validate_guards(config: GenerationConfig, rows: int, live: bool) -> None:
         raise ValueError(message)
 
 
+def _validate_origin_labels(
+    *, frame: pl.DataFrame, contract: OriginLabelContract
+) -> None:
+    """Require every demographic row to use its contracted Danish label."""
+    for row in frame.iter_rows(named=True):
+        _validate_origin_row(row=t.cast(dict[str, object], row), contract=contract)
+
+
 def _write_output(
     frame: pl.DataFrame, checkpoints: list[PersonaCheckpoint], run_dir: Path
 ) -> Path:
@@ -706,6 +783,8 @@ def generation_context_sha256(
     personas_prompt: str,
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
+    origin_label_contract: OriginLabelContract | None = None,
+    origin_label_contract_sha256: str | None = None,
 ) -> str:
     """Hash every effective input that controls LLM generation.
 
@@ -720,10 +799,21 @@ def generation_context_sha256(
             Validated reviewed title mapping.
         job_title_mapping_sha256:
             Checksum of the exact mapping file.
+        origin_label_contract:
+            Exact configured Danish origin-label contract.
+        origin_label_contract_sha256:
+            Checksum of the exact configured origin-label contract file.
 
     Returns:
         SHA-256 digest for the prompts, schemas, validator, and configuration.
     """
+    effective_origin_contract = origin_label_contract or load_origin_label_contract(
+        path=config.origin_label_contract
+    )
+    effective_origin_sha256 = (
+        origin_label_contract_sha256
+        or origin_label_contract_sha256_file(path=config.origin_label_contract)
+    )
     return sha256_text(
         canonical_json(
             {
@@ -738,6 +828,10 @@ def generation_context_sha256(
                 or mapping_file_sha256(
                     config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
                 ),
+                "origin_label_contract": effective_origin_contract.model_dump(
+                    mode="json"
+                ),
+                "origin_label_contract_sha256": effective_origin_sha256,
                 "attributes_prompt_sha256": sha256_text(attributes_prompt),
                 "personas_prompt_sha256": sha256_text(personas_prompt),
                 "attributes_schema": GeneratedAttributes.model_json_schema(),

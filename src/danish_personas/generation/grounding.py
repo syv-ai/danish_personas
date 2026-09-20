@@ -51,7 +51,7 @@ class PersonaGroundingFacts(StrictModel):
     sex: str = Field(min_length=1)
     municipality: str = Field(min_length=1)
     education_level: str = Field(min_length=1)
-    origin_country: str = Field(min_length=1)
+    origin_country_da: str = Field(min_length=1)
     current_employment: str = Field(min_length=1)
 
 
@@ -99,7 +99,7 @@ def build_persona_grounding_facts(
         "sex": sex,
         "municipality": context.get("municipality"),
         "education_level": education,
-        "origin_country": context.get("origin_country"),
+        "origin_country_da": context.get("origin_country_da"),
         "current_employment": current_employment,
     }
     if any(

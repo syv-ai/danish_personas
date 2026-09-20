@@ -10,6 +10,11 @@ import polars as pl
 
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..models import MetricResult, ValidationReport
+from ..origin_labels import (
+    OriginLabelContract,
+    load_origin_label_contract,
+    origin_label_contract_sha256,
+)
 from .identity import generation_run_id, persona_pilot_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
@@ -21,12 +26,18 @@ from .models import (
     GeneratedAttributes,
     GenerationConfig,
     GenerationManifest,
+    GenerationValidationReport,
     PersonaCheckpoint,
     PersonaDescriptions,
     PilotManifest,
     RequestLedger,
 )
-from .pipeline import generation_context_sha256, models_match, validate_upstream_sample
+from .pipeline import (
+    _validate_origin_row,
+    generation_context_sha256,
+    models_match,
+    validate_upstream_sample,
+)
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 
@@ -96,7 +107,7 @@ def _build_persona_pilot_report(
             batch_manifest = GenerationManifest.model_validate_json(
                 manifest_path.read_text(encoding="utf-8")
             )
-            batch_report = ValidationReport.model_validate_json(
+            batch_report = GenerationValidationReport.model_validate_json(
                 report_path.read_text(encoding="utf-8")
             )
             fresh_report = _build_persona_run_report(
@@ -146,6 +157,34 @@ def _build_persona_pilot_report(
                 != manifest.job_title_mapping_version
                 or batch_manifest.job_title_mapping_content
                 != manifest.job_title_mapping_content
+                or (
+                    reference.origin_label_contract_file
+                    != batch_manifest.origin_label_contract_file
+                    or reference.origin_label_contract_sha256
+                    != batch_manifest.origin_label_contract_sha256
+                    or reference.origin_label_contract_version
+                    != batch_manifest.origin_label_contract_version
+                    or reference.origin_label_contract_content
+                    != batch_manifest.origin_label_contract_content
+                )
+                or (
+                    batch_report.origin_label_contract_file
+                    != batch_manifest.origin_label_contract_file
+                    or batch_report.origin_label_contract_sha256
+                    != batch_manifest.origin_label_contract_sha256
+                    or batch_report.origin_label_contract_version
+                    != batch_manifest.origin_label_contract_version
+                    or batch_report.origin_label_contract_content
+                    != batch_manifest.origin_label_contract_content
+                )
+                or batch_manifest.origin_label_contract_file
+                != manifest.origin_label_contract_file
+                or batch_manifest.origin_label_contract_sha256
+                != manifest.origin_label_contract_sha256
+                or batch_manifest.origin_label_contract_version
+                != manifest.origin_label_contract_version
+                or batch_manifest.origin_label_contract_content
+                != manifest.origin_label_contract_content
                 or batch_manifest.requests > manifest.maximum_shard_requests
                 or batch_report.kind != "personas"
                 or not batch_report.passed
@@ -180,8 +219,11 @@ def _build_persona_pilot_report(
     mapping_binding = _load_mapping_binding(
         config_path=config_path, repository_root=repository_root
     )
+    origin_binding = _load_origin_binding(
+        config_path=config_path, repository_root=repository_root
+    )
     content_errors = _count_content_errors(
-        output=output, mapping_binding=mapping_binding
+        output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
     )
     provenance_passed = _pilot_provenance_matches(
         pilot_dir=pilot_dir, manifest=manifest, repository_root=repository_root
@@ -229,7 +271,7 @@ def _build_persona_pilot_report(
             threshold=0,
         ),
     ]
-    report = ValidationReport(
+    report = GenerationValidationReport(
         kind="persona_pilot",
         passed=all(metric.passed for metric in checks),
         created_at=datetime.now(tz=UTC).isoformat(),
@@ -243,6 +285,10 @@ def _build_persona_pilot_report(
             if manifest.job_title_mapping_content is not None
             else None
         ),
+        origin_label_contract_file=manifest.origin_label_contract_file,
+        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+        origin_label_contract_version=manifest.origin_label_contract_version,
+        origin_label_contract_content=manifest.origin_label_contract_content,
     )
     return report
 
@@ -303,8 +349,11 @@ def _build_persona_run_report(
     mapping_binding = _load_mapping_binding(
         config_path=config_path, repository_root=repository_root
     )
+    origin_binding = _load_origin_binding(
+        config_path=config_path, repository_root=repository_root
+    )
     validation_errors = _count_content_errors(
-        output=output, mapping_binding=mapping_binding
+        output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
     )
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
@@ -313,6 +362,7 @@ def _build_persona_run_report(
         manifest=manifest,
         config_path=config_path,
         mapping_binding=mapping_binding,
+        origin_binding=origin_binding,
         repository_root=repository_root,
     )
     checks.append(
@@ -336,7 +386,7 @@ def _build_persona_run_report(
             details="Checkpoints match their input, model, prompts, and validator.",
         )
     )
-    return ValidationReport(
+    return GenerationValidationReport(
         kind="personas",
         passed=all(metric.passed for metric in checks),
         created_at=datetime.now(tz=UTC).isoformat(),
@@ -350,6 +400,10 @@ def _build_persona_run_report(
             if manifest.job_title_mapping_content is not None
             else None
         ),
+        origin_label_contract_file=manifest.origin_label_contract_file,
+        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+        origin_label_contract_version=manifest.origin_label_contract_version,
+        origin_label_contract_content=manifest.origin_label_contract_content,
     )
 
 
@@ -369,6 +423,7 @@ def _count_checkpoint_errors(
     manifest: GenerationManifest,
     config_path: Path | None,
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
+    origin_binding: tuple[Path, OriginLabelContract, str] | None,
     repository_root: Path | None,
 ) -> int:
     """Count checkpoint, response-sequence, ledger, and accounting errors.
@@ -423,6 +478,17 @@ def _count_checkpoint_errors(
                     expected_path=mapping_binding[0],
                     expected_mapping=mapping_binding[1],
                     expected_sha256=mapping_binding[2],
+                    repository_root=repository_root,
+                )
+                or origin_binding is None
+                or not _origin_binding_matches(
+                    path=checkpoint.origin_label_contract_file,
+                    sha256=checkpoint.origin_label_contract_sha256,
+                    version=checkpoint.origin_label_contract_version,
+                    content=checkpoint.origin_label_contract_content,
+                    expected_path=origin_binding[0],
+                    expected_contract=origin_binding[1],
+                    expected_sha256=origin_binding[2],
                     repository_root=repository_root,
                 )
                 or checkpoint_values != output_values
@@ -554,6 +620,30 @@ def _repository_path(root: Path | None, value: Path | None) -> Path:
     return Path(os.path.abspath(os.path.normpath(candidate)))
 
 
+def _origin_binding_matches(
+    *,
+    path: Path,
+    sha256: str,
+    version: int,
+    content: OriginLabelContract,
+    expected_path: Path,
+    expected_contract: OriginLabelContract,
+    expected_sha256: str,
+    repository_root: Path | None = None,
+) -> bool:
+    """Check stored origin bindings against the effective configuration.
+
+    Returns:
+        Whether the path, version, checksum, and embedded content all match.
+    """
+    return (
+        _repository_path(repository_root, path) == expected_path
+        and sha256 == expected_sha256
+        and version == expected_contract.version
+        and content == expected_contract
+    )
+
+
 def _responses_match_checkpoint(
     *,
     checkpoint: PersonaCheckpoint,
@@ -624,13 +714,14 @@ def _count_content_errors(
     *,
     output: pl.DataFrame,
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
+    origin_binding: tuple[Path, OriginLabelContract, str] | None,
 ) -> int:
     errors = 0
     required_columns = {
         *GeneratedAttributes.model_fields,
         *PersonaDescriptions.model_fields,
     }
-    if mapping_binding is None:
+    if mapping_binding is None or origin_binding is None:
         return max(1, output.height)
     if not required_columns.issubset(output.columns):
         return max(1, output.height)
@@ -642,6 +733,7 @@ def _count_content_errors(
             descriptions = PersonaDescriptions.model_validate(
                 {name: row[name] for name in PersonaDescriptions.model_fields}
             )
+            _validate_origin_row(row=row, contract=origin_binding[1])
             parse_attributes(
                 attributes.model_dump_json(), row, job_title_mapping=mapping_binding[1]
             )
@@ -696,6 +788,38 @@ def _effective_mapping(
     return path, mapping, job_title_mapping_sha256(path=path)
 
 
+def _load_origin_binding(
+    *, config_path: Path | None, repository_root: Path | None
+) -> tuple[Path, OriginLabelContract, str] | None:
+    """Load the exact Danish origin-label contract selected by a config.
+
+    Returns:
+        Effective path, parsed contract, and checksum, or ``None`` when invalid.
+    """
+    if config_path is None:
+        return None
+    try:
+        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        return _effective_origin_contract(
+            config=config, repository_root=repository_root
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        return None
+
+
+def _effective_origin_contract(
+    *, config: GenerationConfig, repository_root: Path | None
+) -> tuple[Path, OriginLabelContract, str]:
+    """Load the configured contract without a repository-default fallback.
+
+    Returns:
+        Effective path, parsed contract, and file checksum.
+    """
+    path = _repository_path(repository_root, config.origin_label_contract)
+    contract = load_origin_label_contract(path=path)
+    return path, contract, origin_label_contract_sha256(path=path)
+
+
 def _metric(
     name: str,
     passed: bool,
@@ -734,6 +858,9 @@ def _persona_provenance_matches(
         mapping_path, mapping, mapping_sha256 = _effective_mapping(
             config=config, repository_root=repository_root
         )
+        origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
+            config=config, repository_root=repository_root
+        )
         attributes_prompt = _repository_path(
             repository_root, config.attributes_prompt
         ).read_text(encoding="utf-8")
@@ -755,6 +882,8 @@ def _persona_provenance_matches(
             personas_prompt=personas_prompt,
             job_title_mapping=mapping,
             job_title_mapping_sha256=mapping_sha256,
+            origin_label_contract=origin_contract,
+            origin_label_contract_sha256=origin_sha256,
         )
         input_sha256 = sha256_file(input_path)
         return (
@@ -780,6 +909,16 @@ def _persona_provenance_matches(
                 expected_path=mapping_path,
                 expected_mapping=mapping,
                 expected_sha256=mapping_sha256,
+                repository_root=repository_root,
+            )
+            and _origin_binding_matches(
+                path=manifest.origin_label_contract_file,
+                sha256=manifest.origin_label_contract_sha256,
+                version=manifest.origin_label_contract_version,
+                content=manifest.origin_label_contract_content,
+                expected_path=origin_path,
+                expected_contract=origin_contract,
+                expected_sha256=origin_sha256,
                 repository_root=repository_root,
             )
             and manifest.run_id
@@ -842,6 +981,13 @@ def _pilot_aggregates_match(
             and item.job_title_mapping_sha256 == manifest.job_title_mapping_sha256
             and item.job_title_mapping_version == manifest.job_title_mapping_version
             and item.job_title_mapping_content == manifest.job_title_mapping_content
+            and item.origin_label_contract_file == manifest.origin_label_contract_file
+            and item.origin_label_contract_sha256
+            == manifest.origin_label_contract_sha256
+            and item.origin_label_contract_version
+            == manifest.origin_label_contract_version
+            and item.origin_label_contract_content
+            == manifest.origin_label_contract_content
             and item.attributes_prompt_sha256 == manifest.attributes_prompt_sha256
             and item.personas_prompt_sha256 == manifest.personas_prompt_sha256
             and item.model == manifest.model
@@ -872,6 +1018,9 @@ def _pilot_provenance_matches(
         mapping_path, mapping, mapping_sha256 = _effective_mapping(
             config=config, repository_root=repository_root
         )
+        origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
+            config=config, repository_root=repository_root
+        )
         attributes_prompt = _repository_path(
             repository_root, config.attributes_prompt
         ).read_text(encoding="utf-8")
@@ -886,6 +1035,8 @@ def _pilot_provenance_matches(
             personas_prompt=personas_prompt,
             job_title_mapping=mapping,
             job_title_mapping_sha256=mapping_sha256,
+            origin_label_contract=origin_contract,
+            origin_label_contract_sha256=origin_sha256,
         )
         sample_rows = pl.read_parquet(input_path).height
         expected_batches = math.ceil(manifest.rows / manifest.batch_size)
@@ -935,6 +1086,16 @@ def _pilot_provenance_matches(
                 expected_path=mapping_path,
                 expected_mapping=mapping,
                 expected_sha256=mapping_sha256,
+                repository_root=repository_root,
+            )
+            and _origin_binding_matches(
+                path=manifest.origin_label_contract_file,
+                sha256=manifest.origin_label_contract_sha256,
+                version=manifest.origin_label_contract_version,
+                content=manifest.origin_label_contract_content,
+                expected_path=origin_path,
+                expected_contract=origin_contract,
+                expected_sha256=origin_sha256,
                 repository_root=repository_root,
             )
         )

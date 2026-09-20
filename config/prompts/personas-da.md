@@ -8,8 +8,10 @@ senere billedprompting; den må ikke være en visuel beskrivelse.
 
 `persona` skal indeholde hver værdi i `required_persona_facts` ordret i naturlig
 prosa. Det gælder alle seks værdier: alder i formen `<n> år`, det danske statistiske
-kønsord, kommuneetiketten, den brede danske uddannelsesfrase, oprindelsesetiketten og
-det aktuelle arbejdsforhold. Værdierne skal gengives bogstaveligt: oversæt,
+kønsord, kommuneetiketten, den brede danske uddannelsesfrase, den officielle danske
+`origin_country_da`-kildeetiket og det aktuelle arbejdsforhold. Oprindelsesetiketten
+er kun en bogstavelig visningsværdi og må aldrig styre kultur, etnicitet, udseende,
+beskæftigelse eller interesser. Værdierne skal gengives bogstaveligt: oversæt,
 normalisér, bøj, uddyb eller pynt aldrig på dem, og skriv dem ikke som en liste. Brug
 den leverede jobtitel for en ansat, ellers den leverede kanoniske statusfrase.
 `education_level` er en sammenlagt kategori: udled eller opfind aldrig et mere
@@ -32,6 +34,8 @@ Regler:
   over den leverede kommune.
 - Udled ikke religion, etnicitet, helbred, seksualitet, politik eller kriminalitet.
 - Påstå ikke familie, husstand, diagnose eller fysisk udseende.
+- Brug ikke `origin_country_da` til at udlede kultur, etnicitet, udseende, job,
+  færdigheder eller interesser.
 - Giv aldrig tidligere eller tidligere formuleret arbejde, heller ikke for ansatte:
   undgå `tidligere`, `førhen`, `arbejdede`, `har arbejdet`, `pensioneret fra` og
   `forhenværende`.

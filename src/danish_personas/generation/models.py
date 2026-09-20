@@ -5,7 +5,8 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 
-from ..models import StrictModel
+from ..models import StrictModel, ValidationReport
+from ..origin_labels import OriginLabelContract
 from .job_titles import JobFunctionTitleMapping
 
 
@@ -85,7 +86,7 @@ class GeneratedAttributes(StrictModel):
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: t.Literal[2]
+    version: t.Literal[3]
     llm_generation_enabled: bool
     base_url: str | None
     model: str | None
@@ -103,6 +104,27 @@ class GenerationConfig(StrictModel):
     attributes_prompt: Path
     personas_prompt: Path
     job_title_mapping: Path | None = None
+    origin_label_contract: Path
+
+    @field_validator("origin_label_contract")
+    @classmethod
+    def require_repository_relative_origin_contract(_cls, value: Path) -> Path:
+        """Require the origin-label contract to be repository-relative.
+
+        Args:
+            value:
+                Configured origin-label contract path.
+
+        Returns:
+            The validated relative path.
+
+        Raises:
+            ValueError:
+                If the path is absolute or traverses above the repository root.
+        """
+        if value.is_absolute() or ".." in value.parts:
+            raise ValueError("origin_label_contract must be repository-relative")
+        return value
 
 
 class GenerationManifest(StrictModel):
@@ -122,6 +144,10 @@ class GenerationManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     model: str
@@ -138,6 +164,15 @@ class GenerationManifest(StrictModel):
     output_file: Path
     output_sha256: str
     llm_generation: bool
+
+
+class GenerationValidationReport(ValidationReport):
+    """Generation report bound to the effective Danish origin-label contract."""
+
+    origin_label_contract_file: Path | None = None
+    origin_label_contract_sha256: str | None = None
+    origin_label_contract_version: int | None = None
+    origin_label_contract_content: OriginLabelContract | None = None
 
 
 class LLMResponse(StrictModel):
@@ -167,6 +202,10 @@ class AttributeCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes: GeneratedAttributes
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
@@ -194,6 +233,10 @@ class PersonaCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
@@ -215,6 +258,10 @@ class PilotBatchReference(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
 
 
 class PilotManifest(StrictModel):
@@ -237,6 +284,10 @@ class PilotManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
     attributes_prompt_sha256: str
     personas_prompt_sha256: str
     rows: int = Field(ge=1)

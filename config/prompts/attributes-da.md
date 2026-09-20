@@ -5,7 +5,10 @@ Returnér kun gyldigt JSON efter skemaet. Returnér altid alle skemafelter; brug
 null for nullable felter, når værdien ikke findes.
 
 Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
-`allowed_job_titles` er den komplette, lukkede liste over tilladte titler for etiketten.
+`origin_country_da` er en bogstavelig officiel dansk kildeetiket, ikke en oplysning,
+der må bruges til at udlede kultur, etnicitet, udseende, beskæftigelse eller
+interesser. Feltet `allowed_job_titles` er den komplette, lukkede liste over tilladte
+titler for jobfunktionsetiketten.
 Hvis `allowed_job_titles` er tom, skal `job_title` være null. Ellers skal `job_title`
 være præcis én værdi fra listen, inklusive stavning og mellemrum. Brug aldrig koder.
 Opfind ikke arbejdsopgaver, arbejdsgiver, institution, anciennitet eller
@@ -21,7 +24,10 @@ Regler:
 - Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
 - Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning eller
   kriminalhistorik.
-- Undgå stereotyper baseret på køn, alder, region, uddannelse eller arbejdsstatus.
+- Undgå stereotyper baseret på køn, alder, region, oprindelsesetiket, uddannelse
+  eller arbejdsstatus.
+- Lad aldrig `origin_country_da` styre kultur, etnicitet, udseende, job, færdigheder
+  eller interesser.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
 - Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser som
