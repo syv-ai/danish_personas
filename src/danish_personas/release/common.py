@@ -10,9 +10,10 @@ from ..generation.models import GeneratedAttributes, PersonaDescriptions
 from ..generation.validation import parse_attributes, parse_descriptions
 from ..io import canonical_json
 from ..models import DemographicRecord
+from ..origin_labels import OriginLabelContract, load_origin_label_contract
 
-# Release v2 is deliberately explicit: accepting model-derived columns here could
-# silently publish a future generation field or restore the removed visual field.
+# The release output contract is deliberately explicit: accepting model-derived
+# columns here could silently publish a future field or restore the removed field.
 PERSONA_OUTPUT_COLUMNS = (
     *DemographicRecord.model_fields,
     "cultural_context",
@@ -108,16 +109,22 @@ def role(path: str) -> str:
 
 
 def validate_persona_output_rows(
-    output: pl.DataFrame, *, job_title_mapping: JobFunctionTitleMapping | None = None
+    output: pl.DataFrame,
+    *,
+    job_title_mapping: JobFunctionTitleMapping | None = None,
+    origin_label_contract: OriginLabelContract | None = None,
 ) -> None:
-    """Replay generation-v2 contextual validation for every public output row.
+    """Replay generation-v3 contextual validation for every public output row.
 
     Args:
         output:
-            The exact v2 persona output frame.
+            The exact v3 persona output frame.
         job_title_mapping (optional):
             Reviewed title mapping bound to the release inputs. Defaults to the
             production mapping when omitted.
+        origin_label_contract (optional):
+            Official Danish FOLK2 labels bound to the release inputs. Defaults to
+            the checked-in contract when omitted.
 
     Raises:
         ValueError:
@@ -127,7 +134,9 @@ def validate_persona_output_rows(
     if set(output.columns) != set(PERSONA_OUTPUT_COLUMNS) or len(output.columns) != len(
         PERSONA_OUTPUT_COLUMNS
     ):
-        raise ValueError("Persona output schema must match generation contract v2")
+        raise ValueError("Persona output schema must match generation contract v3")
+    contract = origin_label_contract or load_origin_label_contract()
+    labels = contract.labels
     validated_rows: set[str] = set()
     for index, row in enumerate(output.iter_rows(named=True)):
         cache_key = canonical_json(
@@ -136,6 +145,18 @@ def validate_persona_output_rows(
         if cache_key in validated_rows:
             continue
         try:
+            code = row["origin_country_code"]
+            english = row["origin_country"]
+            danish = row["origin_country_da"]
+            if (
+                not isinstance(code, str)
+                or code not in labels
+                or not isinstance(english, str)
+                or not english.strip()
+                or not isinstance(danish, str)
+                or danish != labels[code]
+            ):
+                raise ValueError("Origin country labels do not match the contract")
             demographic = DemographicRecord.model_validate(
                 {name: row[name] for name in DemographicRecord.model_fields}
             )
@@ -154,5 +175,5 @@ def validate_persona_output_rows(
             validated_rows.add(cache_key)
         except (TypeError, ValueError) as error:
             raise ValueError(
-                f"Persona row {index} fails generation-v2 contextual validation"
+                f"Persona row {index} fails generation-v3 contextual validation"
             ) from error

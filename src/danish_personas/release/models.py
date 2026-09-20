@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from ..models import StrictModel
+from ..origin_labels import OriginLabelContract
 
 
 class ReleasePolicyError(ValueError):
@@ -289,14 +290,14 @@ class ReleaseManifest(StrictModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: t.Literal[1]
+    version: t.Literal[2]
     release_id: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
 
     @field_validator("version", mode="before")
     @classmethod
     def _strict_version(_cls, value: object) -> object:
-        if type(value) is not int or value != 1:
-            raise ValueError("Release manifest version must be exactly integer 1")
+        if type(value) is not int or value != 2:
+            raise ValueError("Release manifest version must be exactly integer 2")
         return value
 
     created_at: datetime
@@ -307,6 +308,10 @@ class ReleaseManifest(StrictModel):
     origin_url: StrictStr = Field(min_length=1)
     uv_lock_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     evidence_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
+    origin_label_contract_content: OriginLabelContract
     artifacts: tuple[Artifact, ...] = Field(
         min_length=1, validation_alias=AliasChoices("artifacts", "files")
     )
@@ -460,6 +465,11 @@ class ShardEvidence(StrictModel):
     manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     report_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     output_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
     requests: StrictInt = Field(ge=0)
     retries: StrictInt = Field(ge=0)
     rejected_validation_responses: StrictInt = Field(ge=0)
@@ -491,13 +501,13 @@ class ReleaseEvidence(StrictModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: t.Literal[1]
+    version: t.Literal[2]
 
     @field_validator("version", mode="before")
     @classmethod
     def _strict_version(_cls, value: object) -> object:
-        if type(value) is not int or value != 1:
-            raise ValueError("Release evidence version must be exactly integer 1")
+        if type(value) is not int or value != 2:
+            raise ValueError("Release evidence version must be exactly integer 2")
         return value
 
     pilot_id: StrictStr = Field(min_length=1)
@@ -508,6 +518,10 @@ class ReleaseEvidence(StrictModel):
     sample_manifest_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_config_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     generation_context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    origin_label_contract_version: StrictInt
+    origin_label_contract_content: OriginLabelContract
     validator_version: StrictStr = Field(min_length=1)
     attributes_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     personas_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
