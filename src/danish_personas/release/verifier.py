@@ -9,6 +9,7 @@ import typing as t
 from pathlib import Path
 
 import polars as pl
+from pydantic import ValidationError
 
 from ..generation.job_titles import load_job_title_mapping
 from ..generation.models import GenerationConfig
@@ -179,6 +180,17 @@ def _lexical_absolute(path: Path) -> Path:
 def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     try:
         return model.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValidationError as error:
+        diagnostics = "; ".join(
+            f"{'.'.join(str(part) for part in item['loc']) or '<model>'}: "
+            f"{item['type']}"
+            for item in error.errors(
+                include_url=False, include_context=False, include_input=False
+            )
+        )
+        raise ReleaseVerificationError(
+            f"Invalid public contract: {path} ({diagnostics})"
+        ) from error
     except Exception as error:
         raise ReleaseVerificationError(f"Invalid public contract: {path}") from error
 
