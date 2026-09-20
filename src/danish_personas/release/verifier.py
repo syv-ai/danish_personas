@@ -222,6 +222,17 @@ def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
     location = item.get("loc")
     message = str(item.get("msg", ""))
     if location == ("origin_label_contract_content",):
+        if "Origin-label Danish value has Windows-1252 mojibake" in message:
+            return "origin_da_windows_1252_mojibake"
+        if "Origin-label English value has Windows-1252 mojibake" in message:
+            return "origin_en_windows_1252_mojibake"
+        reviewed_value = re.search(
+            r"Origin-label (English|Danish) value differs at reviewed code ([0-9]{4})",
+            message,
+        )
+        if reviewed_value is not None:
+            language = "en" if reviewed_value.group(1) == "English" else "da"
+            return f"origin_{language}_value_{reviewed_value.group(2)}"
         origin_failures = (
             ("Unsupported origin-label contract version", "origin_version"),
             ("contract table_id must be FOLK2", "origin_table"),
@@ -234,7 +245,12 @@ def _safe_validation_error_type(item: t.Mapping[str, object]) -> str:
             ("label is blank or padded", "origin_label_padding"),
             ("label is not NFC-normalised", "origin_label_nfc"),
             ("labels must be unique", "origin_label_uniqueness"),
-            ("triples differ from the reviewed contract", "origin_triples"),
+            ("English keys differ from the reviewed contract", "origin_en_keys"),
+            ("English whitespace differs", "origin_en_whitespace"),
+            ("English values differ from the reviewed contract", "origin_en_values"),
+            ("Danish keys differ from the reviewed contract", "origin_da_keys"),
+            ("Danish whitespace differs", "origin_da_whitespace"),
+            ("Danish values differ from the reviewed contract", "origin_da_values"),
             ("English and Danish code order differs", "origin_code_order"),
             ("English labels must be unique", "origin_english_uniqueness"),
         )
