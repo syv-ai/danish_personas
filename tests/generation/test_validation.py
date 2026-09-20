@@ -2,36 +2,57 @@
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
+import yaml
+from lingua import Language
 
+import danish_personas.generation.validation as validation_module
+from danish_personas.generation.grounding import build_persona_grounding_facts
+from danish_personas.generation.job_titles import load_job_title_mapping
 from danish_personas.generation.models import GeneratedAttributes
-from danish_personas.generation.validation import parse_attributes, parse_descriptions
+from danish_personas.generation.validation import (
+    EDUCATION_DANISH,
+    parse_attributes,
+    parse_descriptions,
+)
 
-EDUCATION_RENDERINGS = {
+CATEGORIES_PATH = Path(__file__).parents[2] / "config" / "categories.yaml"
+CATEGORIES = yaml.safe_load(CATEGORIES_PATH.read_text(encoding="utf-8"))
+EDUCATION_POOLING_VALUES = tuple(
+    dict.fromkeys(CATEGORIES["education_pooling"].values())
+)
+EXPECTED_EDUCATION_RENDERINGS = {
     "primary": "grundskole",
-    "upper_secondary": "gymnasial uddannelse",
-    "vocational": "erhvervsuddannelse",
-    "qualifying_programme": "kvalificerende uddannelse",
-    "short_cycle_higher": "kort videregående uddannelse",
-    "professional_bachelor": "professionsbacheloruddannelse",
-    "bachelor": "bacheloruddannelse",
-    "masters": "kandidatuddannelse",
-    "phd": "ph.d.-uddannelse",
+    "secondary_or_vocational": "ungdomsuddannelse eller erhvervsuddannelse",
+    "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
 }
+JOB_TITLE_CASES = tuple(
+    (code, entry.label, title)
+    for code, entry in load_job_title_mapping().job_functions.items()
+    for title in entry.titles
+)
 
 
-@pytest.mark.parametrize(("education", "rendering"), EDUCATION_RENDERINGS.items())
-def test_all_canonical_education_renderings(education: str, rendering: str) -> None:
-    """Every v2 education code has one required Danish rendering."""
-    context = demographic(education_level=education)
-    result = parse_descriptions(
-        json.dumps(descriptions(context=context)),
-        context,
-        GeneratedAttributes.model_validate(attributes()),
-    )
-    assert rendering in result.persona
+@pytest.mark.parametrize(
+    "field",
+    [
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+    ],
+)
+def test_all_six_description_fields_must_be_distinct(field: str) -> None:
+    """Exact normalised duplicate text is rejected for every field."""
+    context = demographic()
+    text = descriptions(context=context)
+    text[field] = text["persona"]
+    with pytest.raises(ValueError, match="exact duplicates"):
+        parse_descriptions(json.dumps(text), context, attributes())
 
 
 def attributes(*, job_title: str | None = "forretningsspecialist") -> dict[str, object]:
@@ -47,7 +68,7 @@ def attributes(*, job_title: str | None = "forretningsspecialist") -> dict[str, 
 
 def demographic(
     *,
-    education_level: str = "masters",
+    education_level: str = "higher_education",
     sex: str = "female",
     status: str = "employed",
     job_title: str | None = "forretningsspecialist",
@@ -88,10 +109,12 @@ def descriptions(
     """Return six distinct Danish fields with grounded summary facts."""
     context = context or demographic()
     interests = interests or ["at læse", "musik", "brætspil"]
-    education = EDUCATION_RENDERINGS[str(context["education_level"])]
+    education = EXPECTED_EDUCATION_RENDERINGS[str(context["education_level"])]
     sex = "kvinde" if context["sex"] == "female" else "mand"
     status = "arbejder som forretningsspecialist"
-    if context["labour_market_status"] != "employed":
+    if context.get("detailed_status_code") == "05":
+        status = "er selvstændig"
+    elif context["labour_market_status"] != "employed":
         status = "er pensionist"
     persona = (
         f"Personen er {context['age']} år og {sex} fra {context['municipality']} "
@@ -121,31 +144,70 @@ def descriptions(
     }
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "professional_persona",
-        "sports_persona",
-        "arts_persona",
-        "travel_persona",
-        "culinary_persona",
-    ],
-)
-def test_all_six_description_fields_must_be_distinct(field: str) -> None:
-    """Exact normalised duplicate text is rejected for every field."""
-    context = demographic()
-    text = descriptions(context=context)
-    text[field] = text["persona"]
-    with pytest.raises(ValueError, match="exact duplicates"):
-        parse_descriptions(json.dumps(text), context, attributes())
-
-
 def test_appearance_boundary_does_not_reject_hardt() -> None:
     """A longer word containing hår is not an appearance claim."""
     context = demographic(status="retired", job_title=None)
     text = descriptions(context=context, interests=["at læse", "musik"])
     text["professional_persona"] += " Personen arbejder hårdt."
     parse_descriptions(json.dumps(text), context, attributes(job_title=None))
+
+
+@pytest.mark.parametrize(
+    ("field", "rejected"),
+    [
+        (
+            "cultural_context",
+            "SENTINEL_REJECTED_TEXT is deliberately written in English.",
+        ),
+        (
+            "career_goals_and_ambitions",
+            "SENTINEL_REJECTED_TEXT describes an English career ambition.",
+        ),
+        ("job_title", "SENTINEL_REJECTED_TITLE"),
+    ],
+)
+def test_attribute_diagnostics_identify_field_without_content(
+    field: str, rejected: str
+) -> None:
+    """Attribute failures identify their field without exposing rejected text."""
+    context = demographic()
+    payload = attributes()
+    payload[field] = rejected
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), context)
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert rejected not in message
+
+
+@pytest.mark.parametrize("field", ["skills_and_expertise", "hobbies_and_interests"])
+def test_attribute_list_diagnostics_identify_category_without_content(
+    field: str,
+) -> None:
+    """List validation failures identify the response list without its values."""
+    context = demographic()
+    payload = attributes()
+    payload[field] = [
+        "SENTINEL_REJECTED_TEXT one",
+        "SENTINEL_REJECTED_TEXT two",
+        "SENTINEL_REJECTED_TEXT three",
+    ]
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), context)
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert "natural Danish" in message
+    assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_benign_interests_are_activities_or_topics() -> None:
+    """Ordinary activity and topic interests remain valid."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = ["at fotografere", "musik", "brætspil"]
+
+    parse_attributes(json.dumps(payload), demographic())
 
 
 def test_current_title_or_non_employee_status_is_required() -> None:
@@ -155,6 +217,67 @@ def test_current_title_or_non_employee_status_is_required() -> None:
     text["persona"] = text["persona"].replace("forretningsspecialist", "analytiker")
     with pytest.raises(ValueError, match="current work status"):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+        "persona",
+    ],
+)
+def test_description_diagnostics_identify_field_without_content(field: str) -> None:
+    """Description failures identify every response field without its text."""
+    context = demographic()
+    payload = descriptions(context=context)
+    rejected = (
+        "SENTINEL_REJECTED_TEXT is deliberately written in English and fails "
+        "the Danish language validation."
+    )
+    payload[field] = rejected
+    with pytest.raises(ValueError) as error:
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert "natural Danish" in message
+    assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_education_renderings_cover_phase_two_pool_domain() -> None:
+    """The validator covers exactly the categories emitted by Phase 2 pooling."""
+    assert set(EXPECTED_EDUCATION_RENDERINGS) == set(EDUCATION_POOLING_VALUES)
+    assert EDUCATION_DANISH == EXPECTED_EDUCATION_RENDERINGS
+
+
+@pytest.mark.parametrize(("code", "label", "title"), JOB_TITLE_CASES)
+def test_every_reviewed_job_title_ignores_language_detection(
+    code: str, label: str, title: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reviewed title passes even when Lingua labels it non-Danish."""
+    context = demographic()
+    context["job_function_code"] = code
+    context["job_function"] = label
+    monkeypatch.setattr(
+        validation_module, "LANGUAGE_DETECTOR", _RejectTitleLanguageDetector(title)
+    )
+
+    payload = attributes(job_title=title)
+    assert parse_attributes(json.dumps(payload), context).job_title == title
+
+
+class _RejectTitleLanguageDetector:
+    """Return a non-Danish result only for the title under test."""
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+    def detect_language_of(self, text: str) -> Language:
+        return Language.ENGLISH if text == self.title else Language.DANISH
 
 
 @pytest.mark.parametrize(
@@ -183,6 +306,33 @@ def test_family_former_work_and_appearance_claims_fail(claim: str) -> None:
         parse_descriptions(json.dumps(text), context, attributes(job_title=None))
 
 
+@pytest.mark.parametrize(
+    "interest",
+    [
+        "kan være rolig",
+        "rolig",
+        "åben for nye ideer",
+        "kan være rolig i naturen",
+        "glad for det velkendte",
+    ],
+)
+def test_interests_reject_ocean_terms_and_phrases(interest: str) -> None:
+    """Interests cannot reserve or smuggle OCEAN language into the persona."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = [interest, "musik", "brætspil"]
+
+    with pytest.raises(ValueError, match="hobbies_and_interests"):
+        parse_attributes(json.dumps(payload), demographic())
+
+
+def test_interests_use_boundaries_for_ocean_terms() -> None:
+    """A word containing an OCEAN term's letters is not itself a match."""
+    payload = attributes()
+    payload["hobbies_and_interests"] = ["roligere", "musik", "brætspil"]
+
+    parse_attributes(json.dumps(payload), demographic())
+
+
 @pytest.mark.parametrize("eligible", [True, False])
 def test_job_title_eligibility_is_contextual(eligible: bool) -> None:
     """Only eligible job-function contexts may contain a title."""
@@ -200,6 +350,23 @@ def test_job_title_eligibility_is_contextual(eligible: bool) -> None:
         parse_attributes(json.dumps(invalid), context)
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "invented specialist",
+        "software engineer",
+        "analytiker",
+        "sundhedsprofessionel med angst",
+        "- forretningsspecialist",
+        "forretningsspecialist\nadministrativ specialist",
+    ],
+)
+def test_job_title_rejects_unreviewed_or_unsafe_titles(title: str) -> None:
+    """Invented, foreign, sensitive, and list-like titles remain invalid."""
+    with pytest.raises(ValueError, match="job_title"):
+        parse_attributes(json.dumps(attributes(job_title=title)), demographic())
+
+
 @pytest.mark.parametrize("punctuation", ["- ", "1. ", "[", ";"])
 def test_list_syntax_is_rejected(punctuation: str) -> None:
     """The summary must remain prose rather than list syntax."""
@@ -210,17 +377,47 @@ def test_list_syntax_is_rejected(punctuation: str) -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
-def test_ocean_tendency_requires_compatibility_and_hedging() -> None:
-    """A compatible tendency is allowed only with cautious wording."""
+def test_ocean_tendency_requires_compatible_complete_phrase() -> None:
+    """A tendency is allowed only when its supplied phrase is copied exactly."""
     context = demographic()
     text = descriptions(context=context)
     text["persona"] = text["persona"].replace("kan være rolig", "er altid rolig")
-    with pytest.raises(ValueError, match="cautious|hedged"):
+    with pytest.raises(ValueError):
         parse_descriptions(json.dumps(text), context, attributes())
 
     context["openness_label"] = "high"
     text["persona"] = text["persona"].replace("er altid rolig", "kan være praktisk")
     with pytest.raises(ValueError, match="compatible"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_ocean_tendency_requires_complete_supplied_phrase() -> None:
+    """A bare term, detached hedge, and incompatible phrase are rejected."""
+    context = demographic()
+    for replacement in ("rolig", "kan muligvis være rolig"):
+        candidate = descriptions(context=context)
+        candidate["persona"] = candidate["persona"].replace(
+            "kan være rolig", replacement
+        )
+        with pytest.raises(ValueError):
+            parse_descriptions(json.dumps(candidate), context, attributes())
+
+    context["openness_label"] = "high"
+    candidate = descriptions(context=context)
+    candidate["persona"] = candidate["persona"].replace(
+        "kan være rolig", "kan være praktisk"
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        parse_descriptions(json.dumps(candidate), context, attributes())
+
+
+def test_ocean_tendency_requires_literal_lexicon_terms() -> None:
+    """Inflected or otherwise nonliteral terms do not satisfy the contract."""
+    context = demographic()
+    text = descriptions(context=context)
+    text["persona"] = text["persona"].replace("kan være rolig", "kan være rolighed")
+
+    with pytest.raises(ValueError, match="1-2 compatible"):
         parse_descriptions(json.dumps(text), context, attributes())
 
 
@@ -237,6 +434,95 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
             context,
             generated,
         )
+
+
+def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
+    """Copied interests cannot satisfy the separate OCEAN phrase contract."""
+    context = demographic()
+    text = descriptions(context=context, interests=["at læse", "musik"])
+    text["persona"] = text["persona"].replace(
+        "Personen kan være rolig og ", "Personen "
+    )
+
+    with pytest.raises(ValueError, match="personality"):
+        parse_descriptions(json.dumps(text), context, attributes())
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("unemployed", "ledig"),
+        ("student", "studerende"),
+        ("retired", "pensionist"),
+        ("other", "uden for arbejdsmarkedet"),
+    ),
+)
+def test_public_grounding_facts_render_canonical_status(
+    status: str, expected: str
+) -> None:
+    """Non-employees use the exact canonical current-status phrase."""
+    context = demographic(status=status, job_title=None)
+    facts = build_persona_grounding_facts(
+        demographic=context, attributes=attributes(job_title=None)
+    )
+
+    assert facts.current_employment == expected
+
+
+@pytest.mark.parametrize(
+    ("education", "expected"), EXPECTED_EDUCATION_RENDERINGS.items()
+)
+def test_public_grounding_facts_render_pool_and_labels(
+    education: str, expected: str
+) -> None:
+    """The public renderer preserves labels and every pooled education phrase."""
+    context = demographic(education_level=education)
+    context.update(municipality="Hjørring", origin_country="Côte d’Ivoire")
+    facts = build_persona_grounding_facts(demographic=context, attributes=attributes())
+
+    assert facts.model_dump() == {
+        "age": "35 år",
+        "sex": "kvinde",
+        "municipality": "Hjørring",
+        "education_level": expected,
+        "origin_country": "Côte d’Ivoire",
+        "current_employment": "forretningsspecialist",
+    }
+
+
+@pytest.mark.parametrize(
+    ("detailed_code", "expected"),
+    (("05", "selvstændig"), ("10", "medarbejdende ægtefælle")),
+)
+def test_public_grounding_facts_render_special_employee_status(
+    detailed_code: str, expected: str
+) -> None:
+    """Special employee statuses remain canonical when no title is eligible."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code=detailed_code,
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
+    )
+
+    facts = build_persona_grounding_facts(
+        demographic=context, attributes=attributes(job_title=None)
+    )
+
+    assert facts.current_employment == expected
+
+
+@pytest.mark.parametrize("education", EDUCATION_POOLING_VALUES)
+def test_real_sample_education_values_parse_contextually(education: str) -> None:
+    """Every pooled Phase-2 education value grounds a realistic persona summary."""
+    context = demographic(education_level=education, sex="male")
+    result = parse_descriptions(
+        json.dumps(descriptions(context=context)),
+        context,
+        GeneratedAttributes.model_validate(attributes()),
+    )
+    assert EXPECTED_EDUCATION_RENDERINGS[education] in result.persona
 
 
 @pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country"])
@@ -256,6 +542,33 @@ def test_required_demographic_facts_are_literal(missing: str) -> None:
         ValueError, match=missing if missing != "origin_country" else "origin"
     ):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_schema_diagnostics_identify_attribute_field_without_raw_input() -> None:
+    """Schema errors retain a safe field location and omit rejected input."""
+    payload = attributes()
+    payload["cultural_context"] = "SENTINEL_REJECTED_TEXT"
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), demographic())
+
+    message = str(error.value)
+    assert message.startswith("cultural_context:")
+    assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_status_05_does_not_count_as_personality_tendency() -> None:
+    """The self-employed status remains a grounding fact, not an OCEAN phrase."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code="05",
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
+    )
+    text = descriptions(context=context)
+    generated = attributes(job_title=None)
+
+    parse_descriptions(json.dumps(text), context, generated)
 
 
 def test_status_ten_allows_only_grounded_phrase_in_persona() -> None:

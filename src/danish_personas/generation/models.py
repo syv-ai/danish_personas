@@ -28,8 +28,8 @@ class GeneratedAttributes(StrictModel):
     cultural_context: str = Field(min_length=20, max_length=600)
     skills_and_expertise: list[str] = Field(min_length=3, max_length=6)
     hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
-    career_goals_and_ambitions: str | None = Field(default=None, max_length=500)
-    job_title: str | None = Field(default=None, max_length=80)
+    career_goals_and_ambitions: str | None = Field(max_length=500)
+    job_title: str | None = Field(max_length=80)
 
     @field_validator("job_title")
     @classmethod

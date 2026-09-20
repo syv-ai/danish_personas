@@ -20,6 +20,7 @@ from ..models import (
     ValidationReport,
 )
 from .client import OpenAIClient, RequestBudgetExceeded
+from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
 from .identity import generation_run_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
@@ -38,6 +39,7 @@ from .models import (
     PersonaDescriptions,
     RequestLedger,
 )
+from .personality import allowed_personality_tendencies
 from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +77,29 @@ PROMPT_FIELDS = (
     "agreeableness_label",
     "neuroticism_score",
     "neuroticism_label",
+    "current_status",
+)
+OCEAN_PROMPT_FIELDS = (
+    "openness_score",
+    "openness_label",
+    "conscientiousness_score",
+    "conscientiousness_label",
+    "extraversion_score",
+    "extraversion_label",
+    "agreeableness_score",
+    "agreeableness_label",
+    "neuroticism_score",
+    "neuroticism_label",
+)
+STAGE_ONE_PROMPT_FIELDS = PROMPT_FIELDS
+STAGE_TWO_PROMPT_FIELDS = (
+    "origin_country",
+    "municipality",
+    "job_function",
+    "age",
+    "sex",
+    "education_level",
+    "labour_market_status",
     "current_status",
 )
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
@@ -258,7 +283,7 @@ def _generate_one(
 ) -> PersonaCheckpoint:
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
-    prompt_row = _prompt_row(row=row)
+    stage_one_demographics = _stage_one_demographics(row=row)
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{persona_id}.json"
     attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
@@ -304,12 +329,12 @@ def _generate_one(
         attributes = _complete_validated(
             client=client,
             prompt=attributes_prompt,
-            payload={
-                "demographics_and_personality": prompt_row,
-                "allowed_job_titles": _allowed_job_titles(
+            payload=_stage_one_payload(
+                demographics=stage_one_demographics,
+                allowed_job_titles=_allowed_job_titles(
                     row=row, mapping=job_title_mapping
                 ),
-            },
+            ),
             schema_name="generated_attributes",
             schema=t.cast(dict[str, object], GeneratedAttributes.model_json_schema()),
             parser=lambda content: parse_attributes(
@@ -339,10 +364,13 @@ def _generate_one(
         descriptions = _complete_validated(
             client=client,
             prompt=personas_prompt,
-            payload={
-                "demographics_and_personality": prompt_row,
-                "generated_attributes": attributes.model_dump(mode="json"),
-            },
+            payload=_stage_two_payload(
+                row=row,
+                personality_tendencies=allowed_personality_tendencies(
+                    context=stage_one_demographics
+                ),
+                attributes=attributes,
+            ),
             schema_name="persona_descriptions",
             schema=t.cast(dict[str, object], PersonaDescriptions.model_json_schema()),
             parser=lambda content: parse_descriptions(content, row, attributes),
@@ -432,13 +460,39 @@ def _complete_validated(
     raise last_error
 
 
-def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
-    """Build the intentionally small, human-readable model context.
+def _stage_one_demographics(*, row: dict[str, object]) -> dict[str, object]:
+    """Build the first-stage demographic boundary, including raw OCEAN fields.
 
     Returns:
-        Selected human-readable input fields with any leading DISCO code removed.
+        Human-readable demographic fields allowed in stage one.
+    """
+    return _prompt_demographics(row=row, fields=STAGE_ONE_PROMPT_FIELDS)
+
+
+def _prompt_demographics(
+    *, row: dict[str, object], fields: c.Iterable[str]
+) -> dict[str, object]:
+    """Select normalised, human-readable fields for one stage boundary.
+
+    Returns:
+        Only the requested fields from the normalised demographic context.
+    """
+    normalised = _normalise_prompt_row(row=row)
+    return {name: normalised[name] for name in fields}
+
+
+def _normalise_prompt_row(*, row: dict[str, object]) -> dict[str, object]:
+    """Build the human-readable demographic context shared by both stages.
+
+    Returns:
+        Normalised labels and values before stage-specific field selection.
     """
     payload = {name: row.get(name) for name in PROMPT_FIELDS}
+    education_level = payload.get("education_level")
+    if isinstance(education_level, str):
+        payload["education_level"] = EDUCATION_DANISH.get(
+            education_level.casefold(), education_level
+        )
     detailed_status = str(row.get("detailed_status_code", ""))
     current_status = {"05": "selvstændig", "10": "medarbejdende ægtefælle"}.get(
         detailed_status
@@ -459,6 +513,44 @@ def _prompt_row(*, row: dict[str, object]) -> dict[str, object]:
             r"^\s*\d{1,3}(?:\s*[-:]\s*|\s+)", "", job_function
         ).strip()
     return payload
+
+
+def _stage_one_payload(
+    *, demographics: dict[str, object], allowed_job_titles: list[str]
+) -> dict[str, object]:
+    """Build the complete first-stage payload boundary.
+
+    Returns:
+        The first-stage demographics and reviewed job-title inputs.
+    """
+    return {
+        "demographics_and_personality": demographics,
+        "allowed_job_titles": allowed_job_titles,
+    }
+
+
+def _stage_two_payload(
+    *,
+    row: dict[str, object],
+    personality_tendencies: tuple[str, ...],
+    attributes: GeneratedAttributes,
+) -> dict[str, object]:
+    """Build the second-stage boundary without raw OCEAN fields.
+
+    Returns:
+        The second-stage demographics, compatible terms, and generated attributes.
+    """
+    grounding_facts = build_persona_grounding_facts(
+        demographic=row, attributes=attributes
+    )
+    return {
+        "demographics_and_personality": _prompt_demographics(
+            row=row, fields=STAGE_TWO_PROMPT_FIELDS
+        ),
+        "required_persona_facts": grounding_facts.model_dump(mode="json"),
+        "allowed_personality_tendencies": list(personality_tendencies),
+        "generated_attributes": attributes.model_dump(mode="json"),
+    }
 
 
 def _validate_checkpoint(
@@ -652,6 +744,11 @@ def generation_context_sha256(
                 "personas_schema": PersonaDescriptions.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
                 "prompt_fields": PROMPT_FIELDS,
+                "stage_payload_fields": {
+                    "attributes": sorted(STAGE_ONE_PROMPT_FIELDS),
+                    "descriptions": sorted(STAGE_TWO_PROMPT_FIELDS),
+                    "ocean": sorted(OCEAN_PROMPT_FIELDS),
+                },
                 "withheld_fields": sorted(
                     set(DemographicRecord.model_fields) - set(PROMPT_FIELDS)
                 ),

@@ -16,6 +16,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
+from danish_personas.generation.personality import allowed_personality_tendencies
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.pipeline import (
     generate_personas,
@@ -26,6 +27,7 @@ from danish_personas.generation.report import (
     validate_persona_pilot,
     validate_persona_run,
 )
+from danish_personas.generation.validation import EDUCATION_DANISH, VALIDATOR_VERSION
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SAMPLER_SCHEMA_VERSION, RunManifest, ValidationReport
 from scripts.generate_persona_pilot import main as pilot_main
@@ -136,12 +138,11 @@ def _descriptions_json(
         "sex": "female",
         "municipality": "København",
         "origin_country": "Denmark",
-        "education_level": "masters",
+        "education_level": "higher_education",
     }
     sex = "kvinde" if context["sex"] == "female" else "mand"
-    education = {"masters": "kandidatuddannelse", "vocational": "erhvervsuddannelse"}[
-        str(context["education_level"])
-    ]
+    education_level = str(context["education_level"])
+    education = EDUCATION_DANISH.get(education_level, education_level)
     if employed:
         persona = (
             f"Personen er {context['age']} år gammel {sex} fra "
@@ -239,32 +240,123 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
     assert len(_MockClient.payloads) == 2
-    attributes_payload = _MockClient.payloads[0]["demographics_and_personality"]
-    descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
+    attributes_request = _MockClient.payloads[0]
+    descriptions_request = _MockClient.payloads[1]
+    attributes_payload = attributes_request["demographics_and_personality"]
+    descriptions_payload = descriptions_request["demographics_and_personality"]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
-    withheld_fields = {
-        *set(resolution_columns) - {"municipality"},
+
+    stage_one_allowed = {
+        "origin_country",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+        "current_status",
+    }
+    stage_two_allowed = {
+        "origin_country",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "current_status",
+    }
+    stage_one_forbidden = {
+        "age_resolution",
+        "marital_resolution",
+        "education_resolution",
+        "detailed_status_resolution",
+        "origin_country_code",
+        "job_function_code",
+        "job_function_resolution",
+        "municipality_code",
         "region_code",
         "country",
         "detailed_status_code",
         "education_source_code",
+        "persona_id",
     }
-    assert withheld_fields.isdisjoint(attributes_payload)
-    assert withheld_fields.isdisjoint(descriptions_payload)
+    ocean_fields = {
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+    }
+    assert set(attributes_request) == {
+        "demographics_and_personality",
+        "allowed_job_titles",
+    }
+    assert set(descriptions_request) == {
+        "demographics_and_personality",
+        "required_persona_facts",
+        "allowed_personality_tendencies",
+        "generated_attributes",
+    }
+    assert set(attributes_payload) == stage_one_allowed
+    assert set(descriptions_payload) == stage_two_allowed
+    stage_two_forbidden = stage_one_forbidden | ocean_fields
+    assert stage_one_forbidden.isdisjoint(attributes_payload)
+    assert stage_two_forbidden.isdisjoint(descriptions_payload)
+    assert stage_one_allowed.isdisjoint(stage_one_forbidden)
+    assert stage_two_allowed.isdisjoint(stage_two_forbidden)
+    assert {"municipality", "origin_country", "job_function"} <= set(attributes_payload)
+    assert {"municipality", "origin_country", "job_function"} <= set(
+        descriptions_payload
+    )
+    allowed_phrases = descriptions_request["allowed_personality_tendencies"]
+    assert isinstance(allowed_phrases, list)
+    assert allowed_phrases == list(
+        allowed_personality_tendencies(context=attributes_payload)
+    )
+    assert allowed_phrases
+    assert all(
+        isinstance(phrase, str) and phrase.startswith("kan være ")
+        for phrase in allowed_phrases
+    )
     assert (
         attributes_payload["job_function"]
         == "Business and administration professionals"
     )
     assert attributes_payload["municipality"] == "København"
-    assert attributes_payload["education_level"] == "masters"
-    assert descriptions_payload["education_level"] == "masters"
+    assert attributes_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_request["required_persona_facts"] == {
+        "age": "35 år",
+        "sex": "kvinde",
+        "municipality": "København",
+        "education_level": "videregående uddannelse",
+        "origin_country": "Denmark",
+        "current_employment": "forretningsspecialist",
+    }
     assert "generated_attributes" in _MockClient.payloads[1]
 
     generation_manifest = json.loads(
         (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
+    assert generation_manifest["validator_version"] == VALIDATOR_VERSION
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
@@ -289,7 +381,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "municipality": ["København", "Roskilde"],
             "region_code": ["084", "085"],
             "region": ["Region Hovedstaden", "Region Sjælland"],
-            "education_level": ["masters", "vocational"],
+            "education_level": ["higher_education", "secondary_or_vocational"],
             "education_source_code": ["H70", "H40"],
             "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
             "labour_market_status": ["employed", "outside_labour_force"],
@@ -560,6 +652,33 @@ def test_persona_validation_rejects_mapping_binding_tampering(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["job_title_mapping_sha256"] = "f" * 64
     write_json(path=manifest_path, payload=manifest)
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
+@pytest.mark.parametrize("artifact", ["checkpoint", "manifest"])
+def test_persona_validation_rejects_stale_validator_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
+) -> None:
+    """Checkpoint and run manifests must use the current validator contract."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    path = (
+        next((run_dir / "checkpoints").glob("*.json"))
+        if artifact == "checkpoint"
+        else run_dir / "generation-manifest.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["validator_version"] = "persona-safety-v12"
+    write_json(path=path, payload=payload)
+
     assert not validate_persona_run(run_dir=run_dir).passed
 
 

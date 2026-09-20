@@ -9,14 +9,40 @@ from pydantic import ValidationError
 from tldextract import TLDExtract
 
 from ..models import DemographicRecord
+from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
     JobFunctionTitleMapping,
     load_job_title_mapping,
 )
 from .models import GeneratedAttributes, PersonaDescriptions
+from .personality import (
+    all_personality_phrases,
+    all_personality_tendencies,
+    allowed_personality_tendencies,
+)
 
-VALIDATOR_VERSION = "persona-safety-v8"
+VALIDATOR_VERSION = "persona-safety-v13"
+__all__ = ["EDUCATION_DANISH"]
+_ATTRIBUTE_FIELDS = frozenset(
+    {
+        "cultural_context",
+        "skills_and_expertise",
+        "hobbies_and_interests",
+        "career_goals_and_ambitions",
+        "job_title",
+    }
+)
+_DESCRIPTION_FIELDS = frozenset(
+    {
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+        "persona",
+    }
+)
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -62,86 +88,7 @@ FORMER_WORK = re.compile(
     r"var\s+ansat|forhenværende|pensioneret\s+fra)(?![\w])"
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
-HEDGE = re.compile(r"(?<![\w])(?:kan|ofte|muligvis|gerne|typisk)(?![\w])")
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
-
-EDUCATION_DANISH = {
-    "primary": "grundskole",
-    "upper_secondary": "gymnasial uddannelse",
-    "vocational": "erhvervsuddannelse",
-    "qualifying_programme": "kvalificerende uddannelse",
-    "short_cycle_higher": "kort videregående uddannelse",
-    "professional_bachelor": "professionsbacheloruddannelse",
-    "bachelor": "bacheloruddannelse",
-    "masters": "kandidatuddannelse",
-    "phd": "ph.d.-uddannelse",
-    "not_stated": "uddannelse ikke oplyst",
-}
-EDUCATION_DANISH.update(
-    {
-        "h10": "grundskole",
-        "h20": "gymnasial uddannelse",
-        "h30": "erhvervsuddannelse",
-        "h35": "kvalificerende uddannelse",
-        "h40": "kort videregående uddannelse",
-        "h50": "professionsbacheloruddannelse",
-        "h60": "bacheloruddannelse",
-        "h70": "kandidatuddannelse",
-        "h80": "ph.d.-uddannelse",
-        "h90": "uddannelse ikke oplyst",
-    }
-)
-SEX_DANISH = {"male": "mand", "female": "kvinde", "m": "mand", "k": "kvinde"}
-STATUS_DANISH = {
-    "unemployed": "ledig",
-    "student": "studerende",
-    "retired": "pensionist",
-    "other": "uden for arbejdsmarkedet",
-    "outside_labour_force": "uden for arbejdsmarkedet",
-    "not_applicable": "uden for arbejdsmarkedet",
-}
-DETAILED_STATUS_DANISH = {
-    "05": "selvstændig",
-    "10": "medarbejdende ægtefælle",
-    "50": "ledig",
-    "85": "ledig",
-    "90": "ledig",
-    "95": "ledig",
-    "130": "studerende",
-    "154": "studerende",
-    "156": "studerende",
-    "158": "studerende",
-    "160": "studerende",
-    "135": "pensionist",
-    "138": "pensionist",
-    "139": "pensionist",
-    "140": "pensionist",
-    "145": "pensionist",
-    "150": "pensionist",
-    "155": "pensionist",
-}
-OCEAN_TERMS = {
-    "openness": {
-        "high": ("nysgerrig", "kreativ", "åben for nye ideer"),
-        "low": ("praktisk", "jordnær", "glad for det velkendte"),
-    },
-    "conscientiousness": {
-        "high": ("struktureret", "omhyggelig", "planlagt"),
-        "low": ("fleksibel", "spontan"),
-    },
-    "extraversion": {
-        "high": ("social", "udadvendt", "snakkesalig"),
-        "low": ("rolig", "eftertænksom", "reserveret"),
-    },
-    "agreeableness": {
-        "high": ("samarbejdende", "hensynsfuld", "venlig"),
-        "low": ("selvstændig", "direkte"),
-    },
-    "neuroticism": {
-        "high": ("opmærksom", "varsom", "følsom"),
-        "low": ("rolig", "afbalanceret"),
-    },
-}
 
 
 def parse_attributes(
@@ -162,18 +109,42 @@ def parse_attributes(
     try:
         attributes = GeneratedAttributes.model_validate_json(content)
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise ValueError(
+            _format_schema_error(error=error, fields=_ATTRIBUTE_FIELDS)
+        ) from error
     context = _context_values(demographic)
-    _validate_text(text=attributes.cultural_context, require_danish=True)
-    _validate_texts(texts=attributes.skills_and_expertise, require_each_danish=False)
-    _validate_texts(texts=attributes.hobbies_and_interests, require_each_danish=False)
-    if attributes.career_goals_and_ambitions:
-        _validate_text(text=attributes.career_goals_and_ambitions, require_danish=True)
-    _validate_job_title(
-        title=attributes.job_title,
-        context=context,
-        mapping=job_title_mapping
-        or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+    _validate_field(
+        field="cultural_context",
+        validator=lambda: _validate_text(
+            text=attributes.cultural_context, require_danish=True
+        ),
+    )
+    _validate_field(
+        field="skills_and_expertise",
+        validator=lambda: _validate_texts(
+            texts=attributes.skills_and_expertise, require_each_danish=False
+        ),
+    )
+    _validate_field(
+        field="hobbies_and_interests",
+        validator=lambda: _validate_hobbies_and_interests(
+            texts=attributes.hobbies_and_interests
+        ),
+    )
+    career_goals = attributes.career_goals_and_ambitions
+    if career_goals:
+        _validate_field(
+            field="career_goals_and_ambitions",
+            validator=lambda: _validate_text(text=career_goals, require_danish=True),
+        )
+    _validate_field(
+        field="job_title",
+        validator=lambda: _validate_job_title(
+            title=attributes.job_title,
+            context=context,
+            mapping=job_title_mapping
+            or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+        ),
     )
     return attributes
 
@@ -186,31 +157,107 @@ def _context_values(
     return dict(demographic)
 
 
-def _validate_job_title(
-    *, title: str | None, context: dict[str, object], mapping: JobFunctionTitleMapping
-) -> None:
-    resolution = context.get("job_function_resolution")
-    if resolution not in {"lons20_sex_marginal", "not_applicable"}:
-        raise ValueError("Unknown job-function resolution")
-    eligible = resolution == "lons20_sex_marginal"
-    if eligible != (title is not None):
-        expected = "a title" if eligible else "null job_title"
-        raise ValueError(f"Eligible job-function context requires {expected}")
-    if title is None:
-        return
-    code = str(context.get("job_function_code", ""))
-    entry = mapping.job_functions.get(code)
-    if entry is None:
-        label = str(context.get("job_function", "")).strip()
-        entry = next(
-            (item for item in mapping.job_functions.values() if item.label == label),
-            None,
-        )
-    if entry is None or title not in entry.titles:
-        raise ValueError("job_title must equal an allowlisted reviewed title")
-    _validate_text(text=title, require_danish=True)
-    if LIST_FORM.search(title) or "\n" in title or "\r" in title:
-        raise ValueError("job_title must be a single plain Danish line")
+def _format_schema_error(*, error: ValidationError, fields: frozenset[str]) -> str:
+    """Format Pydantic errors without exposing generated input values.
+
+    Returns:
+        Safe structural error messages.
+    """
+    messages: list[str] = []
+    for issue in error.errors():
+        location = _safe_schema_location(location=issue.get("loc", ()), fields=fields)
+        message = str(issue.get("msg", "Schema validation failed"))
+        messages.append(f"{location}: {message}")
+    return "; ".join(messages) or "response: Schema validation failed"
+
+
+def _safe_schema_location(*, location: object, fields: frozenset[str]) -> str:
+    """Keep schema locations while excluding arbitrary input keys.
+
+    Returns:
+        A response location containing only known fields and list indexes.
+    """
+    if not isinstance(location, tuple) or not location:
+        return "response"
+    field = location[0]
+    if not isinstance(field, str) or field not in fields:
+        return "response"
+    suffix = "".join(
+        f"[{part}]" for part in location[1:] if isinstance(part, int) and part >= 0
+    )
+    return f"{field}{suffix}"
+
+
+def _validate_field(*, field: str, validator: c.Callable[[], None]) -> None:
+    """Attach a generated response field to a validation failure.
+
+    Raises:
+        ValueError:
+            If the field validator rejects the generated response field.
+    """
+    try:
+        validator()
+    except ValueError as error:
+        raise ValueError(f"{field}: {error}") from error
+
+
+def _validate_hobbies_and_interests(*, texts: list[str]) -> None:
+    """Require interests to describe activities or topics, not OCEAN language.
+
+    Personality terms are reserved for the grounded persona's separately validated
+    tendency phrases. Matching against the shared term and phrase APIs also rejects
+    a tendency when it is embedded in a longer interest, while preserving ordinary
+    words that merely contain the same letters.
+
+    Raises:
+        ValueError:
+            If an interest contains a reviewed personality term or phrase.
+    """
+    _validate_texts(texts=texts, require_each_danish=False)
+    personality_terms = (*all_personality_tendencies(), *all_personality_phrases())
+    if any(
+        _contains_term(text=interest, term=term)
+        for interest in texts
+        for term in personality_terms
+    ):
+        raise ValueError("Every interest must be an activity or topic")
+
+
+def _contains_term(text: str, term: str) -> bool:
+    """Match a canonical Unicode token sequence, never a substring.
+
+    Returns:
+        Whether the complete token sequence occurs at Unicode word boundaries.
+    """
+    return bool(_term_spans(text=text, term=term))
+
+
+def _term_spans(*, text: str, term: str) -> list[tuple[int, int]]:
+    """Return token-boundary spans for a canonical phrase in normalised text."""
+    tokens = [token for token in _normalize(term).split(" ") if token]
+    if not tokens:
+        return []
+    expression = r"\s+".join(re.escape(token) for token in tokens)
+    return [
+        match.span()
+        for match in re.finditer(rf"(?<![\w]){expression}(?![\w])", _normalize(text))
+    ]
+
+
+def _normalize(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
+    for text in texts:
+        _validate_text(text=text, require_danish=require_each_danish)
+    if not require_each_danish:
+        _require_danish(text=" ".join(texts))
+
+
+def _require_danish(text: str) -> None:
+    if LANGUAGE_DETECTOR.detect_language_of(text) != Language.DANISH:
+        raise ValueError("Generated content does not appear to be natural Danish")
 
 
 def _validate_text(
@@ -270,20 +317,31 @@ def _contains_url(text: str) -> bool:
     return False
 
 
-def _normalize(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
-
-
-def _require_danish(text: str) -> None:
-    if LANGUAGE_DETECTOR.detect_language_of(text) != Language.DANISH:
-        raise ValueError("Generated content does not appear to be natural Danish")
-
-
-def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
-    for text in texts:
-        _validate_text(text=text, require_danish=require_each_danish)
-    if not require_each_danish:
-        _require_danish(text=" ".join(texts))
+def _validate_job_title(
+    *, title: str | None, context: dict[str, object], mapping: JobFunctionTitleMapping
+) -> None:
+    resolution = context.get("job_function_resolution")
+    if resolution not in {"lons20_sex_marginal", "not_applicable"}:
+        raise ValueError("Unknown job-function resolution")
+    eligible = resolution == "lons20_sex_marginal"
+    if eligible != (title is not None):
+        expected = "a title" if eligible else "null job_title"
+        raise ValueError(f"Eligible job-function context requires {expected}")
+    if title is None:
+        return
+    code = str(context.get("job_function_code", ""))
+    entry = mapping.job_functions.get(code)
+    if entry is None:
+        label = str(context.get("job_function", "")).strip()
+        entry = next(
+            (item for item in mapping.job_functions.values() if item.label == label),
+            None,
+        )
+    if entry is None or title not in entry.titles:
+        raise ValueError("job_title must equal an allowlisted reviewed title")
+    _validate_text(text=title, require_danish=False)
+    if LIST_FORM.search(title) or "\n" in title or "\r" in title:
+        raise ValueError("job_title must be a single plain Danish line")
 
 
 def parse_descriptions(
@@ -302,13 +360,20 @@ def parse_descriptions(
     """
     try:
         descriptions = PersonaDescriptions.model_validate_json(content)
+    except ValidationError as error:
+        raise ValueError(
+            _format_schema_error(error=error, fields=_DESCRIPTION_FIELDS)
+        ) from error
+    try:
         generated = (
             attributes
             if isinstance(attributes, GeneratedAttributes)
             else GeneratedAttributes.model_validate(attributes)
         )
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise ValueError(
+            _format_schema_error(error=error, fields=_ATTRIBUTE_FIELDS)
+        ) from error
     context = _context_values(demographic)
     for field, text in descriptions.model_dump().items():
         allowed_terms = (
@@ -316,14 +381,22 @@ def parse_descriptions(
             if field == "persona" and str(context.get("detailed_status_code")) == "10"
             else ()
         )
-        _validate_text(
-            text=text, require_danish=True, allowed_unsupported_terms=allowed_terms
+        _validate_field(
+            field=field,
+            validator=lambda text=text, allowed_terms=allowed_terms: _validate_text(
+                text=text, require_danish=True, allowed_unsupported_terms=allowed_terms
+            ),
         )
-    _validate_persona(text=descriptions.persona, context=context, attributes=generated)
+    _validate_field(
+        field="persona",
+        validator=lambda: _validate_persona(
+            text=descriptions.persona, context=context, attributes=generated
+        ),
+    )
     texts = list(descriptions.model_dump().values())
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
-        raise ValueError("Persona descriptions must not be exact duplicates")
+        raise ValueError("persona: Persona descriptions must not be exact duplicates")
     return descriptions
 
 
@@ -334,9 +407,8 @@ def _validate_persona(
     if DETERMINISTIC_CLAIMS.search(normalized):
         raise ValueError("Persona must use cautious, non-deterministic language")
     sentences = _persona_sentences(text=text)
-    _validate_persona_facts(normalized=normalized, context=context)
-    _validate_current_status(
-        normalized=normalized, context=context, attributes=attributes
+    _validate_persona_facts(
+        normalized=normalized, demographic=context, attributes=attributes
     )
     _validate_interests(normalized=normalized, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
@@ -353,38 +425,6 @@ def _persona_sentences(text: str) -> list[str]:
     if not 2 <= len(sentences) <= 4 or not text.rstrip().endswith((".", "!", "?")):
         raise ValueError("persona must contain 2-4 prose sentences")
     return sentences
-
-
-def _validate_current_status(
-    *, normalized: str, context: dict[str, object], attributes: GeneratedAttributes
-) -> None:
-    if attributes.job_title is not None:
-        required_status = attributes.job_title
-    else:
-        detailed_code = str(context.get("detailed_status_code", ""))
-        required_status = DETAILED_STATUS_DANISH.get(detailed_code)
-        if detailed_code not in {"05", "10"}:
-            status = str(context.get("labour_market_status")).casefold()
-            required_status = (
-                "lønmodtager" if status == "employed" else STATUS_DANISH.get(status)
-            )
-        if required_status is None:
-            raise ValueError("Unknown current labour status")
-    if not required_status or not _contains_term(normalized, required_status):
-        raise ValueError("Persona does not contain its exact current work status")
-
-
-def _contains_term(text: str, term: str) -> bool:
-    """Match a canonical Unicode token sequence, never a substring.
-
-    Returns:
-        Whether the complete token sequence occurs at Unicode word boundaries.
-    """
-    tokens = [token for token in _normalize(term).split(" ") if token]
-    if not tokens:
-        return False
-    expression = r"\s+".join(re.escape(token) for token in tokens)
-    return re.search(rf"(?<![\w]){expression}(?![\w])", _normalize(text)) is not None
 
 
 def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> None:
@@ -408,92 +448,67 @@ def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> 
         raise ValueError("Persona must contain exactly 2-3 generated interests")
 
 
-def _validate_persona_facts(*, normalized: str, context: dict[str, object]) -> None:
-    required = (
-        (str(context.get("age")), "age"),
-        (
-            SEX_DANISH.get(str(context.get("sex")).casefold(), str(context.get("sex"))),
-            "sex",
-        ),
-        (str(context.get("municipality")), "municipality"),
-        (str(context.get("origin_country")), "origin"),
-        (_education_label(context), "education"),
+def _validate_persona_facts(
+    *, normalized: str, demographic: dict[str, object], attributes: GeneratedAttributes
+) -> None:
+    facts = build_persona_grounding_facts(
+        demographic=demographic, attributes=attributes
     )
-    for value, name in required:
-        if not value or not _contains_term(normalized, value):
-            raise ValueError(f"Persona does not contain the exact {name} fact")
-    age = str(context.get("age"))
-    if not re.search(rf"(?<!\d){re.escape(age)}\s+år\b", normalized):
-        raise ValueError("Persona age must use the fixed '<age> år' form")
-
-
-def _education_label(context: dict[str, object]) -> str:
-    value = str(context.get("education_level", "")).casefold()
-    if value not in EDUCATION_DANISH:
-        raise ValueError("Unknown education mapping")
-    return EDUCATION_DANISH[value]
+    names = {
+        "age": "age",
+        "sex": "sex",
+        "municipality": "municipality",
+        "education_level": "education",
+        "origin_country": "origin",
+        "current_employment": "current work status",
+    }
+    for field, value in facts.model_dump().items():
+        if not _contains_term(normalized, value):
+            raise ValueError(f"Persona does not contain the exact {names[field]} fact")
 
 
 def _validate_personality(
     *, normalized: str, sentences: list[str], context: dict[str, object]
 ) -> None:
-    compatible = set(_compatible_ocean_terms(context=context))
-    mentioned = {
-        term for term in _all_ocean_terms() if _contains_term(normalized, term)
+    """Require one or two compatible, complete phrases copied from the API.
+
+    ``sentences`` remains part of the signature because the persona prose contract
+    validates sentence structure before this check. Personality matching itself is
+    deliberately whole-persona based: a phrase may occur in any one sentence, but a
+    bare term elsewhere must not satisfy the contract.
+
+    Raises:
+        ValueError:
+            If the persona contains an incompatible or incomplete phrase set.
+    """
+    del sentences
+    compatible = set(allowed_personality_tendencies(context=context))
+    all_phrases = set(all_personality_phrases())
+    incompatible = {
+        phrase
+        for phrase in all_phrases - compatible
+        if _contains_term(normalized, phrase)
     }
-    incompatible = mentioned - compatible
     if incompatible:
         raise ValueError("Persona contains an incompatible personality tendency")
-    if not 1 <= len(mentioned) <= 2:
+
+    matched_phrases = {
+        phrase for phrase in compatible if _contains_term(normalized, phrase)
+    }
+    phrase_spans = [
+        span
+        for phrase in matched_phrases
+        for span in _term_spans(text=normalized, term=phrase)
+    ]
+    if not 1 <= len(matched_phrases) <= 2:
         raise ValueError("Persona must contain 1-2 compatible personality tendencies")
-    for sentence in sentences:
-        sentence_terms = [term for term in mentioned if _contains_term(sentence, term)]
-        for term in sentence_terms:
-            term_match = re.search(
-                rf"(?<![\w]){re.escape(term)}(?![\w])", _normalize(sentence)
-            )
-            if term_match is None or not _nearby_hedge(sentence, term_match.start()):
-                raise ValueError("Personality tendencies must be hedged nearby")
 
-
-def _all_ocean_terms() -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            term
-            for levels in OCEAN_TERMS.values()
-            for terms in levels.values()
-            for term in terms
-        )
-    )
-
-
-def _compatible_ocean_terms(context: dict[str, object]) -> tuple[str, ...]:
-    terms: list[str] = []
-    for trait, labels in OCEAN_TERMS.items():
-        label = str(context.get(f"{trait}_label", "")).casefold()
-        raw_score = context.get(f"{trait}_score", 50)
-        score = float(raw_score) if isinstance(raw_score, (int, float)) else 50.0
-        level = (
-            "high"
-            if label == "high" or score >= 60
-            else "low"
-            if label == "low" or score <= 40
-            else "average"
-        )
-        levels = ("high", "low") if level == "average" else (level,)
-        for selected in levels:
-            terms.extend(labels[selected])
-    return tuple(dict.fromkeys(terms))
-
-
-def _nearby_hedge(sentence: str, position: int) -> bool:
-    clause = re.split(r"[,;:]", _normalize(sentence))
-    offset = 0
-    for part in clause:
-        end = offset + len(part)
-        if offset <= position <= end:
-            return any(
-                abs(match.start() - position) <= 48 for match in HEDGE.finditer(part)
-            )
-        offset = end + 1
-    return False
+    for term in all_personality_tendencies():
+        for start, end in _term_spans(text=normalized, term=term):
+            if not any(
+                phrase_start <= start and end <= phrase_end
+                for phrase_start, phrase_end in phrase_spans
+            ):
+                raise ValueError(
+                    "Personality terms must occur inside supplied complete phrases"
+                )

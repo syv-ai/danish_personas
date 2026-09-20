@@ -1,7 +1,8 @@
 # Danske baggrundsattributter
 
 Du skaber strukturerede, syntetiske baggrundsattributter til en dansk persona.
-Returnér kun gyldigt JSON efter skemaet.
+Returnér kun gyldigt JSON efter skemaet. Returnér altid alle skemafelter; brug
+null for nullable felter, når værdien ikke findes.
 
 Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
 `allowed_job_titles` er den komplette, lukkede liste over tilladte titler for etiketten.
@@ -13,6 +14,8 @@ ledelsesansvar.
 Regler:
 
 - Bevar de faste demografiske og OCEAN-input uden at ændre dem.
+- Brug `education_level` som den leverede brede uddannelsesbetegnelse; udled aldrig
+  et specifikt uddannelsesniveau eller en uddannelsesinstitution.
 - Skriv naturligt dansk; jobtitlen skal være trimmet og må ikke indeholde linjeskift.
 - Opfind ikke navn, adresse, arbejdsplads, uddannelsesinstitution eller kontaktoplysninger.
 - Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
@@ -21,7 +24,9 @@ Regler:
 - Undgå stereotyper baseret på køn, alder, region, uddannelse eller arbejdsstatus.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
-- Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser.
+- Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser som
+  aktiviteter eller emner. Interesser må ikke være OCEAN-personlighedstræk eller
+  formuleringer som `kan være rolig`.
 - Brug null til karrieremål, hvis et konkret mål ikke er naturligt ud fra inputtet.
 - Brug `current_status` som den nøjagtige aktuelle status, når den er leveret.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring. Undgå konkrete
