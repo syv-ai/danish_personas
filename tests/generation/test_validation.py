@@ -112,7 +112,9 @@ def descriptions(
     education = EXPECTED_EDUCATION_RENDERINGS[str(context["education_level"])]
     sex = "kvinde" if context["sex"] == "female" else "mand"
     status = "arbejder som forretningsspecialist"
-    if context["labour_market_status"] != "employed":
+    if context.get("detailed_status_code") == "05":
+        status = "er selvstændig"
+    elif context["labour_market_status"] != "employed":
         status = "er pensionist"
     persona = (
         f"Personen er {context['age']} år og {sex} fra {context['municipality']} "
@@ -340,18 +342,38 @@ def test_list_syntax_is_rejected(punctuation: str) -> None:
         parse_descriptions(json.dumps(text), context, attributes())
 
 
-def test_ocean_tendency_requires_compatibility_and_hedging() -> None:
-    """A compatible tendency is allowed only with cautious wording."""
+def test_ocean_tendency_requires_compatible_complete_phrase() -> None:
+    """A tendency is allowed only when its supplied phrase is copied exactly."""
     context = demographic()
     text = descriptions(context=context)
     text["persona"] = text["persona"].replace("kan være rolig", "er altid rolig")
-    with pytest.raises(ValueError, match="cautious|hedged"):
+    with pytest.raises(ValueError):
         parse_descriptions(json.dumps(text), context, attributes())
 
     context["openness_label"] = "high"
     text["persona"] = text["persona"].replace("er altid rolig", "kan være praktisk")
     with pytest.raises(ValueError, match="compatible"):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_ocean_tendency_requires_complete_supplied_phrase() -> None:
+    """A bare term, detached hedge, and incompatible phrase are rejected."""
+    context = demographic()
+    for replacement in ("rolig", "kan muligvis være rolig"):
+        candidate = descriptions(context=context)
+        candidate["persona"] = candidate["persona"].replace(
+            "kan være rolig", replacement
+        )
+        with pytest.raises(ValueError):
+            parse_descriptions(json.dumps(candidate), context, attributes())
+
+    context["openness_label"] = "high"
+    candidate = descriptions(context=context)
+    candidate["persona"] = candidate["persona"].replace(
+        "kan være rolig", "kan være praktisk"
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        parse_descriptions(json.dumps(candidate), context, attributes())
 
 
 def test_ocean_tendency_requires_literal_lexicon_terms() -> None:
@@ -485,6 +507,21 @@ def test_schema_diagnostics_identify_attribute_field_without_raw_input() -> None
     message = str(error.value)
     assert message.startswith("cultural_context:")
     assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_status_05_does_not_count_as_personality_tendency() -> None:
+    """The self-employed status remains a grounding fact, not an OCEAN phrase."""
+    context = demographic(status="employed", job_title=None)
+    context.update(
+        detailed_status_code="05",
+        job_function=None,
+        job_function_code=None,
+        job_function_resolution="not_applicable",
+    )
+    text = descriptions(context=context)
+    generated = attributes(job_title=None)
+
+    parse_descriptions(json.dumps(text), context, generated)
 
 
 def test_status_ten_allows_only_grounded_phrase_in_persona() -> None:
