@@ -27,6 +27,9 @@ ORIGIN_LABEL_CONTRACT_SHA256 = (
     "87a296b5c67b5763b952ca314be1b737c8238e5281461419e05005cab9539b61"
 )
 _CODE_PATTERN = re.compile(r"[0-9]{4}\Z")
+_CANONICAL_CONTRACT_FILE = (
+    Path(__file__).parents[2] / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
+)
 
 
 def _validate_labels(
@@ -148,11 +151,29 @@ class OriginLabelContract(BaseModel):
         _validate_contract_identity(self)
         _validate_labels(self.labels_en, allow_official_padding=True)
         _validate_labels(self.labels_da)
+        reviewed = _canonical_contract_payload()
+        if self.labels_en != reviewed.get(
+            "labels_en"
+        ) or self.labels_da != reviewed.get("labels_da"):
+            raise ValueError("Origin-label triples differ from the reviewed contract")
         if tuple(self.labels_en) != tuple(self.labels_da):
             raise ValueError("Origin-label English and Danish code order differs")
         if len(set(self.labels_en.values())) != ORIGIN_LABEL_COUNT:
             raise ValueError("Origin-label English labels must be unique")
         return self
+
+
+def _canonical_contract_payload() -> Mapping[str, object]:
+    try:
+        payload = yaml.load(
+            _CANONICAL_CONTRACT_FILE.read_text(encoding="utf-8"),
+            Loader=_UniqueKeyLoader,
+        )
+    except OSError as error:
+        raise ValueError("Reviewed origin-label contract is unavailable") from error
+    if not isinstance(payload, Mapping):
+        raise ValueError("Reviewed origin-label contract is not a mapping")
+    return payload
 
 
 def _validate_contract_identity(contract: OriginLabelContract) -> None:
