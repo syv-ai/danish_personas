@@ -84,13 +84,31 @@ def _refresh_manifest(release: Path, **changes: object) -> str:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.update(changes)
     path.write_bytes(
-        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        (
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
     )
     digest = sha256_file(path)
     (release / "release-manifest.sha256").write_bytes(
         f"{digest}  release-manifest.json\n".encode("ascii")
     )
     return digest
+
+
+def test_refresh_manifest_preserves_utf8_origin_labels(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Refreshing a manifest preserves canonical Unicode label values."""
+    release, _ = verifier_package
+    manifest_path = release / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    digest = _refresh_manifest(release, **manifest)
+
+    refreshed = manifest_path.read_bytes()
+    assert "Grækenland".encode() in refreshed
+    assert b"Gr\\u00e6kenland" not in refreshed
+    verify_release(release_dir=release, expected_manifest_sha256=digest)
 
 
 def test_validation_diagnostic_does_not_echo_contract_input(
