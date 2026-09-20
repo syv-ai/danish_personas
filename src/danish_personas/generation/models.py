@@ -7,8 +7,9 @@ from pydantic import Field, field_validator, model_validator
 
 from ..models import FrozenSampleManifest, StrictModel, ValidationReport
 from ..origin_labels import (
-    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
     OriginLabelContract,
+    OriginLabelContractPath,
+    canonical_origin_label_contract_path,
     validate_origin_contract_reference,
 )
 from .job_titles import JobFunctionTitleMapping
@@ -97,7 +98,7 @@ class GenerationConfig(StrictModel):
     attributes_prompt: Path
     personas_prompt: Path
     job_title_mapping: Path | None = None
-    origin_label_contract: Path
+    origin_label_contract: OriginLabelContractPath
 
     @field_validator("origin_label_contract")
     @classmethod
@@ -111,12 +112,8 @@ class GenerationConfig(StrictModel):
         Returns:
             The validated relative path.
 
-        Raises:
-            ValueError:
-                If the path is absolute or traverses above the repository root.
         """
-        if value != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
-            raise ValueError("origin_label_contract must be the canonical path")
+        canonical_origin_label_contract_path(value)
         return value
 
 
@@ -137,7 +134,7 @@ class GenerationManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
@@ -177,7 +174,7 @@ class GenerationManifest(StrictModel):
 class GenerationValidationReport(ValidationReport):
     """Generation report bound to the effective Danish origin-label contract."""
 
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
@@ -225,7 +222,7 @@ class AttributeCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
@@ -271,7 +268,7 @@ class PersonaCheckpoint(StrictModel):
     job_title_mapping_version: int | None = None
     job_title_mapping_file: Path | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
@@ -311,7 +308,7 @@ class PilotBatchReference(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
@@ -337,7 +334,7 @@ class PilotManifest(StrictModel):
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None
     job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: Path
+    origin_label_contract_file: OriginLabelContractPath
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract

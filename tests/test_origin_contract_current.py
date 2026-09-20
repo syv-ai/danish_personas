@@ -1,7 +1,7 @@
 """Adversarial tests for the current origin-label contract boundary."""
 
 import typing as t
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 import polars as pl
@@ -13,6 +13,7 @@ from danish_personas.io import sha256_file
 from danish_personas.models import BundleManifest, FrozenSampleManifest, RunManifest
 from danish_personas.origin_labels import (
     DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_PATH,
     ORIGIN_LABEL_CONTRACT_SHA256,
     load_origin_label_contract,
     validate_origin_contract_reference,
@@ -149,3 +150,41 @@ def test_legacy_three_column_origin_table_is_rejected() -> None:
         _origin_quota_sample(
             frame=frame, rows=1, rng=np.random.default_rng(1), require_danish=True
         )
+
+
+def test_windows_flavoured_contract_paths_serialise_portably() -> None:
+    """Filesystem path flavour cannot leak into public generation config."""
+    payload = {
+        "version": 3,
+        "llm_generation_enabled": False,
+        "base_url": None,
+        "model": None,
+        "api_key_env": None,
+        "timeout_seconds": 1.0,
+        "maximum_http_attempts": 1,
+        "maximum_validation_attempts": 1,
+        "maximum_total_requests": 1,
+        "retry_backoff_seconds": 0.0,
+        "maximum_smoke_rows": 1,
+        "response_format": "json_object",
+        "attributes_prompt": "config/prompts/attributes-da.md",
+        "personas_prompt": "config/prompts/personas-da.md",
+        "origin_label_contract": PureWindowsPath(r"config\folk2-ieland-labels-da.yaml"),
+    }
+    config = GenerationConfig.model_validate(payload)
+
+    assert config.model_dump(mode="json")["origin_label_contract"] == (
+        ORIGIN_LABEL_CONTRACT_PATH
+    )
+    assert "\\" not in config.model_dump_json()
+
+    for invalid in (
+        r"config\folk2-ieland-labels-da.yaml",
+        "/repository/config/folk2-ieland-labels-da.yaml",
+        "config/../config/folk2-ieland-labels-da.yaml",
+        "config/other-origin-labels.yaml",
+    ):
+        with pytest.raises(ValidationError):
+            GenerationConfig.model_validate(
+                payload | {"origin_label_contract": invalid}
+            )
