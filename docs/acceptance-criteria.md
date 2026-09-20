@@ -37,7 +37,7 @@ These gates apply before any LLM integration may be enabled.
   validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with the
   official Statistics Denmark geography classification.
-- A shared boundary verifier requires prepared-bundle schema 5, all mandatory Parquet
+- A shared boundary verifier requires prepared-bundle schema 6, all mandatory Parquet
   schemas, successful source preparation, and every manifest checksum before either
   sampling or demographic validation. Legacy, malformed, and tampered bundles fail.
 - The locked RAS209 selection, official hierarchy, and prepared RAS209 joint have
@@ -58,8 +58,8 @@ These gates apply before any LLM integration may be enabled.
   detailed status, and each of those ladders independently keeps at most 1% of records
   on a coarser cell. Age and marital back-off can relax age or sex only while retaining
   the same municipality; no region or national fallback exists. RAS202's national
-  detailed-status refinement remains a separate ladder. The validation configuration is
-  schema version 5.
+  detailed-status refinement remains a separate ladder. The sampler schema is version 6
+  and the validation configuration remains version 5.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
@@ -76,9 +76,14 @@ These gates apply before any LLM integration may be enabled.
 - OCEAN scores lie in `[20, 80]`.
 - Maximum absolute pairwise OCEAN correlation is at most 0.02 at 100,000 rows.
 - The run manifest records exactly zero LLM calls and the sampler schema version.
-- Every Phase 2 record has the official FOLK2 `origin_country_code` and `origin_country`
-  values, sampled independently from the national marginal with deterministic
-  largest-remainder quotas and a separate RNG child. Equal largest remainders are
+- Every Phase 2 record has the official FOLK2 `origin_country_code`, English
+  `origin_country`, and mandatory Danish `origin_country_da` values, sampled
+  independently from the national marginal with deterministic largest-remainder quotas
+  and a separate RNG child. The English label is retained as official source/audit
+  provenance. The Danish label is resolved from the archived official FOLK2 metadata-da
+  241-code contract (`config/folk2-ieland-labels-da.yaml`) with source metadata SHA-256
+  `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Exact code-label
+  pairs, including Danish display labels, are checked. Equal largest remainders are
   resolved by sorted official code regardless of input order. Unequal official weights
   are retained; zero-weight categories are never emitted; malformed code-label-count
   distributions fail loudly. Every observed code-label pair is checked, including an
@@ -96,35 +101,42 @@ These gates apply before any LLM integration may be enabled.
   is never conditioned on municipality, origin, age, education, OCEAN, or an unsupported
   joint.
 - `country` remains the residence value `Danmark`; mandatory municipality code and name,
-  official region parent, and `education_level` are retained. Origin is not ethnicity,
-  citizenship, residence, or appearance and cannot drive language, culture, religion,
-  occupation, or personality.
+  official region parent, and `education_level` are retained. Neither origin label is
+  ethnicity, citizenship, residence, or appearance. Origin cannot drive culture,
+  religion, job, interests, personality, or visual traits.
 - Origin and job-function fields remain in upstream/generated outputs and
-  input/checkpoint hashes. Human-readable municipality, origin, and job-function labels
-  may reach the provider for grounding; their source codes and resolution fields do not.
-  Job titles are synthetic and must not imply unsupported work history.
+  input/checkpoint hashes. Human-readable municipality, Danish `origin_country_da`, and
+  job-function labels may reach both provider stages for grounding; origin code, English
+  `origin_country`, contract metadata, and all resolution fields do not. The exact
+  Danish label is the origin fact in the grounded persona. Job titles are synthetic and
+  must not imply unsupported work history.
 
-`SAMPLER_SCHEMA_VERSION` must be incremented whenever deterministic sampling semantics
-or generated record columns change incompatibly. It is part of the content-addressed run
-identity, so a legacy run cannot be silently reused.
+`SAMPLER_SCHEMA_VERSION` is 6 and must be incremented whenever deterministic sampling
+semantics or generated record columns change incompatibly. The frozen-sample schema
+is 3. These versions are part of content-addressed identities, so legacy bundles, runs,
+or samples cannot be silently reused. The previous schema-5 canonical IDs are historical
+and non-resumable; regenerate and record new IDs rather than inventing them.
 
 ## Persona smoke runs
 
 - The committed configuration remains disabled and every live invocation requires
   `--live` explicitly.
 - The input checksum and successful Phase-2 validation report match the upstream run.
-  The upstream sampler schema version must equal the current version, and every frozen
-  row and column must validate against the current `DemographicRecord`; legacy
-  origin-less samples require migration and cannot cross the Phase-3 boundary.
+  The upstream sampler schema must be version 6 and the frozen-sample schema must be
+  version 3. Every frozen row and column must validate against the current
+  `DemographicRecord`; legacy, origin-less samples require migration and cannot cross
+  the Phase-3 boundary.
 - No invocation can request more than five rows. The deliberately stratified 1,000-row
   text-development input is separate from the 2,000-row Phase-2 smoke run.
-- Generated attributes and all six v2 persona descriptions satisfy strict schemas: five
-  specialised texts plus one short, grounded `persona`. The persona contains age,
-  statistical sex, municipality, education, origin, an official-job-function-grounded
-  synthetic job title or current nonemployee status, two or three interests in prose,
-  and cautious OCEAN tendencies. `visual_persona` is not a v2 field.
-- The provider receives human-readable municipality, origin, and job-function labels,
-  plus the reviewed allowlist of Danish titles for that label, but never source codes or
+- Generated attributes and all six generation-3 persona descriptions satisfy strict
+  schemas: five specialised texts plus one short, grounded `persona`. The persona
+  contains age, statistical sex, municipality, education, the exact Danish
+  `origin_country_da` label, an official-job-function-grounded synthetic job title or
+  current nonemployee status, two or three interests in prose, and cautious OCEAN
+  tendencies. `visual_persona` is not a generation-3 field.
+- Both provider stages receive human-readable municipality, the official Danish
+  `origin_country_da`, and job-function labels, plus the reviewed allowlist of Danish
+  titles for that label, but never origin code, English label, contract metadata, or
   resolution fields. A generated title must equal an allowlist entry exactly.
 - The versioned 42-code title mapping is checksum-bound into generation context,
   checkpoints, shards, pilots, and the offline release package.
@@ -136,8 +148,9 @@ identity, so a legacy run cannot be silently reused.
   stereotype, so this contract does not make image generation safe.
 - Exact duplicate persona descriptions are rejected. The specialised texts remain
   separate domains, and all six texts must be distinct.
-- Current v2 per-record checkpoints support resume without repeating completed model
-  calls. Historical v1 outputs and old pilots are not resumable under v2.
+- Current generation-3 per-record checkpoints support resume without repeating completed
+  model calls. Historical v1/v2 outputs, the previous v2/v13 ten-person smoke, and old
+  pilots are not resumable under generation 3.
 - The manifest records model, selected inference provider, endpoint, prompt and input
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
   output checksum.
@@ -158,12 +171,16 @@ identity, so a legacy run cannot be silently reused.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract v2 and retain five specialised texts plus
-  one short grounded persona. It must record that provider payloads contain approved
-  human-readable municipality, origin, and job-function labels only, not source codes or
-  resolutions, and must disclose synthetic job titles and image-model stereotyping risk.
-- These checks are pure in-memory contracts. Packaging, publication, uploads, and
-  release manifests are not implemented by this release.
+- A release must identify generation contract 3, validator `persona-safety-v14`, and
+  retain five specialised texts plus one short grounded persona. Release manifest and
+  evidence use schema 2. It must record that both provider payloads contain approved
+  human-readable municipality, Danish origin, and job-function labels only, not origin
+  code, English label, contract metadata, or resolutions, and must disclose synthetic
+  job titles and image-model stereotyping risk.
+- Release packaging and verification must bind the schema-2 release manifest and
+  evidence checksums, provenance, row counts, and human-review evidence. Until a current
+  package is regenerated, release IDs, checksums, and canonical output IDs are
+  placeholders rather than claims about historical artefacts.
 
 A failed mandatory gate returns a non-zero command exit code. Thresholds may not be
 changed retrospectively to make a completed statistical run pass.

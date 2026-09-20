@@ -4,10 +4,12 @@
 
 This report covers a three-record integration smoke test only. It does not approve the
 frozen 1,000-row development sample, the 10,000-row pilot, or any release-scale persona
-generation. It is a historical generation-contract v1 report from before the v2 change:
-its six-description results are not evidence for the current six-text grounded-persona
-schema or validation gates. The old run is retained for historical facts only and cannot
-be resumed under v2.
+generation. It is a historical generation-contract v1 report from before the
+generation-3 change: its six-description results are not evidence for the current
+six-text grounded-persona schema or validation gates. The old run is retained for
+historical facts only and cannot be resumed under generation 3. It predates the
+mandatory Danish `origin_country_da` provider boundary and validator
+`persona-safety-v14`.
 
 The run used the first three persona identifiers from the checksum-locked, stratified
 Phase-3 seed file. Generation preserved the existing demographic and independently
@@ -19,8 +21,8 @@ sampled OCEAN fields.
 - Model: `gpt-5.6-sol` through provider `openai-codex`.
 - Response mode: strict JSON Schema.
 - Stages per record in this historical v1 run: structured attributes, then six persona
-  descriptions under the old prompt contract; current v2 runs return five specialised
-  texts plus one short grounded persona, with no `visual_persona`.
+  descriptions under the old prompt contract; current generation-3 runs return five
+  specialised texts plus one short grounded persona, with no `visual_persona`.
 - Sampling parameters: none; the proxy rejects temperature, seed, and token-limit
   parameters.
 
