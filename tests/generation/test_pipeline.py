@@ -648,6 +648,33 @@ def test_persona_validation_rejects_mapping_binding_tampering(
     assert not validate_persona_run(run_dir=run_dir).passed
 
 
+@pytest.mark.parametrize("artifact", ["checkpoint", "manifest"])
+def test_persona_validation_rejects_stale_validator_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
+) -> None:
+    """Checkpoint and run manifests must use the current validator contract."""
+    paths = _write_inputs(root=tmp_path)
+    monkeypatch.setattr("danish_personas.generation.pipeline.OpenAIClient", _MockClient)
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        live=True,
+    )
+    path = (
+        next((run_dir / "checkpoints").glob("*.json"))
+        if artifact == "checkpoint"
+        else run_dir / "generation-manifest.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["validator_version"] = "persona-safety-v10"
+    write_json(path=path, payload=payload)
+
+    assert not validate_persona_run(run_dir=run_dir).passed
+
+
 def test_persona_validation_reports_missing_manifest(tmp_path: Path) -> None:
     """A missing required manifest produces a failed report rather than an error."""
     run_dir = tmp_path / "missing-manifest"

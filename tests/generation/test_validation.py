@@ -6,8 +6,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from lingua import Language
 
+import danish_personas.generation.validation as validation_module
 from danish_personas.generation.grounding import build_persona_grounding_facts
+from danish_personas.generation.job_titles import load_job_title_mapping
 from danish_personas.generation.models import GeneratedAttributes
 from danish_personas.generation.validation import (
     EDUCATION_DANISH,
@@ -26,6 +29,11 @@ EXPECTED_EDUCATION_RENDERINGS = {
     "higher_education": "videregående uddannelse",
     "not_stated": "uddannelse ikke oplyst",
 }
+JOB_TITLE_CASES = tuple(
+    (code, entry.label, title)
+    for code, entry in load_job_title_mapping().job_functions.items()
+    for title in entry.titles
+)
 
 
 @pytest.mark.parametrize(
@@ -236,6 +244,32 @@ def test_education_renderings_cover_phase_two_pool_domain() -> None:
     assert EDUCATION_DANISH == EXPECTED_EDUCATION_RENDERINGS
 
 
+@pytest.mark.parametrize(("code", "label", "title"), JOB_TITLE_CASES)
+def test_every_reviewed_job_title_ignores_language_detection(
+    code: str, label: str, title: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reviewed title passes even when Lingua labels it non-Danish."""
+    context = demographic()
+    context["job_function_code"] = code
+    context["job_function"] = label
+    monkeypatch.setattr(
+        validation_module, "LANGUAGE_DETECTOR", _RejectTitleLanguageDetector(title)
+    )
+
+    payload = attributes(job_title=title)
+    assert parse_attributes(json.dumps(payload), context).job_title == title
+
+
+class _RejectTitleLanguageDetector:
+    """Return a non-Danish result only for the title under test."""
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+    def detect_language_of(self, text: str) -> Language:
+        return Language.ENGLISH if text == self.title else Language.DANISH
+
+
 @pytest.mark.parametrize(
     "claim",
     [
@@ -277,6 +311,23 @@ def test_job_title_eligibility_is_contextual(eligible: bool) -> None:
     invalid = attributes(job_title=None if eligible else "forretningsspecialist")
     with pytest.raises(ValueError, match="title|job_title"):
         parse_attributes(json.dumps(invalid), context)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "invented specialist",
+        "software engineer",
+        "analytiker",
+        "sundhedsprofessionel med angst",
+        "- forretningsspecialist",
+        "forretningsspecialist\nadministrativ specialist",
+    ],
+)
+def test_job_title_rejects_unreviewed_or_unsafe_titles(title: str) -> None:
+    """Invented, foreign, sensitive, and list-like titles remain invalid."""
+    with pytest.raises(ValueError, match="job_title"):
+        parse_attributes(json.dumps(attributes(job_title=title)), demographic())
 
 
 @pytest.mark.parametrize("punctuation", ["- ", "1. ", "[", ";"])
