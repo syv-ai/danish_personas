@@ -39,6 +39,12 @@ from ..generation.pipeline import generation_context_sha256
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, sha256_file, write_json
 from ..models import RunManifest, StrictModel, ValidationReport
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    OriginLabelContract,
+    load_origin_label_contract,
+)
 from .common import (
     PERSONA_OUTPUT_COLUMNS,
     persona_output_dtypes_are_valid,
@@ -145,6 +151,7 @@ _PUBLIC_FILES = (
     "provenance/prompts/personas-da.md",
     "provenance/config/generation.yaml",
     "provenance/config/job-function-titles.yaml",
+    "provenance/config/folk2-ieland-labels-da.yaml",
     "provenance/config/sources.lock.yaml",
     "provenance/config/categories.yaml",
     "provenance/config/sampling.yaml",
@@ -222,6 +229,9 @@ def package_release(
         config.job_title_mapping or Path("config/job-function-titles.yaml"),
     )
     _capture_path(path=mapping_path, inventory=inventory)
+    origin_contract_path, origin_contract = _capture_origin_contract(
+        repository_root=repository_root, config=config, inventory=inventory
+    )
     attributes_path = _repository_path(repository_root, config.attributes_prompt)
     personas_path = _repository_path(repository_root, config.personas_prompt)
     _capture_path(path=attributes_path, inventory=inventory)
@@ -287,6 +297,9 @@ def package_release(
             config_path=snapshot_repository / config_path.relative_to(repository_root),
             mapping_path=snapshot_repository
             / mapping_path.relative_to(repository_root),
+            origin_contract_path=snapshot_repository
+            / origin_contract_path.relative_to(repository_root),
+            origin_contract=origin_contract,
             attributes_path=(
                 snapshot_repository / attributes_path.relative_to(repository_root)
             ),
@@ -341,6 +354,7 @@ def package_release(
             report=report,
             config_path=_snapshot_path(inventory, config_path),
             mapping_path=_snapshot_path(inventory, mapping_path),
+            origin_contract_path=_snapshot_path(inventory, origin_contract_path),
             attributes_path=_snapshot_path(inventory, attributes_path),
             personas_path=_snapshot_path(inventory, personas_path),
             repository_root=snapshot_repository,
@@ -358,7 +372,7 @@ def package_release(
             for path in _PUBLIC_FILES
         )
         manifest = ReleaseManifest(
-            version=1,
+            version=2,
             release_id=release_identifier,
             created_at=attestation.reviewed_at,
             pilot_id=pilot_manifest.pilot_id,
@@ -367,6 +381,12 @@ def package_release(
             git_head=git_head,
             origin_url=origin_url,
             uv_lock_sha256=_source_sha256(repository_root / "uv.lock", inventory),
+            origin_label_contract_file=DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+            origin_label_contract_sha256=sha256_bytes(
+                _captured_bytes(inventory, origin_contract_path)
+            ),
+            origin_label_contract_version=origin_contract.version,
+            origin_label_contract_content=origin_contract,
             evidence_sha256=sha256_file(stage / "provenance/evidence.json"),
             artifacts=artifacts,
         )
@@ -392,6 +412,32 @@ def package_release(
             shutil.rmtree(stage, ignore_errors=True)
         if lock_owned:
             lock_path.unlink(missing_ok=True)
+
+
+def _capture_origin_contract(
+    *, repository_root: Path, config: GenerationConfig, inventory: list[_InventoryItem]
+) -> tuple[Path, OriginLabelContract]:
+    """Capture and validate the reviewed origin contract before any staging.
+
+    Returns:
+        The captured path and strictly validated contract.
+
+    Raises:
+        ReleasePackagingError:
+            If the configured contract is not the exact reviewed file.
+    """
+    if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleasePackagingError("Origin-label contract path binding failed")
+    path = _repository_path(repository_root, config.origin_label_contract)
+    _capture_path(path=path, inventory=inventory)
+    try:
+        payload = yaml.safe_load(_captured_bytes(inventory, path))
+        contract = OriginLabelContract.model_validate(payload)
+    except (TypeError, ValueError, yaml.YAMLError) as error:
+        raise ReleasePackagingError("Invalid captured origin-label contract") from error
+    if sha256_bytes(_captured_bytes(inventory, path)) != ORIGIN_LABEL_CONTRACT_SHA256:
+        raise ReleasePackagingError("Origin-label contract checksum binding failed")
+    return path, contract
 
 
 def _capture_path(*, path: Path, inventory: list[_InventoryItem]) -> None:
@@ -961,6 +1007,9 @@ def _install_files(**kwargs: object) -> None:
         "provenance/config/job-function-titles.yaml": _captured_bytes(
             inventory, mapping_path
         ),
+        "provenance/config/folk2-ieland-labels-da.yaml": _captured_bytes(
+            inventory, t.cast(Path, kwargs["origin_contract_path"])
+        ),
     }
     for name in (
         "generation.yaml",
@@ -1257,6 +1306,8 @@ def _validate_pilot_for_release(
     config: GenerationConfig,
     config_path: Path,
     mapping_path: Path,
+    origin_contract_path: Path,
+    origin_contract: OriginLabelContract,
     attributes_path: Path,
     personas_path: Path,
     policy_path: Path,
@@ -1294,17 +1345,19 @@ def _validate_pilot_for_release(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleasePackagingError(
-            "Persona output schema must match generation contract v2"
+            "Persona output schema must match generation contract v3"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
     try:
         validate_persona_output_rows(
-            output, job_title_mapping=load_job_title_mapping(mapping_path)
+            output,
+            job_title_mapping=load_job_title_mapping(mapping_path),
+            origin_label_contract=origin_contract,
         )
     except ValueError as error:
         raise ReleasePackagingError(
-            "Persona output fails contextual generation-v2 validation"
+            "Persona output fails contextual generation-v3 validation"
         ) from error
     validate_release_approval(
         policy=policy,
@@ -1320,6 +1373,8 @@ def _validate_pilot_for_release(
         config=config,
         config_path=config_path,
         mapping_path=mapping_path,
+        origin_contract_path=origin_contract_path,
+        origin_contract=origin_contract,
         attributes_path=attributes_path,
         personas_path=personas_path,
     )
@@ -1348,6 +1403,7 @@ def _validate_pilot_for_release(
             _captured_bytes(inventory, attributes_path),
             _captured_bytes(inventory, personas_path),
             _captured_bytes(inventory, mapping_path),
+            _captured_bytes(inventory, origin_contract_path),
         ]
     )
     _scan_dataframe(output)
@@ -1360,6 +1416,8 @@ def _assert_manifest_bindings(
     config: GenerationConfig,
     config_path: Path,
     mapping_path: Path,
+    origin_contract_path: Path,
+    origin_contract: OriginLabelContract,
     attributes_path: Path,
     personas_path: Path,
 ) -> None:
@@ -1382,18 +1440,58 @@ def _assert_manifest_bindings(
         raise ReleasePackagingError("Attributes prompt binding failed")
     if sha256_file(personas_path) != manifest.personas_prompt_sha256:
         raise ReleasePackagingError("Personas prompt binding failed")
-    _require_generation_v2(config)
+    _assert_origin_contract_binding(
+        manifest=manifest,
+        config=config,
+        config_path=config_path,
+        origin_contract_path=origin_contract_path,
+        origin_contract=origin_contract,
+    )
+    _require_generation_v3(config)
     context = generation_context_sha256(
         config=config,
         attributes_prompt=attributes_path.read_text(encoding="utf-8"),
         personas_prompt=personas_path.read_text(encoding="utf-8"),
         job_title_mapping=load_job_title_mapping(mapping_path),
         job_title_mapping_sha256=sha256_file(mapping_path),
+        origin_label_contract=origin_contract,
+        origin_label_contract_sha256=sha256_file(origin_contract_path),
     )
     if context != manifest.generation_context_sha256:
         raise ReleasePackagingError("Generation context binding failed")
     if config.model != manifest.model:
         raise ReleasePackagingError("Generation model binding failed")
+
+
+def _assert_origin_contract_binding(
+    *,
+    manifest: PilotManifest,
+    config: GenerationConfig,
+    config_path: Path,
+    origin_contract_path: Path,
+    origin_contract: OriginLabelContract,
+) -> None:
+    """Require the configured origin contract to be the reviewed exact file.
+
+    Raises:
+        ReleasePackagingError:
+            If the contract path, version, content, or checksum is not exact.
+    """
+    if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleasePackagingError("Origin-label contract path binding failed")
+    expected_path = config_path.parent / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.name
+    if origin_contract_path != expected_path:
+        raise ReleasePackagingError("Origin-label contract path binding failed")
+    if manifest.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ReleasePackagingError("Origin-label manifest path binding failed")
+    digest = sha256_file(origin_contract_path)
+    if (
+        manifest.origin_label_contract_sha256 != digest
+        or digest != ORIGIN_LABEL_CONTRACT_SHA256
+        or manifest.origin_label_contract_version != origin_contract.version
+        or manifest.origin_label_contract_content != origin_contract
+    ):
+        raise ReleasePackagingError("Origin-label contract binding failed")
 
 
 def _mapping_binding_matches(
@@ -1424,9 +1522,9 @@ def _mapping_binding_matches(
     return manifest.job_title_mapping_version == mapping.version
 
 
-def _require_generation_v2(config: GenerationConfig) -> None:
-    if config.version != 2:
-        raise ReleasePackagingError("Release requires generation contract v2")
+def _require_generation_v3(config: GenerationConfig) -> None:
+    if config.version != 3:
+        raise ReleasePackagingError("Release requires generation contract v3")
 
 
 def _derive_evidence(
@@ -1450,9 +1548,40 @@ def _derive_evidence(
             If shard accounting is inconsistent.
     """
     shards: list[ShardEvidence] = []
+    origin_contract_path = _repository_path(
+        repository_root, manifest.origin_label_contract_file
+    )
+    origin_contract = load_origin_label_contract(path=origin_contract_path)
+    origin_contract_sha256 = _source_sha256(origin_contract_path, inventory)
+    if (
+        origin_contract_sha256 != manifest.origin_label_contract_sha256
+        or origin_contract.version != manifest.origin_label_contract_version
+        or origin_contract != manifest.origin_label_contract_content
+        or origin_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
+        raise ReleasePackagingError("Origin-label contract binding failed")
     for reference in manifest.batch_runs:
         manifest_path = _pilot_path(pilot_dir, reference.manifest_file)
         shard = _load_json_model(manifest_path, GenerationManifest)
+        if (
+            reference.origin_label_contract_file != manifest.origin_label_contract_file
+            or reference.origin_label_contract_sha256
+            != manifest.origin_label_contract_sha256
+            or reference.origin_label_contract_version
+            != manifest.origin_label_contract_version
+            or reference.origin_label_contract_content
+            != manifest.origin_label_contract_content
+            or shard.generation_config_sha256 != manifest.generation_config_sha256
+            or shard.generation_context_sha256 != manifest.generation_context_sha256
+            or shard.origin_label_contract_file != manifest.origin_label_contract_file
+            or shard.origin_label_contract_sha256
+            != manifest.origin_label_contract_sha256
+            or shard.origin_label_contract_version
+            != manifest.origin_label_contract_version
+            or shard.origin_label_contract_content
+            != manifest.origin_label_contract_content
+        ):
+            raise ReleasePackagingError("Shard generation contract bindings disagree")
         output_path = _output_path(manifest_path.parent, shard.output_file)
         rejected = 0
         checkpoint_dir = manifest_path.parent / "checkpoints"
@@ -1471,6 +1600,11 @@ def _derive_evidence(
                     _pilot_path(pilot_dir, reference.validation_report_file), inventory
                 ),
                 output_sha256=_source_sha256(output_path, inventory),
+                generation_config_sha256=shard.generation_config_sha256,
+                generation_context_sha256=shard.generation_context_sha256,
+                origin_label_contract_file=shard.origin_label_contract_file,
+                origin_label_contract_sha256=shard.origin_label_contract_sha256,
+                origin_label_contract_version=shard.origin_label_contract_version,
                 requests=shard.requests,
                 retries=shard.retries,
                 rejected_validation_responses=rejected,
@@ -1542,6 +1676,7 @@ def _derive_evidence(
         "job-function-titles.yaml": _source_sha256(
             repository_root / "config/job-function-titles.yaml", inventory
         ),
+        "folk2-ieland-labels-da.yaml": _source_sha256(origin_contract_path, inventory),
         **{
             name: _source_sha256(repository_root / "config" / name, inventory)
             for name in (
@@ -1553,7 +1688,7 @@ def _derive_evidence(
         },
     }
     return ReleaseEvidence(
-        version=1,
+        version=2,
         pilot_id=manifest.pilot_id,
         model=manifest.model,
         rows=manifest.rows,
@@ -1562,6 +1697,10 @@ def _derive_evidence(
         sample_manifest_sha256=manifest.sample_manifest_sha256,
         generation_config_sha256=manifest.generation_config_sha256,
         generation_context_sha256=manifest.generation_context_sha256,
+        origin_label_contract_file=manifest.origin_label_contract_file,
+        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
+        origin_label_contract_version=manifest.origin_label_contract_version,
+        origin_label_contract_content=manifest.origin_label_contract_content,
         validator_version=manifest.validator_version,
         attributes_prompt_sha256=manifest.attributes_prompt_sha256,
         personas_prompt_sha256=manifest.personas_prompt_sha256,
