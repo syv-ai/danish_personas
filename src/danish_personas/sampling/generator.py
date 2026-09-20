@@ -20,7 +20,6 @@ from ..models import (
     RunManifest,
     SamplingConfig,
 )
-from ..origin_labels import load_origin_label_contract
 from ..sources.bundle import verify_prepared_bundle
 
 LOGGER = logging.getLogger(__name__)
@@ -425,34 +424,18 @@ def _draw(
 def _ensure_origin_danish_labels(
     *, frame: pl.DataFrame, bundle: BundleManifest
 ) -> pl.DataFrame:
-    """Require schema-6 Danish labels, with a fixture-only compatibility path.
-
-    Source-backed schema-6 bundles are verified before this function and therefore
-    must already contain the Danish marginal.  Empty-snapshot manifests are used by
-    small in-memory fixtures; deriving their labels from the reviewed contract keeps
-    those fixtures useful without weakening the source bundle boundary.
+    """Require the captured Danish label column at the sampling boundary.
 
     Returns:
-        The marginal with a complete Danish label column.
+        The unchanged marginal with its captured Danish labels.
 
     Raises:
-        ValueError:
-            If a bound marginal is missing Danish labels or contains an unknown code.
+        ValueError: If the captured Danish label column is absent.
     """
-    if "origin_country_da" in frame.columns:
-        return frame
-    if getattr(bundle, "origin_labels_contract_content", ""):
+    del bundle
+    if "origin_country_da" not in frame.columns:
         raise ValueError("Schema-6 origin marginal is missing Danish labels")
-    contract = load_origin_label_contract()
-    mapping = dict(contract.ordered_labels)
-    codes = frame.get_column("origin_country_code").to_list()
-    if any(code not in mapping for code in codes):
-        raise ValueError("Origin marginal contains a code without a Danish label")
-    return frame.with_columns(
-        pl.col("origin_country_code")
-        .replace(mapping, default=None)
-        .alias("origin_country_da")
-    )
+    return frame
 
 
 def _ladder_index(

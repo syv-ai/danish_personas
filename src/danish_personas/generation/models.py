@@ -3,10 +3,14 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..models import FrozenSampleManifest, StrictModel, ValidationReport
-from ..origin_labels import OriginLabelContract
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    OriginLabelContract,
+    validate_origin_contract_reference,
+)
 from .job_titles import JobFunctionTitleMapping
 
 __all__ = ["FrozenSampleManifest"]
@@ -111,8 +115,8 @@ class GenerationConfig(StrictModel):
             ValueError:
                 If the path is absolute or traverses above the repository root.
         """
-        if value.is_absolute() or ".." in value.parts:
-            raise ValueError("origin_label_contract must be repository-relative")
+        if value != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+            raise ValueError("origin_label_contract must be the canonical path")
         return value
 
 
@@ -154,14 +158,44 @@ class GenerationManifest(StrictModel):
     output_sha256: str
     llm_generation: bool
 
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "GenerationManifest":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
+
 
 class GenerationValidationReport(ValidationReport):
     """Generation report bound to the effective Danish origin-label contract."""
 
-    origin_label_contract_file: Path | None = None
-    origin_label_contract_sha256: str | None = None
-    origin_label_contract_version: int | None = None
-    origin_label_contract_content: OriginLabelContract | None = None
+    origin_label_contract_file: Path
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "GenerationValidationReport":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
 
 
 class LLMResponse(StrictModel):
@@ -199,6 +233,21 @@ class AttributeCheckpoint(StrictModel):
     responses: list[LLMResponse]
     http_requests: int = Field(ge=1)
 
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "AttributeCheckpoint":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
+
 
 class PersonaDescriptions(StrictModel):
     """Second-stage generated Danish persona descriptions."""
@@ -231,6 +280,21 @@ class PersonaCheckpoint(StrictModel):
     responses: list[LLMResponse]
     attempts: int = Field(ge=2)
     http_requests: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "PersonaCheckpoint":
+        """Require the exact compiled origin contract binding.
+
+        Returns:
+            The validated model.
+        """
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
 
 
 class PilotBatchReference(StrictModel):

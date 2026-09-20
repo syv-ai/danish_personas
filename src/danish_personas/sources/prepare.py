@@ -27,7 +27,7 @@ from ..origin_labels import (
     ORIGIN_LABEL_CONTRACT_SHA256,
     ORIGIN_LABEL_COUNT,
     OriginLabelContract,
-    bind_origin_labels,
+    bind_origin_triples,
     load_origin_label_contract,
 )
 from .bundle import verify_prepared_bundle
@@ -106,6 +106,8 @@ def prepare_bundle(
         ValueError:
             If the lock has no geography classification.
     """
+    if origin_labels_contract_path != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+        raise ValueError("Only the canonical origin-label contract is permitted")
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     contract = load_lons20_contract(path=contract_path)
     origin_labels_contract = load_origin_label_contract(
@@ -191,10 +193,10 @@ def prepare_bundle(
         source_snapshot_dir(source=origin_source, raw_dir=raw_dir) / "metadata-da.json"
     )
     origin_metadata_da_sha256 = sha256_file(origin_metadata_da_path)
-    if origin_metadata_da_sha256 != origin_labels_contract.source_metadata_sha256:
-        raise ValueError(
-            "FOLK2 Danish metadata checksum does not match the origin-label contract"
-        )
+    origin_metadata_en_path = (
+        source_snapshot_dir(source=origin_source, raw_dir=raw_dir) / "metadata-en.json"
+    )
+    origin_metadata_en_sha256 = sha256_file(origin_metadata_en_path)
     origin_metadata_da = StatBankMetadata.model_validate_json(
         origin_metadata_da_path.read_bytes()
     )
@@ -203,7 +205,8 @@ def prepare_bundle(
         english_metadata=metadata_by_table["FOLK2"],
         danish_metadata=origin_metadata_da,
         contract=origin_labels_contract,
-        metadata_sha256=origin_metadata_da_sha256,
+        metadata_en_sha256=origin_metadata_en_sha256,
+        metadata_da_sha256=origin_metadata_da_sha256,
     )
     prepared_source_frames = dict(source_frames)
     prepared_source_frames["FOLK2"] = _materialise_origin_zero_codes(
@@ -292,6 +295,7 @@ def prepare_bundle(
         origin_labels_contract=origin_labels_contract,
         origin_labels_contract_path=origin_labels_contract_relative_path,
         origin_labels_contract_sha256=origin_labels_contract_sha256,
+        origin_metadata_en_sha256=origin_metadata_en_sha256,
         origin_metadata_da_sha256=origin_metadata_da_sha256,
     )
     source_report_path = bundle_dir / "source-preparation-report.json"
@@ -1263,6 +1267,7 @@ def _source_metrics(
     origin_labels_contract: OriginLabelContract,
     origin_labels_contract_path: str,
     origin_labels_contract_sha256: str,
+    origin_metadata_en_sha256: str,
     origin_metadata_da_sha256: str,
 ) -> dict[str, object]:
     """Summarise prepared tables and the geography cross-check.
@@ -1284,6 +1289,8 @@ def _source_metrics(
             Repository-relative contract path.
         origin_labels_contract_sha256:
             Contract byte checksum.
+        origin_metadata_en_sha256:
+            Archived English metadata byte checksum.
         origin_metadata_da_sha256:
             Archived Danish metadata byte checksum.
 
@@ -1341,7 +1348,13 @@ def _source_metrics(
             "path": origin_labels_contract_path,
             "version": origin_labels_contract.version,
             "sha256": origin_labels_contract_sha256,
-            "source_metadata_sha256": origin_labels_contract.source_metadata_sha256,
+            "source_metadata_en_sha256": (
+                origin_labels_contract.source_metadata_en_sha256
+            ),
+            "source_metadata_da_sha256": (
+                origin_labels_contract.source_metadata_da_sha256
+            ),
+            "metadata_en_sha256": origin_metadata_en_sha256,
             "metadata_da_sha256": origin_metadata_da_sha256,
         },
         "tables": table_metrics,
@@ -1476,7 +1489,8 @@ def _validate_origin_metadata(
     english_metadata: StatBankMetadata,
     danish_metadata: StatBankMetadata,
     contract: OriginLabelContract,
-    metadata_sha256: str,
+    metadata_en_sha256: str,
+    metadata_da_sha256: str,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Validate the four-way FOLK2 IELAND partition and return both labels.
 
@@ -1491,20 +1505,26 @@ def _validate_origin_metadata(
         or len(set(lock_codes)) != ORIGIN_LABEL_COUNT
     ):
         raise ValueError("FOLK2 lock must contain exactly 241 unique IELAND codes")
-    danish_labels = bind_origin_labels(
-        contract=contract, metadata=danish_metadata, metadata_sha256=metadata_sha256
+    english_labels, danish_labels = bind_origin_triples(
+        contract=contract,
+        english_metadata=english_metadata,
+        danish_metadata=danish_metadata,
+        english_metadata_sha256=metadata_en_sha256,
+        danish_metadata_sha256=metadata_da_sha256,
     )
-    english_labels = _metadata_labels(english_metadata).get("IELAND", {})
     code_sets = {
         "lock": set(lock_codes),
         "English metadata": set(english_labels),
         "Danish metadata": set(danish_labels),
-        "origin-label contract": set(contract.labels),
+        "origin-label contract English": set(contract.labels_en),
+        "origin-label contract Danish": set(contract.labels_da),
     }
     if any(len(codes) != ORIGIN_LABEL_COUNT for codes in code_sets.values()):
         raise ValueError("FOLK2 IELAND metadata and contract must contain 241 codes")
     if len({frozenset(codes) for codes in code_sets.values()}) != 1:
         raise ValueError("FOLK2 IELAND code sets differ across lock and metadata")
+    if english_labels != contract.labels_en or danish_labels != contract.labels_da:
+        raise ValueError("FOLK2 metadata labels differ from the reviewed triples")
     return english_labels, danish_labels
 
 

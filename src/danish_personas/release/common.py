@@ -135,8 +135,11 @@ def validate_persona_output_rows(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ValueError("Persona output schema must match generation contract v3")
-    contract = origin_label_contract or load_origin_label_contract()
-    labels = contract.labels
+    canonical_contract = load_origin_label_contract()
+    contract = origin_label_contract or canonical_contract
+    if contract != canonical_contract:
+        raise ValueError("Release origin-label contract is not canonical")
+    labels = contract.labels_da
     validated_rows: set[str] = set()
     for index, row in enumerate(output.iter_rows(named=True)):
         cache_key = canonical_json(
@@ -152,7 +155,7 @@ def validate_persona_output_rows(
                 not isinstance(code, str)
                 or code not in labels
                 or not isinstance(english, str)
-                or not english.strip()
+                or contract.labels_en.get(code) != english
                 or not isinstance(danish, str)
                 or danish != labels[code]
             ):

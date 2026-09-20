@@ -936,10 +936,8 @@ def _sha256_bytes(content: bytes) -> str:
 
 def _verify_bundle_tables(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
     """Verify schemas and semantic origin labels in a captured bundle."""
-    require_origin_danish = bool(manifest.origin_labels_contract_content)
-    _verify_schemas(capture=capture, require_origin_danish=require_origin_danish)
-    if require_origin_danish:
-        _verify_origin_table(capture=capture, manifest=manifest)
+    _verify_schemas(capture=capture)
+    _verify_origin_table(capture=capture, manifest=manifest)
 
 
 def _verify_origin_table(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
@@ -970,8 +968,17 @@ def _verify_origin_table(*, capture: _BundleCapture, manifest: BundleManifest) -
     danish = dict(
         zip(codes, frame.get_column("origin_country_da").to_list(), strict=True)
     )
-    if set(codes) != set(contract.labels) or danish != contract.labels:
-        raise ValueError("Prepared FOLK2 Danish labels do not match the contract")
+    english = dict(
+        zip(codes, frame.get_column("origin_country").to_list(), strict=True)
+    )
+    if (
+        set(codes) != set(contract.labels_en)
+        or english != contract.labels_en
+        or danish != contract.labels_da
+    ):
+        raise ValueError(
+            "Prepared FOLK2 English/Danish labels do not match the contract"
+        )
 
 
 def _bound_contract_path(*, manifest: BundleManifest) -> Path:
@@ -991,17 +998,13 @@ def _bound_contract_path(*, manifest: BundleManifest) -> Path:
         or "\\" in manifest.origin_labels_contract_path
     ):
         raise ValueError("Prepared bundle origin-label contract path is not canonical")
+    if relative != Path("config/folk2-ieland-labels-da.yaml"):
+        raise ValueError("Prepared bundle origin-label contract path is not canonical")
     return Path.cwd() / relative
 
 
-def _verify_schemas(
-    *, capture: _BundleCapture, require_origin_danish: bool = False
-) -> None:
+def _verify_schemas(*, capture: _BundleCapture) -> None:
     expected_schema = dict(REQUIRED_COLUMNS)
-    if not require_origin_danish:
-        expected_schema["normalized/folk2_origin_country_marginal.parquet"] = frozenset(
-            {"origin_country_code", "origin_country", "count"}
-        )
     for relative_path, expected_columns in expected_schema.items():
         try:
             columns = frozenset(
@@ -1013,12 +1016,7 @@ def _verify_schemas(
             raise ValueError(
                 f"Prepared bundle schema cannot be read: {relative_path}"
             ) from error
-        fixture_origin_schema = (
-            relative_path == "normalized/folk2_origin_country_marginal.parquet"
-            and not require_origin_danish
-            and columns == expected_columns | {"origin_country_da"}
-        )
-        if columns != expected_columns and not fixture_origin_schema:
+        if columns != expected_columns:
             missing = sorted(expected_columns - columns)
             unexpected = sorted(columns - expected_columns)
             message = (
@@ -1039,12 +1037,6 @@ def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
         manifest.origin_labels_contract_sha256,
         manifest.origin_labels_contract_content,
     )
-    if not any(fields):
-        if manifest.source_snapshots:
-            raise ValueError(
-                "Prepared bundle is missing its origin-label contract binding"
-            )
-        return
     if not all(fields) or manifest.origin_labels_contract_version < 1:
         raise ValueError("Prepared bundle origin-label contract binding is incomplete")
     contract_path = _bound_contract_path(manifest=manifest)
@@ -1066,12 +1058,17 @@ def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
     if contract.version != manifest.origin_labels_contract_version:
         raise ValueError("Bound origin-label contract version changed")
     _verify_origin_snapshot_binding(
-        manifest=manifest, source_metadata_sha256=contract.source_metadata_sha256
+        manifest=manifest,
+        source_metadata_en_sha256=contract.source_metadata_en_sha256,
+        source_metadata_da_sha256=contract.source_metadata_da_sha256,
     )
 
 
 def _verify_origin_snapshot_binding(
-    *, manifest: BundleManifest, source_metadata_sha256: str
+    *,
+    manifest: BundleManifest,
+    source_metadata_en_sha256: str,
+    source_metadata_da_sha256: str,
 ) -> None:
     """Verify the FOLK2 snapshot's Danish metadata checksum.
 
@@ -1085,5 +1082,7 @@ def _verify_origin_snapshot_binding(
     ]
     if len(folk2) != 1:
         raise ValueError("Prepared bundle must contain one FOLK2 source snapshot")
-    if folk2[0].metadata_da_sha256 != source_metadata_sha256:
+    if folk2[0].metadata_sha256 != source_metadata_en_sha256:
+        raise ValueError("FOLK2 English metadata is not bound to the contract")
+    if folk2[0].metadata_da_sha256 != source_metadata_da_sha256:
         raise ValueError("FOLK2 Danish metadata is not bound to the contract")

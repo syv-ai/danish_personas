@@ -19,7 +19,11 @@ from ..models import (
     RunManifest,
     ValidationReport,
 )
-from ..origin_labels import OriginLabelContract, load_origin_label_contract
+from ..origin_labels import (
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    OriginLabelContract,
+    load_origin_label_contract,
+)
 from ..origin_labels import (
     origin_label_contract_sha256 as origin_label_contract_sha256_file,
 )
@@ -654,7 +658,7 @@ def _validate_origin_row(
 
     Raises:
         ValueError:
-            If the row does not contain the exact contracted Danish display label.
+            If the row does not contain the exact contracted English and Danish labels.
     """
     code = row.get("origin_country_code")
     english = row.get("origin_country")
@@ -662,8 +666,8 @@ def _validate_origin_row(
     if (
         not isinstance(code, str)
         or not isinstance(english, str)
-        or not english.strip()
-        or contract.labels.get(code) != danish
+        or contract.labels_en.get(code) != english
+        or contract.labels_da.get(code) != danish
     ):
         raise ValueError("Origin code-English-Danish triple does not match contract")
 
@@ -806,7 +810,12 @@ def generation_context_sha256(
 
     Returns:
         SHA-256 digest for the prompts, schemas, validator, and configuration.
+
+    Raises:
+        ValueError: If the origin-label contract is not the reviewed contract.
     """
+    if config.origin_label_contract != Path("config/folk2-ieland-labels-da.yaml"):
+        raise ValueError("Generation origin-label contract path must be canonical")
     effective_origin_contract = origin_label_contract or load_origin_label_contract(
         path=config.origin_label_contract
     )
@@ -814,6 +823,8 @@ def generation_context_sha256(
         origin_label_contract_sha256
         or origin_label_contract_sha256_file(path=config.origin_label_contract)
     )
+    if effective_origin_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+        raise ValueError("Generation origin-label contract is not reviewed")
     return sha256_text(
         canonical_json(
             {
