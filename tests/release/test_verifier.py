@@ -83,12 +83,12 @@ def _refresh_manifest(release: Path, **changes: object) -> str:
     path = release / "release-manifest.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.update(changes)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    path.write_bytes(
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     )
     digest = sha256_file(path)
-    (release / "release-manifest.sha256").write_text(
-        f"{digest}  release-manifest.json\n", encoding="ascii"
+    (release / "release-manifest.sha256").write_bytes(
+        f"{digest}  release-manifest.json\n".encode("ascii")
     )
     return digest
 
