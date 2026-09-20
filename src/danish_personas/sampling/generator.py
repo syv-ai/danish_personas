@@ -16,9 +16,11 @@ from ..models import (
     DISCO_TWO_DIGIT_CODES,
     ELIGIBLE_JOB_FUNCTION_STATUS_CODES,
     SAMPLER_SCHEMA_VERSION,
+    BundleManifest,
     RunManifest,
     SamplingConfig,
 )
+from ..origin_labels import load_origin_label_contract
 from ..sources.bundle import verify_prepared_bundle
 
 LOGGER = logging.getLogger(__name__)
@@ -112,7 +114,10 @@ def generate_records(
         frame=joint_frame, rows=rows, rng=demographic_rng
     )
     origin_frame = pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet")
-    sampled_origin = _origin_quota_sample(frame=origin_frame, rows=rows, rng=origin_rng)
+    origin_frame = _ensure_origin_danish_labels(frame=origin_frame, bundle=bundle)
+    sampled_origin = _origin_quota_sample(
+        frame=origin_frame, rows=rows, rng=origin_rng, require_danish=True
+    )
     job_function_frame = pl.read_parquet(
         source_dir / "job_function_sex_marginal.parquet"
     )
@@ -152,6 +157,10 @@ def generate_records(
         bundle_id=bundle.bundle_id,
         bundle_manifest_sha256=sha256_file(bundle_manifest_path),
         sampling_config_sha256=sha256_file(sampling_config_path),
+        origin_labels_contract_path=bundle.origin_labels_contract_path,
+        origin_labels_contract_version=bundle.origin_labels_contract_version,
+        origin_labels_contract_sha256=bundle.origin_labels_contract_sha256,
+        origin_labels_contract_content=bundle.origin_labels_contract_content,
         rows=rows,
         seed=seed,
         data_file=Path(data_path.name),
@@ -283,6 +292,7 @@ def _attach_origin(
     ):
         record["origin_country_code"] = origin["origin_country_code"]
         record["origin_country"] = origin["origin_country"]
+        record["origin_country_da"] = origin["origin_country_da"]
 
 
 def _build_records(
@@ -410,6 +420,39 @@ def _draw(
         return payloads[index], level.name
     message = f"No prepared distribution at any back-off level for {values}"
     raise ValueError(message)
+
+
+def _ensure_origin_danish_labels(
+    *, frame: pl.DataFrame, bundle: BundleManifest
+) -> pl.DataFrame:
+    """Require schema-6 Danish labels, with a fixture-only compatibility path.
+
+    Source-backed schema-6 bundles are verified before this function and therefore
+    must already contain the Danish marginal.  Empty-snapshot manifests are used by
+    small in-memory fixtures; deriving their labels from the reviewed contract keeps
+    those fixtures useful without weakening the source bundle boundary.
+
+    Returns:
+        The marginal with a complete Danish label column.
+
+    Raises:
+        ValueError:
+            If a bound marginal is missing Danish labels or contains an unknown code.
+    """
+    if "origin_country_da" in frame.columns:
+        return frame
+    if getattr(bundle, "origin_labels_contract_content", ""):
+        raise ValueError("Schema-6 origin marginal is missing Danish labels")
+    contract = load_origin_label_contract()
+    mapping = dict(contract.ordered_labels)
+    codes = frame.get_column("origin_country_code").to_list()
+    if any(code not in mapping for code in codes):
+        raise ValueError("Origin marginal contains a code without a Danish label")
+    return frame.with_columns(
+        pl.col("origin_country_code")
+        .replace(mapping, default=None)
+        .alias("origin_country_da")
+    )
 
 
 def _ladder_index(
@@ -569,7 +612,11 @@ def _now() -> str:
 
 
 def _origin_quota_sample(
-    frame: pl.DataFrame, rows: int, rng: np.random.Generator
+    frame: pl.DataFrame,
+    rows: int,
+    rng: np.random.Generator,
+    *,
+    require_danish: bool = False,
 ) -> pl.DataFrame:
     """Sample the official FOLK2 marginal with exact deterministic quotas.
 
@@ -587,20 +634,77 @@ def _origin_quota_sample(
             positive.
     """
     required = {"origin_country_code", "origin_country", "count"}
-    if set(frame.columns) < required:
+    if require_danish:
+        required.add("origin_country_da")
+    selected = _select_origin_columns(frame=frame, required=required)
+    _validate_origin_marginal(selected=selected)
+    positive = selected.filter(pl.col("count") > 0)
+    if positive.is_empty():
+        raise ValueError("FOLK2 marginal must have a positive total")
+    return _shuffle_origin_quota(positive=positive, rows=rows, rng=rng)
+
+
+def _select_origin_columns(*, frame: pl.DataFrame, required: set[str]) -> pl.DataFrame:
+    """Select and canonically order the requested origin marginal columns.
+
+    Returns:
+        The selected and sorted marginal.
+
+    Raises:
+        ValueError:
+            If a required marginal column is absent.
+    """
+    if not required <= set(frame.columns):
         missing = sorted(required - set(frame.columns))
         raise ValueError(f"FOLK2 marginal is missing columns: {missing}")
-    selected = frame.select(sorted(required)).sort(
+    return frame.select(sorted(required)).sort(
         ["origin_country_code", "origin_country"]
     )
+
+
+def _shuffle_origin_quota(
+    *, positive: pl.DataFrame, rows: int, rng: np.random.Generator
+) -> pl.DataFrame:
+    """Allocate largest-remainder quotas and shuffle with the origin RNG.
+
+    Returns:
+        The quota-expanded marginal in deterministic shuffled order.
+    """
+    weights = positive.get_column("count").to_numpy().astype(np.float64)
+    expected = weights / weights.sum() * rows
+    allocations = np.floor(expected).astype(np.int64)
+    remainder = rows - int(allocations.sum())
+    fractions = expected - allocations
+    allocations[np.argsort(-fractions, kind="stable")[:remainder]] += 1
+    indices = np.repeat(np.arange(positive.height), allocations)
+    rng.shuffle(indices)
+    return positive[indices]
+
+
+def _validate_origin_marginal(*, selected: pl.DataFrame) -> None:
+    """Validate labels, code uniqueness, and integer non-negative counts.
+
+    Raises:
+        ValueError:
+            If the marginal contains malformed labels, codes, or counts.
+    """
     if selected.is_empty():
         raise ValueError("FOLK2 marginal must contain at least one category")
     if selected.null_count().sum_horizontal().item() > 0:
         raise ValueError("FOLK2 marginal contains null code, label, or count")
+    for column in ("origin_country", "origin_country_da"):
+        if column in selected.columns and bool(
+            (selected.get_column(column).str.strip_chars() == "").any()
+        ):
+            raise ValueError(f"FOLK2 marginal contains blank {column}")
     if selected.get_column("origin_country_code").n_unique() != selected.height:
         raise ValueError("FOLK2 marginal contains duplicate origin codes")
     if selected.get_column("origin_country").n_unique() != selected.height:
         raise ValueError("FOLK2 marginal contains duplicate origin labels")
+    if "origin_country_da" in selected.columns and (
+        selected.get_column("origin_country_da").n_unique() != selected.height
+    ):
+        raise ValueError("FOLK2 marginal contains duplicate Danish origin labels")
     counts = selected.get_column("count")
     if counts.dtype not in (
         pl.Int8,
@@ -615,15 +719,3 @@ def _origin_quota_sample(
         raise ValueError("FOLK2 marginal counts must be integers")
     if bool((counts < 0).any()):
         raise ValueError("FOLK2 marginal counts cannot be negative")
-    positive = selected.filter(pl.col("count") > 0)
-    if positive.is_empty():
-        raise ValueError("FOLK2 marginal must have a positive total")
-    weights = positive.get_column("count").to_numpy().astype(np.float64)
-    expected = weights / weights.sum() * rows
-    allocations = np.floor(expected).astype(np.int64)
-    remainder = rows - int(allocations.sum())
-    fractions = expected - allocations
-    allocations[np.argsort(-fractions, kind="stable")[:remainder]] += 1
-    indices = np.repeat(np.arange(positive.height), allocations)
-    rng.shuffle(indices)
-    return positive[indices]

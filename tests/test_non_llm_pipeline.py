@@ -157,6 +157,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         {
             "origin_country_code": ["5100", "5103", "5999"],
             "origin_country": ["Denmark", "Stateless", "Not stated"],
+            "origin_country_da": ["Danmark", "Statsløse", "Uoplyst"],
             "count": [107, 2, 0],
         }
     )
@@ -462,6 +463,7 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
         {
             "origin_country_code": ["5100", "5103", "5999"],
             "origin_country": ["Denmark", "Stateless", "Not stated"],
+            "origin_country_da": ["Danmark", "Statsløse", "Uoplyst"],
             "count": [2, 107, 0],
         }
     ).write_parquet(origin_path)
@@ -485,7 +487,7 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
     old_fields = [
         field
         for field in first_frame.columns
-        if field not in {"origin_country_code", "origin_country"}
+        if field not in {"origin_country_code", "origin_country", "origin_country_da"}
     ]
     assert first_frame.select(old_fields).equals(second_frame.select(old_fields))
 

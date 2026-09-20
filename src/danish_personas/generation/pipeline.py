@@ -913,6 +913,9 @@ def validate_upstream_sample(
     ):
         message = "Frozen sample belongs to a different upstream run"
         raise ValueError(message)
+    _validate_origin_provenance(
+        sample_manifest=sample_manifest, upstream=upstream, report=report
+    )
     upstream_frame = pl.read_parquet(upstream_path)
     if sample.columns != upstream_frame.columns:
         message = "Frozen sample schema differs from the validated Phase-2 data"
@@ -979,3 +982,39 @@ def _validate_current_demographic_sample(
     except ValidationError as error:
         message = "Frozen sample rows do not match the current demographic schema"
         raise ValueError(message) from error
+
+
+def _validate_origin_provenance(
+    *,
+    sample_manifest: FrozenSampleManifest,
+    upstream: RunManifest,
+    report: ValidationReport,
+) -> None:
+    """Require one unchanged origin contract across Phase-2 and Phase-3.
+
+    Raises:
+        ValueError:
+            If the sample or validation report has a different binding.
+    """
+    run_binding = (
+        upstream.origin_labels_contract_path,
+        upstream.origin_labels_contract_version,
+        upstream.origin_labels_contract_sha256,
+        upstream.origin_labels_contract_content,
+    )
+    sample_binding = (
+        sample_manifest.origin_labels_contract_path,
+        sample_manifest.origin_labels_contract_version,
+        sample_manifest.origin_labels_contract_sha256,
+        sample_manifest.origin_labels_contract_content,
+    )
+    if sample_binding != run_binding:
+        raise ValueError("Frozen sample origin contract differs from its run")
+    report_binding = (
+        report.origin_labels_contract_path,
+        report.origin_labels_contract_version,
+        report.origin_labels_contract_sha256,
+        report.origin_labels_contract_content,
+    )
+    if report_binding != run_binding:
+        raise ValueError("Phase-2 validation report has stale origin provenance")

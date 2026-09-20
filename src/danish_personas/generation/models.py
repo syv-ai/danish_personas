@@ -5,22 +5,11 @@ from pathlib import Path
 
 from pydantic import Field, field_validator
 
-from ..models import StrictModel, ValidationReport
+from ..models import FrozenSampleManifest, StrictModel, ValidationReport
 from ..origin_labels import OriginLabelContract
 from .job_titles import JobFunctionTitleMapping
 
-
-class FrozenSampleManifest(StrictModel):
-    """Manifest proving the origin of a frozen Phase-3 sample."""
-
-    sample_schema_version: int
-    source_run_id: str
-    rows: int = Field(gt=0)
-    strata: list[str]
-    method: str
-    data_file: Path
-    sha256: str
-    llm_calls: int = Field(ge=0)
+__all__ = ["FrozenSampleManifest"]
 
 
 class GeneratedAttributes(StrictModel):

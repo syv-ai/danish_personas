@@ -10,7 +10,12 @@ from pathlib import Path
 import polars as pl
 
 from ..io import sha256_file
-from ..models import FROZEN_SAMPLE_SCHEMA_VERSION, RunManifest
+from ..models import (
+    FROZEN_SAMPLE_SCHEMA_VERSION,
+    SAMPLER_SCHEMA_VERSION,
+    FrozenSampleManifest,
+    RunManifest,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +50,8 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
     manifest = RunManifest.model_validate_json(
         (canonical_run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
+    if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
+        raise ValueError("Cannot freeze a legacy demographic run")
     frame = pl.read_parquet(canonical_run_dir / manifest.data_file)
     if rows > frame.height:
         raise SampleSizeError("Requested sample exceeds the run row count")
@@ -77,18 +84,24 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
         temporary.replace(output_path)
     finally:
         temporary.unlink(missing_ok=True)
-    sample_manifest: dict[str, object] = {
-        "sample_schema_version": FROZEN_SAMPLE_SCHEMA_VERSION,
-        "source_run_id": manifest.run_id,
-        "rows": sample.height,
-        "strata": ["municipality_code", "education_level", "labour_market_status"],
-        "method": "deterministic round-robin within sorted strata",
-        "data_file": output_path.name,
-        "sha256": sha256_file(output_path),
-        "llm_calls": 0,
-    }
+    sample_manifest = FrozenSampleManifest(
+        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
+        source_run_id=manifest.run_id,
+        rows=sample.height,
+        strata=["municipality_code", "education_level", "labour_market_status"],
+        method="deterministic round-robin within sorted strata",
+        data_file=output_path.name,
+        sha256=sha256_file(output_path),
+        llm_calls=0,
+        origin_labels_contract_path=manifest.origin_labels_contract_path,
+        origin_labels_contract_version=manifest.origin_labels_contract_version,
+        origin_labels_contract_sha256=manifest.origin_labels_contract_sha256,
+        origin_labels_contract_content=manifest.origin_labels_contract_content,
+    )
     _write_manifest(
-        path=manifest_path, run_dir=canonical_run_dir, payload=sample_manifest
+        path=manifest_path,
+        run_dir=canonical_run_dir,
+        payload=sample_manifest.model_dump(mode="json"),
     )
     LOGGER.info("Frozen %s development records at %s", sample.height, output_path)
     return output
