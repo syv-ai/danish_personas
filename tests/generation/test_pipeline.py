@@ -16,6 +16,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
+from danish_personas.generation.personality import allowed_personality_tendencies
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.pipeline import (
     generate_personas,
@@ -241,6 +242,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert len(_MockClient.payloads) == 2
     attributes_payload = _MockClient.payloads[0]["demographics_and_personality"]
     descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
+    descriptions_request = _MockClient.payloads[1]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
     withheld_fields = {
@@ -252,6 +254,10 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     }
     assert withheld_fields.isdisjoint(attributes_payload)
     assert withheld_fields.isdisjoint(descriptions_payload)
+    assert "allowed_personality_tendencies" not in attributes_payload
+    assert descriptions_request["allowed_personality_tendencies"] == list(
+        allowed_personality_tendencies(context=descriptions_payload)
+    )
     assert (
         attributes_payload["job_function"]
         == "Business and administration professionals"

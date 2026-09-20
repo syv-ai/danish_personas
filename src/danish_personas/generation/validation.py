@@ -15,6 +15,7 @@ from .job_titles import (
     load_job_title_mapping,
 )
 from .models import GeneratedAttributes, PersonaDescriptions
+from .personality import all_personality_tendencies, allowed_personality_tendencies
 
 VALIDATOR_VERSION = "persona-safety-v9"
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
@@ -99,28 +100,6 @@ DETAILED_STATUS_DANISH = {
     "145": "pensionist",
     "150": "pensionist",
     "155": "pensionist",
-}
-OCEAN_TERMS = {
-    "openness": {
-        "high": ("nysgerrig", "kreativ", "åben for nye ideer"),
-        "low": ("praktisk", "jordnær", "glad for det velkendte"),
-    },
-    "conscientiousness": {
-        "high": ("struktureret", "omhyggelig", "planlagt"),
-        "low": ("fleksibel", "spontan"),
-    },
-    "extraversion": {
-        "high": ("social", "udadvendt", "snakkesalig"),
-        "low": ("rolig", "eftertænksom", "reserveret"),
-    },
-    "agreeableness": {
-        "high": ("samarbejdende", "hensynsfuld", "venlig"),
-        "low": ("selvstændig", "direkte"),
-    },
-    "neuroticism": {
-        "high": ("opmærksom", "varsom", "følsom"),
-        "low": ("rolig", "afbalanceret"),
-    },
 }
 
 
@@ -417,9 +396,11 @@ def _education_label(context: dict[str, object]) -> str:
 def _validate_personality(
     *, normalized: str, sentences: list[str], context: dict[str, object]
 ) -> None:
-    compatible = set(_compatible_ocean_terms(context=context))
+    compatible = set(allowed_personality_tendencies(context=context))
     mentioned = {
-        term for term in _all_ocean_terms() if _contains_term(normalized, term)
+        term
+        for term in all_personality_tendencies()
+        if _contains_term(normalized, term)
     }
     incompatible = mentioned - compatible
     if incompatible:
@@ -434,36 +415,6 @@ def _validate_personality(
             )
             if term_match is None or not _nearby_hedge(sentence, term_match.start()):
                 raise ValueError("Personality tendencies must be hedged nearby")
-
-
-def _all_ocean_terms() -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            term
-            for levels in OCEAN_TERMS.values()
-            for terms in levels.values()
-            for term in terms
-        )
-    )
-
-
-def _compatible_ocean_terms(context: dict[str, object]) -> tuple[str, ...]:
-    terms: list[str] = []
-    for trait, labels in OCEAN_TERMS.items():
-        label = str(context.get(f"{trait}_label", "")).casefold()
-        raw_score = context.get(f"{trait}_score", 50)
-        score = float(raw_score) if isinstance(raw_score, (int, float)) else 50.0
-        level = (
-            "high"
-            if label == "high" or score >= 60
-            else "low"
-            if label == "low" or score <= 40
-            else "average"
-        )
-        levels = ("high", "low") if level == "average" else (level,)
-        for selected in levels:
-            terms.extend(labels[selected])
-    return tuple(dict.fromkeys(terms))
 
 
 def _nearby_hedge(sentence: str, position: int) -> bool:
