@@ -1,5 +1,6 @@
 """Adversarial tests for the current origin-label contract boundary."""
 
+import json
 import typing as t
 from pathlib import Path, PureWindowsPath
 
@@ -169,14 +170,24 @@ def test_windows_flavoured_contract_paths_serialise_portably() -> None:
         "response_format": "json_object",
         "attributes_prompt": "config/prompts/attributes-da.md",
         "personas_prompt": "config/prompts/personas-da.md",
+        "job_title_mapping": "config/job-function-titles.yaml",
         "origin_label_contract": PureWindowsPath(r"config\folk2-ieland-labels-da.yaml"),
     }
     config = GenerationConfig.model_validate(payload)
 
-    assert config.model_dump(mode="json")["origin_label_contract"] == (
-        ORIGIN_LABEL_CONTRACT_PATH
-    )
-    assert "\\" not in config.model_dump_json()
+    expected_paths = {
+        "attributes_prompt": "config/prompts/attributes-da.md",
+        "personas_prompt": "config/prompts/personas-da.md",
+        "job_title_mapping": "config/job-function-titles.yaml",
+        "origin_label_contract": ORIGIN_LABEL_CONTRACT_PATH,
+    }
+    path_fields = config.model_dump(mode="json")
+    assert {field: path_fields[field] for field in expected_paths} == expected_paths
+
+    serialised = json.loads(config.model_dump_json())
+    for field, expected in expected_paths.items():
+        assert "\\" not in serialised[field]
+        assert serialised[field] == expected
 
     for invalid in (
         r"config\folk2-ieland-labels-da.yaml",
