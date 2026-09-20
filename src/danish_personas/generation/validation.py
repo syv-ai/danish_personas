@@ -22,7 +22,7 @@ from .personality import (
     allowed_personality_tendencies,
 )
 
-VALIDATOR_VERSION = "persona-safety-v14"
+VALIDATOR_VERSION = "persona-safety-v15"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -89,6 +89,17 @@ FORMER_WORK = re.compile(
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
+REDUNDANT_PERSONA_PHRASES = (
+    "han er en mand",
+    "hun er en kvinde",
+    "mand på",
+    "kvinde på",
+    "oprindelsesland",
+    "oprindelsesetiket",
+    "brede uddannelsesbaggrund",
+    "uddannelsesniveau",
+    "aktuelle arbejdsforhold",
+)
 
 
 def parse_attributes(
@@ -202,7 +213,7 @@ def _validate_field(*, field: str, validator: c.Callable[[], None]) -> None:
 
 
 def _validate_hobbies_and_interests(*, texts: list[str]) -> None:
-    """Require interests to describe activities or topics, not OCEAN language.
+    """Require lowercase activity or topic phrases, not OCEAN language.
 
     Personality terms are reserved for the grounded persona's separately validated
     tendency phrases. Matching against the shared term and phrase APIs also rejects
@@ -211,9 +222,14 @@ def _validate_hobbies_and_interests(*, texts: list[str]) -> None:
 
     Raises:
         ValueError:
-            If an interest contains a reviewed personality term or phrase.
+            If an interest is not a lowercase phrase, ends in punctuation, or
+            contains a reviewed personality term or phrase.
     """
     _validate_texts(texts=texts, require_each_danish=False)
+    if any(_contains_uppercase_character(text=interest) for interest in texts):
+        raise ValueError("Every interest must be a lowercase Danish phrase")
+    if any(_ends_with_punctuation(text=interest) for interest in texts):
+        raise ValueError("Interests must not end with punctuation")
     personality_terms = (*all_personality_tendencies(), *all_personality_phrases())
     if any(
         _contains_term(text=interest, term=term)
@@ -246,6 +262,17 @@ def _term_spans(*, text: str, term: str) -> list[tuple[int, int]]:
 
 def _normalize(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _contains_uppercase_character(*, text: str) -> bool:
+    """Return whether any cased character in a phrase is uppercase."""
+    return any(character.isupper() for character in text if character.isalpha())
+
+
+def _ends_with_punctuation(*, text: str) -> bool:
+    """Return whether a phrase has terminal Unicode punctuation."""
+    stripped = text.rstrip()
+    return bool(stripped) and unicodedata.category(stripped[-1]).startswith("P")
 
 
 def _validate_texts(texts: list[str], require_each_danish: bool) -> None:
@@ -407,11 +434,11 @@ def _validate_persona(
     if DETERMINISTIC_CLAIMS.search(normalized):
         raise ValueError("Persona must use cautious, non-deterministic language")
     sentences = _persona_sentences(text=text)
-    _validate_persona_facts(
-        normalized=normalized, demographic=context, attributes=attributes
-    )
-    _validate_interests(normalized=normalized, attributes=attributes)
+    _validate_persona_facts(text=text, demographic=context, attributes=attributes)
+    _validate_interests(text=text, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
+    if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
+        raise ValueError("Persona must not contain redundant or technical wording")
     if FORMER_WORK.search(normalized):
         raise ValueError("Persona must not contain former or past-work claims")
 
@@ -427,44 +454,82 @@ def _persona_sentences(text: str) -> list[str]:
     return sentences
 
 
-def _validate_interests(*, normalized: str, attributes: GeneratedAttributes) -> None:
+def _validate_interests(*, text: str, attributes: GeneratedAttributes) -> None:
     """Require two or three complete, literal interests in the summary prose.
 
     Matching complete terms prevents a short interest such as ``art`` from being
-    accepted merely because it occurs inside an unrelated word.  The generated
-    value is normalised in the same way as the prose so capitalisation and
-    incidental whitespace do not change the contract.
+    accepted merely because it occurs inside an unrelated word. An interest keeps
+    its lowercase spelling unless its first cased character starts a sentence.
 
     Raises:
         ValueError:
             If the prose contains fewer than two or more than three interests.
     """
     interests = {
-        _normalize(interest)
+        interest
         for interest in attributes.hobbies_and_interests
-        if _contains_term(normalized, _normalize(interest))
+        if _contains_exact_phrase(text=text, phrase=interest)
     }
     if len(interests) not in {2, 3}:
         raise ValueError("Persona must contain exactly 2-3 generated interests")
 
 
+def _contains_exact_phrase(*, text: str, phrase: str) -> bool:
+    """Return whether exact casing or sentence-initial capitalisation matches."""
+    normalised_text = _normalise_spacing(text=text)
+    normalised_phrase = _normalise_spacing(text=phrase)
+    if _has_bounded_phrase(text=normalised_text, phrase=normalised_phrase):
+        return True
+    capitalised = _capitalise_first_cased_character(text=normalised_phrase)
+    for match in _bounded_phrase_matches(text=normalised_text, phrase=capitalised):
+        prefix = normalised_text[: match.start()].rstrip()
+        if not prefix or prefix.endswith((".", "!", "?")):
+            return True
+    return False
+
+
+def _bounded_phrase_matches(*, text: str, phrase: str) -> c.Iterator[re.Match[str]]:
+    """Return exact phrase matches at Unicode token boundaries."""
+    expression = r"\s+".join(re.escape(token) for token in phrase.split())
+    return re.finditer(rf"(?<![\w]){expression}(?![\w])", text)
+
+
+def _capitalise_first_cased_character(*, text: str) -> str:
+    """Return text with only its first cased character capitalised."""
+    for index, character in enumerate(text):
+        if character.lower() != character.upper():
+            return f"{text[:index]}{character.upper()}{text[index + 1 :]}"
+    return text
+
+
+def _has_bounded_phrase(*, text: str, phrase: str) -> bool:
+    """Return whether an exact phrase occurs at Unicode token boundaries."""
+    return next(_bounded_phrase_matches(text=text, phrase=phrase), None) is not None
+
+
+def _normalise_spacing(*, text: str) -> str:
+    """Return Unicode-normalised text without incidental whitespace."""
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
 def _validate_persona_facts(
-    *, normalized: str, demographic: dict[str, object], attributes: GeneratedAttributes
+    *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
 ) -> None:
     facts = build_persona_grounding_facts(
         demographic=demographic, attributes=attributes
     )
     names = {
-        "age": "age",
-        "sex": "sex",
+        "pronoun_age": "pronoun and age",
         "municipality": "municipality",
-        "education_level": "education",
-        "origin_country_da": "origin",
-        "current_employment": "current work status",
+        "origin": "origin",
+        "education": "education",
+        "employment": "current work status",
     }
     for field, value in facts.model_dump().items():
-        if not _contains_term(normalized, value):
-            raise ValueError(f"Persona does not contain the exact {names[field]} fact")
+        if not _contains_exact_phrase(text=text, phrase=value):
+            raise ValueError(
+                f"Persona does not contain the exact {names[field]} clause"
+            )
 
 
 def _validate_personality(

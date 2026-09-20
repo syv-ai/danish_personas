@@ -5,7 +5,7 @@
 This is a historical generation-contract v1 comparison. Its retained outputs and metrics
 are not resumable under generation contract 3 and do not establish the current
 generation-3 quality gate. It predates the mandatory Danish `origin_country_da` provider
-boundary and validator `persona-safety-v14`.
+boundary and validator `persona-safety-v15`.
 
 Four candidate models generated the same five frozen demographic records using the same
 revised prompts, strict schemas, and two-stage process. The records cover all five

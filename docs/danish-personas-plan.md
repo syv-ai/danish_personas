@@ -225,10 +225,10 @@ identity claims.
 - `arts_persona`
 - `travel_persona`
 - `culinary_persona`
-- `persona`: one short, grounded Danish text containing age, statistical sex,
-  municipality, education, origin, a synthetic job title grounded in the official
-  job-function label or the current nonemployee status, two or three interests in prose,
-  and cautious OCEAN tendencies.
+- `persona`: one short, grounded Danish text using exact natural clauses for pronoun and
+  age, municipality, origin, broad education, and an allowlisted synthetic job title or
+  canonical current status, plus two or three lowercase interests in running prose and
+  cautious OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
 `origin_country_da`, and job-function labels for this grounding. It does not receive
@@ -357,7 +357,7 @@ Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot
 culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
-schema 3, generation contract 3, validator `persona-safety-v14`, and release
+schema 3, generation contract 3, validator `persona-safety-v15`, and release
 manifest/evidence schema 2. The previously documented bundle `cfc1b56f5586a2d7` and runs
 `f449f1de01d18c08` and `3ebc00282c621ef2` used schema 5 and are historical,
 non-resumable evidence only. Regenerate before recording current canonical IDs; use
@@ -535,9 +535,9 @@ Automated tests should require:
 - no impossible age-education-status combinations;
 - correct use and labelling of the `67+` education proxy;
 - consistency between structured attributes and all persona texts;
-- grounded age, statistical sex, municipality, education, origin, job title or current
-  nonemployee status, two or three interests, and cautious OCEAN tendencies in
-  `persona`;
+- exact natural Danish clauses grounding pronoun and age, municipality, origin, broad
+  education, and job title or current nonemployee status, plus two or three lowercase
+  interests in running prose and cautious OCEAN tendencies in `persona`;
 - no exact addresses, CPR-like values, phone numbers, or email addresses;
 - no unsupported family or appearance claims and no disallowed sensitive-attribute
   claims;

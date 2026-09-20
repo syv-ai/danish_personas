@@ -41,7 +41,7 @@ The previously documented offline source bundle `cfc1b56f5586a2d7` used prepared
 schema 5, and its passing runs `f449f1de01d18c08` (2,000 rows) and `3ebc00282c621ef2`
 (100,000 rows) used sampler and validation schema 5. These IDs are historical and
 non-resumable. The current documentation requires prepared-bundle schema 6, sampler
-schema 6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v14`,
+schema 6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v15`,
 and release manifest/evidence schema 2. Regenerate before claiming current canonical
 IDs; use `<new-bundle-id>` and `<new-run-id>` placeholders until then.
 

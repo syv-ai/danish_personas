@@ -6,7 +6,7 @@ This is a historical generation-contract v1 comparison. Its retained outputs and
 are not resumable under generation contract 3; the experiment is evidence about the
 listed models and must not be treated as current generation-3 validation. It predates
 the mandatory Danish `origin_country_da` provider boundary and validator
-`persona-safety-v14`.
+`persona-safety-v15`.
 
 `deepseek-ai/DeepSeek-V4.1-Flash` and `deepseek-ai/DeepSeek-V4-Flash-0731` generated the
 same five frozen records used in the previous four-model comparison. Each model ran

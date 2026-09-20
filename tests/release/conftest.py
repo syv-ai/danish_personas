@@ -73,9 +73,9 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit("not_applicable").alias("job_function_resolution"),
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
-                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "ungdomsuddannelse eller erhvervsuddannelse er ledig. "
-                "Han kan være nysgerrig og nyder vandring og musik i hverdagen."
+                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
+                "ungdoms- eller erhvervsuddannelse og er ledig. Han kan være "
+                "nysgerrig og nyder vandring og musik i hverdagen."
             ).alias("persona"),
         )
     )
@@ -305,8 +305,8 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             * 10_000,
             "culinary_persona": [sentence + "Måltider deles gerne med andre."] * 10_000,
             "persona": [
-                "En mand på 35 år i Aarhus med oprindelse i Danmark og en "
-                "ungdomsuddannelse eller erhvervsuddannelse arbejder som "
+                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
+                "ungdoms- eller erhvervsuddannelse og arbejder som "
                 "forretningsspecialist. Han kan være nysgerrig og nyder vandring "
                 "og musik i hverdagen."
             ]

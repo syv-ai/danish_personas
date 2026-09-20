@@ -3,7 +3,7 @@
 This report records the previous schema-5 regeneration only. Its bundle and run IDs are
 historical evidence and are non-resumable under the current contracts. The current
 architecture requires prepared-bundle schema 6, sampler schema 6, frozen-sample schema
-3, generation contract 3, validator `persona-safety-v14`, and release manifest/evidence
+3, generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
 schema 2. Regenerate before recording current canonical IDs; use placeholders until
 then.
 

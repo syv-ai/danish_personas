@@ -146,14 +146,23 @@ def _descriptions_json(
         "origin_country_da": "Danmark",
         "education_level": "higher_education",
     }
-    sex = "kvinde" if context["sex"] == "female" else "mand"
+    pronoun = "hun" if context["sex"] == "female" else "han"
     education_level = str(context["education_level"])
-    education = EDUCATION_DANISH.get(education_level, education_level)
+    education_labels = {
+        "grundskole": "har ingen uddannelse efter folkeskolen",
+        "ungdomsuddannelse eller erhvervsuddannelse": (
+            "har en ungdoms- eller erhvervsuddannelse"
+        ),
+        "videregående uddannelse": "har en videregående uddannelse",
+        "uddannelse ikke oplyst": "uddannelsen er ikke oplyst",
+    }
+    rendered_education = EDUCATION_DANISH.get(education_level, education_level)
+    education = education_labels[rendered_education]
     if employed:
         persona = (
-            f"Personen er {context['age']} år gammel {sex} fra "
-            f"{context['municipality']} i {context['origin_country_da']} med en "
-            f"{education} og arbejder som {job_title}. Personen "
+            f"{pronoun.capitalize()} er {context['age']} år, bor i "
+            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
+            f"{education} og arbejder som {job_title}. {pronoun.capitalize()} "
             "kan være rolig og holder af at læse danske romaner, at lytte til "
             "musik i fritiden og at spille brætspil med venner."
         )
@@ -164,10 +173,10 @@ def _descriptions_json(
             else "uden for arbejdsmarkedet"
         )
         persona = (
-            f"Personen er {context['age']} år gammel {sex} fra "
-            f"{context['municipality']} i {context['origin_country_da']} med en "
-            f"{education} og er {status}. Personen kan være rolig og nyder "
-            "at læse danske romaner og at lytte til musik i fritiden."
+            f"{pronoun.capitalize()} er {context['age']} år, bor i "
+            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
+            f"{education} og er {status}. {pronoun.capitalize()} kan være rolig "
+            "og nyder at læse danske romaner og at lytte til musik i fritiden."
         )
     return json.dumps(
         {
@@ -581,12 +590,11 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert attributes_payload["education_level"] == "videregående uddannelse"
     assert descriptions_payload["education_level"] == "videregående uddannelse"
     assert descriptions_request["required_persona_facts"] == {
-        "age": "35 år",
-        "sex": "kvinde",
-        "municipality": "København",
-        "education_level": "videregående uddannelse",
-        "origin_country_da": "Danmark",
-        "current_employment": "forretningsspecialist",
+        "pronoun_age": "hun er 35 år",
+        "municipality": "bor i København",
+        "origin": "kommer fra Danmark",
+        "education": "har en videregående uddannelse",
+        "employment": "arbejder som forretningsspecialist",
     }
     assert "generated_attributes" in _MockClient.payloads[1]
 
@@ -850,7 +858,7 @@ def test_persona_validation_rejects_stale_validator_version(
         else run_dir / "generation-manifest.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["validator_version"] = "persona-safety-v13"
+    payload["validator_version"] = "persona-safety-v14"
     write_json(path=path, payload=payload)
 
     assert not validate_persona_run(run_dir=run_dir).passed

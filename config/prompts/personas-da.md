@@ -6,25 +6,30 @@ Du skriver seks korte, syntetiske tekster på naturligt dansk ud fra faste input
 sammenhængende prosa på 2-4 sætninger. `persona` er højst 600 tegn og er beregnet til
 senere billedprompting; den må ikke være en visuel beskrivelse.
 
-`persona` skal indeholde hver værdi i `required_persona_facts` ordret i naturlig
-prosa. Det gælder alle seks værdier: alder i formen `<n> år`, det danske statistiske
-kønsord, kommuneetiketten, den brede danske uddannelsesfrase, den officielle danske
-`origin_country_da`-kildeetiket og det aktuelle arbejdsforhold. Oprindelsesetiketten
-er kun en bogstavelig visningsværdi og må aldrig styre kultur, etnicitet, udseende,
-beskæftigelse eller interesser. Værdierne skal gengives bogstaveligt: oversæt,
-normalisér, bøj, uddyb eller pynt aldrig på dem, og skriv dem ikke som en liste. Brug
-den leverede jobtitel for en ansat, ellers den leverede kanoniske statusfrase.
-`education_level` er en sammenlagt kategori: udled eller opfind aldrig et mere
-specifikt uddannelsesniveau eller en uddannelsesinstitution. Returnér altid alle
-skemafelter; ingen felter må udelades. Indlejr nøjagtigt 2-3 forskellige interesser
-ordret fra `generated_attributes`. Medtag nøjagtigt 1-2 forskellige
-OCEAN-tendenser som komplette, bogstavelige fraser fra den leverede liste
-`allowed_personality_tendencies`. Kopiér hver hel frase
-ordret; sammensæt aldrig en term med en separat hedge, og brug ikke andre
-personlighedstermer. Rå OCEAN-scorer og labels hører ikke til dette trin: fortolk dem
-ikke, og opfind ikke andre personlighedstermer end de leverede fraser. Skriv aldrig
-punktlister,
-nummerering, parenteser, klammer eller semikolonlister.
+`persona` skal indeholde hvert naturligt sætningsled i `required_persona_facts` ordret
+og som en del af løbende prosa. Det gælder alle fem sætningsled: pronomen og alder,
+bopælskommune, oprindelse, uddannelse og nuværende beskæftigelse. Du må kun ændre det
+første bogstav til stort, når et sætningsled står først i en sætning. Oversæt, bøj,
+uddyb eller pynt aldrig på sætningsleddene, og skriv dem ikke som en liste.
+
+Brug altid det leverede pronomen. Gentag aldrig det statistiske køn som `mand` eller
+`kvinde`. Skriv altid `kommer fra X`; brug aldrig tekniske betegnelser som
+`oprindelsesland` eller `oprindelsesetiket`. Brug den leverede formulering `arbejder
+som X` for en ansat og `er X` for en anden aktuel status. Uddannelsesformuleringen er
+et midlertidigt, kildeunderbygget, sammenlagt niveau, indtil en særskilt DST-kilde kan
+give flere detaljer. Udled eller opfind aldrig en bestemt uddannelse eller en
+uddannelsesinstitution. Brug ingen ord fra datamodellen eller andre tekniske
+forklaringer i teksten.
+
+Returnér altid alle skemafelter; ingen felter må udelades. Indlejr nøjagtigt 2-3
+forskellige interesser ordret fra `generated_attributes` i løbende prosa. Bevar små
+bogstaver; kun en interesse først i en sætning må begynde med stort bogstav. Medtag
+nøjagtigt 1-2 forskellige OCEAN-tendenser som komplette, bogstavelige fraser fra den
+leverede liste `allowed_personality_tendencies`. Kopiér hver hel frase ordret;
+sammensæt aldrig en term med en separat forsigtighedsmarkør, og brug ikke andre
+personlighedstermer. Rå OCEAN-scorer og etiketter hører ikke til dette trin: fortolk
+dem ikke, og opfind ikke andre personlighedstermer end de leverede fraser. Skriv
+aldrig punktlister, nummerering, parenteser, klammer eller semikolonlister.
 
 Regler:
 

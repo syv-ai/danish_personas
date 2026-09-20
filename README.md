@@ -21,7 +21,7 @@ The previously regenerated municipality-native Phase 2 workflow used prepared bu
 `cfc1b56f5586a2d7`, prepared-bundle schema 5, sampler schema 5, and validation schema 5.
 Those canonical IDs and reports are historical evidence only and are not resumable under
 the current contracts. The current architecture requires bundle schema 6, sampler schema
-6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v14`, and
+6, frozen-sample schema 3, generation contract 3, validator `persona-safety-v15`, and
 release manifest/evidence schema 2. Regenerate before making current claims; until then,
 use `<new-bundle-id>`, `<new-run-id>`, and `<new-sample-manifest>` placeholders rather
 than treating old IDs as current:
@@ -299,10 +299,12 @@ specialised descriptions (`professional_persona`, `sports_persona`, `arts_person
 v3 passes only the official Danish `origin_country_da` label to both stages and uses
 that same label for exact persona grounding. The code, English `origin_country`,
 resolution fields, and origin-contract metadata never enter provider payloads. The v3
-persona includes age, statistical sex, municipality, education, the Danish origin label,
-a synthetic job title grounded in the official job-function label (or the current
-nonemployee status), two or three interests in prose, and cautious OCEAN tendencies. It
-is not a visual description; `visual_persona` is removed. See
+persona uses exact natural Danish clauses for pronoun and age, municipality, origin,
+broad education, and an allowlisted synthetic job title (or canonical current status).
+It embeds two or three lowercase interests in running prose and adds cautious OCEAN
+tendencies. The pooled secondary/vocational clause is temporary and source-backed,
+pending a separate Statistics Denmark detailed-education source. The persona is not a
+visual description; `visual_persona` is removed. See
 [`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
 repeated live command resumes only valid v3 per-record checkpoints and does not repeat
 completed calls. v1/v2 checkpoints, the previous v2/v13 ten-person smoke, and old pilots

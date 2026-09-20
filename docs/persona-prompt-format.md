@@ -15,7 +15,8 @@ The first five are specialised texts. They stay in their respective domains and 
 written as short, distinct prose. The sixth is one short, grounded persona: six text
 fields total. The first attributes stage has five fields (`cultural_context`,
 `skills_and_expertise`, `hobbies_and_interests`, `career_goals_and_ambitions`, and
-`job_title`). There is no `visual_persona` field in generation contract 3.
+`job_title`). Interests are lowercase Danish common-noun phrases without terminal
+punctuation. There is no `visual_persona` field in generation contract 3.
 
 The current version matrix is:
 
@@ -25,7 +26,7 @@ The current version matrix is:
 | Deterministic sampler |                    6 |
 | Frozen sample         |                    3 |
 | Generation            |                    3 |
-| Persona validator     | `persona-safety-v14` |
+| Persona validator     | `persona-safety-v15` |
 | Release manifest      |                    2 |
 | Release evidence      |                    2 |
 
@@ -66,19 +67,35 @@ sampling-resolution fields.
 
 ## Grounded `persona`
 
-The short `persona` must state the following in natural Danish prose when applicable:
+The stage-two payload and validator share five exact natural Danish clauses:
 
-- age;
-- statistical sex;
-- municipality;
-- education;
-- the exact official Danish `origin_country_da` label;
-- a short synthetic job title grounded only in the official job-function label, or the
-  current canonical nonemployee status;
-- two or three different interests copied from the generated attributes; and
-- one or two complete, cautious OCEAN phrases copied literally from the supplied
-  `allowed_personality_tendencies` list. The phrases must not be composed from a
-  tendency term and a separate hedge.
+- `han/hun er <n> år`;
+- `bor i <municipality>`;
+- `kommer fra <origin_country_da>`;
+- `arbejder som <allowlisted title>` or `er <canonical status>`; and
+- one source-backed education clause:
+  - primary: `har ingen uddannelse efter folkeskolen`;
+  - pooled secondary/vocational: `har en ungdoms- eller erhvervsuddannelse`;
+  - higher: `har en videregående uddannelse`;
+  - not stated: `uddannelsen er ikke oplyst`.
+
+Each clause must occur literally in natural running prose. Only its first cased
+character may be capitalised when the clause starts a sentence. The persona uses the
+pronoun and never repeats the statistical-sex noun. It always says `kommer fra`; it
+must not use data-model wording such as origin label, education level, or current-work
+field names.
+
+The pooled secondary/vocational clause is a temporary source-backed level, pending a
+separate Statistics Denmark detailed-education source. It must not be expanded into a
+specific qualification or institution.
+
+The persona also contains two or three different interests copied from the generated
+attributes and one or two complete, cautious OCEAN phrases copied literally from the
+supplied `allowed_personality_tendencies` list. Interests stay lowercase unless they
+start a sentence and must be embedded in running prose. Unicode-normalised, casefolded
+matching permits that sentence-initial capitalisation without permitting an unrelated
+substring. Personality phrases must not be composed from a tendency term and a
+separate hedge.
 
 The job title is synthetic. It is not an observed occupation and must not invent an
 employer, institution, duties, seniority, qualifications, or previous work. A
