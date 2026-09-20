@@ -32,75 +32,6 @@ _CANONICAL_CONTRACT_FILE = (
 )
 
 
-def _validate_labels(
-    labels: Mapping[str, str], *, allow_official_padding: bool = False
-) -> None:
-    normalised_labels: set[str] = set()
-    for code, label in labels.items():
-        if _CODE_PATTERN.fullmatch(code) is None:
-            raise ValueError(f"Malformed FOLK2 IELAND code: {code!r}")
-        if not label or (not allow_official_padding and label.strip() != label):
-            raise ValueError(f"FOLK2 IELAND label is blank or padded: {code!r}")
-        if unicodedata.normalize("NFC", label) != label:
-            raise ValueError(f"FOLK2 IELAND label is not NFC-normalised: {code!r}")
-        normalised = unicodedata.normalize("NFC", label).casefold()
-        if normalised in normalised_labels:
-            raise ValueError("FOLK2 IELAND labels must be unique")
-        normalised_labels.add(normalised)
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """Safe YAML loader that preserves the contract's one-entry-per-code rule."""
-
-    def construct_mapping(
-        self, node: yaml.nodes.MappingNode, deep: bool = False
-    ) -> dict[object, object]:
-        mapping: dict[object, object] = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            if key in mapping:
-                raise ValueError(f"Duplicate YAML key: {key!r}")
-            mapping[key] = self.construct_object(value_node, deep=deep)
-        return mapping
-
-
-def load_bound_origin_labels(
-    metadata_path: Path, contract_path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
-) -> dict[str, str]:
-    """Load a contract and bind it to a metadata JSON file.
-
-    Args:
-        metadata_path:
-            Exact source metadata JSON path.
-        contract_path:
-            YAML contract path. Defaults to the repository contract.
-
-    Returns:
-        The bound code-to-label mapping.
-    """
-    with metadata_path.open(encoding="utf-8") as file:
-        metadata = json.load(file)
-    contract = load_origin_label_contract(path=contract_path)
-    return bind_origin_labels(
-        contract=contract,
-        metadata=metadata,
-        metadata_sha256=source_metadata_sha256(metadata_path),
-    )
-
-
-def _as_mapping(value: object, name: str) -> Mapping[str, object]:
-    if isinstance(value, BaseModel):
-        value = value.model_dump()
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{name} must be a mapping")
-    return value
-
-
-def source_metadata_sha256(path: Path) -> str:
-    """Return the byte checksum of a Danish StatBank metadata file."""
-    return _sha256_file(path)
-
-
 class OriginLabelContract(BaseModel):
     """Versioned, ordered code-to-English-Danish FOLK2 triples."""
 
@@ -114,11 +45,6 @@ class OriginLabelContract(BaseModel):
     source_metadata_da_sha256: StrictStr
     labels_en: dict[StrictStr, StrictStr]
     labels_da: dict[StrictStr, StrictStr]
-
-    @property
-    def source_metadata_sha256(self) -> str:
-        """Danish source checksum for existing callers."""
-        return self.source_metadata_da_sha256
 
     @property
     def labels(self) -> dict[str, str]:
@@ -137,6 +63,11 @@ class OriginLabelContract(BaseModel):
             (code, self.labels_en[code], self.labels_da[code])
             for code in self.labels_en
         )
+
+    @property
+    def source_metadata_sha256(self) -> str:
+        """Danish source checksum for existing callers."""
+        return self.source_metadata_da_sha256
 
     @model_validator(mode="after")
     def validate_contract(self) -> "OriginLabelContract":
@@ -199,6 +130,72 @@ def _validate_contract_identity(contract: OriginLabelContract) -> None:
                 "per language"
             )
         )
+
+
+def _validate_labels(
+    labels: Mapping[str, str], *, allow_official_padding: bool = False
+) -> None:
+    normalised_labels: set[str] = set()
+    for code, label in labels.items():
+        if _CODE_PATTERN.fullmatch(code) is None:
+            raise ValueError(f"Malformed FOLK2 IELAND code: {code!r}")
+        if not label or (not allow_official_padding and label.strip() != label):
+            raise ValueError(f"FOLK2 IELAND label is blank or padded: {code!r}")
+        if unicodedata.normalize("NFC", label) != label:
+            raise ValueError(f"FOLK2 IELAND label is not NFC-normalised: {code!r}")
+        normalised = unicodedata.normalize("NFC", label).casefold()
+        if normalised in normalised_labels:
+            raise ValueError("FOLK2 IELAND labels must be unique")
+        normalised_labels.add(normalised)
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that preserves the contract's one-entry-per-code rule."""
+
+    def construct_mapping(
+        self, node: yaml.nodes.MappingNode, deep: bool = False
+    ) -> dict[object, object]:
+        mapping: dict[object, object] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise ValueError(f"Duplicate YAML key: {key!r}")
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+def bind_origin_label_triples(
+    contract: OriginLabelContract,
+    english_metadata: Mapping[str, object] | BaseModel,
+    danish_metadata: Mapping[str, object] | BaseModel,
+    *,
+    english_metadata_sha256: str,
+    danish_metadata_sha256: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Validate and return the exact English/Danish metadata triple maps.
+
+    Returns:
+        English and Danish code-to-label mappings.
+
+    Raises:
+        ValueError: If either metadata response differs from the reviewed contract.
+    """
+    if english_metadata_sha256 != contract.source_metadata_en_sha256:
+        raise ValueError("FOLK2 English metadata checksum does not match contract")
+    if danish_metadata_sha256 != contract.source_metadata_da_sha256:
+        raise ValueError("FOLK2 Danish metadata checksum does not match contract")
+    english = bind_origin_labels(
+        contract=contract, metadata=english_metadata, expected_labels=contract.labels_en
+    )
+    danish = bind_origin_labels(
+        contract=contract,
+        metadata=danish_metadata,
+        metadata_sha256=danish_metadata_sha256,
+        expected_labels=contract.labels_da,
+    )
+    if tuple(english) != tuple(danish):
+        raise ValueError("FOLK2 English and Danish metadata code order differs")
+    return english, danish
 
 
 def bind_origin_labels(
@@ -275,38 +272,41 @@ def bind_origin_labels(
     return dict(bound)
 
 
-def bind_origin_label_triples(
-    contract: OriginLabelContract,
-    english_metadata: Mapping[str, object] | BaseModel,
-    danish_metadata: Mapping[str, object] | BaseModel,
-    *,
-    english_metadata_sha256: str,
-    danish_metadata_sha256: str,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Validate and return the exact English/Danish metadata triple maps.
+def _as_mapping(value: object, name: str) -> Mapping[str, object]:
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    return value
+
+
+def load_bound_origin_labels(
+    metadata_path: Path, contract_path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
+) -> dict[str, str]:
+    """Load a contract and bind it to a metadata JSON file.
+
+    Args:
+        metadata_path:
+            Exact source metadata JSON path.
+        contract_path:
+            YAML contract path. Defaults to the repository contract.
 
     Returns:
-        English and Danish code-to-label mappings.
-
-    Raises:
-        ValueError: If either metadata response differs from the reviewed contract.
+        The bound code-to-label mapping.
     """
-    if english_metadata_sha256 != contract.source_metadata_en_sha256:
-        raise ValueError("FOLK2 English metadata checksum does not match contract")
-    if danish_metadata_sha256 != contract.source_metadata_da_sha256:
-        raise ValueError("FOLK2 Danish metadata checksum does not match contract")
-    english = bind_origin_labels(
-        contract=contract, metadata=english_metadata, expected_labels=contract.labels_en
-    )
-    danish = bind_origin_labels(
+    with metadata_path.open(encoding="utf-8") as file:
+        metadata = json.load(file)
+    contract = load_origin_label_contract(path=contract_path)
+    return bind_origin_labels(
         contract=contract,
-        metadata=danish_metadata,
-        metadata_sha256=danish_metadata_sha256,
-        expected_labels=contract.labels_da,
+        metadata=metadata,
+        metadata_sha256=source_metadata_sha256(metadata_path),
     )
-    if tuple(english) != tuple(danish):
-        raise ValueError("FOLK2 English and Danish metadata code order differs")
-    return english, danish
+
+
+def source_metadata_sha256(path: Path) -> str:
+    """Return the byte checksum of a Danish StatBank metadata file."""
+    return _sha256_file(path)
 
 
 def validate_origin_contract_reference(
@@ -340,14 +340,6 @@ def validate_origin_contract_reference(
 bind_origin_triples = bind_origin_label_triples
 
 
-def _is_canonical_contract_path(path: Path) -> bool:
-    return path == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH or (
-        path.is_absolute()
-        and path.name == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.name
-        and path.parent.name == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.parent.name
-    )
-
-
 def load_origin_label_contract(
     path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
 ) -> OriginLabelContract:
@@ -372,12 +364,12 @@ def load_origin_label_contract(
     return OriginLabelContract.model_validate(payload)
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _is_canonical_contract_path(path: Path) -> bool:
+    return path == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH or (
+        path.is_absolute()
+        and path.name == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.name
+        and path.parent.name == DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.parent.name
+    )
 
 
 def origin_label_contract_sha256(
@@ -391,3 +383,11 @@ def origin_label_contract_sha256(
     if not _is_canonical_contract_path(path):
         raise ValueError("Only the canonical origin-label contract is permitted")
     return _sha256_file(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

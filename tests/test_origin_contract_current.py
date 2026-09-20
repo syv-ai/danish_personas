@@ -1,6 +1,7 @@
 """Adversarial tests for the current origin-label contract boundary."""
 
 from pathlib import Path
+import typing as t
 
 import numpy as np
 import polars as pl
@@ -21,14 +22,13 @@ from danish_personas.sampling.generator import _origin_quota_sample
 CONTRACT_TEXT = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.read_text(encoding="utf-8")
 
 
-def _binding() -> dict[str, object]:
-    """Return the current embedded contract binding."""
-    return {
-        "origin_labels_contract_path": str(DEFAULT_ORIGIN_LABEL_CONTRACT_PATH),
-        "origin_labels_contract_version": 1,
-        "origin_labels_contract_sha256": ORIGIN_LABEL_CONTRACT_SHA256,
-        "origin_labels_contract_content": CONTRACT_TEXT,
-    }
+class OriginBinding(t.TypedDict):
+    """Current manifest origin-label binding fields."""
+
+    origin_labels_contract_path: str
+    origin_labels_contract_version: int
+    origin_labels_contract_sha256: str
+    origin_labels_contract_content: str
 
 
 def test_current_manifests_require_every_origin_binding_field() -> None:
@@ -83,6 +83,16 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
                 type(model).model_validate(omitted)
 
 
+def _binding() -> OriginBinding:
+    """Return the current embedded contract binding."""
+    return {
+        "origin_labels_contract_path": str(DEFAULT_ORIGIN_LABEL_CONTRACT_PATH),
+        "origin_labels_contract_version": 1,
+        "origin_labels_contract_sha256": ORIGIN_LABEL_CONTRACT_SHA256,
+        "origin_labels_contract_content": CONTRACT_TEXT,
+    }
+
+
 def test_custom_contract_and_recalculated_outer_digest_do_not_bypass() -> None:
     """A custom path or embedded content remains invalid despite a valid digest."""
     with pytest.raises(ValueError):
@@ -111,17 +121,6 @@ def test_english_label_drift_is_not_just_a_nonblank_value() -> None:
         type(contract).model_validate(payload)
 
 
-def test_legacy_three_column_origin_table_is_rejected() -> None:
-    """Sampling cannot synthesise Danish labels for a legacy table."""
-    frame = pl.DataFrame(
-        {"origin_country_code": ["5100"], "origin_country": ["Denmark"], "count": [1]}
-    )
-    with pytest.raises(ValueError, match="origin_country_da"):
-        _origin_quota_sample(
-            frame=frame, rows=1, rng=np.random.default_rng(1), require_danish=True
-        )
-
-
 def test_generation_config_rejects_custom_contract_path() -> None:
     """Generation context creation accepts only the repository-relative path."""
     payload = {
@@ -143,3 +142,14 @@ def test_generation_config_rejects_custom_contract_path() -> None:
     }
     with pytest.raises(ValidationError):
         GenerationConfig.model_validate(payload)
+
+
+def test_legacy_three_column_origin_table_is_rejected() -> None:
+    """Sampling cannot synthesise Danish labels for a legacy table."""
+    frame = pl.DataFrame(
+        {"origin_country_code": ["5100"], "origin_country": ["Denmark"], "count": [1]}
+    )
+    with pytest.raises(ValueError, match="origin_country_da"):
+        _origin_quota_sample(
+            frame=frame, rows=1, rng=np.random.default_rng(1), require_danish=True
+        )

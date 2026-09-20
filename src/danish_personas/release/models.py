@@ -498,6 +498,15 @@ class ShardEvidence(StrictModel):
             raise ValueError("Costs must be finite")
         return value
 
+    @field_validator("providers")
+    @classmethod
+    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or item != item.strip() for item in value):
+            raise ValueError("Provider names must be nonblank")
+        if tuple(sorted(set(value))) != value:
+            raise ValueError("Provider names must be sorted and unique")
+        return value
+
     @model_validator(mode="after")
     def _validate_origin_contract(self) -> "ShardEvidence":
         if self.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
@@ -507,15 +516,6 @@ class ShardEvidence(StrictModel):
         if self.origin_label_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
             raise ValueError("Shard origin-label contract is not reviewed")
         return self
-
-    @field_validator("providers")
-    @classmethod
-    def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not item or item != item.strip() for item in value):
-            raise ValueError("Provider names must be nonblank")
-        if tuple(sorted(set(value))) != value:
-            raise ValueError("Provider names must be sorted and unique")
-        return value
 
 
 class ReleaseEvidence(StrictModel):
