@@ -9,6 +9,11 @@ from click.testing import CliRunner
 from danish_personas import cli
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SamplingConfig
+from danish_personas.origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    load_origin_label_contract,
+    origin_label_contract_sha256,
+)
 from danish_personas.release.models import ReleaseManifest, ReleasePackageResult
 from danish_personas.release.packager import ReleasePackagingError
 from danish_personas.release.verifier import ReleaseVerificationError
@@ -250,8 +255,9 @@ def test_release_cli_package_and_verify_delegate_exact_paths(
 
     def verify(**kwargs: object) -> ReleaseManifest:
         calls.append(("verify", kwargs))
+        contract = load_origin_label_contract()
         return ReleaseManifest(
-            version=1,
+            version=2,
             release_id="b" * 32,
             created_at="2026-09-17T00:00:00Z",
             pilot_id="c" * 16,
@@ -261,6 +267,10 @@ def test_release_cli_package_and_verify_delegate_exact_paths(
             origin_url="https://example.invalid/repo.git",
             uv_lock_sha256="e" * 64,
             evidence_sha256="f" * 64,
+            origin_label_contract_file=DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+            origin_label_contract_sha256=origin_label_contract_sha256(),
+            origin_label_contract_version=contract.version,
+            origin_label_contract_content=contract,
             artifacts=[
                 {
                     "path": "README.md",
