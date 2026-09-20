@@ -18,7 +18,7 @@ from .job_titles import (
 from .models import GeneratedAttributes, PersonaDescriptions
 from .personality import all_personality_tendencies, allowed_personality_tendencies
 
-VALIDATOR_VERSION = "persona-safety-v10"
+VALIDATOR_VERSION = "persona-safety-v11"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -220,7 +220,7 @@ def _validate_job_title(
         )
     if entry is None or title not in entry.titles:
         raise ValueError("job_title must equal an allowlisted reviewed title")
-    _validate_text(text=title, require_danish=True)
+    _validate_text(text=title, require_danish=False)
     if LIST_FORM.search(title) or "\n" in title or "\r" in title:
         raise ValueError("job_title must be a single plain Danish line")
 
