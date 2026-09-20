@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import re
 import typing as t
@@ -71,6 +72,23 @@ _PUBLIC_DIRS = {
     "provenance/code",
     "data",
 }
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object while rejecting ambiguous duplicate keys.
+
+    Returns:
+        The object with every key present exactly once.
+
+    Raises:
+        ValueError: If a key occurs more than once.
+    """
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("Public JSON contract contains a duplicate key")
+        payload[key] = value
+    return payload
 
 
 def verify_release(
@@ -179,7 +197,11 @@ def _lexical_absolute(path: Path) -> Path:
 
 def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     try:
-        return model.model_validate_json(path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+        return model.model_validate(payload)
     except ValidationError as error:
         diagnostics = "; ".join(
             f"{_safe_validation_location(item=item, model=model)}: "

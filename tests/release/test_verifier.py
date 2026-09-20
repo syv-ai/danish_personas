@@ -134,6 +134,27 @@ def test_validation_diagnostic_does_not_echo_contract_input(
     assert marker not in diagnostic
 
 
+def test_verifier_rejects_duplicate_json_keys(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Public JSON contracts reject ambiguous duplicate object keys."""
+    release, _ = verifier_package
+    manifest_path = release / "release-manifest.json"
+    original = manifest_path.read_bytes()
+    needle = b'"version": 2\n'
+    assert original.count(needle) == 1
+    manifest_path.write_bytes(
+        original.replace(needle, b'"version": 2,\n  "version": 2\n', 1)
+    )
+    digest = sha256_file(manifest_path)
+    (release / "release-manifest.sha256").write_bytes(
+        f"{digest}  release-manifest.json\n".encode("ascii")
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="Invalid public contract"):
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+
 def test_verify_release_accepts_external_digest_and_relocation(
     verifier_package: tuple[Path, str], tmp_path: Path
 ) -> None:
