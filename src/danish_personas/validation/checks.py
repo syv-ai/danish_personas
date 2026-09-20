@@ -23,6 +23,7 @@ from ..models import (
     ValidationConfig,
     ValidationReport,
 )
+from ..origin_labels import load_origin_label_contract
 from ..sources.bundle import (
     SOURCE_REPORT,
     _verify_prepared_bundle_capture,
@@ -57,7 +58,7 @@ def validate_demographics(
     Returns:
         Validation report.
     """
-    verify_prepared_bundle(bundle_dir=bundle_dir)
+    bundle = verify_prepared_bundle(bundle_dir=bundle_dir)
     config = load_yaml_model(path=validation_config_path, model=ValidationConfig)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
     manifest_path = run_dir / "run-manifest.json"
@@ -102,6 +103,10 @@ def validate_demographics(
         created_at=_now(),
         subject_id=manifest.run_id,
         metrics=metrics,
+        origin_labels_contract_path=bundle.origin_labels_contract_path,
+        origin_labels_contract_version=bundle.origin_labels_contract_version,
+        origin_labels_contract_sha256=bundle.origin_labels_contract_sha256,
+        origin_labels_contract_content=bundle.origin_labels_contract_content,
     )
     _write_reports(directory=run_dir, report=report)
     return report
@@ -123,8 +128,8 @@ def _distribution_metrics(
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
         "origin_country": (
-            pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet"),
-            ["origin_country_code", "origin_country"],
+            _origin_target(bundle_dir=bundle_dir),
+            ["origin_country_code", "origin_country", "origin_country_da"],
         ),
     }
     metrics: list[MetricResult] = []
@@ -262,6 +267,21 @@ def _compare_distribution(
             details="Total variation between generated and fitted marginal.",
         ),
     ]
+
+
+def _origin_target(*, bundle_dir: Path) -> pl.DataFrame:
+    """Return the prepared origin marginal with its complete label triple."""
+    target = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    )
+    if "origin_country_da" in target.columns:
+        return target
+    contract = load_origin_label_contract()
+    return target.with_columns(
+        pl.col("origin_country_code")
+        .replace(dict(contract.ordered_labels), default=None)
+        .alias("origin_country_da")
+    )
 
 
 def _geography_parent_metrics(
@@ -474,10 +494,18 @@ def _origin_mapping_metrics(
     Returns:
         Mapping and positive-weight validation metrics.
     """
-    target = pl.read_parquet(
-        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
-    )
-    columns = ["origin_country_code", "origin_country"]
+    target = _origin_target(bundle_dir=bundle_dir)
+    columns = ["origin_country_code", "origin_country", "origin_country_da"]
+    if not set(columns) <= set(frame.columns):
+        return [
+            MetricResult(
+                name="origin_country_mapping",
+                passed=False,
+                value="missing origin label columns",
+                threshold=0,
+                details="Every origin record must contain a complete label triple.",
+            )
+        ]
     expected_pairs = target.select(columns).unique()
     observed_pairs = frame.select(columns).unique()
     mismatches = observed_pairs.join(
@@ -487,13 +515,22 @@ def _origin_mapping_metrics(
     emitted_zero_weight = observed_pairs.join(
         zero_weight_pairs, on=columns, how="inner", nulls_equal=True
     ).height
+    incomplete = frame.select(columns).null_count().row(0)
+    incomplete_count = sum(incomplete)
     return [
+        MetricResult(
+            name="origin_country_complete_labels",
+            passed=incomplete_count == 0,
+            value=incomplete_count,
+            threshold=0,
+            details="Origin code, English label, and Danish label are paired.",
+        ),
         MetricResult(
             name="origin_country_mapping",
             passed=mismatches == 0,
             value=mismatches,
             threshold=0,
-            details="Generated origin labels must use the official code mapping.",
+            details="Generated origin code and labels must use the official mapping.",
         ),
         MetricResult(
             name="origin_country_positive_weights",
@@ -523,6 +560,15 @@ def _provenance_metrics(
         ),
         "bundle_manifest_checksum": (
             sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
+        ),
+        "origin_contract_binding": (
+            manifest.origin_labels_contract_path == bundle.origin_labels_contract_path
+            and manifest.origin_labels_contract_version
+            == bundle.origin_labels_contract_version
+            and manifest.origin_labels_contract_sha256
+            == bundle.origin_labels_contract_sha256
+            and manifest.origin_labels_contract_content
+            == bundle.origin_labels_contract_content
         ),
     }
     return [

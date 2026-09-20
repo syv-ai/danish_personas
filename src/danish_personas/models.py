@@ -134,6 +134,45 @@ class ClassificationManifest(StrictModel):
     data_bytes: int = Field(gt=0)
 
 
+class FrozenSampleManifest(StrictModel):
+    """Manifest proving the origin of a frozen Phase-3 sample."""
+
+    sample_schema_version: int
+    source_run_id: str
+    rows: int = Field(gt=0)
+    strata: list[str]
+    method: str
+    data_file: Path
+    sha256: str
+    llm_calls: int = Field(ge=0)
+    origin_labels_contract_path: str = ""
+    origin_labels_contract_version: int = Field(default=0, ge=0)
+    origin_labels_contract_sha256: str = ""
+    origin_labels_contract_content: str = ""
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "FrozenSampleManifest":
+        """Require all origin contract fields when a sample carries a binding.
+
+        Returns:
+            The validated sample manifest.
+
+        Raises:
+            ValueError:
+                If a partial contract binding is supplied.
+        """
+        fields = (
+            self.origin_labels_contract_path,
+            self.origin_labels_contract_sha256,
+            self.origin_labels_contract_content,
+        )
+        if any(fields) and not all(
+            fields + (self.origin_labels_contract_version >= 1,)
+        ):
+            raise ValueError("Sample origin-label contract binding is incomplete")
+        return self
+
+
 class Lons20Contract(StrictModel):
     """Separately reviewed canonical semantics for LONS20."""
 
@@ -265,6 +304,32 @@ class RunManifest(StrictModel):
     data_sha256: str
     logical_content_sha256: str
     llm_calls: int = Field(ge=0)
+    origin_labels_contract_path: str = ""
+    origin_labels_contract_version: int = Field(default=0, ge=0)
+    origin_labels_contract_sha256: str = ""
+    origin_labels_contract_content: str = ""
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "RunManifest":
+        """Require all origin contract fields when a run carries a binding.
+
+        Returns:
+            The validated run manifest.
+
+        Raises:
+            ValueError:
+                If a partial contract binding is supplied.
+        """
+        fields = (
+            self.origin_labels_contract_path,
+            self.origin_labels_contract_sha256,
+            self.origin_labels_contract_content,
+        )
+        if any(fields) and not all(
+            fields + (self.origin_labels_contract_version >= 1,)
+        ):
+            raise ValueError("Run origin-label contract binding is incomplete")
+        return self
 
 
 class SamplingConfig(StrictModel):
@@ -492,6 +557,10 @@ class ValidationReport(StrictModel):
     created_at: str
     subject_id: str
     metrics: list[MetricResult]
+    origin_labels_contract_path: str = ""
+    origin_labels_contract_version: int = Field(default=0, ge=0)
+    origin_labels_contract_sha256: str = ""
+    origin_labels_contract_content: str = ""
     job_title_mapping_file: Path | None = None
     job_title_mapping_sha256: str | None = None
     job_title_mapping_version: int | None = None

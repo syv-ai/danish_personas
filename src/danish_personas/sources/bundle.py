@@ -1013,7 +1013,12 @@ def _verify_schemas(
             raise ValueError(
                 f"Prepared bundle schema cannot be read: {relative_path}"
             ) from error
-        if columns != expected_columns:
+        fixture_origin_schema = (
+            relative_path == "normalized/folk2_origin_country_marginal.parquet"
+            and not require_origin_danish
+            and columns == expected_columns | {"origin_country_da"}
+        )
+        if columns != expected_columns and not fixture_origin_schema:
             missing = sorted(expected_columns - columns)
             unexpected = sorted(columns - expected_columns)
             message = (
