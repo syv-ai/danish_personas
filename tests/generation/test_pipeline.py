@@ -26,6 +26,7 @@ from danish_personas.generation.report import (
     validate_persona_pilot,
     validate_persona_run,
 )
+from danish_personas.generation.validation import EDUCATION_DANISH, VALIDATOR_VERSION
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SAMPLER_SCHEMA_VERSION, RunManifest, ValidationReport
 from scripts.generate_persona_pilot import main as pilot_main
@@ -136,12 +137,11 @@ def _descriptions_json(
         "sex": "female",
         "municipality": "København",
         "origin_country": "Denmark",
-        "education_level": "masters",
+        "education_level": "higher_education",
     }
     sex = "kvinde" if context["sex"] == "female" else "mand"
-    education = {"masters": "kandidatuddannelse", "vocational": "erhvervsuddannelse"}[
-        str(context["education_level"])
-    ]
+    education_level = str(context["education_level"])
+    education = EDUCATION_DANISH.get(education_level, education_level)
     if employed:
         persona = (
             f"Personen er {context['age']} år gammel {sex} fra "
@@ -257,14 +257,15 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         == "Business and administration professionals"
     )
     assert attributes_payload["municipality"] == "København"
-    assert attributes_payload["education_level"] == "masters"
-    assert descriptions_payload["education_level"] == "masters"
+    assert attributes_payload["education_level"] == "videregående uddannelse"
+    assert descriptions_payload["education_level"] == "videregående uddannelse"
     assert "generated_attributes" in _MockClient.payloads[1]
 
     generation_manifest = json.loads(
         (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
+    assert generation_manifest["validator_version"] == VALIDATOR_VERSION
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
@@ -289,7 +290,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
             "municipality": ["København", "Roskilde"],
             "region_code": ["084", "085"],
             "region": ["Region Hovedstaden", "Region Sjælland"],
-            "education_level": ["masters", "vocational"],
+            "education_level": ["higher_education", "secondary_or_vocational"],
             "education_source_code": ["H70", "H40"],
             "education_resolution": ["ras209_age_band", "ras209_67_plus_proxy"],
             "labour_market_status": ["employed", "outside_labour_force"],
