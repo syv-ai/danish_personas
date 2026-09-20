@@ -240,23 +240,92 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
     assert len(_MockClient.payloads) == 2
-    attributes_payload = _MockClient.payloads[0]["demographics_and_personality"]
-    descriptions_payload = _MockClient.payloads[1]["demographics_and_personality"]
+    attributes_request = _MockClient.payloads[0]
     descriptions_request = _MockClient.payloads[1]
+    attributes_payload = attributes_request["demographics_and_personality"]
+    descriptions_payload = descriptions_request["demographics_and_personality"]
     assert isinstance(attributes_payload, dict)
     assert isinstance(descriptions_payload, dict)
-    withheld_fields = {
-        *set(resolution_columns) - {"municipality"},
+
+    stage_one_allowed = {
+        "origin_country",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+        "current_status",
+    }
+    stage_two_allowed = {
+        "origin_country",
+        "municipality",
+        "job_function",
+        "age",
+        "sex",
+        "education_level",
+        "labour_market_status",
+        "current_status",
+    }
+    stage_one_forbidden = {
+        "age_resolution",
+        "marital_resolution",
+        "education_resolution",
+        "detailed_status_resolution",
+        "origin_country_code",
+        "job_function_code",
+        "job_function_resolution",
+        "municipality_code",
         "region_code",
         "country",
         "detailed_status_code",
         "education_source_code",
+        "persona_id",
     }
-    assert withheld_fields.isdisjoint(attributes_payload)
-    assert withheld_fields.isdisjoint(descriptions_payload)
-    assert "allowed_personality_tendencies" not in attributes_payload
+    ocean_fields = {
+        "openness_score",
+        "openness_label",
+        "conscientiousness_score",
+        "conscientiousness_label",
+        "extraversion_score",
+        "extraversion_label",
+        "agreeableness_score",
+        "agreeableness_label",
+        "neuroticism_score",
+        "neuroticism_label",
+    }
+    assert set(attributes_request) == {
+        "demographics_and_personality",
+        "allowed_job_titles",
+    }
+    assert set(descriptions_request) == {
+        "demographics_and_personality",
+        "allowed_personality_tendencies",
+        "generated_attributes",
+    }
+    assert set(attributes_payload) == stage_one_allowed
+    assert set(descriptions_payload) == stage_two_allowed
+    stage_two_forbidden = stage_one_forbidden | ocean_fields
+    assert stage_one_forbidden.isdisjoint(attributes_payload)
+    assert stage_two_forbidden.isdisjoint(descriptions_payload)
+    assert stage_one_allowed.isdisjoint(stage_one_forbidden)
+    assert stage_two_allowed.isdisjoint(stage_two_forbidden)
+    assert {"municipality", "origin_country", "job_function"} <= set(attributes_payload)
+    assert {"municipality", "origin_country", "job_function"} <= set(
+        descriptions_payload
+    )
     assert descriptions_request["allowed_personality_tendencies"] == list(
-        allowed_personality_tendencies(context=descriptions_payload)
+        allowed_personality_tendencies(context=attributes_payload)
     )
     assert (
         attributes_payload["job_function"]
