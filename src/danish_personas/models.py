@@ -328,6 +328,35 @@ class BundleManifest(StrictModel):
     assumptions: list[str]
     lons20_contract_version: int = Field(ge=1)
     lons20_contract_sha256: str
+    # These fields are optional for in-memory fixture manifests.  Production
+    # schema-6 bundles must bind the reviewed origin-label contract; the bundle
+    # verifier enforces that stronger requirement before consuming a bundle.
+    origin_labels_contract_path: str = ""
+    origin_labels_contract_version: int = Field(default=0, ge=0)
+    origin_labels_contract_sha256: str = ""
+    origin_labels_contract_content: str = ""
+
+    @model_validator(mode="after")
+    def validate_origin_contract_binding(self) -> "BundleManifest":
+        """Require origin-label provenance for source-backed schema-6 bundles.
+
+        Returns:
+            The validated bundle manifest.
+
+        Raises:
+            ValueError: If a source-backed manifest omits its contract binding.
+        """
+        if self.prepared_bundle_schema_version == 6 and self.source_snapshots:
+            if not all(
+                (
+                    self.origin_labels_contract_path,
+                    self.origin_labels_contract_version >= 1,
+                    self.origin_labels_contract_sha256,
+                    self.origin_labels_contract_content,
+                )
+            ):
+                raise ValueError("Schema-6 source bundles require origin-label binding")
+        return self
 
 
 class SourceMetadataExpectations(StrictModel):

@@ -19,6 +19,9 @@ ORIGIN_LABEL_LANGUAGE = "da"
 ORIGIN_LABEL_SOURCE_METADATA_SHA256 = (
     "f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213"
 )
+ORIGIN_LABEL_CONTRACT_SHA256 = (
+    "be3f0c56ecfb7a212a9077576ca193aae8cc81dc2faf2f20aebbe7f700149c38"
+)
 _CODE_PATTERN = re.compile(r"[0-9]{4}\Z")
 
 
@@ -217,6 +220,7 @@ def load_origin_label_contract(
 
     Returns:
         A strictly validated origin-label contract.
+
     """
     with path.open(encoding="utf-8") as file:
         payload = yaml.load(file, Loader=_UniqueKeyLoader)
