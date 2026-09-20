@@ -1,7 +1,7 @@
 """Adversarial tests for the current origin-label contract boundary."""
 
-from pathlib import Path
 import typing as t
+from pathlib import Path
 
 import numpy as np
 import polars as pl
