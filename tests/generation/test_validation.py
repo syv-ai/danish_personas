@@ -1,4 +1,4 @@
-"""Contextual tests for the generation-contract v2 validators."""
+"""Contextual tests for the generation-contract v3 validators."""
 
 import json
 from collections.abc import Mapping
@@ -80,7 +80,9 @@ def demographic(
         "age": 35,
         "sex": sex,
         "municipality": "København",
-        "origin_country": "Danmark",
+        "origin_country_code": "5100",
+        "origin_country": "Denmark",
+        "origin_country_da": "Danmark",
         "education_level": education_level,
         "labour_market_status": status,
         "job_function": "24 Business and administration professionals"
@@ -118,7 +120,7 @@ def descriptions(
         status = "er pensionist"
     persona = (
         f"Personen er {context['age']} år og {sex} fra {context['municipality']} "
-        f"i {context['origin_country']} med en {education} og {status}. "
+        f"i {context['origin_country_da']} med en {education} og {status}. "
         f"Personen kan være rolig og holder af {', '.join(interests)}."
     )
     return {
@@ -477,7 +479,7 @@ def test_public_grounding_facts_render_pool_and_labels(
 ) -> None:
     """The public renderer preserves labels and every pooled education phrase."""
     context = demographic(education_level=education)
-    context.update(municipality="Hjørring", origin_country="Côte d’Ivoire")
+    context.update(municipality="Hjørring", origin_country_da="Côte d’Ivoire")
     facts = build_persona_grounding_facts(demographic=context, attributes=attributes())
 
     assert facts.model_dump() == {
@@ -485,7 +487,7 @@ def test_public_grounding_facts_render_pool_and_labels(
         "sex": "kvinde",
         "municipality": "Hjørring",
         "education_level": expected,
-        "origin_country": "Côte d’Ivoire",
+        "origin_country_da": "Côte d’Ivoire",
         "current_employment": "forretningsspecialist",
     }
 
@@ -525,7 +527,7 @@ def test_real_sample_education_values_parse_contextually(education: str) -> None
     assert EXPECTED_EDUCATION_RENDERINGS[education] in result.persona
 
 
-@pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country"])
+@pytest.mark.parametrize("missing", ["age", "sex", "municipality", "origin_country_da"])
 def test_required_demographic_facts_are_literal(missing: str) -> None:
     """Changing any required demographic fact is rejected."""
     context = demographic()
@@ -534,12 +536,12 @@ def test_required_demographic_facts_are_literal(missing: str) -> None:
         "age": "34 år",
         "sex": "mand",
         "municipality": "Roskilde",
-        "origin_country": "Sverige",
+        "origin_country_da": "Sverige",
     }
     original = "kvinde" if missing == "sex" else str(context[missing])
     text["persona"] = text["persona"].replace(original, replacements[missing])
     with pytest.raises(
-        ValueError, match=missing if missing != "origin_country" else "origin"
+        ValueError, match=missing if missing != "origin_country_da" else "origin"
     ):
         parse_descriptions(json.dumps(text), context, attributes())
 
@@ -617,7 +619,7 @@ def test_two_or_three_literal_interests_pass(count: int) -> None:
     )
 
 
-def test_valid_v2_attributes_and_description() -> None:
+def test_valid_v3_attributes_and_description() -> None:
     """A complete employee record passes both contextual stages."""
     context = demographic()
     parsed = parse_attributes(json.dumps(attributes()), context)

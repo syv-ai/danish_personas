@@ -22,7 +22,7 @@ from .personality import (
     allowed_personality_tendencies,
 )
 
-VALIDATOR_VERSION = "persona-safety-v13"
+VALIDATOR_VERSION = "persona-safety-v14"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -459,7 +459,7 @@ def _validate_persona_facts(
         "sex": "sex",
         "municipality": "municipality",
         "education_level": "education",
-        "origin_country": "origin",
+        "origin_country_da": "origin",
         "current_employment": "current work status",
     }
     for field, value in facts.model_dump().items():

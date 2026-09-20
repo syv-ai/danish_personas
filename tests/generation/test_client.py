@@ -39,7 +39,7 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
 
 def _config() -> GenerationConfig:
     return GenerationConfig(
-        version=2,
+        version=3,
         llm_generation_enabled=True,
         base_url="http://test/v1",
         model="gpt-test",
@@ -56,6 +56,7 @@ def _config() -> GenerationConfig:
         response_format="json_schema",
         attributes_prompt=Path("attributes.md"),
         personas_prompt=Path("personas.md"),
+        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
     )
 
 

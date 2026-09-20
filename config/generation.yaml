@@ -1,4 +1,4 @@
-version: 2
+version: 3
 llm_generation_enabled: false
 base_url: null
 model: null
@@ -16,3 +16,4 @@ response_format: json_schema
 attributes_prompt: config/prompts/attributes-da.md
 personas_prompt: config/prompts/personas-da.md
 job_title_mapping: config/job-function-titles.yaml
+origin_label_contract: config/folk2-ieland-labels-da.yaml
