@@ -19,7 +19,13 @@ from pydantic import (
 )
 
 from ..models import StrictModel
-from ..origin_labels import OriginLabelContract
+from ..origin_labels import (
+    DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    ORIGIN_LABEL_CONTRACT_SHA256,
+    ORIGIN_LABEL_CONTRACT_VERSION,
+    OriginLabelContract,
+    validate_origin_contract_reference,
+)
 
 
 class ReleasePolicyError(ValueError):
@@ -320,6 +326,12 @@ class ReleaseManifest(StrictModel):
     def _require_aware_created_at(self) -> "ReleaseManifest":
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise ValueError("Manifest timestamp must be timezone-aware")
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
         return self
 
     @field_validator("created_at", mode="before")
@@ -486,6 +498,16 @@ class ShardEvidence(StrictModel):
             raise ValueError("Costs must be finite")
         return value
 
+    @model_validator(mode="after")
+    def _validate_origin_contract(self) -> "ShardEvidence":
+        if self.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
+            raise ValueError("Shard origin-label contract path must be canonical")
+        if self.origin_label_contract_version != ORIGIN_LABEL_CONTRACT_VERSION:
+            raise ValueError("Shard origin-label contract version is not current")
+        if self.origin_label_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+            raise ValueError("Shard origin-label contract is not reviewed")
+        return self
+
     @field_validator("providers")
     @classmethod
     def _unique_providers(_cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -537,3 +559,13 @@ class ReleaseEvidence(StrictModel):
     config_hashes: dict[StrictStr, StrictStr] = Field(min_length=5)
     shards: tuple[ShardEvidence, ...] = Field(min_length=1)
     accounting: Accounting
+
+    @model_validator(mode="after")
+    def _validate_origin_contract(self) -> "ReleaseEvidence":
+        validate_origin_contract_reference(
+            path=self.origin_label_contract_file,
+            version=self.origin_label_contract_version,
+            sha256=self.origin_label_contract_sha256,
+            content=self.origin_label_contract_content,
+        )
+        return self
