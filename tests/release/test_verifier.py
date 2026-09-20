@@ -93,6 +93,29 @@ def _refresh_manifest(release: Path, **changes: object) -> str:
     return digest
 
 
+def test_validation_diagnostic_does_not_echo_contract_input(
+    verifier_package: tuple[Path, str],
+) -> None:
+    """Contract diagnostics expose a field and type, but not hostile input."""
+    release, _ = verifier_package
+    manifest = json.loads(
+        (release / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    labels = manifest["origin_label_contract_content"]["labels_da"]
+    first_code = next(iter(labels))
+    label = labels.pop(first_code)
+    marker = "SECRET-MARKER"
+    labels[marker] = label
+    digest = _refresh_manifest(release, **manifest)
+
+    with pytest.raises(ReleaseVerificationError) as exc_info:
+        verify_release(release_dir=release, expected_manifest_sha256=digest)
+
+    diagnostic = str(exc_info.value)
+    assert "origin_label_contract_content: value_error" in diagnostic
+    assert marker not in diagnostic
+
+
 def test_verify_release_accepts_external_digest_and_relocation(
     verifier_package: tuple[Path, str], tmp_path: Path
 ) -> None:

@@ -183,7 +183,7 @@ def _load_json(path: Path, model: type[ModelType]) -> ModelType:
     except ValidationError as error:
         diagnostics = "; ".join(
             f"{'.'.join(str(part) for part in item['loc']) or '<model>'}: "
-            f"{item['type']} ({item['msg']})"
+            f"{item['type']}"
             for item in error.errors(
                 include_url=False, include_context=False, include_input=False
             )
