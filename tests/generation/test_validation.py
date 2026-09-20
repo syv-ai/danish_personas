@@ -489,6 +489,40 @@ def test_one_or_four_literal_interests_fail(count: int) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("municipality", "origin"), (("Mandø", "Normandiet"), ("Kvindestrup", "Kvindeland"))
+)
+def test_persona_allows_sex_noun_letters_inside_grounded_labels(
+    municipality: str, origin: str
+) -> None:
+    """Grounded municipality and country labels are matched as complete tokens."""
+    context = demographic()
+    context["municipality"] = municipality
+    context["origin_country_da"] = origin
+    payload = descriptions(context=context)
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert municipality in result.persona
+    assert origin in result.persona
+
+
+@pytest.mark.parametrize(
+    "compound", ("brandmand", "romandebut", "mandolin", "kvindelig", "kvindekamp")
+)
+def test_persona_allows_words_that_embed_sex_noun_letters(compound: str) -> None:
+    """Unicode token boundaries do not turn embedded letters into sex nouns."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "Hun kan være rolig", f"Ordet {compound} står her. Hun kan være rolig"
+    )
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert compound in result.persona
+
+
 def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
     """Copied interests cannot satisfy the separate OCEAN phrase contract."""
     context = demographic()
@@ -500,12 +534,33 @@ def test_persona_needs_a_separate_tendency_phrase_after_interests() -> None:
 
 
 @pytest.mark.parametrize(
+    "noun",
+    (
+        "MAND",
+        "mandens",
+        "mænd",
+        "MÆNDENE",
+        "KVINDE",
+        "kvindens",
+        "kvinder",
+        "KVINDERNES",
+    ),
+)
+def test_persona_rejects_case_and_inflected_sex_nouns(noun: str) -> None:
+    """Case-folded standalone singular, plural, and genitive nouns are rejected."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "Hun kan være rolig", f"{noun} står som ord her. Hun kan være rolig"
+    )
+
+    with pytest.raises(ValueError, match="statistical sex only through its pronoun"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
     "phrase",
     (
-        "han er en mand",
-        "hun er en kvinde",
-        "mand på",
-        "kvinde på",
         "oprindelsesland",
         "oprindelsesetiket",
         "brede uddannelsesbaggrund",
@@ -523,6 +578,35 @@ def test_persona_rejects_redundant_and_technical_phrases(phrase: str) -> None:
 
     with pytest.raises(ValueError, match="redundant or technical wording"):
         parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    ("sex", "forbidden_sentence"),
+    (("female", "Hun er en mand."), ("male", "Han er en kvinde.")),
+)
+def test_persona_rejects_standalone_sex_nouns_despite_pronoun(
+    sex: str, forbidden_sentence: str
+) -> None:
+    """A valid pronoun clause never permits a standalone statistical-sex noun."""
+    context = demographic(sex=sex)
+    payload = descriptions(context=context)
+    pronoun = "Hun" if sex == "female" else "Han"
+    payload["persona"] = payload["persona"].replace(
+        f"{pronoun} kan være rolig", f"{forbidden_sentence} {pronoun} kan være rolig"
+    )
+
+    with pytest.raises(ValueError, match="statistical sex only through its pronoun"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+def test_persona_sex_noun_fix_remains_validator_v15() -> None:
+    """The boundary fix closes v15's existing sex-noun rule, not a new contract."""
+    prompt = (ROOT / "config" / "prompts" / "personas-da.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert validation_module.VALIDATOR_VERSION == "persona-safety-v15"
+    assert "Brug aldrig `mand` eller `kvinde` som selvstændige" in prompt
 
 
 @pytest.mark.parametrize(
@@ -647,6 +731,17 @@ def test_schema_diagnostics_identify_attribute_field_without_raw_input() -> None
     message = str(error.value)
     assert message.startswith("cultural_context:")
     assert "SENTINEL_REJECTED_TEXT" not in message
+
+
+def test_standalone_sex_noun_rule_applies_only_to_persona() -> None:
+    """The pronoun-only statistical-sex contract is scoped to the short persona."""
+    context = demographic()
+    payload = descriptions(context=context)
+    payload["professional_persona"] += " Hun er en kvinde."
+
+    result = parse_descriptions(json.dumps(payload), context, attributes())
+
+    assert result.professional_persona.endswith("Hun er en kvinde.")
 
 
 def test_status_05_does_not_count_as_personality_tendency() -> None:

@@ -89,11 +89,25 @@ FORMER_WORK = re.compile(
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
+PERSONA_SEX_NOUNS = (
+    "mand",
+    "manden",
+    "mandens",
+    "mands",
+    "mænd",
+    "mændene",
+    "mændenes",
+    "mænds",
+    "kvinde",
+    "kvinden",
+    "kvindens",
+    "kvindes",
+    "kvinder",
+    "kvinderne",
+    "kvindernes",
+    "kvinders",
+)
 REDUNDANT_PERSONA_PHRASES = (
-    "han er en mand",
-    "hun er en kvinde",
-    "mand på",
-    "kvinde på",
     "oprindelsesland",
     "oprindelsesetiket",
     "brede uddannelsesbaggrund",
@@ -437,6 +451,8 @@ def _validate_persona(
     _validate_persona_facts(text=text, demographic=context, attributes=attributes)
     _validate_interests(text=text, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
+    if any(_contains_term(normalized, noun) for noun in PERSONA_SEX_NOUNS):
+        raise ValueError("Persona must convey statistical sex only through its pronoun")
     if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
         raise ValueError("Persona must not contain redundant or technical wording")
     if FORMER_WORK.search(normalized):
