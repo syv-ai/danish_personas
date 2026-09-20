@@ -142,6 +142,56 @@ def test_appearance_boundary_does_not_reject_hardt() -> None:
     parse_descriptions(json.dumps(text), context, attributes(job_title=None))
 
 
+@pytest.mark.parametrize(
+    ("field", "rejected"),
+    [
+        (
+            "cultural_context",
+            "SENTINEL_REJECTED_TEXT is deliberately written in English.",
+        ),
+        (
+            "career_goals_and_ambitions",
+            "SENTINEL_REJECTED_TEXT describes an English career ambition.",
+        ),
+        ("job_title", "SENTINEL_REJECTED_TITLE"),
+    ],
+)
+def test_attribute_diagnostics_identify_field_without_content(
+    field: str, rejected: str
+) -> None:
+    """Attribute failures identify their field without exposing rejected text."""
+    context = demographic()
+    payload = attributes()
+    payload[field] = rejected
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), context)
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert rejected not in message
+
+
+@pytest.mark.parametrize("field", ["skills_and_expertise", "hobbies_and_interests"])
+def test_attribute_list_diagnostics_identify_category_without_content(
+    field: str,
+) -> None:
+    """List validation failures identify the response list without its values."""
+    context = demographic()
+    payload = attributes()
+    payload[field] = [
+        "SENTINEL_REJECTED_TEXT one",
+        "SENTINEL_REJECTED_TEXT two",
+        "SENTINEL_REJECTED_TEXT three",
+    ]
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), context)
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert "natural Danish" in message
+    assert "SENTINEL_REJECTED_TEXT" not in message
+
+
 def test_current_title_or_non_employee_status_is_required() -> None:
     """The summary names the exact current title or canonical status."""
     context = demographic()
@@ -149,6 +199,35 @@ def test_current_title_or_non_employee_status_is_required() -> None:
     text["persona"] = text["persona"].replace("forretningsspecialist", "analytiker")
     with pytest.raises(ValueError, match="current work status"):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+        "persona",
+    ],
+)
+def test_description_diagnostics_identify_field_without_content(field: str) -> None:
+    """Description failures identify every response field without its text."""
+    context = demographic()
+    payload = descriptions(context=context)
+    rejected = (
+        "SENTINEL_REJECTED_TEXT is deliberately written in English and fails "
+        "the Danish language validation."
+    )
+    payload[field] = rejected
+    with pytest.raises(ValueError) as error:
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+    message = str(error.value)
+    assert message.startswith(f"{field}:")
+    assert "natural Danish" in message
+    assert "SENTINEL_REJECTED_TEXT" not in message
 
 
 def test_education_renderings_cover_phase_two_pool_domain() -> None:
@@ -343,6 +422,18 @@ def test_required_demographic_facts_are_literal(missing: str) -> None:
         ValueError, match=missing if missing != "origin_country" else "origin"
     ):
         parse_descriptions(json.dumps(text), context, attributes())
+
+
+def test_schema_diagnostics_identify_attribute_field_without_raw_input() -> None:
+    """Schema errors retain a safe field location and omit rejected input."""
+    payload = attributes()
+    payload["cultural_context"] = "SENTINEL_REJECTED_TEXT"
+    with pytest.raises(ValueError) as error:
+        parse_attributes(json.dumps(payload), demographic())
+
+    message = str(error.value)
+    assert message.startswith("cultural_context:")
+    assert "SENTINEL_REJECTED_TEXT" not in message
 
 
 def test_status_ten_allows_only_grounded_phrase_in_persona() -> None:

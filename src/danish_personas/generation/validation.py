@@ -20,6 +20,25 @@ from .personality import all_personality_tendencies, allowed_personality_tendenc
 
 VALIDATOR_VERSION = "persona-safety-v10"
 __all__ = ["EDUCATION_DANISH"]
+_ATTRIBUTE_FIELDS = frozenset(
+    {
+        "cultural_context",
+        "skills_and_expertise",
+        "hobbies_and_interests",
+        "career_goals_and_ambitions",
+        "job_title",
+    }
+)
+_DESCRIPTION_FIELDS = frozenset(
+    {
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+        "persona",
+    }
+)
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -87,18 +106,42 @@ def parse_attributes(
     try:
         attributes = GeneratedAttributes.model_validate_json(content)
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise ValueError(
+            _format_schema_error(error=error, fields=_ATTRIBUTE_FIELDS)
+        ) from error
     context = _context_values(demographic)
-    _validate_text(text=attributes.cultural_context, require_danish=True)
-    _validate_texts(texts=attributes.skills_and_expertise, require_each_danish=False)
-    _validate_texts(texts=attributes.hobbies_and_interests, require_each_danish=False)
-    if attributes.career_goals_and_ambitions:
-        _validate_text(text=attributes.career_goals_and_ambitions, require_danish=True)
-    _validate_job_title(
-        title=attributes.job_title,
-        context=context,
-        mapping=job_title_mapping
-        or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+    _validate_field(
+        field="cultural_context",
+        validator=lambda: _validate_text(
+            text=attributes.cultural_context, require_danish=True
+        ),
+    )
+    _validate_field(
+        field="skills_and_expertise",
+        validator=lambda: _validate_texts(
+            texts=attributes.skills_and_expertise, require_each_danish=False
+        ),
+    )
+    _validate_field(
+        field="hobbies_and_interests",
+        validator=lambda: _validate_texts(
+            texts=attributes.hobbies_and_interests, require_each_danish=False
+        ),
+    )
+    career_goals = attributes.career_goals_and_ambitions
+    if career_goals:
+        _validate_field(
+            field="career_goals_and_ambitions",
+            validator=lambda: _validate_text(text=career_goals, require_danish=True),
+        )
+    _validate_field(
+        field="job_title",
+        validator=lambda: _validate_job_title(
+            title=attributes.job_title,
+            context=context,
+            mapping=job_title_mapping
+            or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+        ),
     )
     return attributes
 
@@ -109,6 +152,50 @@ def _context_values(
     if isinstance(demographic, DemographicRecord):
         return demographic.model_dump(mode="python")
     return dict(demographic)
+
+
+def _format_schema_error(*, error: ValidationError, fields: frozenset[str]) -> str:
+    """Format Pydantic errors without exposing generated input values.
+
+    Returns:
+        Safe structural error messages.
+    """
+    messages: list[str] = []
+    for issue in error.errors():
+        location = _safe_schema_location(location=issue.get("loc", ()), fields=fields)
+        message = str(issue.get("msg", "Schema validation failed"))
+        messages.append(f"{location}: {message}")
+    return "; ".join(messages) or "response: Schema validation failed"
+
+
+def _safe_schema_location(*, location: object, fields: frozenset[str]) -> str:
+    """Keep schema locations while excluding arbitrary input keys.
+
+    Returns:
+        A response location containing only known fields and list indexes.
+    """
+    if not isinstance(location, tuple) or not location:
+        return "response"
+    field = location[0]
+    if not isinstance(field, str) or field not in fields:
+        return "response"
+    suffix = "".join(
+        f"[{part}]" for part in location[1:] if isinstance(part, int) and part >= 0
+    )
+    return f"{field}{suffix}"
+
+
+def _validate_field(*, field: str, validator: c.Callable[[], None]) -> None:
+    """Attach a generated response field to a validation failure.
+
+    Raises:
+        ValueError:
+            If the field validator rejects the generated response field.
+    """
+    try:
+        validator()
+    except ValueError as error:
+        raise ValueError(f"{field}: {error}") from error
 
 
 def _validate_job_title(
@@ -227,13 +314,20 @@ def parse_descriptions(
     """
     try:
         descriptions = PersonaDescriptions.model_validate_json(content)
+    except ValidationError as error:
+        raise ValueError(
+            _format_schema_error(error=error, fields=_DESCRIPTION_FIELDS)
+        ) from error
+    try:
         generated = (
             attributes
             if isinstance(attributes, GeneratedAttributes)
             else GeneratedAttributes.model_validate(attributes)
         )
     except ValidationError as error:
-        raise ValueError(str(error)) from error
+        raise ValueError(
+            _format_schema_error(error=error, fields=_ATTRIBUTE_FIELDS)
+        ) from error
     context = _context_values(demographic)
     for field, text in descriptions.model_dump().items():
         allowed_terms = (
@@ -241,14 +335,22 @@ def parse_descriptions(
             if field == "persona" and str(context.get("detailed_status_code")) == "10"
             else ()
         )
-        _validate_text(
-            text=text, require_danish=True, allowed_unsupported_terms=allowed_terms
+        _validate_field(
+            field=field,
+            validator=lambda text=text, allowed_terms=allowed_terms: _validate_text(
+                text=text, require_danish=True, allowed_unsupported_terms=allowed_terms
+            ),
         )
-    _validate_persona(text=descriptions.persona, context=context, attributes=generated)
+    _validate_field(
+        field="persona",
+        validator=lambda: _validate_persona(
+            text=descriptions.persona, context=context, attributes=generated
+        ),
+    )
     texts = list(descriptions.model_dump().values())
     normalized = [_normalize(text=text) for text in texts]
     if len(set(normalized)) != len(normalized):
-        raise ValueError("Persona descriptions must not be exact duplicates")
+        raise ValueError("persona: Persona descriptions must not be exact duplicates")
     return descriptions
 
 
