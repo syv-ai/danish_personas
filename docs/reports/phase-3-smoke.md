@@ -9,7 +9,7 @@ generation-3 change: its six-description results are not evidence for the curren
 six-text grounded-persona schema or validation gates. The old run is retained for
 historical facts only and cannot be resumed under generation 3. It predates the
 mandatory Danish `origin_country_da` provider boundary and validator
-`persona-safety-v14`.
+`persona-safety-v15`.
 
 The run used the first three persona identifiers from the checksum-locked, stratified
 Phase-3 seed file. Generation preserved the existing demographic and independently

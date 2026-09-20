@@ -7,7 +7,7 @@ this run must not be described as a 1,000-person dataset. This is a historical
 generation-contract v1 pilot. Its partial checkpoints are retained for experiment
 evidence only and are not resumable under generation contract 3. It predates the
 mandatory Danish `origin_country_da` provider boundary and validator
-`persona-safety-v14`.
+`persona-safety-v15`.
 
 The intended input was the complete 1,000-row frozen Phase-3 sample:
 

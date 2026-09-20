@@ -129,11 +129,16 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - No invocation can request more than five rows. The deliberately stratified 1,000-row
   text-development input is separate from the 2,000-row Phase-2 smoke run.
 - Generated attributes and all six generation-3 persona descriptions satisfy strict
-  schemas: five specialised texts plus one short, grounded `persona`. The persona
-  contains age, statistical sex, municipality, education, the exact Danish
-  `origin_country_da` label, an official-job-function-grounded synthetic job title or
-  current nonemployee status, two or three interests in prose, and cautious OCEAN
-  tendencies. `visual_persona` is not a generation-3 field.
+  schemas: five specialised texts plus one short, grounded `persona`. Stage-one
+  interests are lowercase Danish common-noun phrases without terminal punctuation.
+  The persona embeds two or three interests in running prose, preserving lowercase
+  except at sentence start, plus cautious OCEAN tendencies. `visual_persona` is not a
+  generation-3 field.
+- The persona contains the exact natural clauses `han/hun er <n> år`, `bor i
+  <municipality>`, `kommer fra <origin_country_da>`, one canonical education clause,
+  and `arbejder som <allowlisted title>` or `er <canonical status>`. Only
+  sentence-initial capitalisation may vary. Redundant sex nouns and data-model jargon
+  are rejected.
 - Both provider stages receive human-readable municipality, the official Danish
   `origin_country_da`, and job-function labels, plus the reviewed allowlist of Danish
   titles for that label, but never origin code, English label, contract metadata, or
@@ -171,8 +176,11 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract 3, validator `persona-safety-v14`, and
-  retain five specialised texts plus one short grounded persona. Release manifest and
+- A release must identify generation contract 3, validator `persona-safety-v15`, and
+  retain five specialised texts plus one short grounded persona using the exact natural
+  clause contract. The pooled `har en ungdoms- eller erhvervsuddannelse` clause is a
+  temporary source-backed level pending a separate Statistics Denmark detailed-
+  education source; no detailed qualification may be inferred. Release manifest and
   evidence use schema 2. It must record that both provider payloads contain approved
   human-readable municipality, Danish origin, and job-function labels only, not origin
   code, English label, contract metadata, or resolutions, and must disclose synthetic

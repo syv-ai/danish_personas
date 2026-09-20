@@ -26,7 +26,7 @@ _ORIGIN_LABEL_CONTRACT_CONTENT = (
 
 
 def bind_origin_contract(payload: dict[str, object]) -> dict[str, object]:
-    """Copy a manifest payload and bind it to the committed origin contract."""
+    """Return a manifest copy bound to the committed origin contract."""
     return payload | origin_contract_fields()
 
 
