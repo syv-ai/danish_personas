@@ -91,10 +91,10 @@ tokens, or generated data artefacts.
 
 ### Script interface
 
-Run scripts directly from the repository root with `uv run`. The public persona workflow
-has two commands:
+Run the three public scripts directly from the repository root with `uv run`:
 
 ```bash
+uv run src/scripts/fix_dot_env_file.py --help
 uv run src/scripts/generate_persona.py --help
 uv run src/scripts/build_dataset.py --help
 ```
@@ -105,140 +105,35 @@ generates a requested number of personas, saves the merged Parquet dataset below
 `config/config.yaml` by default. The dataset builder can optionally package, verify, and
 upload an approved release to a Hugging Face dataset pull request.
 
-The remaining scripts restore and prepare the pinned Statistics Denmark sources,
-generate and freeze deterministic demographic inputs, and run validation gates. They
-are maintenance commands required for clean-clone reproducibility, not one-off data
-migrations. See [`docs/cli.md`](docs/cli.md) for the complete script list.
+When `--input` is omitted, either persona script automatically restores the committed
+archive when necessary, prepares and validates the deterministic source bundle, runs
+and validates the smoke and statistical demographic stages, and freezes the standard
+1,000-row sample. Existing content-addressed artefacts are reused. When `--input` is
+provided, its adjacent `.manifest.json` is used.
 
-### Regenerate development data
+Source acquisition, archive packing and restoration, deterministic generation, sample
+freezing, and validation remain importable maintenance services rather than public
+scripts. See [`docs/cli.md`](docs/cli.md) for the three-script interface.
 
-The following commands restore the seven exact Statistics Denmark aggregate snapshots
-and the official geography classification snapshot, prepare a local source bundle,
-generate 2,000 deterministic smoke records, and validate every stage without network
-access. They print the new content-addressed IDs; do not copy historical IDs into new
-claims. The archive and attribution are documented in
+### Regenerate deterministic prerequisites
+
+The persona scripts prepare these prerequisites automatically. To invoke the underlying
+maintenance services from Python, call
+`danish_personas.workflows.prepare_standard_sample()`. It returns the frozen sample and
+its adjacent manifest path, and fails if any source or demographic validation gate
+fails. The committed archive and its attribution are documented in
 [`data/README.md`](data/README.md).
 
-```bash
-set -o pipefail
-
-uv run src/scripts/restore_raw_sources.py
-
-BUNDLE=$( \
-  uv run src/scripts/build_distributions.py \
-    --lock config/sources.lock.yaml \
-    --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260919 \
-    --output-dir data/processed \
-    2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
-)
-test -n "$BUNDLE" || exit 1
-uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
-
-RUN=$( \
-  uv run src/scripts/generate_demographics.py \
-    --bundle "$BUNDLE" \
-    --config config/sampling.yaml \
-    --rows 2000 \
-    --seed 20260914 \
-    --output-dir data/runs/smoke \
-    2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
-)
-test -n "$RUN" || exit 1
-uv run src/scripts/validate_dataset.py demographics \
-  --run "$RUN" \
-  --bundle "$BUNDLE"
-```
-
-The assignments capture the exact paths printed by the CLI commands. They do not select
-an arbitrary newest directory, and fail if a command emits no path.
+The workflow restores the seven exact Statistics Denmark aggregate snapshots and the
+official geography classification snapshot, prepares a local source bundle, generates
+and validates 2,000 deterministic smoke records, then generates and validates 100,000
+statistical records before freezing the 1,000-row development sample. Resolve selectors
+or fetch from StatBank only when intentionally updating the source lock; refreshed
+responses form a new provenance chain rather than reproducing this release.
 
 All generated run identifiers are derived from input checksums, row count, and seed.
-Repeating a valid command reuses the existing run; a checksum mismatch fails instead of
+Repeating a valid workflow reuses existing runs; a checksum mismatch fails instead of
 overwriting data.
-
-### Regenerate canonical data and persona seeds
-
-Use the same ordering for a 100,000-row local run. Resolve selectors or fetch from the
-StatBank API only when intentionally updating the source lock; refreshed responses form
-a new provenance chain rather than reproducing this release.
-
-```bash
-set -o pipefail
-
-uv run src/scripts/restore_raw_sources.py
-
-BUNDLE=$( \
-  uv run src/scripts/build_distributions.py \
-    --lock config/sources.lock.yaml \
-    --categories config/categories.yaml \
-    --raw-dir data/raw-hardened-20260919 \
-    --output-dir data/processed \
-    2>&1 | tee /dev/stderr | sed -n 's/^INFO Prepared bundle: //p' \
-)
-test -n "$BUNDLE" || exit 1
-uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
-
-RUN=$( \
-  uv run src/scripts/generate_demographics.py \
-    --bundle "$BUNDLE" \
-    --config config/sampling.yaml \
-    --rows 100000 \
-    --seed 20260914 \
-    --output-dir data/runs/statistical \
-    2>&1 | tee /dev/stderr | sed -n 's/^INFO Generated run: //p' \
-)
-test -n "$RUN" || exit 1
-uv run src/scripts/validate_dataset.py demographics \
-  --run "$RUN" \
-  --bundle "$BUNDLE"
-```
-
-The assignments capture the exact paths printed by the CLI commands rather than
-selecting an arbitrary newest directory.
-
-Freeze a deterministic 1,000-row input for optional LLM development work only after the
-statistical validation passes. This is a separate, deliberate Phase-3 development size;
-it does not replace the canonical 2,000-row Phase-2 smoke validation:
-
-```bash
-uv run src/scripts/freeze_demographic_sample.py \
-  --run "$RUN" \
-  --rows 1000 \
-  --output "$RUN/text-development-seeds.parquet"
-```
-
-The source preparation stage uses LONS20, FOLK2, FOLK1A, RAS209, RAS202, BEFOLK3, and
-RAS210. LONS20's title, dimension semantics, fixed selector labels, and all selected
-two-digit ARBF English labels are independently frozen in the reviewed
-`config/lons20-contract.yaml`; lock and raw snapshot metadata must each match it. The
-contract checksum and version are part of source provenance and bundle identity. LONS20
-provides an optional sex-conditional synthetic broad job-function marginal for eligible
-employees only. Its incomplete earnings-statistics universe is not an all-worker
-representation. The human-readable job-function label reaches the provider so the model
-can produce a grounded synthetic job title; the job-function code and resolution do not.
-The allocation is conditioned on sex alone, not municipality, origin, education, age,
-OCEAN, or any unsupported joint. FOLK2 is an independent national marginal of official
-IELAND country-of-origin categories for adults. It preserves categories such as
-Stateless and Not stated, but is not ethnicity, citizenship, residence, or appearance.
-Each Phase 2 record receives an independently quota-sampled `origin_country_code`,
-English `origin_country`, and mandatory Danish `origin_country_da`. The English label is
-retained as official source and audit provenance. The Danish label is resolved from the
-archived official FOLK2 `metadata-da` 241-code contract at
-`config/folk2-ieland-labels-da.yaml`, whose source metadata SHA-256 is
-`f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Only the Danish
-label reaches the provider request and exact persona grounding. The code, English
-label, resolution fields, and contract metadata are withheld. Neither label is
-ethnicity, citizenship, residence, or appearance; origin cannot drive culture, religion,
-job, interests, personality, or visual traits. FOLK1A, RAS209, and RAS202 ground the
-distributions; BEFOLK3 and RAS210 are held-out aggregate diagnostics. Municipality
-aggregates remain municipality-keyed throughout source preparation and sampling; they
-are never grouped into regional person-sampling artefacts. Generated records retain
-mandatory `municipality_code` and `municipality` fields. Region is attached only as the
-official parent from the Statistics Denmark classification snapshot, and preparation
-fails unless the locked, hierarchy, and prepared RAS209 municipality sets match exactly.
-The municipality label reaches the provider for grounded prose; its code and resolution
-do not.
 
 ## Optional LLM workflow
 
@@ -261,18 +156,20 @@ token; never put the token itself in `config/config.yaml`. Generation commands e
 immediately and can consume paid requests.
 
 The single-persona command validates the upstream report, sample checksum, prompts,
-schemas, and request limits before emitting the final Danish text. With the current
-validated sample present under `data/runs/statistical`, run:
+schemas, and request limits before emitting the final Danish text. The standard sample
+is prepared automatically when needed:
 
 ```bash
 uv run src/scripts/generate_persona.py
 ```
 
-Use `--input` and `--sample-manifest` to select another current frozen sample. Each
-invocation samples one demographic locally, then starts a fresh model request to return
-both structured attributes and a detailed Danish `persona`. Direct invocations do not
-reuse earlier persona checkpoints. Only approved human-readable fields reach the provider. Source codes, resolution fields, the English origin label,
-and origin-contract metadata remain withheld.
+Use `--input` to select another current frozen sample; its adjacent `.manifest.json`
+is used automatically. Without `--input`, the deterministic prerequisites are prepared
+first. Each invocation samples one demographic locally, then starts a fresh model request
+to return both structured attributes and a detailed Danish `persona`. Direct invocations
+do not reuse earlier persona checkpoints. Only approved human-readable fields reach the
+provider. Source codes, resolution fields, the English origin label, and origin-contract
+metadata remain withheld.
 
 For a larger dataset, enter the provider's current list prices. Use zero only when the
 configured endpoint is genuinely free:
@@ -285,9 +182,8 @@ read -r -p "Current output price (USD per million tokens): " \
 
 uv run src/scripts/build_dataset.py \
   --rows 10 \
-  --batch-size 5 \
   --concurrency 1 \
-  --maximum-total-requests 30 \
+  --request-limit 30 \
   --input-price-per-million "$INPUT_PRICE_PER_MILLION" \
   --output-price-per-million "$OUTPUT_PRICE_PER_MILLION"
 ```
@@ -296,12 +192,12 @@ The builder limits each shard to five rows, validates and merges all shards, rec
 request/token/cost accounting, shows `tqdm` progress on stderr, and writes only the
 completed Parquet path to stdout.
 
-Passing `--hf-repo OWNER/DATASET` additionally requires the blinded-review attestation,
-enabled release policy, dataset card, licence, repository root, and release output
-directory options shown by `--help`. The script packages and independently verifies the
-release before uploading it to a Hugging Face dataset pull request. Authentication comes
-from the standard `HF_TOKEN` or cached Hugging Face credentials; tokens are never CLI
-arguments. Re-running after review resumes already validated generation shards.
+Passing `--hf-repo OWNER/DATASET` additionally requires `--attestation`, `--policy`,
+`--dataset-card`, and `--licence`. The script packages the release below
+`<output-dir>/releases`, uses the current working directory as repository root, and
+independently verifies it before uploading to a Hugging Face dataset pull request.
+Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
+tokens are never CLI arguments. Re-running after review resumes already validated generation shards.
 
 ## Outputs and data handling
 

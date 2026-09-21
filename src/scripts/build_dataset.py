@@ -13,8 +13,8 @@ from danish_personas.generation.report import validate_persona_pilot
 from danish_personas.release.packager import package_release
 from danish_personas.release.upload import upload_release
 from danish_personas.release.verifier import verify_release
+from danish_personas.workflows import prepare_standard_sample
 
-DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -23,14 +23,8 @@ LOGGER = logging.getLogger(__name__)
     "--input",
     "input_path",
     type=click.Path(path_type=Path),
-    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.parquet",
-    show_default=True,
-)
-@click.option(
-    "--sample-manifest",
-    type=click.Path(path_type=Path),
-    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.manifest.json",
-    show_default=True,
+    default=None,
+    help="Frozen sample Parquet path. Prepare the standard sample when omitted.",
 )
 @click.option(
     "--config",
@@ -46,56 +40,24 @@ LOGGER = logging.getLogger(__name__)
     show_default=True,
 )
 @click.option("--rows", type=click.IntRange(min=1), required=True)
-@click.option("--batch-size", type=click.IntRange(min=1, max=5), default=5)
 @click.option("--concurrency", type=click.IntRange(min=1, max=8), default=4)
-@click.option("--delay-between-batches", type=click.FloatRange(min=0), default=0.0)
-@click.option("--maximum-total-requests", type=click.IntRange(min=1), required=True)
+@click.option("--request-limit", type=click.IntRange(min=1), required=True)
 @click.option("--input-price-per-million", type=click.FloatRange(min=0), required=True)
 @click.option("--output-price-per-million", type=click.FloatRange(min=0), required=True)
 @click.option(
     "--hf-repo", default=None, help="Dataset repository to publish after review."
 )
-@click.option(
-    "--attestation", "--attestation-path", type=click.Path(path_type=Path), default=None
-)
-@click.option(
-    "--policy",
-    "--release-policy",
-    "--policy-path",
-    type=click.Path(path_type=Path),
-    default=None,
-)
-@click.option(
-    "--dataset-card",
-    "--dataset-card-path",
-    type=click.Path(path_type=Path),
-    default=None,
-)
-@click.option(
-    "--licence",
-    "--license",
-    "--licence-path",
-    type=click.Path(path_type=Path),
-    default=None,
-)
-@click.option("--repository-root", type=click.Path(path_type=Path), default=None)
-@click.option(
-    "--release-output-parent",
-    "--release-output-dir",
-    "--output-parent",
-    type=click.Path(path_type=Path),
-    default=None,
-)
+@click.option("--attestation", type=click.Path(path_type=Path), default=None)
+@click.option("--policy", type=click.Path(path_type=Path), default=None)
+@click.option("--dataset-card", type=click.Path(path_type=Path), default=None)
+@click.option("--licence", type=click.Path(path_type=Path), default=None)
 def main(
-    input_path: Path,
-    sample_manifest: Path,
+    input_path: Path | None,
     config_path: Path,
     output_dir: Path,
     rows: int,
-    batch_size: int,
     concurrency: int,
-    delay_between_batches: float,
-    maximum_total_requests: int,
+    request_limit: int,
     input_price_per_million: float,
     output_price_per_million: float,
     hf_repo: str | None,
@@ -103,8 +65,6 @@ def main(
     policy: Path | None,
     dataset_card: Path | None,
     licence: Path | None,
-    repository_root: Path | None,
-    release_output_parent: Path | None,
 ) -> None:
     """Build a validated dataset, optionally packaging and uploading its release.
 
@@ -116,16 +76,20 @@ def main(
     """
     configure_cli_logging()
     LOGGER.info("Starting persona dataset build for %s row(s)", rows)
-    release_paths: tuple[Path, Path, Path, Path, Path, Path] | None = None
     if hf_repo is not None:
-        release_paths = _require_release_options(
+        _require_release_options(
             attestation=attestation,
             policy=policy,
             dataset_card=dataset_card,
             licence=licence,
-            repository_root=repository_root,
-            release_output_parent=release_output_parent,
         )
+    if input_path is None:
+        try:
+            input_path, sample_manifest = prepare_standard_sample()
+        except Exception as error:
+            raise click.ClickException(str(error)) from error
+    else:
+        sample_manifest = input_path.with_suffix(".manifest.json")
 
     progress = tqdm(total=rows, unit="row", file=sys.stderr)
     try:
@@ -136,10 +100,10 @@ def main(
             config_path=config_path,
             output_dir=output_dir,
             rows=rows,
-            batch_size=batch_size,
+            batch_size=5,
             concurrency=concurrency,
-            delay_between_batches=delay_between_batches,
-            maximum_total_requests=maximum_total_requests,
+            delay_between_batches=0.0,
+            maximum_total_requests=request_limit,
             input_price_per_million=input_price_per_million,
             output_price_per_million=output_price_per_million,
             progress_callback=progress.update,
@@ -150,24 +114,19 @@ def main(
             raise ValueError("Persona dataset failed validation")
         output_path = _merged_output_path(pilot_dir=pilot_dir)
         if hf_repo is not None:
-            assert release_paths is not None
-            (
-                attestation_path,
-                policy_path,
-                dataset_card_path,
-                licence_path,
-                repository_path,
-                release_parent,
-            ) = release_paths
+            assert attestation is not None
+            assert policy is not None
+            assert dataset_card is not None
+            assert licence is not None
             LOGGER.info("Validation passed; packaging release")
             result = package_release(
                 pilot_dir=pilot_dir,
-                attestation_path=attestation_path,
-                policy_path=policy_path,
-                dataset_card_path=dataset_card_path,
-                licence_path=licence_path,
-                repository_root=repository_path,
-                output_parent=release_parent,
+                attestation_path=attestation,
+                policy_path=policy,
+                dataset_card_path=dataset_card,
+                licence_path=licence,
+                repository_root=Path.cwd(),
+                output_parent=output_dir / "releases",
             )
             verify_release(
                 release_dir=result.path, expected_manifest_sha256=result.manifest_sha256
@@ -201,18 +160,8 @@ def _require_release_options(
     policy: Path | None,
     dataset_card: Path | None,
     licence: Path | None,
-    repository_root: Path | None,
-    release_output_parent: Path | None,
-) -> tuple[Path, Path, Path, Path, Path, Path]:
-    """Require every release-boundary input when publication is requested.
-
-    Returns:
-        The six paths required by the release packager.
-
-    Raises:
-        click.ClickException:
-            If a release-boundary input is missing.
-    """
+) -> None:
+    """Require every release-boundary input when publication is requested."""
     missing = [
         name
         for name, value in (
@@ -220,29 +169,11 @@ def _require_release_options(
             ("--policy", policy),
             ("--dataset-card", dataset_card),
             ("--licence", licence),
-            ("--repository-root", repository_root),
-            ("--release-output-parent", release_output_parent),
         )
         if value is None
     ]
     if missing:
         raise click.ClickException("--hf-repo requires: " + ", ".join(missing))
-    assert (
-        attestation is not None
-        and policy is not None
-        and dataset_card is not None
-        and licence is not None
-        and repository_root is not None
-        and release_output_parent is not None
-    )
-    return (
-        attestation,
-        policy,
-        dataset_card,
-        licence,
-        repository_root,
-        release_output_parent,
-    )
 
 
 if __name__ == "__main__":

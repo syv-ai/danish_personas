@@ -5,14 +5,14 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner, Result
 
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import SnapshotManifest
 from danish_personas.sampling.generator import generate_records
+from danish_personas.sources.archive import RAW_DIRECTORY, restore_raw_sources
+from danish_personas.sources.exceptions import SourceArchiveError
 from danish_personas.sources.prepare import prepare_bundle
 from danish_personas.validation.checks import validate_demographics, validate_sources
-from scripts.restore_raw_sources import RAW_DIRECTORY, main
 
 PROJECT_ROOT = Path(__file__).parents[2]
 ARCHIVE_PATH = PROJECT_ROOT / "data" / f"{RAW_DIRECTORY}.tar.zst"
@@ -21,8 +21,7 @@ ARCHIVE_PATH = PROJECT_ROOT / "data" / f"{RAW_DIRECTORY}.tar.zst"
 def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> None:
     """The committed archive is sufficient for offline source preparation."""
     output_dir = tmp_path / "data"
-    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
-    assert result.exit_code == 0, result.output
+    assert restore_raw_sources(archive_path=ARCHIVE_PATH, output_dir=output_dir) == 45
     assert len(_restored_files(output_dir=output_dir)) == 45
 
     bundle_dir = prepare_bundle(
@@ -71,13 +70,6 @@ def test_committed_archive_restores_a_valid_source_bundle(tmp_path: Path) -> Non
     assert report.passed
 
 
-def _restore(archive_path: Path, output_dir: Path, force: bool = False) -> Result:
-    arguments = ["--archive", str(archive_path), "--output-dir", str(output_dir)]
-    if force:
-        arguments.append("--force")
-    return CliRunner().invoke(main, arguments)
-
-
 def _restored_files(output_dir: Path) -> list[Path]:
     return [path for path in (output_dir / RAW_DIRECTORY).rglob("*") if path.is_file()]
 
@@ -93,12 +85,16 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
     target = output_dir / RAW_DIRECTORY
     target.symlink_to(external, target_is_directory=True)
 
-    refused = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
-    assert refused.exit_code != 0
+    with pytest.raises(SourceArchiveError):
+        restore_raw_sources(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert target.is_symlink()
 
-    restored = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
-    assert restored.exit_code == 0, restored.output
+    assert (
+        restore_raw_sources(
+            archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True
+        )
+        == 45
+    )
     assert target.is_dir() and not target.is_symlink()
     assert marker.read_text(encoding="utf-8") == "untouched"
 
@@ -106,8 +102,7 @@ def test_force_replaces_target_symlink_without_following_it(tmp_path: Path) -> N
 def test_preparation_rejects_unexpected_missing_origin_code(tmp_path: Path) -> None:
     """Preparation rejects a selected origin code removed from a valid snapshot."""
     output_dir = tmp_path / "data"
-    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
-    assert result.exit_code == 0, result.output
+    restore_raw_sources(archive_path=ARCHIVE_PATH, output_dir=output_dir)
 
     snapshot_dir = next((output_dir / RAW_DIRECTORY).glob("folk2/*"))
     data_path = snapshot_dir / "data.csv"
@@ -153,12 +148,16 @@ def test_restore_refuses_existing_target_without_force(tmp_path: Path) -> None:
     stale = target / "stale.txt"
     stale.write_text("preserve on refusal")
 
-    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir)
-    assert result.exit_code != 0
+    with pytest.raises(SourceArchiveError):
+        restore_raw_sources(archive_path=ARCHIVE_PATH, output_dir=output_dir)
     assert stale.read_text(encoding="utf-8") == "preserve on refusal"
 
-    result = _restore(archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True)
-    assert result.exit_code == 0, result.output
+    assert (
+        restore_raw_sources(
+            archive_path=ARCHIVE_PATH, output_dir=output_dir, force=True
+        )
+        == 45
+    )
     assert not stale.exists()
     assert len(_restored_files(output_dir=output_dir)) == 45
 
@@ -181,8 +180,8 @@ def test_restore_rejects_unsafe_members(
     _write_archive(path=archive_path, name=name, member_type=member_type)
     output_dir = tmp_path / "data"
 
-    result = _restore(archive_path=archive_path, output_dir=output_dir)
-    assert result.exit_code != 0
+    with pytest.raises(SourceArchiveError):
+        restore_raw_sources(archive_path=archive_path, output_dir=output_dir)
     assert not (tmp_path / "escape.txt").exists()
     assert not Path("/tmp/danish-personas-absolute.txt").exists()
     assert not output_dir.exists()

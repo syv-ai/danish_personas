@@ -12,8 +12,8 @@ from danish_personas.generation.pipeline import generate_personas
 from danish_personas.generation.report import validate_persona_run
 from danish_personas.io import sha256_file
 from danish_personas.models import FrozenSampleManifest
+from danish_personas.workflows import prepare_standard_sample
 
-DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -22,14 +22,8 @@ LOGGER = logging.getLogger(__name__)
     "--input",
     "input_path",
     type=click.Path(path_type=Path),
-    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.parquet",
-    show_default=True,
-)
-@click.option(
-    "--sample-manifest",
-    type=click.Path(path_type=Path),
-    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.manifest.json",
-    show_default=True,
+    default=None,
+    help="Frozen sample Parquet path. Prepare the standard sample when omitted.",
 )
 @click.option(
     "--config",
@@ -45,10 +39,7 @@ LOGGER = logging.getLogger(__name__)
     show_default=True,
 )
 def main(
-    input_path: Path,
-    sample_manifest: Path,
-    config_path: Path,
-    output_dir: Path,
+    input_path: Path | None, config_path: Path, output_dir: Path
 ) -> None:
     """Generate exactly one persona and write only its text to stdout.
 
@@ -61,6 +52,10 @@ def main(
     configure_cli_logging()
     LOGGER.info("Loading and validating persona inputs")
     try:
+        if input_path is None:
+            input_path, sample_manifest = prepare_standard_sample()
+        else:
+            sample_manifest = input_path.with_suffix(".manifest.json")
         sampled_offset = _sample_offset(
             input_path=input_path, sample_manifest_path=sample_manifest
         )
@@ -118,7 +113,6 @@ def _sample_offset(*, input_path: Path, sample_manifest_path: Path) -> int:
     if sha256_file(input_path) != manifest.sha256:
         raise ValueError("Frozen sample checksum does not match its manifest")
     return secrets.randbelow(row_count)
-
 
 
 if __name__ == "__main__":

@@ -4,17 +4,12 @@
 to build the Danish persona demographic distributions. It holds seven Statistics Denmark
 StatBank table snapshots and the official Statistics Denmark classification snapshot
 that supplies the region, landsdel, and municipality hierarchy. The archive contains
-only public aggregate data and no personal microdata. Restore its 45 files with Python
-3.14:
-
-```bash
-uv run src/scripts/restore_raw_sources.py
-```
-
-The command creates `data/raw-hardened-20260919/`. The merged 20260918 source chain is
-retained unchanged. Derived source bundles, records, and LLM outputs remain ignored by
-Git and can be rebuilt using the main
-[developer setup guide](../README.md#developer-setup-guide).
+only public aggregate data and no personal microdata. The three public persona scripts restore its 45 files automatically when the standard
+input workflow needs them. The same operation remains available as the importable
+`danish_personas.sources.archive.restore_raw_sources` maintenance service. It creates
+`data/raw-hardened-20260919/`. The merged 20260918 source chain is retained unchanged.
+Derived source bundles, records, and LLM outputs remain ignored by Git and can be rebuilt
+using the main [developer setup guide](../README.md#developer-setup-guide).
 
 LONS20 supplies 84 cells: exactly 42 two-digit DISCO-08 job-function groups for each of
 women and men. Its official 2024 counts total 881,774 women and 919,819 men. The

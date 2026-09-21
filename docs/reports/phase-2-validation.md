@@ -16,34 +16,18 @@ bundle schema 6.
 
 ## Regeneration commands
 
-```bash
-rm -rf data/regeneration-20260919
-mkdir -p data/regeneration-20260919
-uv run src/scripts/restore_raw_sources.py \
-  --archive data/raw-hardened-20260919.tar.zst \
-  --output-dir data/regeneration-20260919
-uv run src/scripts/build_distributions.py \
-  --lock config/sources.lock.yaml \
-  --categories config/categories.yaml \
-  --raw-dir data/regeneration-20260919/raw-hardened-20260919 \
-  --output-dir data/regeneration-20260919/processed
-uv run src/scripts/validate_dataset.py sources \
-  --bundle data/regeneration-20260919/processed/cfc1b56f5586a2d7
-uv run src/scripts/generate_demographics.py \
-  --bundle data/regeneration-20260919/processed/cfc1b56f5586a2d7 \
-  --config config/sampling.yaml --rows 2000 --seed 20260914 \
-  --output-dir data/regeneration-20260919/runs/smoke
-uv run src/scripts/validate_dataset.py demographics \
-  --run data/regeneration-20260919/runs/smoke/f449f1de01d18c08 \
-  --bundle data/regeneration-20260919/processed/cfc1b56f5586a2d7
-uv run src/scripts/generate_demographics.py \
-  --bundle data/regeneration-20260919/processed/cfc1b56f5586a2d7 \
-  --config config/sampling.yaml --rows 100000 --seed 20260914 \
-  --output-dir data/regeneration-20260919/runs/statistical
-uv run src/scripts/validate_dataset.py demographics \
-  --run data/regeneration-20260919/runs/statistical/3ebc00282c621ef2 \
-  --bundle data/regeneration-20260919/processed/cfc1b56f5586a2d7
+The historical command wrappers used for this report are retired. The current public
+persona scripts prepare deterministic prerequisites automatically. The equivalent
+current importable orchestration service is:
+
+```python
+from danish_personas.workflows import prepare_standard_sample
+
+sample_path, sample_manifest_path = prepare_standard_sample()
 ```
+
+This report retains the historical IDs and checksums below as evidence only; invoking
+the current service produces current content-addressed artefacts.
 
 ## Artefacts
 
