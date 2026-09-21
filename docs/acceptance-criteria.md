@@ -119,7 +119,7 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 
 ## Persona runs
 
-- The root Hydra configuration names the endpoint and model explicitly. Each invocation
+- The Hydra configuration names the endpoint and model explicitly. Each invocation
   remains bounded by row and HTTP-request limits.
 - The input checksum and successful Phase-2 validation report match the upstream run.
   The upstream sampler schema must be version 6 and the frozen-sample schema must be

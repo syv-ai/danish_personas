@@ -19,10 +19,10 @@ from danish_personas.release.packager import ReleasePackagingError
 def test_package_captures_root_generation_config(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The root Hydra config is captured as the effective generation config."""
+    """The Hydra config is captured as the effective generation config."""
     result = _package(release_case, monkeypatch)
     assert (result.path / "provenance/config/config.yaml").read_bytes() == (
-        release_case.repository / "config.yaml"
+        release_case.repository / "config/config.yaml"
     ).read_bytes()
 
 
@@ -139,7 +139,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         sample_manifest_file=Path("sample-manifest.json"),
         input_sha256="a" * 64,
         ordered_persona_ids_sha256="b" * 64,
-        generation_config_file=Path("config.yaml"),
+        generation_config_file=Path("config/config.yaml"),
         generation_config_sha256=release_case.manifest.generation_config_sha256,
         generation_context_sha256=release_case.manifest.generation_context_sha256,
         origin_label_contract_file=release_case.manifest.origin_label_contract_file,

@@ -30,7 +30,7 @@ DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
     "--config",
     "config_path",
     type=click.Path(path_type=Path),
-    default=Path("config.yaml"),
+    default=Path("config/config.yaml"),
     show_default=True,
 )
 @click.option(

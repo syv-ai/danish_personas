@@ -301,7 +301,7 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
     )
     mapping_path = root / "config" / "job-function-titles.yaml"
     mapping_path.write_bytes((Path("config") / "job-function-titles.yaml").read_bytes())
-    config_path = root / "config.yaml"
+    config_path = root / "config/config.yaml"
     config = {
         "base_url": "http://test/v1",
         "model": "test-model",

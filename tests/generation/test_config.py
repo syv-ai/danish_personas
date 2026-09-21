@@ -14,7 +14,7 @@ def test_hydra_resolves_values_and_rejects_obsolete_fields(
     """Hydra interpolation works while removed guard fields remain invalid."""
     monkeypatch.setenv("TEST_GENERATION_MODEL", "resolved-model")
     content = (
-        Path("config.yaml")
+        Path("config/config.yaml")
         .read_text(encoding="utf-8")
         .replace("model: gpt-5.6-sol", "model: ${oc.env:TEST_GENERATION_MODEL}")
     )
@@ -30,7 +30,7 @@ def test_hydra_resolves_values_and_rejects_obsolete_fields(
 
 def test_root_generation_config_has_local_defaults() -> None:
     """The canonical config names the default local endpoint and model."""
-    config = load_generation_config(Path("config.yaml"))
+    config = load_generation_config(Path("config/config.yaml"))
 
     assert config.base_url == "http://127.0.0.1:18080/v1"
     assert config.model == "gpt-5.6-sol"

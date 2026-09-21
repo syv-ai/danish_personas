@@ -201,7 +201,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         providers=("test-provider",),
     )
     config_hashes = {
-        "config.yaml": sha256_file(case.repository / "config.yaml"),
+        "config.yaml": sha256_file(case.repository / "config/config.yaml"),
         **{
             name: sha256_file(case.repository / "config" / name)
             for name in (

@@ -90,7 +90,7 @@ client when testing LLM paths.
 | `config/categories.yaml`             | Canonical demographic and labour-status mappings.         |
 | `config/sampling.yaml`               | Seed, rows, adult age range, region, OCEAN settings.      |
 | `config/validation.yaml`             | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config.yaml`                        | Hydra LLM endpoint, model, prompts, guards, and budgets.  |
+| `config/config.yaml`                 | Hydra LLM endpoint, model, prompts, guards, and budgets.  |
 | `config/prompts/attributes-da.md`    | Danish attributes schema and safety rules.                |
 | `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
 | `config/prompts/personas-da.md`      | Danish v4 persona writing brief and safety rules.         |
@@ -168,7 +168,7 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 3. Generate deterministic demographic/OCEAN records.
 4. Validate the smoke run, then generate and validate the statistical run.
 5. Freeze the stratified text-development sample.
-6. Configure the root `config.yaml` for the intended provider and model.
+6. Configure `config/config.yaml` for the intended provider and model.
 7. Validate each persona run; `generate_persona.py` emits one row, while each
    `build_dataset.py` shard is capped at five rows before merge and pilot validation.
 
@@ -246,12 +246,11 @@ current contracts have been regenerated; use placeholders in instructions.
 - Add tests under `tests/` for behavioural changes. Prefer fixture-based, no-network
   tests.
 - Use Conventional Commits (`docs: ...`, `fix: ...`, `feat: ...`, and so on). Do not
-  commit `.env`, `.name_and_email`, `config/*.local.yaml`, `data/`, tokens, or raw
-  provider data.
+  commit `.env`, `.name_and_email`, `data/`, tokens, or raw provider data.
 
 ## Non-obvious gotchas and safety
 
-- `generate_persona.py` and `build_dataset.py` load the root Hydra `config.yaml` and
+- `generate_persona.py` and `build_dataset.py` load Hydra `config/config.yaml` and
   execute immediately. They require provider reachability and may spend money. Dataset
   generation has its own global request limit and requires current input and output
   prices; use zero only for a genuinely free endpoint. `--concurrency` can issue

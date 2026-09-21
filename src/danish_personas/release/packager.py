@@ -1427,9 +1427,9 @@ def _assert_manifest_bindings(
         config_path=config_path,
     ):
         raise ReleasePackagingError("Job-title mapping binding failed")
-    if attributes_path != config_path.parent / "config/prompts/attributes-da.md":
+    if attributes_path != config_path.parent / "prompts/attributes-da.md":
         raise ReleasePackagingError("Generation attributes prompt path binding failed")
-    if personas_path != config_path.parent / "config/prompts/personas-da.md":
+    if personas_path != config_path.parent / "prompts/personas-da.md":
         raise ReleasePackagingError("Generation personas prompt path binding failed")
     if sha256_file(config_path) != manifest.generation_config_sha256:
         raise ReleasePackagingError("Generation config binding failed")
@@ -1475,7 +1475,7 @@ def _assert_origin_contract_binding(
     """
     if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
         raise ReleasePackagingError("Origin-label contract path binding failed")
-    expected_path = config_path.parent / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
+    expected_path = config_path.parent / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.name
     if origin_contract_path != expected_path:
         raise ReleasePackagingError("Origin-label contract path binding failed")
     if manifest.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
@@ -1505,7 +1505,7 @@ def _mapping_binding_matches(
     expected_path = Path("config/job-function-titles.yaml")
     if config.job_title_mapping != expected_path:
         return False
-    if mapping_path != config_path.parent / expected_path:
+    if mapping_path != config_path.parent / expected_path.name:
         return False
     if manifest.job_title_mapping_file != expected_path:
         return False

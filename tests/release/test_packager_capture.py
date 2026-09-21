@@ -208,7 +208,7 @@ def test_snapshot_materialisation_preserves_repository_and_pilot_paths(
     pilot = tmp_path / "pilot"
     repository.mkdir()
     pilot.mkdir()
-    repository_file = repository / "config.yaml"
+    repository_file = repository / "config/config.yaml"
     pilot_file = pilot / "checkpoints" / "persona.json"
     repository_file.parent.mkdir(exist_ok=True)
     pilot_file.parent.mkdir()
@@ -219,9 +219,11 @@ def test_snapshot_materialisation_preserves_repository_and_pilot_paths(
         inventory=inventory, pilot_dir=pilot, repository_root=repository
     )
     try:
-        assert (snapshot / "repository/config.yaml").read_bytes() == b"repository"
+        assert (
+            snapshot / "repository/config/config.yaml"
+        ).read_bytes() == b"repository"
         assert (snapshot / "pilot/checkpoints/persona.json").read_bytes() == b"pilot"
-        assert not (snapshot / "repository/config.yaml").is_symlink()
+        assert not (snapshot / "repository/config/config.yaml").is_symlink()
         assert not (snapshot / "pilot/checkpoints/persona.json").is_symlink()
     finally:
         shutil.rmtree(snapshot)

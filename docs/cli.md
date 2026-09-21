@@ -24,7 +24,7 @@ clean-clone reproducibility path; they are not one-off migrations.
 
 `generate_persona.py` validates the upstream frozen sample and generated run, stores
 resumable evidence below `data/personas` by default, and writes only the final Danish
-persona plus a newline to stdout. It loads the root Hydra `config.yaml` by default and
+persona plus a newline to stdout. It loads Hydra `config/config.yaml` by default and
 runs immediately. Diagnostics use stderr.
 
 `build_dataset.py` requires `--rows`. It generates validated shards of at most five
@@ -34,7 +34,7 @@ the complete dataset, stores it below `data/persona-datasets` by default, displa
 The request budget, prices, concurrency, input sample, and output paths are explicit CLI
 options.
 
-Neither command loads `.env`. All model settings live in the root `config.yaml`. Set
+Neither command loads `.env`. All model settings live in `config/config.yaml`. Set
 `api_key_env` to an environment-variable name if the provider requires authentication,
 and provide that variable only for the command invocation. Never store token values in
 the configuration. Commands can consume paid provider requests.

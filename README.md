@@ -11,7 +11,7 @@ The design rationale and deferred work are documented in
 ## Status and scope
 
 The source-acquisition, preparation, deterministic sampling, and validation stages are
-implemented. The root Hydra config defaults to a local OpenAI-compatible endpoint. Each
+implemented. The Hydra config defaults to a local OpenAI-compatible endpoint. Each
 direct generation shard is capped at five rows, while a pilot can span multiple shards.
 Release-scale generation and human approval remain pending; schema-2 package verification
 and evidence are required before
@@ -101,9 +101,9 @@ uv run src/scripts/build_dataset.py --help
 
 `generate_persona.py` emits one validated Danish persona to stdout. `build_dataset.py`
 generates a requested number of personas, saves the merged Parquet dataset below
-`data/`, and displays row progress on stderr. Both use the root Hydra `config.yaml` by
-default. The dataset builder can optionally package, verify, and upload an approved
-release to a Hugging Face dataset pull request.
+`data/`, and displays row progress on stderr. Both use the Hydra
+`config/config.yaml` by default. The dataset builder can optionally package, verify, and
+upload an approved release to a Hugging Face dataset pull request.
 
 The remaining scripts restore and prepare the pinned Statistics Denmark sources,
 generate and freeze deterministic demographic inputs, and run validation gates. They
@@ -246,7 +246,8 @@ This workflow is separate from the non-LLM pipeline and may incur provider charg
 sends frozen aggregate-derived records to the configured OpenAI-compatible endpoint.
 Automated checks are necessary but do not replace blinded human review.
 
-All model settings live in the root Hydra [`config.yaml`](config.yaml). Its defaults are:
+All model settings live in Hydra
+[`config/config.yaml`](config/config.yaml). Its defaults are:
 
 ```yaml
 base_url: http://127.0.0.1:18080/v1
@@ -256,7 +257,7 @@ api_key_env: null
 
 Edit `base_url` and `model` there when changing providers or models. If authentication
 is required, set `api_key_env` to the environment-variable name containing the bearer
-token; never put the token itself in `config.yaml`. Generation commands execute
+token; never put the token itself in `config/config.yaml`. Generation commands execute
 immediately and can consume paid requests.
 
 The single-persona command validates the upstream report, sample checksum, prompts,

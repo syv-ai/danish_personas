@@ -168,7 +168,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     )
     pilot = tmp_path / "pilot"
     pilot.mkdir()
-    config_path = repository / "config.yaml"
+    config_path = repository / "config/config.yaml"
     config_path.write_text(
         yaml.safe_dump(generation_config.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",
@@ -297,7 +297,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         input_sha256=input_hash,
         sample_manifest_file=Path("sample-manifest.json"),
         sample_manifest_sha256=sha256_file(sample_manifest),
-        generation_config_file=Path("config.yaml"),
+        generation_config_file=Path("config/config.yaml"),
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context,
         validator_version=VALIDATOR_VERSION,
