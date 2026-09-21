@@ -20,7 +20,7 @@ from danish_personas.origin_labels import (
     validate_origin_contract_reference,
 )
 from danish_personas.sampling.generator import _origin_quota_sample
-from tests.generation.manifest_helpers import origin_contract_fields
+from tests.support.origin import origin_contract_fields
 
 CONTRACT_TEXT = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.read_text(encoding="utf-8")
 

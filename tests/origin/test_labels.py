@@ -22,7 +22,7 @@ from danish_personas.origin_labels import (
 )
 from danish_personas.sources.archive import restore_raw_sources
 
-PROJECT_ROOT = Path(__file__).parents[1]
+PROJECT_ROOT = Path(__file__).parents[2]
 ARCHIVE_PATH = PROJECT_ROOT / "data" / "raw-hardened-20260919.tar.zst"
 
 
@@ -128,6 +128,17 @@ def test_contract_rejects_duplicate_yaml_codes(tmp_path: Path) -> None:
         lambda labels: labels["labels_da"].__setitem__("5122", "danmark"),
         lambda labels: labels["labels_da"].__setitem__("5100", None),
     ],
+    ids=[
+        "missing-code",
+        "extra-code",
+        "malformed-code",
+        "blank-label",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "non-nfc-label",
+        "duplicate-label",
+        "null-label",
+    ],
 )
 def test_contract_rejects_malformed_or_duplicate_labels(
     change: c.Callable[[dict[str, object]], object],
@@ -162,6 +173,7 @@ def test_contract_rejects_missing_and_extra_fields() -> None:
         ("language", "en"),
         ("source_metadata_da_sha256", "0" * 64),
     ],
+    ids=["version", "table-id", "dimension", "language", "metadata-checksum"],
 )
 def test_contract_rejects_wrong_identity_fields(field: str, value: object) -> None:
     """Every immutable contract identity field is checked."""
