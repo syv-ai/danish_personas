@@ -65,18 +65,18 @@ Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is n
 
 ## Tests
 
-| Path                                  | Coverage                                                  |
-| ------------------------------------- | --------------------------------------------------------- |
-| `tests/test_models.py`                | Source-selection contract validation.                     |
-| `tests/test_llm_guard.py`             | Default LLM-disabled guard.                               |
-| `tests/test_non_llm_pipeline.py`      | Deterministic fixture pipeline.                           |
-| `tests/test_source_validation.py`     | Bundle and raw-snapshot checksum/query gates.             |
-| `tests/test_raw_archive.py`           | Archive integrity, safe restoration, byte-stable packing. |
-| `tests/test_classification.py`        | Geography parsing and the StatBank cross-check.           |
-| `tests/test_backoff.py`               | Sparse-cell back-off, ladders, and smoothing.             |
-| `tests/generation/test_client.py`     | Request budgets, retries, rate limits, schemas.           |
-| `tests/generation/test_pipeline.py`   | Resume, provenance, tamper, pilot merging.                |
-| `tests/generation/test_validation.py` | Danish, safety, duplicate-text gates.                     |
+| Path                 | Coverage                                                    |
+| -------------------- | ----------------------------------------------------------- |
+| `tests/cli/`         | Command contracts, guards, delegation, and workflows.       |
+| `tests/generation/`  | Client, pipeline, pilot, provenance, and persona gates.     |
+| `tests/integration/` | Deterministic generation and cross-boundary invariants.     |
+| `tests/models/`      | Strict record and source-selection contracts.               |
+| `tests/origin/`      | Origin labels, source preparation, contracts, and sampling. |
+| `tests/release/`     | Packaging, policy, security, and verifier contracts.        |
+| `tests/sampling/`    | Sparse-cell back-off and job-function allocation.           |
+| `tests/sources/`     | Acquisition, archives, bundles, geography, and StatBank.    |
+| `tests/validation/`  | Dataset validation contracts.                               |
+| `tests/support/`     | Shared factories for synthetic bundles and source rows.     |
 
 Tests must remain offline and must not call a provider. Mock HTTPX or the generation
 client when testing LLM paths.
