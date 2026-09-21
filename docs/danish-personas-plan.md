@@ -215,10 +215,10 @@ identity claims.
 
 #### Generated persona text
 
-- `persona`: one short, grounded Danish text using exact natural clauses for pronoun and
-  age, municipality, origin, broad education, and an allowlisted synthetic job title or
-  canonical current status, while allowing natural use of supplied interests and
-  cautious OCEAN tendencies.
+- `persona`: one short, grounded Danish text preserving pronoun and age, municipality,
+  origin, broad education, and an allowlisted synthetic job title or canonical current
+  status through natural paraphrase, while allowing optional interests and cautious
+  OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
 `origin_country_da`, and job-function labels for this grounding. It does not receive
@@ -774,7 +774,7 @@ A release is complete only when it includes:
 - code revision and environment lock file;
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
-- prepared-bundle 6, sampler 6, frozen-sample 3, generation 3, validator v14, and
+- prepared-bundle 6, sampler 6, frozen-sample 3, generation 4, validator v16, and
   release manifest/evidence 2 version bindings;
 - official FOLK2 English provenance label and Danish 241-code display-label contract,
   including source metadata SHA-256

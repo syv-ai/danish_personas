@@ -265,9 +265,9 @@ current contracts have been regenerated; use placeholders in instructions.
   `origin_country_da`, and job-function labels reach both provider stages; the origin
   code, English `origin_country`, resolution fields, and origin-contract metadata do
   not. The Danish label is also the exact origin fact in the grounded persona.
-  Re-running a valid v3 live run resumes completed records, but v1/v2 checkpoints, the
+  Re-running a valid v4 live run resumes completed records, but v1-v3 checkpoints, the
   previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
-  under v3.
+  under v4.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
