@@ -6,13 +6,13 @@ import hashlib
 import json
 import shutil
 import subprocess
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
 import pytest
 import yaml
+from support import ReleaseCase, coherent_evidence
 
 from danish_personas.generation.models import (
     GeneratedAttributes,
@@ -26,35 +26,15 @@ from danish_personas.io import sha256_file
 from danish_personas.models import DemographicRecord, ValidationReport
 from danish_personas.release import packager
 from danish_personas.release.models import (
-    Accounting,
     ReleaseEvidence,
     ReleasePolicy,
     ReviewAttestation,
-    ShardEvidence,
 )
 
 ROOT = Path(__file__).parents[2]
 PILOT_ID = "b" * 16
 MODEL = "provider/model@revision"
 REVIEWED_AT = datetime(2026, 9, 17, tzinfo=timezone.utc)
-
-
-@dataclass(frozen=True)
-class ReleaseCase:
-    """Paths and contracts for a minimal but complete release input."""
-
-    repository: Path
-    pilot: Path
-    attestation: Path
-    policy: Path
-    card: Path
-    licence: Path
-    output_parent: Path
-    output: Path
-    manifest: PilotManifest
-    attestation_model: ReviewAttestation
-    policy_model: ReleasePolicy
-    report: ValidationReport
 
 
 @pytest.fixture
@@ -133,95 +113,6 @@ def packaged_release(
     assert len(calls) == 1
     assert calls[0].name == "pilot"
     return release_case, result.path, result.manifest_sha256
-
-
-def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
-    """Build evidence whose accounting and file bindings are internally coherent.
-
-    Returns:
-        Strict evidence for the fixture release.
-    """
-    manifest = case.manifest
-    shard = ShardEvidence(
-        shard_id="shard-1",
-        offset=0,
-        rows=10_000,
-        manifest_sha256="a" * 64,
-        report_sha256="b" * 64,
-        output_sha256=manifest.output_sha256,
-        generation_config_sha256=manifest.generation_config_sha256,
-        generation_context_sha256=manifest.generation_context_sha256,
-        origin_label_contract_file=manifest.origin_label_contract_file,
-        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
-        origin_label_contract_version=manifest.origin_label_contract_version,
-        requests=20_000,
-        retries=0,
-        rejected_validation_responses=0,
-        prompt_tokens=0,
-        completion_tokens=0,
-        total_tokens=0,
-        provider_cost_usd=0,
-        providers=("test-provider",),
-    )
-    config_hashes = {
-        name: sha256_file(case.repository / "config" / name)
-        for name in (
-            "generation.yaml",
-            "job-function-titles.yaml",
-            "sources.lock.yaml",
-            "categories.yaml",
-            "sampling.yaml",
-            "validation.yaml",
-            "folk2-ieland-labels-da.yaml",
-        )
-    }
-    return ReleaseEvidence(
-        version=2,
-        pilot_id=manifest.pilot_id,
-        model=manifest.model,
-        rows=manifest.rows,
-        output_sha256=manifest.output_sha256,
-        input_sha256=manifest.input_sha256,
-        sample_manifest_sha256=manifest.sample_manifest_sha256,
-        generation_config_sha256=manifest.generation_config_sha256,
-        generation_context_sha256=manifest.generation_context_sha256,
-        origin_label_contract_file=manifest.origin_label_contract_file,
-        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
-        origin_label_contract_version=manifest.origin_label_contract_version,
-        origin_label_contract_content=manifest.origin_label_contract_content,
-        validator_version=manifest.validator_version,
-        attributes_prompt_sha256=manifest.attributes_prompt_sha256,
-        personas_prompt_sha256=manifest.personas_prompt_sha256,
-        upstream_run_id=manifest.upstream_run_id,
-        sample_source_run_id="source-run",
-        source_bundle_id="bundle",
-        policy_sha256=sha256_file(case.policy),
-        attestation_sha256=sha256_file(case.attestation),
-        licence_sha256=sha256_file(case.licence),
-        code_license_sha256=sha256_file(case.repository / "LICENSE"),
-        uv_lock_sha256=sha256_file(case.repository / "uv.lock"),
-        pilot_validation_report_sha256=(
-            sha256_file(case.pilot / "pilot-validation-report.json")
-            if (case.pilot / "pilot-validation-report.json").exists()
-            else "c" * 64
-        ),
-        config_hashes=config_hashes,
-        shards=(shard,),
-        accounting=Accounting(
-            requests=20_000,
-            retries=0,
-            rejected_validation_responses=0,
-            dropped_rows=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            input_price_per_million_usd=0,
-            output_price_per_million_usd=0,
-            list_price_estimated_cost_usd=0,
-            provider_estimated_cost_usd=0,
-            providers=("test-provider",),
-        ),
-    )
 
 
 @pytest.fixture

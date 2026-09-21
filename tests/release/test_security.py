@@ -7,9 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import ReleaseCase
-from test_packager import _package
-from test_verifier import _refresh_artifact
+from support import ReleaseCase, _package, _refresh_artifact
 
 from danish_personas.release import packager
 from danish_personas.release.packager import ReleasePackagingError
@@ -23,6 +21,7 @@ from danish_personas.release.verifier import verify_release
         b"The source is https://example.invalid/path?a=1&b=2.\n",
         b"A plain URL https://example.invalid is public metadata.\n",
     ],
+    ids=["docs-url", "query-url", "plain-url"],
 )
 def test_normal_https_documentation_is_not_a_secret(
     verifier_package: tuple[Path, str], content: bytes
@@ -60,7 +59,9 @@ def test_package_rejects_concurrent_lock(
         _package(release_case, monkeypatch)
 
 
-@pytest.mark.parametrize("mutation", ["head", "origin"])
+@pytest.mark.parametrize(
+    "mutation", ["head", "origin"], ids=["head-change", "origin-change"]
+)
 def test_package_rejects_git_provenance_change_during_install(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
@@ -133,6 +134,7 @@ def test_package_rejects_linked_input_files(
         b"https://example.invalid?api_key=secret\n",
         b"https://example.invalid/#token\n",
     ],
+    ids=["local-path", "windows-path", "api-key", "fragment-token"],
 )
 def test_package_rejects_local_and_secret_card_content(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch, content: bytes
