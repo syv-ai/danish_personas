@@ -1,4 +1,4 @@
-"""Regression tests for source-validation provenance gates."""
+"""Prepared-bundle filesystem and manifest verification tests."""
 
 import os
 from pathlib import Path, PureWindowsPath
@@ -6,111 +6,13 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 import danish_personas.sources.bundle as bundle_module
-from danish_personas.io import sha256_file, sha256_text, write_json
-from danish_personas.models import BundleManifest, SnapshotManifest
-from danish_personas.sampling.generator import generate_records
+from danish_personas.io import sha256_file, write_json
+from danish_personas.models import BundleManifest
 from danish_personas.sources.bundle import (
     _regular_file_inventory,
     verify_prepared_bundle,
 )
-from danish_personas.sources.prepare import _verify_existing_bundle, verify_raw_snapshot
-from danish_personas.validation.checks import validate_demographics, validate_sources
-from tests.test_non_llm_pipeline import _write_bundle
-
-
-def test_missing_prepared_bundle_schema_version_is_rejected_everywhere(
-    tmp_path: Path,
-) -> None:
-    """Consumers reject a valid-looking bundle when its schema is omitted."""
-    bundle_dir, sampling_path, validation_path, categories_path = _write_bundle(
-        root=tmp_path
-    )
-    run_dir = generate_records(
-        bundle_dir=bundle_dir,
-        sampling_config_path=sampling_path,
-        output_dir=tmp_path / "runs",
-        rows=20,
-        seed=42,
-    )
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    payload = manifest.model_dump(mode="json")
-    del payload["prepared_bundle_schema_version"]
-    write_json(path=manifest_path, payload=payload)
-
-    verification_paths = (
-        (
-            "strict manifest model",
-            lambda: BundleManifest.model_validate_json(
-                manifest_path.read_text(encoding="utf-8")
-            ),
-            "Field required",
-        ),
-        (
-            "prepared bundle verifier",
-            lambda: verify_prepared_bundle(bundle_dir=bundle_dir),
-            "Invalid prepared bundle manifest",
-        ),
-        (
-            "source preparation reuse",
-            lambda: _verify_existing_bundle(
-                bundle_dir=bundle_dir, manifest_path=manifest_path
-            ),
-            "Invalid prepared bundle manifest",
-        ),
-        (
-            "source validation",
-            lambda: validate_sources(bundle_dir=bundle_dir),
-            "Invalid prepared bundle manifest",
-        ),
-        (
-            "demographic generation",
-            lambda: generate_records(
-                bundle_dir=bundle_dir,
-                sampling_config_path=sampling_path,
-                output_dir=tmp_path / "other-runs",
-                rows=20,
-                seed=42,
-            ),
-            "Invalid prepared bundle manifest",
-        ),
-        (
-            "demographic validation",
-            lambda: validate_demographics(
-                run_dir=run_dir,
-                bundle_dir=bundle_dir,
-                validation_config_path=validation_path,
-                categories_path=categories_path,
-            ),
-            "Invalid prepared bundle manifest",
-        ),
-    )
-
-    for _, verify, message in verification_paths:
-        with pytest.raises(ValueError, match=message):
-            verify()
-
-
-def test_nested_pass_cannot_override_failed_source_report(tmp_path: Path) -> None:
-    """Source validation requires the top-level report result to pass."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    source_report = bundle_dir / "source-preparation-report.json"
-    write_json(
-        path=source_report,
-        payload={"passed": False, "tables": {"example": {"passed": True}}},
-    )
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    files = dict(manifest.files)
-    files[source_report.name] = sha256_file(source_report)
-    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
-
-    with pytest.raises(ValueError, match="source preparation did not pass"):
-        validate_sources(bundle_dir=bundle_dir)
+from tests.support.bundles import _write_bundle
 
 
 def test_prepared_bundle_inventory_accepts_normal_files(tmp_path: Path) -> None:
@@ -139,8 +41,11 @@ def test_prepared_bundle_manifest_excludes_itself(tmp_path: Path) -> None:
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor race seam")
-@pytest.mark.parametrize("replacement_kind", ["same-size", "symlink", "hardlink"])
+@pytest.mark.parametrize(
+    "replacement_kind",
+    ["same-size", "symlink", "hardlink"],
+    ids=["same-size-replacement", "symlink-replacement", "hardlink-replacement"],
+)
 def test_prepared_bundle_rechecks_path_after_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement_kind: str
 ) -> None:
@@ -191,7 +96,11 @@ def test_prepared_bundle_verifier_accepts_windows_manifest_keys(tmp_path: Path) 
     assert verified.files == windows_files
 
 
-@pytest.mark.parametrize("kind", ["symlink", "hardlink", "case", "mixed"])
+@pytest.mark.parametrize(
+    "kind",
+    ["symlink", "hardlink", "case", "mixed"],
+    ids=["symlink", "hardlink", "case-collision", "separator-alias"],
+)
 def test_prepared_bundle_verifier_rejects_inventory_attacks(
     tmp_path: Path, kind: str
 ) -> None:
@@ -251,7 +160,9 @@ def test_prepared_bundle_verifier_rejects_inventory_extras_and_missing_files(
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
-@pytest.mark.parametrize("alias_kind", ["separator", "case"])
+@pytest.mark.parametrize(
+    "alias_kind", ["separator", "case"], ids=["separator-alias", "case-alias"]
+)
 def test_prepared_bundle_verifier_rejects_manifest_aliases(
     tmp_path: Path, alias_kind: str
 ) -> None:
@@ -278,7 +189,6 @@ def test_prepared_bundle_verifier_rejects_manifest_aliases(
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is unsupported")
 def test_prepared_bundle_verifier_rejects_nonregular_inventory_entry(
     tmp_path: Path,
 ) -> None:
@@ -307,6 +217,21 @@ def test_prepared_bundle_verifier_rejects_nonregular_inventory_entry(
         "\\\\?\\C:\\device.txt",
         "normal\\..\\escape.txt",
     ],
+    ids=[
+        "empty",
+        "dot",
+        "dot-component",
+        "duplicate-separator",
+        "parent-component",
+        "parent-escape",
+        "absolute-posix",
+        "rooted-windows",
+        "drive-relative",
+        "drive-absolute",
+        "unc-path",
+        "device-path",
+        "normalised-parent-escape",
+    ],
 )
 def test_prepared_bundle_verifier_rejects_unsafe_manifest_paths(
     tmp_path: Path, unsafe_path: str
@@ -326,70 +251,11 @@ def test_prepared_bundle_verifier_rejects_unsafe_manifest_paths(
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
-def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:
-    """A self-consistent manifest cannot bless a query changed after locking."""
-    contents = {
-        "metadata-en.json": "{}\n",
-        "metadata-da.json": "{}\n",
-        "query.json": "{}\n",
-        "data.csv": "value\n1\n",
-        "response-headers.json": "{}\n",
-    }
-    for name, content in contents.items():
-        (tmp_path / name).write_text(content, encoding="utf-8", newline="\n")
-    snapshot = SnapshotManifest(
-        table_id="TEST",
-        role="test_role",
-        period="2024",
-        metadata_sha256=sha256_file(tmp_path / "metadata-en.json"),
-        metadata_da_sha256=sha256_file(tmp_path / "metadata-da.json"),
-        query_sha256=sha256_file(tmp_path / "query.json"),
-        data_sha256=sha256_file(tmp_path / "data.csv"),
-        response_headers_sha256=sha256_file(tmp_path / "response-headers.json"),
-        retrieved_at="2026-09-14T00:00:00+00:00",
-        data_bytes=(tmp_path / "data.csv").stat().st_size,
-    )
-    with pytest.raises(ValueError, match="does not match source lock"):
-        verify_raw_snapshot(
-            snapshot_dir=tmp_path,
-            snapshot=snapshot,
-            table_id="TEST",
-            role="test_role",
-            period="2024",
-            expected_query='{"table":"TEST"}\n',
-        )
-    assert snapshot.query_sha256 == sha256_text(contents["query.json"])
-
-
-def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
-    tmp_path: Path,
-) -> None:
-    """A changed semantic result cannot overwrite an earlier passing report."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    assert validate_sources(bundle_dir=bundle_dir).passed
-
-    source_report = bundle_dir / "source-preparation-report.json"
-    write_json(
-        path=source_report,
-        payload={
-            "passed": True,
-            "origin_country_checks": {"positive_total": {"passed": False}},
-        },
-    )
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    files = dict(manifest.files)
-    files[source_report.name] = sha256_file(source_report)
-    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
-
-    with pytest.raises(ValueError, match="differs from recomputed validation"):
-        validate_sources(bundle_dir=bundle_dir)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows native inventory contract")
-@pytest.mark.parametrize("kind", ["normal", "symlink", "hardlink"])
+@pytest.mark.parametrize(
+    "kind",
+    ["normal", "symlink", "hardlink"],
+    ids=["regular-file", "symlink", "hardlink"],
+)
 def test_windows_native_inventory_contract(tmp_path: Path, kind: str) -> None:
     """Windows inventory uses native identity for files and links."""
     bundle_dir, _, _, _ = _write_bundle(root=tmp_path)

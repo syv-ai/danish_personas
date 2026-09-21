@@ -83,6 +83,12 @@ def test_geography_lookup_uses_official_names_and_parents() -> None:
             '3;"101";3;;\n'
         ),
     ],
+    ids=[
+        "blank-region-code",
+        "blank-region-title",
+        "blank-landsdel-title",
+        "blank-municipality-title",
+    ],
 )
 def test_hierarchy_rejects_blank_codes_titles_and_parents(
     tmp_path: Path, body: str
