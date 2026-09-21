@@ -30,14 +30,23 @@ JOB_TITLE = "forretningsspecialist"
 
 
 @pytest.mark.parametrize(
-    "term", ["vedkommende", "personen", "kan være", "ungdoms- eller erhvervsuddannelse"]
+    "status", ["unemployed", "student", "retired", "other", "outside_labour_force"]
 )
-def test_banned_persona_terms_are_case_insensitive_and_token_bounded(term: str) -> None:
-    context = demographic()
-    text = persona(context=context)["persona"]
-    payload = {"persona": text[:-1] + f" {term.upper()}."}
-    with pytest.raises(ValueError, match="prohibited|contract"):
-        parse_descriptions(json.dumps(payload), context, attributes())
+def test_all_current_statuses_are_grounded(status: str) -> None:
+    context = demographic(status=status, job_title=None)
+    generated = attributes(job_title=None)
+    expected = {
+        "unemployed": "ledig",
+        "student": "studerende",
+        "retired": "pensionist",
+        "other": "uden for arbejdsmarkedet",
+        "outside_labour_force": "uden for arbejdsmarkedet",
+    }[status]
+    assert parse_descriptions(
+        json.dumps(persona(context=context, employment=f"er {expected}")),
+        context,
+        generated,
+    )
 
 
 def attributes(*, job_title: str | None = JOB_TITLE) -> dict[str, object]:
@@ -119,6 +128,62 @@ def persona(
     return {"persona": text}
 
 
+@pytest.mark.parametrize(
+    ("sex", "opposing"),
+    [
+        ("female", "han"),
+        ("female", "ham"),
+        ("female", "hans"),
+        ("male", "hun"),
+        ("male", "hende"),
+        ("male", "hendes"),
+    ],
+)
+def test_all_danish_pronoun_paradigms_are_consistent(sex: str, opposing: str) -> None:
+    context = demographic(sex=sex)
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + f" {opposing.capitalize()} læser."
+    with pytest.raises(ValueError, match="pronoun"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "noun",
+    [
+        "mand",
+        "manden",
+        "mandens",
+        "mands",
+        "mænd",
+        "mændene",
+        "mændenes",
+        "kvinde",
+        "kvinden",
+        "kvindens",
+        "kvinder",
+        "kvinderne",
+        "kvindernes",
+    ],
+)
+def test_all_sex_noun_inflections_are_rejected(noun: str) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + f" {noun} står her."
+    with pytest.raises(ValueError, match="statistical sex"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "term", ["vedkommende", "personen", "kan være", "ungdoms- eller erhvervsuddannelse"]
+)
+def test_banned_persona_terms_are_case_insensitive_and_token_bounded(term: str) -> None:
+    context = demographic()
+    text = persona(context=context)["persona"]
+    payload = {"persona": text[:-1] + f" {term.upper()}."}
+    with pytest.raises(ValueError, match="prohibited|contract"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
 def test_banned_terms_do_not_match_larger_words() -> None:
     context = demographic()
     text = persona(context=context)["persona"][:-1] + " Personenhed er ikke nævnt."
@@ -136,6 +201,77 @@ def test_broad_education_wording_preserves_level(education_level: str) -> None:
     assert parse_descriptions(json.dumps(persona(context=context)), context, parsed)
 
 
+def test_cautious_ocean_paraphrase_is_allowed() -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + " Hun er ofte social."
+    assert parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "vedkommendes",
+        "personen",
+        "personens",
+        "personer",
+        "personerne",
+        "kan måske være",
+        "kan ofte godt være",
+        "ungdoms - eller erhvervsuddannelse",
+        "ungdoms–eller erhvervsuddannelse",
+    ],
+)
+def test_contract_variants_are_rejected(term: str) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + f" {term}."
+    with pytest.raises(ValueError, match="prohibited|contract"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+def test_contradictory_age_is_rejected() -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace("35 år", "36 år")
+    with pytest.raises(ValueError, match="pronoun.*age"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    ("original", "contradiction"),
+    [
+        ("arbejder som forretningsspecialist", "arbejder som analytiker"),
+        ("arbejder som forretningsspecialist", "er studerende"),
+    ],
+)
+def test_contradictory_current_work_is_rejected(
+    original: str, contradiction: str
+) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(original, contradiction)
+    with pytest.raises(ValueError, match="work status"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+@pytest.mark.parametrize(
+    ("original", "contradiction", "message"),
+    [
+        ("bor i København", "bor i Roskilde, men nævner København", "municipality"),
+        ("kommer fra Danmark", "kommer fra Sverige, men nævner Danmark", "origin"),
+    ],
+)
+def test_contradictory_location_and_origin_are_rejected(
+    original: str, contradiction: str, message: str
+) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(original, contradiction)
+    with pytest.raises(ValueError, match=message):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
 def test_description_schema_rejects_removed_fields() -> None:
     payload = persona(context=demographic())
     payload["removed_field"] = "ikke en aktiv kontrakt"
@@ -143,10 +279,68 @@ def test_description_schema_rejects_removed_fields() -> None:
         parse_descriptions(json.dumps(payload), demographic(), attributes())
 
 
+def test_former_work_and_list_syntax_are_rejected() -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "arbejder som", "arbejdede tidligere som"
+    )
+    with pytest.raises(ValueError, match="former|current work"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+    payload = persona(context=context)
+    payload["persona"] = "- " + payload["persona"]
+    with pytest.raises(ValueError, match="prose"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
+def test_job_title_eligibility_and_unsafe_titles() -> None:
+    context = demographic()
+    assert parse_attributes(json.dumps(attributes()), context).job_title == JOB_TITLE
+    with pytest.raises(ValueError, match="allowlisted reviewed title"):
+        parse_attributes(json.dumps(attributes(job_title="analytiker")), context)
+
+    retired = demographic(status="retired", job_title=None)
+    with pytest.raises(ValueError, match="null job_title"):
+        parse_attributes(json.dumps(attributes()), retired)
+
+    for title in ("sundhedsprofessionel med angst", "- forretningsspecialist"):
+        with pytest.raises(ValueError, match="job_title"):
+            parse_attributes(json.dumps(attributes(job_title=title)), context)
+
+
 def test_job_title_must_be_allowlisted() -> None:
     context = demographic()
     with pytest.raises(ValueError, match="allowlisted reviewed title"):
         parse_attributes(json.dumps(attributes(job_title="opfinder")), context)
+
+
+@pytest.mark.parametrize(
+    ("original", "contradiction", "message"),
+    [
+        ("Hun er 35 år", "Hun er ikke 35 år", "pronoun or age"),
+        ("bor i København", "bor ikke i København", "municipality"),
+        ("kommer fra Danmark", "kommer ikke fra Danmark", "origin"),
+        (
+            "har en videregående uddannelse",
+            "har ikke en videregående uddannelse",
+            "education",
+        ),
+        (
+            "arbejder som forretningsspecialist",
+            "arbejder ikke som forretningsspecialist",
+            "current work status",
+        ),
+    ],
+)
+def test_negated_grounding_facts_are_rejected(
+    original: str, contradiction: str, message: str
+) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(original, contradiction)
+    with pytest.raises(ValueError, match=message):
+        parse_descriptions(json.dumps(payload), context, attributes())
 
 
 def test_non_employee_status_is_grounded() -> None:
@@ -156,11 +350,34 @@ def test_non_employee_status_is_grounded() -> None:
     assert parse_descriptions(json.dumps(text), context, generated)
 
 
+def test_ocean_terms_are_checked_independently_and_hedged() -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + " Hun er social."
+    with pytest.raises(ValueError, match="cautious"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+    context["openness_label"] = "high"
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + " Hun er praktisk."
+    with pytest.raises(ValueError, match="incompatible"):
+        parse_descriptions(json.dumps(payload), context, attributes())
+
+
 def test_origin_label_is_not_used_to_infer_sensitive_detail() -> None:
     context = demographic()
     text = persona(context=context)["persona"][:-1] + " Hun omtaler religion."
     with pytest.raises(ValueError, match="sensitive"):
         parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+
+def test_persona_can_be_one_sentence_without_interest_or_personality_counts() -> None:
+    context = demographic()
+    text = (
+        "Hun er 35 år, bor i København, kommer fra Danmark, har en videregående "
+        "uddannelse og arbejder som forretningsspecialist."
+    )
+    assert parse_descriptions(json.dumps({"persona": text}), context, attributes())
 
 
 def test_pronoun_must_remain_consistent() -> None:
@@ -190,6 +407,24 @@ def test_supplied_facts_can_be_naturally_paraphrased() -> None:
         "som forretningsspecialist. Hun holder af en rolig hverdag."
     )
     assert parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "oprindelsesland",
+        "oprindelsesetiket",
+        "brede uddannelsesbaggrund",
+        "uddannelsesniveau",
+        "aktuelle arbejdsforhold",
+    ],
+)
+def test_technical_grounding_wording_is_rejected(phrase: str) -> None:
+    context = demographic()
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"][:-1] + f" {phrase}."
+    with pytest.raises(ValueError, match="redundant or technical"):
+        parse_descriptions(json.dumps(payload), context, attributes())
 
 
 def test_unsupported_family_and_appearance_claims_are_rejected() -> None:

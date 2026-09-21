@@ -80,6 +80,14 @@ FORMER_WORK = re.compile(
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
 DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
+GENERIC_SUBJECT = re.compile(
+    r"\b(?:vedkommend(?:e|es|en|ene)|person(?:en|ens|er|erne|ernes|ers))\b",
+    re.IGNORECASE,
+)
+INTERVENING_KAN_VAERE = re.compile(r"\bkan(?:\s+[\wæøå]+){0,2}\s+være\b", re.IGNORECASE)
+SECONDARY_EDUCATION_DASH = re.compile(
+    r"\bungdoms\s*[-‐‑‒–—―−]\s*eller\s+erhvervsuddannelse\b", re.IGNORECASE
+)
 PERSONA_SEX_NOUNS = (
     "mand",
     "manden",
@@ -438,18 +446,14 @@ def _validate_persona(
     normalized = _normalize(text=text)
     if DETERMINISTIC_CLAIMS.search(normalized):
         raise ValueError("Persona must use cautious, non-deterministic language")
+    if GENERIC_SUBJECT.search(normalized) or INTERVENING_KAN_VAERE.search(normalized):
+        raise ValueError("Persona contains a prohibited generic or contract phrase")
+    if SECONDARY_EDUCATION_DASH.search(text):
+        raise ValueError("Persona contains a prohibited generic or contract phrase")
     sentences = _persona_sentences(text=text)
     _validate_persona_facts(text=text, demographic=context, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
     _validate_pronoun_consistency(text=normalized, context=context)
-    banned_terms = (
-        "vedkommende",
-        "personen",
-        "kan være",
-        "ungdoms- eller erhvervsuddannelse",
-    )
-    if any(_contains_term(normalized, term) for term in banned_terms):
-        raise ValueError("Persona contains a prohibited generic or contract phrase")
     if any(_contains_term(normalized, noun) for noun in PERSONA_SEX_NOUNS):
         raise ValueError("Persona must convey statistical sex only through its pronoun")
     if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
@@ -459,93 +463,250 @@ def _validate_persona(
 
 
 def _persona_sentences(text: str) -> list[str]:
+    """Reject list-shaped output without imposing a sentence-count contract.
+
+    Returns:
+        The prose fragments used by downstream validation.
+
+    Raises:
+        ValueError:
+            If the persona uses list syntax.
+    """
     if LIST_FORM.search(text):
         raise ValueError("Persona must be prose, not a list")
-    sentences = [
-        part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()
-    ]
-    if not 2 <= len(sentences) <= 4 or not text.rstrip().endswith((".", "!", "?")):
-        raise ValueError("persona must contain 2-4 prose sentences")
-    return sentences
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
 
 
 def _validate_persona_facts(
     *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
 ) -> None:
+    """Require supplied facts without accepting a nearby negation.
+
+    The checks use small reviewed vocabularies rather than requiring copied clauses,
+    allowing ordinary Danish paraphrases while rejecting denial or contradiction.
+    """
     facts = build_persona_grounding_facts(
         demographic=demographic, attributes=attributes
     )
     normalized = _normalize(text=text)
-    pronoun = facts.pronoun_age.split(" ", 1)[0]
-    age = str(demographic.get("age", ""))
-    if not _contains_term(normalized, pronoun) or not _contains_term(
-        normalized, f"{age} år"
-    ):
-        raise ValueError("Persona does not preserve the supplied pronoun and age")
+    _validate_age(text=normalized, demographic=demographic)
     for field, value in (
         ("municipality", str(demographic.get("municipality", ""))),
         ("origin", str(demographic.get("origin_country_da", ""))),
     ):
-        if not _contains_term(normalized, value):
-            raise ValueError(f"Persona does not preserve the supplied {field}")
-    education_level = str(demographic.get("education_level", "")).casefold()
-    education_terms = {
-        "primary": ("folkeskolen", "grundskole", "grundskolen"),
-        "secondary_or_vocational": ("ungdomsuddannelse", "erhvervsuddannelse"),
-        "higher_education": ("videregående uddannelse",),
-        "not_stated": ("uddannelse ikke oplyst", "uddannelsen er ikke oplyst"),
-    }
-    education_matches = education_terms.get(education_level, ())
-    education_preserved = any(
-        _contains_term(normalized, term) for term in education_matches
-    )
-    if education_level == "not_stated":
-        education_preserved = education_preserved or (
-            _contains_term(normalized, "uddannelse")
-            and _contains_term(normalized, "oplyst")
-        )
-    if not education_preserved:
-        raise ValueError("Persona does not preserve the supplied education level")
-    employment = facts.employment.removeprefix("arbejder som ").removeprefix("er ")
-    if not _contains_term(normalized, employment):
-        raise ValueError("Persona does not preserve the supplied work status")
+        _validate_grounding_label(text=normalized, field=field, value=value)
+    _validate_education(text=normalized, demographic=demographic)
+    _validate_employment(text=normalized, employment=facts.employment)
 
 
-def _validate_personality(
-    *, normalized: str, sentences: list[str], context: dict[str, object]
-) -> None:
-    """Reject personality wording that contradicts the supplied OCEAN tendencies.
-
-    ``sentences`` remains part of the signature because the persona prose contract
-    validates sentence structure before this check. No fixed number of tendencies is
-    required, but any recognised tendency must be compatible with the sampled record.
+def _validate_age(*, text: str, demographic: dict[str, object]) -> None:
+    """Require the supplied age and pronoun without accepting denial.
 
     Raises:
-        ValueError: If the persona contains an incompatible personality tendency.
+        ValueError:
+            If age or pronoun is missing, contradicted, or denied.
     """
-    del sentences
-    compatible = set(allowed_personality_tendencies(context=context))
-    all_phrases = set(all_personality_phrases())
-    incompatible = {
-        phrase
-        for phrase in all_phrases - compatible
-        if _contains_term(normalized, phrase)
-    }
-    if incompatible:
-        raise ValueError("Persona contains an incompatible personality tendency")
+    pronoun = _expected_pronoun(context=demographic)
+    age = str(demographic.get("age", ""))
+    if not _contains_term(text, pronoun):
+        raise ValueError("Persona does not preserve the supplied pronoun and age")
+    expected = list(re.finditer(rf"(?<!\w){re.escape(age)}\s*år(?:ig)?\b", text))
+    all_ages = list(re.finditer(r"(?<!\w)\d{1,3}\s*år(?:ig)?\b", text))
+    expected_spans = {match.span() for match in expected}
+    if not expected or any(match.span() not in expected_spans for match in all_ages):
+        raise ValueError("Persona does not preserve the supplied pronoun and age")
+    if any(_is_negated(text=text, span=match.span()) for match in expected):
+        raise ValueError("Persona negates the supplied pronoun or age")
 
 
-def _validate_pronoun_consistency(*, text: str, context: dict[str, object]) -> None:
-    """Reject a second gendered pronoun after selecting the supplied one.
+def _expected_pronoun(*, context: dict[str, object]) -> str:
+    """Return the supplied Danish subject pronoun.
 
     Raises:
-        ValueError: If the supplied sex has no recognised pronoun.
+        ValueError:
+            If the supplied sex has no recognised pronoun.
     """
     expected = {"male": "han", "m": "han", "female": "hun", "k": "hun"}.get(
         str(context.get("sex", "")).casefold()
     )
     if expected is None:
         raise ValueError("Persona has no recognised supplied pronoun")
-    opposite = "hun" if expected == "han" else "han"
-    if _contains_term(text, opposite):
+    return expected
+
+
+def _is_negated(*, text: str, span: tuple[int, int]) -> bool:
+    """Return whether a supplied fact is denied in its local clause."""
+    prefix = text[: span[0]].rsplit(".", maxsplit=1)[-1]
+    words = re.findall(r"[\wæøå]+", prefix.casefold())
+    return any(word in {"ikke", "ingen", "aldrig", "hverken"} for word in words[-8:])
+
+
+def _validate_education(*, text: str, demographic: dict[str, object]) -> None:
+    """Require the broad education level without accepting contradiction.
+
+    Raises:
+        ValueError:
+            If the level is missing, denied, or contradicted.
+    """
+    education_terms = {
+        "primary": ("folkeskolen", "grundskole", "grundskolen"),
+        "secondary_or_vocational": ("ungdomsuddannelse", "erhvervsuddannelse"),
+        "higher_education": ("videregående uddannelse",),
+        "not_stated": ("uddannelse ikke oplyst", "uddannelsen er ikke oplyst"),
+    }
+    level = str(demographic.get("education_level", "")).casefold()
+    matches = [
+        span
+        for term in education_terms.get(level, ())
+        for span in _term_spans(text=text, term=term)
+    ]
+    if (
+        level == "not_stated"
+        and _contains_term(text, "uddannelse")
+        and _contains_term(text, "oplyst")
+    ):
+        matches.append((0, 0))
+    if not matches:
+        raise ValueError("Persona does not preserve the supplied education level")
+    if level != "not_stated" and any(
+        _is_negated(text=text, span=span) for span in matches
+    ):
+        raise ValueError("Persona negates the supplied education level")
+    other_levels = (terms for other, terms in education_terms.items() if other != level)
+    if any(_contains_term(text, term) for terms in other_levels for term in terms):
+        raise ValueError("Persona contradicts the supplied education level")
+
+
+def _validate_employment(*, text: str, employment: str) -> None:
+    """Require the current title or status without accepting denial.
+
+    Raises:
+        ValueError:
+            If the title or status is missing, denied, or contradicted.
+    """
+    value = employment.removeprefix("arbejder som ").removeprefix("er ")
+    spans = _term_spans(text=text, term=value)
+    if not spans:
+        raise ValueError("Persona does not preserve the supplied work status")
+    if any(_is_negated(text=text, span=span) for span in spans):
+        raise ValueError("Persona negates the supplied current work status")
+    title_clauses = re.findall(r"\b(?:arbejder|jobber)\s+som\s+([^,.!?;]+)", text)
+    if title_clauses and not any(
+        _contains_term(clause, value) for clause in title_clauses
+    ):
+        raise ValueError("Persona contradicts the supplied current work status")
+    status_terms = (
+        "ledig",
+        "studerende",
+        "pensionist",
+        "selvstændig",
+        "medarbejdende ægtefælle",
+        "uden for arbejdsmarkedet",
+    )
+    mentioned_statuses = {
+        term for term in status_terms if _contains_term(text=text, term=term)
+    }
+    expected_status = {
+        term for term in status_terms if _contains_term(text=value, term=term)
+    }
+    if expected_status and mentioned_statuses - expected_status:
+        raise ValueError("Persona contradicts the supplied current work status")
+
+
+def _validate_grounding_label(*, text: str, field: str, value: str) -> None:
+    """Require a municipality or origin label without accepting denial.
+
+    Raises:
+        ValueError:
+            If the label is missing, denied, or contradicted by a direct clause.
+    """
+    spans = _term_spans(text=text, term=value)
+    if not spans:
+        raise ValueError(f"Persona does not preserve the supplied {field}")
+    if any(_is_negated(text=text, span=span) for span in spans):
+        raise ValueError(f"Persona negates the supplied {field}")
+    relation = (
+        r"(?:bor|lever|har base|opholder sig)\s+i\s+([^.!?;,]+)"
+        if field == "municipality"
+        else r"(?:kommer|stammer)\s+fra\s+([^.!?;,]+)"
+    )
+    for clause in re.findall(relation, text):
+        if not _contains_term(clause, value):
+            raise ValueError(f"Persona contradicts the supplied {field}")
+
+
+def _validate_personality(
+    *, normalized: str, sentences: list[str], context: dict[str, object]
+) -> None:
+    """Reject incompatible or unhedged occurrences of OCEAN lexicon terms.
+
+    Raises:
+        ValueError:
+            If a recognised term is incompatible or lacks cautious framing.
+    """
+    del sentences
+    compatible_phrases = set(allowed_personality_tendencies(context=context))
+    compatible_terms = {
+        phrase.removeprefix("har ofte tendens til at være ")
+        for phrase in compatible_phrases
+    }
+    for term in all_personality_tendencies():
+        for span in _term_spans(text=normalized, term=term):
+            if term not in compatible_terms:
+                raise ValueError(
+                    "Persona contains an incompatible personality tendency"
+                )
+            if _is_non_assertive_modifier(text=normalized, span=span):
+                continue
+            if not _has_cautious_framing(text=normalized, span=span):
+                raise ValueError("Personality tendencies require cautious framing")
+
+
+def _has_cautious_framing(*, text: str, span: tuple[int, int]) -> bool:
+    """Recognise a cautious hedge in the sentence containing a term.
+
+    Returns:
+        Whether a reviewed hedge occurs before the term in its sentence.
+    """
+    sentence_start = max(
+        text.rfind(".", 0, span[0]),
+        text.rfind("!", 0, span[0]),
+        text.rfind("?", 0, span[0]),
+    )
+    sentence = text[sentence_start + 1 : span[1]]
+    return (
+        re.search(
+            r"\b(?:kan|ofte|måske|muligvis|mulig|virker|synes|tendens|lejlighedsvis)\b",
+            sentence,
+        )
+        is not None
+    )
+
+
+def _is_non_assertive_modifier(*, text: str, span: tuple[int, int]) -> bool:
+    """Ignore a lexicon adjective used as an ordinary noun modifier.
+
+    Returns:
+        Whether the term follows a Danish definite or indefinite article.
+    """
+    prefix = text[: span[0]].rstrip().split()
+    return bool(prefix and prefix[-1] in {"en", "et", "den", "det"})
+
+
+def _validate_pronoun_consistency(*, text: str, context: dict[str, object]) -> None:
+    """Reject every opposing Danish pronoun paradigm.
+
+    Raises:
+        ValueError:
+            If the supplied sex is unknown or an opposing paradigm appears.
+    """
+    expected = {"male": "han", "m": "han", "female": "hun", "k": "hun"}.get(
+        str(context.get("sex", "")).casefold()
+    )
+    if expected is None:
+        raise ValueError("Persona has no recognised supplied pronoun")
+    opposite = (
+        ("hun", "hende", "hendes") if expected == "han" else ("han", "ham", "hans")
+    )
+    if any(_contains_term(text, term) for term in opposite):
         raise ValueError("Persona must consistently use the supplied pronoun")
