@@ -215,7 +215,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         },
     }
     return ReleaseEvidence(
-        version=2,
+        version=3,
         pilot_id=manifest.pilot_id,
         model=manifest.model,
         rows=manifest.rows,
@@ -229,8 +229,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         origin_label_contract_version=manifest.origin_label_contract_version,
         origin_label_contract_content=manifest.origin_label_contract_content,
         validator_version=manifest.validator_version,
-        attributes_prompt_sha256=manifest.attributes_prompt_sha256,
-        personas_prompt_sha256=manifest.personas_prompt_sha256,
+        prompt_sha256=manifest.prompt_sha256,
         upstream_run_id=manifest.upstream_run_id,
         sample_source_run_id="source-run",
         source_bundle_id="bundle",

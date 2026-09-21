@@ -350,7 +350,8 @@ culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
 schema 3, generation contract 4, validator `persona-safety-v17`, and release
-manifest/evidence schema 2. The current offline bundle is `8a4133e5a0a52050`; its
+release manifest schema 2 and evidence schema 3. The current offline bundle is
+`8a4133e5a0a52050`; its
 passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
 The previous schema-5 bundle `cfc1b56f5586a2d7` and runs `f449f1de01d18c08` /
 `3ebc00282c621ef2` remain historical, non-resumable evidence. Release IDs remain
@@ -777,7 +778,7 @@ A release is complete only when it includes:
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
 - prepared-bundle 6, sampler 6, frozen-sample 3, generation 4, validator v16, and
-  release manifest/evidence 2 version bindings;
+  release manifest schema 2 and evidence schema 3 version bindings;
 - official FOLK2 English provenance label and Danish 241-code display-label contract,
   including source metadata SHA-256
   `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`;

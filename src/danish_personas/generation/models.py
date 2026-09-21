@@ -99,8 +99,7 @@ class GenerationConfig(StrictModel):
     enable_thinking: bool | None = None
     reasoning_effort: t.Literal["none", "low", "medium", "high"] | None = None
     response_format: t.Literal["json_schema", "json_object"]
-    attributes_prompt: Path
-    personas_prompt: Path
+    prompt: Path
     job_title_mapping: Path | None = None
     origin_label_contract: OriginLabelContractPath
 
@@ -120,9 +119,7 @@ class GenerationConfig(StrictModel):
         canonical_origin_label_contract_path(value)
         return value
 
-    @field_serializer(
-        "attributes_prompt", "personas_prompt", "job_title_mapping", when_used="json"
-    )
+    @field_serializer("prompt", "job_title_mapping", when_used="json")
     def serialise_repository_path(self, value: Path | None) -> str | None:
         """Serialise repository paths with portable separators.
 
@@ -159,8 +156,7 @@ class GenerationManifest(StrictModel):
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
-    attributes_prompt_sha256: str
-    personas_prompt_sha256: str
+    prompt_sha256: str
     model: str
     base_url: str
     rows: int = Field(ge=1, le=5)
@@ -319,8 +315,7 @@ class PilotManifest(StrictModel):
     origin_label_contract_sha256: str
     origin_label_contract_version: int
     origin_label_contract_content: OriginLabelContract
-    attributes_prompt_sha256: str
-    personas_prompt_sha256: str
+    prompt_sha256: str
     rows: int = Field(ge=1)
     batch_size: int = Field(ge=1, le=5)
     batches: int = Field(ge=1)

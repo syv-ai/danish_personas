@@ -148,8 +148,7 @@ _PUBLIC_FILES = (
     "provenance/release-policy.yaml",
     "provenance/evidence.json",
     "provenance/pilot-validation-report.json",
-    "provenance/prompts/attributes-da.md",
-    "provenance/prompts/personas-da.md",
+    "provenance/persona-da.md",
     "provenance/config/config.yaml",
     "provenance/config/job-function-titles.yaml",
     "provenance/config/folk2-ieland-labels-da.yaml",
@@ -231,19 +230,12 @@ def package_release(
     origin_contract_path, origin_contract = _capture_origin_contract(
         repository_root=repository_root, config=config, inventory=inventory
     )
-    attributes_path = _repository_path(repository_root, config.attributes_prompt)
-    personas_path = _repository_path(repository_root, config.personas_prompt)
-    _capture_path(path=attributes_path, inventory=inventory)
-    _capture_path(path=personas_path, inventory=inventory)
+    prompt_path = _repository_path(repository_root, config.prompt)
+    _capture_path(path=prompt_path, inventory=inventory)
     _require_public_prompt(
-        attributes_path,
-        pilot_manifest.attributes_prompt_sha256,
-        content=_captured_bytes(inventory, attributes_path),
-    )
-    _require_public_prompt(
-        personas_path,
-        pilot_manifest.personas_prompt_sha256,
-        content=_captured_bytes(inventory, personas_path),
+        prompt_path,
+        pilot_manifest.prompt_sha256,
+        content=_captured_bytes(inventory, prompt_path),
     )
     _capture_path(path=licence_path, inventory=inventory)
     licence_bytes = _captured_bytes(inventory, licence_path)
@@ -299,11 +291,8 @@ def package_release(
             origin_contract_path=snapshot_repository
             / origin_contract_path.relative_to(repository_root),
             origin_contract=origin_contract,
-            attributes_path=(
-                snapshot_repository / attributes_path.relative_to(repository_root)
-            ),
-            personas_path=(
-                snapshot_repository / personas_path.relative_to(repository_root)
+            prompt_path=(
+                snapshot_repository / prompt_path.relative_to(repository_root)
             ),
             policy_path=policy_path,
             attestation_path=attestation_path,
@@ -354,8 +343,7 @@ def package_release(
             config_path=_snapshot_path(inventory, config_path),
             mapping_path=_snapshot_path(inventory, mapping_path),
             origin_contract_path=_snapshot_path(inventory, origin_contract_path),
-            attributes_path=_snapshot_path(inventory, attributes_path),
-            personas_path=_snapshot_path(inventory, personas_path),
+            prompt_path=_snapshot_path(inventory, prompt_path),
             repository_root=snapshot_repository,
             inventory=inventory,
             card_path=dataset_card_path,
@@ -969,8 +957,7 @@ def _install_files(**kwargs: object) -> None:
     policy_path = t.cast(Path, kwargs["policy_path"])
     evidence = t.cast(ReleaseEvidence, kwargs["evidence"])
     report = t.cast(ValidationReport, kwargs["report"])
-    attributes_path = t.cast(Path, kwargs["attributes_path"])
-    personas_path = t.cast(Path, kwargs["personas_path"])
+    prompt_path = t.cast(Path, kwargs["prompt_path"])
     mapping_path = t.cast(Path, kwargs["mapping_path"])
     repository_root = t.cast(Path, kwargs["repository_root"])
     config_path = t.cast(Path, kwargs["config_path"])
@@ -999,10 +986,7 @@ def _install_files(**kwargs: object) -> None:
             )
             + "\n"
         ).encode(),
-        "provenance/prompts/attributes-da.md": _captured_bytes(
-            inventory, attributes_path
-        ),
-        "provenance/prompts/personas-da.md": _captured_bytes(inventory, personas_path),
+        "provenance/persona-da.md": _captured_bytes(inventory, prompt_path),
         "provenance/config/job-function-titles.yaml": _captured_bytes(
             inventory, mapping_path
         ),
@@ -1305,8 +1289,7 @@ def _validate_pilot_for_release(
     mapping_path: Path,
     origin_contract_path: Path,
     origin_contract: OriginLabelContract,
-    attributes_path: Path,
-    personas_path: Path,
+    prompt_path: Path,
     policy_path: Path,
     attestation_path: Path,
     licence_path: Path,
@@ -1372,8 +1355,7 @@ def _validate_pilot_for_release(
         mapping_path=mapping_path,
         origin_contract_path=origin_contract_path,
         origin_contract=origin_contract,
-        attributes_path=attributes_path,
-        personas_path=personas_path,
+        prompt_path=prompt_path,
     )
     report = report.model_copy(
         update={"created_at": attestation.reviewed_at.isoformat()}
@@ -1397,8 +1379,7 @@ def _validate_pilot_for_release(
             _captured_bytes(inventory, attestation_path),
             canonical_json(evidence.model_dump(mode="json")).encode(),
             canonical_json(report.model_dump(mode="json")).encode(),
-            _captured_bytes(inventory, attributes_path),
-            _captured_bytes(inventory, personas_path),
+            _captured_bytes(inventory, prompt_path),
             _captured_bytes(inventory, mapping_path),
             _captured_bytes(inventory, origin_contract_path),
         ]
@@ -1415,8 +1396,7 @@ def _assert_manifest_bindings(
     mapping_path: Path,
     origin_contract_path: Path,
     origin_contract: OriginLabelContract,
-    attributes_path: Path,
-    personas_path: Path,
+    prompt_path: Path,
 ) -> None:
     if manifest.llm_generation is not True:
         raise ReleasePackagingError("Release requires LLM-generated output")
@@ -1427,16 +1407,12 @@ def _assert_manifest_bindings(
         config_path=config_path,
     ):
         raise ReleasePackagingError("Job-title mapping binding failed")
-    if attributes_path != config_path.parent / "prompts/attributes-da.md":
-        raise ReleasePackagingError("Generation attributes prompt path binding failed")
-    if personas_path != config_path.parent / "prompts/personas-da.md":
-        raise ReleasePackagingError("Generation personas prompt path binding failed")
+    if prompt_path != config_path.parent / "persona-da.md":
+        raise ReleasePackagingError("Generation prompt path binding failed")
     if sha256_file(config_path) != manifest.generation_config_sha256:
         raise ReleasePackagingError("Generation config binding failed")
-    if sha256_file(attributes_path) != manifest.attributes_prompt_sha256:
-        raise ReleasePackagingError("Attributes prompt binding failed")
-    if sha256_file(personas_path) != manifest.personas_prompt_sha256:
-        raise ReleasePackagingError("Personas prompt binding failed")
+    if sha256_file(prompt_path) != manifest.prompt_sha256:
+        raise ReleasePackagingError("Generation prompt binding failed")
     _assert_origin_contract_binding(
         manifest=manifest,
         config=config,
@@ -1446,8 +1422,7 @@ def _assert_manifest_bindings(
     )
     context = generation_context_sha256(
         config=config,
-        attributes_prompt=attributes_path.read_text(encoding="utf-8"),
-        personas_prompt=personas_path.read_text(encoding="utf-8"),
+        prompt=prompt_path.read_text(encoding="utf-8"),
         job_title_mapping=load_job_title_mapping(mapping_path),
         job_title_mapping_sha256=sha256_file(mapping_path),
         origin_label_contract=origin_contract,
@@ -1679,7 +1654,7 @@ def _derive_evidence(
         },
     }
     return ReleaseEvidence(
-        version=2,
+        version=3,
         pilot_id=manifest.pilot_id,
         model=manifest.model,
         rows=manifest.rows,
@@ -1693,8 +1668,7 @@ def _derive_evidence(
         origin_label_contract_version=manifest.origin_label_contract_version,
         origin_label_contract_content=manifest.origin_label_contract_content,
         validator_version=manifest.validator_version,
-        attributes_prompt_sha256=manifest.attributes_prompt_sha256,
-        personas_prompt_sha256=manifest.personas_prompt_sha256,
+        prompt_sha256=manifest.prompt_sha256,
         upstream_run_id=manifest.upstream_run_id,
         sample_source_run_id=sample_source_run_id,
         source_bundle_id=source_bundle_id,

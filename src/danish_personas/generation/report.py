@@ -855,12 +855,9 @@ def _persona_provenance_matches(
         origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
             config=config, repository_root=repository_root
         )
-        attributes_prompt = _repository_path(
-            repository_root, config.attributes_prompt
-        ).read_text(encoding="utf-8")
-        personas_prompt = _repository_path(
-            repository_root, config.personas_prompt
-        ).read_text(encoding="utf-8")
+        prompt = _repository_path(repository_root, config.prompt).read_text(
+            encoding="utf-8"
+        )
         sample = pl.read_parquet(input_path).sort("persona_id")
         if manifest.offset + manifest.rows > sample.height:
             return False
@@ -872,8 +869,7 @@ def _persona_provenance_matches(
         ordered_ids_sha256 = sha256_text(canonical_json(selected_ids))
         context_sha256 = generation_context_sha256(
             config=config,
-            attributes_prompt=attributes_prompt,
-            personas_prompt=personas_prompt,
+            prompt=prompt,
             job_title_mapping=mapping,
             job_title_mapping_sha256=mapping_sha256,
             origin_label_contract=origin_contract,
@@ -891,8 +887,7 @@ def _persona_provenance_matches(
             and manifest.rows <= config.maximum_rows_per_shard
             and manifest.requests <= config.maximum_total_requests
             and ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
-            and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
-            and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
+            and sha256_text(prompt) == manifest.prompt_sha256
             and context_sha256 == manifest.generation_context_sha256
             and _mapping_binding_matches(
                 path=manifest.job_title_mapping_file,
@@ -981,8 +976,7 @@ def _pilot_aggregates_match(
             == manifest.origin_label_contract_version
             and item.origin_label_contract_content
             == manifest.origin_label_contract_content
-            and item.attributes_prompt_sha256 == manifest.attributes_prompt_sha256
-            and item.personas_prompt_sha256 == manifest.personas_prompt_sha256
+            and item.prompt_sha256 == manifest.prompt_sha256
             and item.model == manifest.model
             and item.base_url == manifest.base_url
             for item in batch_manifests
@@ -1014,18 +1008,14 @@ def _pilot_provenance_matches(
         origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
             config=config, repository_root=repository_root
         )
-        attributes_prompt = _repository_path(
-            repository_root, config.attributes_prompt
-        ).read_text(encoding="utf-8")
-        personas_prompt = _repository_path(
-            repository_root, config.personas_prompt
-        ).read_text(encoding="utf-8")
+        prompt = _repository_path(repository_root, config.prompt).read_text(
+            encoding="utf-8"
+        )
         input_sha256 = sha256_file(input_path)
         config_sha256 = sha256_file(config_path)
         context_sha256 = generation_context_sha256(
             config=config,
-            attributes_prompt=attributes_prompt,
-            personas_prompt=personas_prompt,
+            prompt=prompt,
             job_title_mapping=mapping,
             job_title_mapping_sha256=mapping_sha256,
             origin_label_contract=origin_contract,
@@ -1067,8 +1057,7 @@ def _pilot_provenance_matches(
             and upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model
             and config.base_url == manifest.base_url
-            and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
-            and sha256_text(personas_prompt) == manifest.personas_prompt_sha256
+            and sha256_text(prompt) == manifest.prompt_sha256
             and context_sha256 == manifest.generation_context_sha256
             and _mapping_binding_matches(
                 path=manifest.job_title_mapping_file,

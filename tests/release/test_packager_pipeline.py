@@ -69,7 +69,7 @@ def test_package_release_rejects_prompt_hash_mismatch(
     release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Prompt files are public inputs whose manifest hashes cannot drift."""
-    prompt = release_case.repository / "config/prompts/attributes-da.md"
+    prompt = release_case.repository / "config/persona-da.md"
     prompt.write_text(prompt.read_text(encoding="utf-8") + "changed", encoding="utf-8")
     monkeypatch.setattr(packager, "_git_provenance", _clean_provenance)
     with pytest.raises(ReleasePackagingError, match="Prompt checksum"):
@@ -150,8 +150,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         job_title_mapping_file=Path("config/job-function-titles.yaml"),
         job_title_mapping_sha256=release_case.manifest.job_title_mapping_sha256,
         job_title_mapping_version=release_case.manifest.job_title_mapping_version,
-        attributes_prompt_sha256=release_case.manifest.attributes_prompt_sha256,
-        personas_prompt_sha256=release_case.manifest.personas_prompt_sha256,
+        prompt_sha256=release_case.manifest.prompt_sha256,
         model=release_case.manifest.model,
         base_url="https://llm.example/v1",
         rows=2,

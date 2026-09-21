@@ -107,12 +107,10 @@ def run_pilot(
     mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
     mapping = load_job_title_mapping(mapping_path)
     mapping_sha = job_title_mapping_sha256(mapping_path)
-    attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
-    personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+    prompt = config.prompt.read_text(encoding="utf-8")
     generation_context_sha = generation_context_sha256(
         config=config,
-        attributes_prompt=attributes_prompt,
-        personas_prompt=personas_prompt,
+        prompt=prompt,
         job_title_mapping=mapping,
         job_title_mapping_sha256=mapping_sha,
     )
@@ -271,8 +269,7 @@ def _merge_pilot(
         origin_label_contract_sha256=first.origin_label_contract_sha256,
         origin_label_contract_version=first.origin_label_contract_version,
         origin_label_contract_content=first.origin_label_contract_content,
-        attributes_prompt_sha256=first.attributes_prompt_sha256,
-        personas_prompt_sha256=first.personas_prompt_sha256,
+        prompt_sha256=first.prompt_sha256,
         rows=output.height,
         batch_size=max(manifest.rows for manifest in manifests),
         batches=len(manifests),
