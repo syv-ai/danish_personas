@@ -22,7 +22,7 @@ from .personality import (
     allowed_personality_tendencies,
 )
 
-VALIDATOR_VERSION = "persona-safety-v15"
+VALIDATOR_VERSION = "persona-safety-v16"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -33,16 +33,7 @@ _ATTRIBUTE_FIELDS = frozenset(
         "job_title",
     }
 )
-_DESCRIPTION_FIELDS = frozenset(
-    {
-        "professional_persona",
-        "sports_persona",
-        "arts_persona",
-        "travel_persona",
-        "culinary_persona",
-        "persona",
-    }
-)
+_DESCRIPTION_FIELDS = frozenset({"persona"})
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -449,8 +440,16 @@ def _validate_persona(
         raise ValueError("Persona must use cautious, non-deterministic language")
     sentences = _persona_sentences(text=text)
     _validate_persona_facts(text=text, demographic=context, attributes=attributes)
-    _validate_interests(text=text, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
+    _validate_pronoun_consistency(text=normalized, context=context)
+    banned_terms = (
+        "vedkommende",
+        "personen",
+        "kan være",
+        "ungdoms- eller erhvervsuddannelse",
+    )
+    if any(_contains_term(normalized, term) for term in banned_terms):
+        raise ValueError("Persona contains a prohibited generic or contract phrase")
     if any(_contains_term(normalized, noun) for noun in PERSONA_SEX_NOUNS):
         raise ValueError("Persona must convey statistical sex only through its pronoun")
     if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
@@ -470,97 +469,59 @@ def _persona_sentences(text: str) -> list[str]:
     return sentences
 
 
-def _validate_interests(*, text: str, attributes: GeneratedAttributes) -> None:
-    """Require two or three complete, literal interests in the summary prose.
-
-    Matching complete terms prevents a short interest such as ``art`` from being
-    accepted merely because it occurs inside an unrelated word. An interest keeps
-    its lowercase spelling unless its first cased character starts a sentence.
-
-    Raises:
-        ValueError:
-            If the prose contains fewer than two or more than three interests.
-    """
-    interests = {
-        interest
-        for interest in attributes.hobbies_and_interests
-        if _contains_exact_phrase(text=text, phrase=interest)
-    }
-    if len(interests) not in {2, 3}:
-        raise ValueError("Persona must contain exactly 2-3 generated interests")
-
-
-def _contains_exact_phrase(*, text: str, phrase: str) -> bool:
-    """Return whether exact casing or sentence-initial capitalisation matches."""
-    normalised_text = _normalise_spacing(text=text)
-    normalised_phrase = _normalise_spacing(text=phrase)
-    if _has_bounded_phrase(text=normalised_text, phrase=normalised_phrase):
-        return True
-    capitalised = _capitalise_first_cased_character(text=normalised_phrase)
-    for match in _bounded_phrase_matches(text=normalised_text, phrase=capitalised):
-        prefix = normalised_text[: match.start()].rstrip()
-        if not prefix or prefix.endswith((".", "!", "?")):
-            return True
-    return False
-
-
-def _bounded_phrase_matches(*, text: str, phrase: str) -> c.Iterator[re.Match[str]]:
-    """Return exact phrase matches at Unicode token boundaries."""
-    expression = r"\s+".join(re.escape(token) for token in phrase.split())
-    return re.finditer(rf"(?<![\w]){expression}(?![\w])", text)
-
-
-def _capitalise_first_cased_character(*, text: str) -> str:
-    """Return text with only its first cased character capitalised."""
-    for index, character in enumerate(text):
-        if character.lower() != character.upper():
-            return f"{text[:index]}{character.upper()}{text[index + 1 :]}"
-    return text
-
-
-def _has_bounded_phrase(*, text: str, phrase: str) -> bool:
-    """Return whether an exact phrase occurs at Unicode token boundaries."""
-    return next(_bounded_phrase_matches(text=text, phrase=phrase), None) is not None
-
-
-def _normalise_spacing(*, text: str) -> str:
-    """Return Unicode-normalised text without incidental whitespace."""
-    return " ".join(unicodedata.normalize("NFKC", text).split())
-
-
 def _validate_persona_facts(
     *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
 ) -> None:
     facts = build_persona_grounding_facts(
         demographic=demographic, attributes=attributes
     )
-    names = {
-        "pronoun_age": "pronoun and age",
-        "municipality": "municipality",
-        "origin": "origin",
-        "education": "education",
-        "employment": "current work status",
+    normalized = _normalize(text=text)
+    pronoun = facts.pronoun_age.split(" ", 1)[0]
+    age = str(demographic.get("age", ""))
+    if not _contains_term(normalized, pronoun) or not _contains_term(
+        normalized, f"{age} år"
+    ):
+        raise ValueError("Persona does not preserve the supplied pronoun and age")
+    for field, value in (
+        ("municipality", str(demographic.get("municipality", ""))),
+        ("origin", str(demographic.get("origin_country_da", ""))),
+    ):
+        if not _contains_term(normalized, value):
+            raise ValueError(f"Persona does not preserve the supplied {field}")
+    education_level = str(demographic.get("education_level", "")).casefold()
+    education_terms = {
+        "primary": ("folkeskolen", "grundskole", "grundskolen"),
+        "secondary_or_vocational": ("ungdomsuddannelse", "erhvervsuddannelse"),
+        "higher_education": ("videregående uddannelse",),
+        "not_stated": ("uddannelse ikke oplyst", "uddannelsen er ikke oplyst"),
     }
-    for field, value in facts.model_dump().items():
-        if not _contains_exact_phrase(text=text, phrase=value):
-            raise ValueError(
-                f"Persona does not contain the exact {names[field]} clause"
-            )
+    education_matches = education_terms.get(education_level, ())
+    education_preserved = any(
+        _contains_term(normalized, term) for term in education_matches
+    )
+    if education_level == "not_stated":
+        education_preserved = education_preserved or (
+            _contains_term(normalized, "uddannelse")
+            and _contains_term(normalized, "oplyst")
+        )
+    if not education_preserved:
+        raise ValueError("Persona does not preserve the supplied education level")
+    employment = facts.employment.removeprefix("arbejder som ").removeprefix("er ")
+    if not _contains_term(normalized, employment):
+        raise ValueError("Persona does not preserve the supplied work status")
 
 
 def _validate_personality(
     *, normalized: str, sentences: list[str], context: dict[str, object]
 ) -> None:
-    """Require one or two compatible, complete phrases copied from the API.
+    """Reject personality wording that contradicts the supplied OCEAN tendencies.
 
     ``sentences`` remains part of the signature because the persona prose contract
-    validates sentence structure before this check. Personality matching itself is
-    deliberately whole-persona based: a phrase may occur in any one sentence, but a
-    bare term elsewhere must not satisfy the contract.
+    validates sentence structure before this check. No fixed number of tendencies is
+    required, but any recognised tendency must be compatible with the sampled record.
 
     Raises:
-        ValueError:
-            If the persona contains an incompatible or incomplete phrase set.
+        ValueError: If the persona contains an incompatible personality tendency.
     """
     del sentences
     compatible = set(allowed_personality_tendencies(context=context))
@@ -573,23 +534,18 @@ def _validate_personality(
     if incompatible:
         raise ValueError("Persona contains an incompatible personality tendency")
 
-    matched_phrases = {
-        phrase for phrase in compatible if _contains_term(normalized, phrase)
-    }
-    phrase_spans = [
-        span
-        for phrase in matched_phrases
-        for span in _term_spans(text=normalized, term=phrase)
-    ]
-    if not 1 <= len(matched_phrases) <= 2:
-        raise ValueError("Persona must contain 1-2 compatible personality tendencies")
 
-    for term in all_personality_tendencies():
-        for start, end in _term_spans(text=normalized, term=term):
-            if not any(
-                phrase_start <= start and end <= phrase_end
-                for phrase_start, phrase_end in phrase_spans
-            ):
-                raise ValueError(
-                    "Personality terms must occur inside supplied complete phrases"
-                )
+def _validate_pronoun_consistency(*, text: str, context: dict[str, object]) -> None:
+    """Reject a second gendered pronoun after selecting the supplied one.
+
+    Raises:
+        ValueError: If the supplied sex has no recognised pronoun.
+    """
+    expected = {"male": "han", "m": "han", "female": "hun", "k": "hun"}.get(
+        str(context.get("sex", "")).casefold()
+    )
+    if expected is None:
+        raise ValueError("Persona has no recognised supplied pronoun")
+    opposite = "hun" if expected == "han" else "han"
+    if _contains_term(text, opposite):
+        raise ValueError("Persona must consistently use the supplied pronoun")

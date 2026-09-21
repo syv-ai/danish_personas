@@ -717,6 +717,7 @@ def _count_content_errors(
     origin_binding: tuple[Path, OriginLabelContract, str] | None,
 ) -> int:
     errors = 0
+    persona_texts: list[str] = []
     required_columns = {
         *GeneratedAttributes.model_fields,
         *PersonaDescriptions.model_fields,
@@ -738,8 +739,10 @@ def _count_content_errors(
                 attributes.model_dump_json(), row, job_title_mapping=mapping_binding[1]
             )
             parse_descriptions(descriptions.model_dump_json(), row, attributes)
+            persona_texts.append(" ".join(descriptions.persona.casefold().split()))
         except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
             errors += 1
+    errors += len(persona_texts) - len(set(persona_texts))
     return errors
 
 

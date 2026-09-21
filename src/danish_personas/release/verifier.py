@@ -509,7 +509,7 @@ def _check_output(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleaseVerificationError(
-            "Persona output schema must match generation contract v3"
+            "Persona output schema must match generation contract v4"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleaseVerificationError(
@@ -527,7 +527,7 @@ def _check_output(
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
-            "Persona output fails contextual generation-v3 validation"
+            "Persona output fails contextual generation-v4 validation"
         ) from error
     if not report.passed or report.kind != "persona_pilot":
         raise ReleaseVerificationError("Pilot validation report is not passing")
@@ -664,7 +664,7 @@ def _load_bound_origin_contract(
 def _load_generation_inputs(
     *, release_dir: Path, config_path: Path, evidence: ReleaseEvidence
 ) -> tuple[GenerationConfig, Path, Path]:
-    """Load and check the packaged v3 generation inputs.
+    """Load and check the packaged v4 generation inputs.
 
     Returns:
         The effective config and the two packaged prompt paths.
@@ -674,8 +674,8 @@ def _load_generation_inputs(
             If a generation input is missing, changed, or misbound.
     """
     config = _load_yaml(config_path, GenerationConfig)
-    if config.version != 3:
-        raise ReleaseVerificationError("Release requires generation contract v3")
+    if config.version != 4:
+        raise ReleaseVerificationError("Release requires generation contract v4")
     if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
     attributes_path = release_dir / "provenance/prompts/attributes-da.md"

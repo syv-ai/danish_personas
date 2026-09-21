@@ -24,21 +24,21 @@ from danish_personas.generation.personality import (
                 )
             },
             (
-                "kan være nysgerrig",
-                "kan være kreativ",
-                "kan være åben for nye ideer",
-                "kan være struktureret",
-                "kan være omhyggelig",
-                "kan være målrettet",
-                "kan være social",
-                "kan være udadvendt",
-                "kan være snakkesalig",
-                "kan være samarbejdende",
-                "kan være hensynsfuld",
-                "kan være venlig",
-                "kan være opmærksom",
-                "kan være varsom",
-                "kan være følsom",
+                "har ofte tendens til at være nysgerrig",
+                "har ofte tendens til at være kreativ",
+                "har ofte tendens til at være åben for nye ideer",
+                "har ofte tendens til at være struktureret",
+                "har ofte tendens til at være omhyggelig",
+                "har ofte tendens til at være målrettet",
+                "har ofte tendens til at være social",
+                "har ofte tendens til at være udadvendt",
+                "har ofte tendens til at være snakkesalig",
+                "har ofte tendens til at være samarbejdende",
+                "har ofte tendens til at være hensynsfuld",
+                "har ofte tendens til at være venlig",
+                "har ofte tendens til at være opmærksom",
+                "har ofte tendens til at være varsom",
+                "har ofte tendens til at være følsom",
             ),
         ),
         (
@@ -53,17 +53,17 @@ from danish_personas.generation.personality import (
                 )
             },
             (
-                "kan være praktisk",
-                "kan være jordnær",
-                "kan være glad for det velkendte",
-                "kan være fleksibel",
-                "kan være spontan",
-                "kan være rolig",
-                "kan være eftertænksom",
-                "kan være reserveret",
-                "kan være ligefrem",
-                "kan være direkte",
-                "kan være afbalanceret",
+                "har ofte tendens til at være praktisk",
+                "har ofte tendens til at være jordnær",
+                "har ofte tendens til at være glad for det velkendte",
+                "har ofte tendens til at være fleksibel",
+                "har ofte tendens til at være spontan",
+                "har ofte tendens til at være rolig",
+                "har ofte tendens til at være eftertænksom",
+                "har ofte tendens til at være reserveret",
+                "har ofte tendens til at være ligefrem",
+                "har ofte tendens til at være direkte",
+                "har ofte tendens til at være afbalanceret",
             ),
         ),
         (
@@ -78,32 +78,32 @@ from danish_personas.generation.personality import (
                 )
             },
             (
-                "kan være nysgerrig",
-                "kan være kreativ",
-                "kan være åben for nye ideer",
-                "kan være praktisk",
-                "kan være jordnær",
-                "kan være glad for det velkendte",
-                "kan være struktureret",
-                "kan være omhyggelig",
-                "kan være målrettet",
-                "kan være fleksibel",
-                "kan være spontan",
-                "kan være social",
-                "kan være udadvendt",
-                "kan være snakkesalig",
-                "kan være rolig",
-                "kan være eftertænksom",
-                "kan være reserveret",
-                "kan være samarbejdende",
-                "kan være hensynsfuld",
-                "kan være venlig",
-                "kan være ligefrem",
-                "kan være direkte",
-                "kan være opmærksom",
-                "kan være varsom",
-                "kan være følsom",
-                "kan være afbalanceret",
+                "har ofte tendens til at være nysgerrig",
+                "har ofte tendens til at være kreativ",
+                "har ofte tendens til at være åben for nye ideer",
+                "har ofte tendens til at være praktisk",
+                "har ofte tendens til at være jordnær",
+                "har ofte tendens til at være glad for det velkendte",
+                "har ofte tendens til at være struktureret",
+                "har ofte tendens til at være omhyggelig",
+                "har ofte tendens til at være målrettet",
+                "har ofte tendens til at være fleksibel",
+                "har ofte tendens til at være spontan",
+                "har ofte tendens til at være social",
+                "har ofte tendens til at være udadvendt",
+                "har ofte tendens til at være snakkesalig",
+                "har ofte tendens til at være rolig",
+                "har ofte tendens til at være eftertænksom",
+                "har ofte tendens til at være reserveret",
+                "har ofte tendens til at være samarbejdende",
+                "har ofte tendens til at være hensynsfuld",
+                "har ofte tendens til at være venlig",
+                "har ofte tendens til at være ligefrem",
+                "har ofte tendens til at være direkte",
+                "har ofte tendens til at være opmærksom",
+                "har ofte tendens til at være varsom",
+                "har ofte tendens til at være følsom",
+                "har ofte tendens til at være afbalanceret",
             ),
         ),
     ],
@@ -127,7 +127,10 @@ def test_every_personality_tendency_has_one_deduplicated_phrase() -> None:
     phrases = all_personality_phrases()
 
     assert len(terms) == len(phrases) == len(set(phrases))
-    assert all(phrase == f"kan være {term}" for term, phrase in zip(terms, phrases))
+    assert all(
+        phrase == f"har ofte tendens til at være {term}"
+        for term, phrase in zip(terms, phrases)
+    )
     assert "selvstændig" not in terms
 
 
@@ -143,8 +146,11 @@ def test_scores_select_levels_when_labels_are_not_informative() -> None:
     terms = allowed_personality_tendencies(context=context)
 
     assert terms[:3] == (
-        "kan være nysgerrig",
-        "kan være kreativ",
-        "kan være åben for nye ideer",
+        "har ofte tendens til at være nysgerrig",
+        "har ofte tendens til at være kreativ",
+        "har ofte tendens til at være åben for nye ideer",
     )
-    assert terms[3:5] == ("kan være fleksibel", "kan være spontan")
+    assert terms[3:5] == (
+        "har ofte tendens til at være fleksibel",
+        "har ofte tendens til at være spontan",
+    )

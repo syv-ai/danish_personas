@@ -59,7 +59,7 @@ class ReleaseCase:
 
 @pytest.fixture
 def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
-    """Return a v2 row with a non-employee status and null job title."""
+    """Return a v4 row with a non-employee status and null job title."""
     return (
         pl.read_parquet(release_case.output)
         .head(1)
@@ -73,9 +73,9 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit("not_applicable").alias("job_function_resolution"),
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
-                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
-                "ungdoms- eller erhvervsuddannelse og er ledig. Han kan være "
-                "nysgerrig og nyder vandring og musik i hverdagen."
+                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark og har en "
+                "ungdomsuddannelse eller erhvervsuddannelse. Han er ledig og nyder "
+                "vandring og musik i hverdagen."
             ).alias("persona"),
         )
     )
@@ -258,7 +258,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     shutil.copyfile(ROOT / "config/job-function-titles.yaml", mapping_path)
 
     generation_config = GenerationConfig(
-        version=3,
+        version=4,
         llm_generation_enabled=True,
         base_url="https://llm.example/v1",
         model=MODEL,
@@ -288,7 +288,6 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     sample_manifest.write_text('{"source_run_id":"source-run"}\n', encoding="utf-8")
     output = pilot / "generated-personas.parquet"
     ids = [f"persona-{index:05d}" for index in range(10_000)]
-    sentence = "Personen finder ro og fællesskab i hverdagen. "
     output_frame = pl.DataFrame(
         {
             "persona_id": ids,
@@ -298,18 +297,10 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             "hobbies_and_interests": [["vandring", "musik", "madlavning"]] * 10_000,
             "career_goals_and_ambitions": ["At udvikle nye færdigheder."] * 10_000,
             "job_title": ["forretningsspecialist"] * 10_000,
-            "professional_persona": [sentence + "Arbejdet giver plads til læring."]
-            * 10_000,
-            "sports_persona": [sentence + "Motion passer naturligt ind."] * 10_000,
-            "arts_persona": [sentence + "Kunst og kultur inspirerer."] * 10_000,
-            "travel_persona": [sentence + "Nye steder opleves i roligt tempo."]
-            * 10_000,
-            "culinary_persona": [sentence + "Måltider deles gerne med andre."] * 10_000,
             "persona": [
-                "Han er 35 år, bor i Aarhus, kommer fra Danmark, har en "
-                "ungdoms- eller erhvervsuddannelse og arbejder som "
-                "forretningsspecialist. Han kan være nysgerrig og nyder vandring "
-                "og musik i hverdagen."
+                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark og har en "
+                "ungdomsuddannelse eller erhvervsuddannelse. Han arbejder som "
+                "forretningsspecialist og nyder vandring og musik i hverdagen."
             ]
             * 10_000,
         }

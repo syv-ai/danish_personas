@@ -30,7 +30,7 @@ never loads `.env`, and deterministic workflows make no network or LLM requests.
 
 Release packaging is offline and has no upload, authentication, or token options. A
 current package must bind release manifest schema 2 and evidence schema 2, including the
-current generation-3, validator-v14, origin-label, and artefact checksums. Do not reuse
+current generation-4, validator-v16, origin-label, and artefact checksums. Do not reuse
 historical release IDs or invent new canonical IDs: package first, then copy the printed
 IDs and digests into release evidence. Retain `release-manifest.sha256` (or the printed
 digest) externally and pass it to `release verify` after relocating the package. After

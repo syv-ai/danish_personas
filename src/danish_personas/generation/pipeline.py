@@ -123,7 +123,7 @@ def generate_personas(
     live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and six persona descriptions.
+    """Generate structured attributes and one persona description.
 
     Args:
         input_path:
@@ -588,7 +588,7 @@ def _stage_two_payload(
         "demographics_and_personality": _prompt_demographics(
             row=row, fields=STAGE_TWO_PROMPT_FIELDS
         ),
-        "required_persona_facts": grounding_facts.model_dump(mode="json"),
+        "grounding_facts": grounding_facts.model_dump(mode="json"),
         "allowed_personality_tendencies": list(personality_tendencies),
         "generated_attributes": attributes.model_dump(mode="json"),
     }

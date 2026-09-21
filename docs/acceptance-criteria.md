@@ -128,17 +128,16 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   the Phase-3 boundary.
 - No invocation can request more than five rows. The deliberately stratified 1,000-row
   text-development input is separate from the 2,000-row Phase-2 smoke run.
-- Generated attributes and all six generation-3 persona descriptions satisfy strict
-  schemas: five specialised texts plus one short, grounded `persona`. Stage-one
-  interests are lowercase Danish common-noun phrases without terminal punctuation.
-  The persona embeds two or three interests in running prose, preserving lowercase
-  except at sentence start, plus cautious OCEAN tendencies. `visual_persona` is not a
-  generation-3 field.
-- The persona contains the exact natural clauses `han/hun er <n> år`, `bor i
-  <municipality>`, `kommer fra <origin_country_da>`, one canonical education clause,
-  and `arbejder som <allowlisted title>` or `er <canonical status>`. Only
-  sentence-initial capitalisation may vary. Redundant sex nouns and data-model jargon
-  are rejected.
+- Generated attributes and the single generation-4 `persona` field satisfy strict
+  schemas. The persona is short, natural Danish prose and may use zero or more
+  supplied interests and personality tendencies; no fixed count is required.
+- The persona preserves age, the supplied `han` or `hun`, municipality,
+  `origin_country_da`, broad education, and the synthetic allowlisted title or current
+  status without requiring verbatim clauses. Natural paraphrase and benign consistent
+  elaboration are allowed. Pronouns must remain consistent. Token-bounded
+  `vedkommende`, `personen`, `kan være`, and `ungdoms- eller
+  erhvervsuddannelse` are rejected, along with redundant sex nouns and data-model
+  jargon.
 - Both provider stages receive human-readable municipality, the official Danish
   `origin_country_da`, and job-function labels, plus the reviewed allowlist of Danish
   titles for that label, but never origin code, English label, contract metadata, or
@@ -151,11 +150,10 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   patterns, and does not contain inflectional sensitive terms. It must make no
   unsupported family claims or physical-appearance claims. Downstream image models may
   stereotype, so this contract does not make image generation safe.
-- Exact duplicate persona descriptions are rejected. The specialised texts remain
-  separate domains, and all six texts must be distinct.
-- Current generation-3 per-record checkpoints support resume without repeating completed
-  model calls. Historical v1/v2 outputs, the previous v2/v13 ten-person smoke, and old
-  pilots are not resumable under generation 3.
+- Exact duplicate persona descriptions are rejected across each run and pilot.
+- Current generation-4 per-record checkpoints support resume without repeating
+  completed model calls. Historical v1-v3 outputs and old pilots are not resumable
+  under generation 4.
 - The manifest records model, selected inference provider, endpoint, prompt and input
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
   output checksum.
@@ -176,15 +174,14 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract 3, validator `persona-safety-v15`, and
-  retain five specialised texts plus one short grounded persona using the exact natural
-  clause contract. The pooled `har en ungdoms- eller erhvervsuddannelse` clause is a
-  temporary source-backed level pending a separate Statistics Denmark detailed-
-  education source; no detailed qualification may be inferred. Release manifest and
-  evidence use schema 2. It must record that both provider payloads contain approved
-  human-readable municipality, Danish origin, and job-function labels only, not origin
-  code, English label, contract metadata, or resolutions, and must disclose synthetic
-  job titles and image-model stereotyping risk.
+- A release must identify generation contract 4 and validator `persona-safety-v16`,
+  and retain only the short grounded `persona`. Broad education wording is
+  source-backed and must not imply a detailed qualification or institution. Release
+  manifest and evidence remain schema 2 because their structures are unchanged. The
+  package must record that both provider payloads contain approved human-readable
+  municipality, Danish origin, and job-function labels only, not origin code, English
+  label, contract metadata, or resolutions, and must disclose synthetic job titles and
+  image-model stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
   evidence checksums, provenance, row counts, and human-review evidence. Until a current
   package is regenerated, release IDs, checksums, and canonical output IDs are
