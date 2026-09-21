@@ -41,8 +41,11 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   have været gift. `divorced` og `widowed` skal omtales som henholdsvis skilt eller
   enke/enkemand, men personaen kan stadig være `partnered` eller `not_partnered`.
 - Partnerkombinationer af samme køn, herunder male/male og female/female, er
-  udtrykkeligt tilladt. Brug partnerens navn og ord som mand eller kvinde til at
-  afspejle `partner_gender`, men skriv eller udled aldrig en orienteringsbetegnelse.
+  udtrykkeligt tilladt. Vælg `partner_gender` uden at foretrække kombinationer af
+  forskelligt køn. Ved `partnered` skal personaen i samme sætning nævne
+  `partner_first_name`, bruge et ord som partner, kæreste eller ægtefælle og skrive
+  mand eller kvinde i overensstemmelse med `partner_gender`. Skriv eller udled aldrig
+  en orienteringsbetegnelse.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
