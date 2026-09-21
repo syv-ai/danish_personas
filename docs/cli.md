@@ -23,9 +23,10 @@ clean-clone reproducibility path; they are not one-off migrations.
 ## Persona commands
 
 `generate_persona.py` validates the upstream frozen sample and generated run, samples
-one frozen demographic locally, and writes only the final Danish persona plus a newline
-to stdout. It loads Hydra `config/config.yaml` by default and runs immediately. Generated
-evidence is stored below `data/personas` by default. Diagnostics use stderr.
+one frozen demographic locally, starts a fresh model request, and writes only the final
+Danish persona plus a newline to stdout. It loads Hydra `config/config.yaml` by default
+and runs immediately. Direct invocations do not reuse earlier persona checkpoints.
+Generated evidence is stored below `data/personas` by default. Diagnostics use stderr.
 
 `build_dataset.py` requires `--rows`. It generates validated shards of at most five
 rows, resumes valid checkpoints, merges and validates

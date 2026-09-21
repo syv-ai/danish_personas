@@ -43,6 +43,7 @@ def test_build_dataset_prints_merged_path(
 
     assert result.exit_code == 0, result.output
     assert result.stdout == f"{output_path}\n"
+    assert "Starting persona dataset build" in result.stderr
 
 
 def test_build_dataset_requires_release_inputs_before_running(
@@ -106,6 +107,8 @@ def test_generate_persona_emits_only_validated_text(
     assert result.exit_code == 0, result.output
     assert result.stdout == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
+    assert "Loading and validating persona inputs" in result.stderr
+    assert "Dette er en dansk syntetisk persona." not in result.stderr
 
 
 def test_sample_offset_selects_a_valid_frozen_row(

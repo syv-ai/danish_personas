@@ -269,9 +269,9 @@ uv run src/scripts/generate_persona.py
 ```
 
 Use `--input` and `--sample-manifest` to select another current frozen sample. Each
-invocation samples one demographic locally, then uses one model request to return both
-structured attributes and a detailed Danish `persona`. Only approved human-readable
-fields reach the provider. Source codes, resolution fields, the English origin label,
+invocation samples one demographic locally, then starts a fresh model request to return
+both structured attributes and a detailed Danish `persona`. Direct invocations do not
+reuse earlier persona checkpoints. Only approved human-readable fields reach the provider. Source codes, resolution fields, the English origin label,
 and origin-contract metadata remain withheld.
 
 For a larger dataset, enter the provider's current list prices. Use zero only when the

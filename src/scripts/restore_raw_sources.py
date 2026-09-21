@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.sources import archive as _archive
 from danish_personas.sources.archive import DEFAULT_ARCHIVE, restore_raw_sources
 from danish_personas.sources.exceptions import SourceArchiveError
@@ -46,7 +47,8 @@ def main(archive_path: Path, output_dir: Path, force: bool) -> None:
         click.ClickException:
             If the archive is missing, unsafe, corrupt, or the target already exists.
     """
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
+    logging.info("Restoring immutable source snapshots")
     try:
         restored_count = restore_raw_sources(
             archive_path=archive_path, output_dir=output_dir, force=force
