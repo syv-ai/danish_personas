@@ -38,7 +38,7 @@ def run_pilot(
     batch_size: int,
     concurrency: int,
     delay_between_batches: float,
-    maximum_total_requests: int,
+    maximum_total_requests: int | None,
     input_price_per_million: float,
     output_price_per_million: float,
     progress_callback: c.Callable[[int], None] | None = None,
@@ -67,7 +67,8 @@ def run_pilot(
         delay_between_batches:
             Seconds to wait before scheduling another wave of shards.
         maximum_total_requests:
-            Global HTTP request budget for the pilot.
+            Global HTTP request budget for the pilot, or ``None`` for unlimited
+            requests.
         input_price_per_million:
             Input-token price used for cost accounting.
         output_price_per_million:
@@ -114,13 +115,17 @@ def run_pilot(
         job_title_mapping=mapping,
         job_title_mapping_sha256=mapping_sha,
     )
-    worst_case_requests = len(offsets) * config.maximum_total_requests
-    if worst_case_requests > maximum_total_requests:
-        message = (
-            f"Worst-case pilot requests ({worst_case_requests}) exceed the pilot limit "
-            f"({maximum_total_requests})"
-        )
-        raise ValueError(message)
+    if (
+        maximum_total_requests is not None
+        and config.maximum_total_requests is not None
+    ):
+        worst_case_requests = len(offsets) * config.maximum_total_requests
+        if worst_case_requests > maximum_total_requests:
+            message = (
+                f"Worst-case pilot requests ({worst_case_requests}) exceed the pilot "
+                f"limit ({maximum_total_requests})"
+            )
+            raise ValueError(message)
     pilot_id = persona_pilot_id(
         input_sha256=sha256_file(input_path),
         generation_config_sha256=sha256_file(config_path),
@@ -149,7 +154,7 @@ def run_pilot(
         for run_dir in run_dirs
     ]
     requests = sum(manifest.requests for manifest in manifests)
-    if requests > maximum_total_requests:
+    if maximum_total_requests is not None and requests > maximum_total_requests:
         message = "Completed pilot exceeds its global request limit"
         raise ValueError(message)
     return _merge_pilot(
@@ -176,8 +181,8 @@ def _merge_pilot(
     input_path: Path,
     sample_manifest_path: Path,
     config_path: Path,
-    maximum_total_requests: int,
-    maximum_shard_requests: int,
+    maximum_total_requests: int | None,
+    maximum_shard_requests: int | None,
     input_price_per_million: float,
     output_price_per_million: float,
 ) -> Path:
@@ -411,7 +416,7 @@ def _validate_pilot_arguments(
     batch_size: int,
     concurrency: int,
     delay_between_batches: float,
-    maximum_total_requests: int,
+    maximum_total_requests: int | None,
     input_price_per_million: float,
     output_price_per_million: float,
 ) -> None:
@@ -423,7 +428,7 @@ def _validate_pilot_arguments(
         raise ValueError("Pilot concurrency must be between 1 and 8")
     if delay_between_batches < 0:
         raise ValueError("Pilot batch delay must not be negative")
-    if maximum_total_requests < 1:
+    if maximum_total_requests is not None and maximum_total_requests < 1:
         raise ValueError("Pilot request budget must be at least 1")
     if input_price_per_million < 0 or output_price_per_million < 0:
         raise ValueError("Pilot token prices must not be negative")

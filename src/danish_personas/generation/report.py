@@ -192,7 +192,10 @@ def _build_persona_pilot_report(
                 != manifest.origin_label_contract_version
                 or batch_manifest.origin_label_contract_content
                 != manifest.origin_label_contract_content
-                or batch_manifest.requests > manifest.maximum_shard_requests
+                or (
+                    manifest.maximum_shard_requests is not None
+                    and batch_manifest.requests > manifest.maximum_shard_requests
+                )
                 or batch_report.kind != "personas"
                 or not batch_report.passed
                 or batch_report.subject_id != batch_manifest.run_id
@@ -267,7 +270,10 @@ def _build_persona_pilot_report(
         ),
         _metric(
             name="request_budget",
-            passed=manifest.requests <= manifest.maximum_total_requests,
+            passed=(
+                manifest.maximum_total_requests is None
+                or manifest.requests <= manifest.maximum_total_requests
+            ),
             value=manifest.requests,
             threshold=manifest.maximum_total_requests,
         ),
@@ -580,7 +586,10 @@ def _checkpoint_accounting_matches(
         and ledger.attempts == http_requests
         and ledger.generation_context_sha256 == manifest.generation_context_sha256
         and ledger.maximum_attempts == config.maximum_total_requests
-        and ledger.attempts <= ledger.maximum_attempts
+        and (
+            ledger.maximum_attempts is None
+            or ledger.attempts <= ledger.maximum_attempts
+        )
         and manifest.requests >= manifest.rows
         and manifest.retries == manifest.requests - manifest.rows
         and manifest.prompt_tokens
@@ -885,7 +894,10 @@ def _persona_provenance_matches(
             and config.model == manifest.model
             and config.base_url == manifest.base_url
             and manifest.rows <= config.maximum_rows_per_shard
-            and manifest.requests <= config.maximum_total_requests
+            and (
+                config.maximum_total_requests is None
+                or manifest.requests <= config.maximum_total_requests
+            )
             and ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
             and sha256_text(prompt) == manifest.prompt_sha256
             and context_sha256 == manifest.generation_context_sha256
@@ -1049,8 +1061,12 @@ def _pilot_provenance_matches(
             == max(reference.rows for reference in manifest.batch_runs)
             and manifest.batch_size <= config.maximum_rows_per_shard
             and manifest.maximum_shard_requests == config.maximum_total_requests
-            and expected_batches * manifest.maximum_shard_requests
-            <= manifest.maximum_total_requests
+            and (
+                manifest.maximum_total_requests is None
+                or manifest.maximum_shard_requests is None
+                or expected_batches * manifest.maximum_shard_requests
+                <= manifest.maximum_total_requests
+            )
             and input_sha256 == manifest.input_sha256
             and _checksum_matches(sample_manifest_path, manifest.sample_manifest_sha256)
             and config_sha256 == manifest.generation_config_sha256
