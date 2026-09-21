@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.io import load_yaml_model
 from danish_personas.models import SourceLock, SourcesConfig
 from danish_personas.sources.acquisition import fetch_sources, resolve_sources
@@ -14,7 +15,7 @@ from danish_personas.sources.exceptions import SourceAcquisitionError
 @click.group()
 def main() -> None:
     """Manage official aggregate source snapshots."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
 
 
 @main.command()
@@ -27,6 +28,7 @@ def fetch(lock_path: Path, raw_dir: Path) -> None:
         click.ClickException:
             If source acquisition fails.
     """
+    logging.info("Loading source lock before fetching snapshots")
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     try:
         result = fetch_sources(lock=lock, raw_dir=raw_dir)
@@ -49,6 +51,7 @@ def resolve(config_path: Path, lock_path: Path) -> None:
         click.ClickException:
             If source resolution fails.
     """
+    logging.info("Loading source configuration before resolving selectors")
     config = load_yaml_model(path=config_path, model=SourcesConfig)
     try:
         lock = resolve_sources(config=config, lock_path=lock_path)

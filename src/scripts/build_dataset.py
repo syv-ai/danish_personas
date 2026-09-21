@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 from tqdm import tqdm
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.report import validate_persona_pilot
 from danish_personas.release.packager import package_release
@@ -14,6 +15,7 @@ from danish_personas.release.upload import upload_release
 from danish_personas.release.verifier import verify_release
 
 DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
+LOGGER = logging.getLogger(__name__)
 
 
 @click.command()
@@ -112,7 +114,8 @@ def main(
         click.ClickException:
             If approval, generation, validation, packaging, or upload fails.
     """
-    _configure_logging()
+    configure_cli_logging()
+    LOGGER.info("Starting persona dataset build for %s row(s)", rows)
     release_paths: tuple[Path, Path, Path, Path, Path, Path] | None = None
     if hf_repo is not None:
         release_paths = _require_release_options(
@@ -126,6 +129,7 @@ def main(
 
     progress = tqdm(total=rows, unit="row", file=sys.stderr)
     try:
+        LOGGER.info("Starting bounded persona generation")
         pilot_dir = run_pilot(
             input_path=input_path,
             sample_manifest_path=sample_manifest,
@@ -140,6 +144,7 @@ def main(
             output_price_per_million=output_price_per_million,
             progress_callback=progress.update,
         )
+        LOGGER.info("Generation complete; validating persona dataset")
         report = validate_persona_pilot(pilot_dir=pilot_dir)
         if not report.passed:
             raise ValueError("Persona dataset failed validation")
@@ -154,6 +159,7 @@ def main(
                 repository_path,
                 release_parent,
             ) = release_paths
+            LOGGER.info("Validation passed; packaging release")
             result = package_release(
                 pilot_dir=pilot_dir,
                 attestation_path=attestation_path,
@@ -166,19 +172,14 @@ def main(
             verify_release(
                 release_dir=result.path, expected_manifest_sha256=result.manifest_sha256
             )
+            LOGGER.info("Release package verified; uploading dataset")
             upload_release(repo_id=hf_repo, release_dir=result.path)
     except Exception as error:
         raise click.ClickException(str(error)) from error
     finally:
         progress.close()
+    LOGGER.info("Persona dataset build completed")
     click.echo(output_path)
-
-
-def _configure_logging() -> None:
-    """Configure diagnostics on stderr while keeping stdout machine-readable."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    for logger_name in ("httpx", "httpcore", "huggingface_hub"):
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def _merged_output_path(*, pilot_dir: Path) -> Path:

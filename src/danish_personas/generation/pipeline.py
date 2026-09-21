@@ -141,6 +141,7 @@ def generate_personas(
         ValueError:
             If the requested range is outside the frozen sample.
     """
+    LOGGER.info("Loading generation configuration and validating frozen sample")
     config = load_generation_config(config_path)
     _validate_guards(config=config, rows=rows)
     upstream_run = validate_upstream_sample(
@@ -199,6 +200,7 @@ def generate_personas(
         initial_requests_made=ledger.attempts,
         record_request=record_request,
     )
+    LOGGER.info("Starting provider generation for %s record(s)", rows)
     checkpoints: list[PersonaCheckpoint] = []
     persisted_http_requests = sum(
         PersonaCheckpoint.model_validate_json(
@@ -240,6 +242,7 @@ def generate_personas(
                 unattributed_http_requests = 0
     finally:
         client.close()
+    LOGGER.info("Provider generation finished; persisting generation artefacts")
     output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
     responses = [response for item in checkpoints for response in item.responses]
     manifest = GenerationManifest(

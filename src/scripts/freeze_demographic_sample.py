@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.sampling.freeze import SampleSizeError, freeze_sample
 
 
@@ -19,11 +20,13 @@ def main(run_dir: Path, rows: int, output: Path) -> None:
         click.ClickException:
             If the requested sample is larger than the source run.
     """
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
+    logging.info("Freezing a %s-row demographic development sample", rows)
     try:
         freeze_sample(run_dir=run_dir, rows=rows, output=output)
     except SampleSizeError as error:
         raise click.ClickException(str(error)) from error
+    logging.info("Completed demographic sample freeze")
 
 
 if __name__ == "__main__":

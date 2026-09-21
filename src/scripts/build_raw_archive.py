@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.sources.archive import (
     DEFAULT_ARCHIVE,
     RAW_DIRECTORY,
@@ -45,12 +46,13 @@ def main(raw_dir: Path, archive_path: Path) -> None:
         click.ClickException:
             If the snapshot directory is missing or contains no regular files.
     """
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
+    logging.info("Packing immutable source snapshots")
     try:
         packed_count = build_raw_archive(raw_dir=raw_dir, archive_path=archive_path)
     except SourceArchiveError as error:
         raise click.ClickException(str(error)) from error
-    logging.info("Packed %s files into %s", packed_count, archive_path)
+    logging.info("Packed %s source files into %s", packed_count, archive_path)
 
 
 if __name__ == "__main__":
