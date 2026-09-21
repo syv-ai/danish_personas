@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.sources.prepare import prepare_bundle
 
 
@@ -30,7 +31,8 @@ def main(
     origin_labels_contract_path: Path,
 ) -> None:
     """Normalise downloaded aggregates into prepared distributions."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
+    logging.info("Preparing offline source distributions")
     bundle_dir = prepare_bundle(
         lock_path=lock_path,
         categories_path=categories_path,
@@ -38,7 +40,7 @@ def main(
         output_dir=output_dir,
         origin_labels_contract_path=origin_labels_contract_path,
     )
-    logging.info("Prepared bundle: %s", bundle_dir)
+    logging.info("Prepared offline source bundle: %s", bundle_dir)
 
 
 if __name__ == "__main__":

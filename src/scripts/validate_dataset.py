@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.generation.report import validate_persona_run
 from danish_personas.validation.checks import validate_demographics, validate_sources
 
@@ -12,7 +13,7 @@ from danish_personas.validation.checks import validate_demographics, validate_so
 @click.group()
 def main() -> None:
     """Validate non-LLM pipeline artefacts."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
 
 
 @main.command()
@@ -41,6 +42,7 @@ def demographics(
         click.ClickException:
             If any mandatory demographic validation gate fails.
     """
+    logging.info("Validating demographic and OCEAN artefacts")
     report = validate_demographics(
         run_dir=run_dir,
         bundle_dir=bundle_dir,
@@ -49,6 +51,7 @@ def demographics(
     )
     if not report.passed:
         raise click.ClickException("Demographic validation failed")
+    logging.info("Demographic validation passed")
 
 
 @main.command()
@@ -60,9 +63,11 @@ def personas(run_dir: Path) -> None:
         click.ClickException:
             If any mandatory persona validation gate fails.
     """
+    logging.info("Validating persona artefacts")
     report = validate_persona_run(run_dir=run_dir)
     if not report.passed:
         raise click.ClickException("Persona validation failed")
+    logging.info("Persona validation passed")
 
 
 @main.command()
@@ -74,9 +79,11 @@ def sources(bundle_dir: Path) -> None:
         click.ClickException:
             If any mandatory source validation gate fails.
     """
+    logging.info("Validating prepared source bundle")
     report = validate_sources(bundle_dir=bundle_dir)
     if not report.passed:
         raise click.ClickException("Source validation failed")
+    logging.info("Source validation passed")
 
 
 if __name__ == "__main__":

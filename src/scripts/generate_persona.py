@@ -6,10 +6,12 @@ from pathlib import Path
 import click
 import polars as pl
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.generation.pipeline import generate_personas
 from danish_personas.generation.report import validate_persona_run
 
 DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
+LOGGER = logging.getLogger(__name__)
 
 
 @click.command()
@@ -55,7 +57,8 @@ def main(
         click.ClickException:
             If generation, upstream, guard, or validation checks fail.
     """
-    _configure_logging()
+    configure_cli_logging()
+    LOGGER.info("Loading and validating persona inputs")
     try:
         run_dir = generate_personas(
             input_path=input_path,
@@ -65,6 +68,7 @@ def main(
             rows=1,
             offset=offset,
         )
+        LOGGER.info("Provider generation finished; validating generated output")
         report = validate_persona_run(run_dir=run_dir)
         if not report.passed:
             raise ValueError("Generated persona failed validation")
@@ -76,16 +80,10 @@ def main(
         persona = output.item(row=0, column="persona")
         if not isinstance(persona, str):
             raise ValueError("Validated persona text was not a string")
+        LOGGER.info("Persona validation passed; emitting validated text")
     except Exception as error:
         raise click.ClickException(str(error)) from error
     click.echo(persona)
-
-
-def _configure_logging() -> None:
-    """Configure diagnostics on stderr without polluting the persona output."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    for logger_name in ("httpx", "httpcore", "huggingface_hub"):
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 if __name__ == "__main__":

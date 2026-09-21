@@ -4,11 +4,15 @@ Usage:
     uv run src/scripts/fix_dot_env_file.py [--non-interactive]
 """
 
+import logging
 from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
+
 # List of all the environment variables that are desired
+LOGGER = logging.getLogger(__name__)
 DESIRED_ENVIRONMENT_VARIABLES = dict(
     GIT_NAME="Enter your full name, to be shown in Git commits:\n> ",
     GIT_EMAIL="Enter your email, as registered on your Github account:\n> ",
@@ -29,6 +33,8 @@ def fix_dot_env_file(non_interactive: bool) -> None:
         non_interactive:
             If set, the script will not ask for user input.
     """
+    configure_cli_logging()
+    LOGGER.info("Preparing local environment files")
     env_path = Path(".env")
     name_and_email_path = Path(".name_and_email")
 
@@ -79,6 +85,7 @@ def fix_dot_env_file(non_interactive: bool) -> None:
 
     # Remove the name and email file
     name_and_email_path.unlink()
+    LOGGER.info("Local environment files are ready")
 
 
 if __name__ == "__main__":

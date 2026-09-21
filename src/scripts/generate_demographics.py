@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.sampling.generator import generate_records
 
 
@@ -24,7 +25,8 @@ def main(
     bundle_dir: Path, config_path: Path, rows: int, seed: int, output_dir: Path
 ) -> None:
     """Generate one reproducible Phase 2 run."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_cli_logging()
+    logging.info("Generating %s deterministic demographic record(s)", rows)
     run_dir = generate_records(
         bundle_dir=bundle_dir,
         sampling_config_path=config_path,
@@ -32,7 +34,7 @@ def main(
         rows=rows,
         seed=seed,
     )
-    logging.info("Generated run: %s", run_dir)
+    logging.info("Completed deterministic demographic run: %s", run_dir)
 
 
 if __name__ == "__main__":
