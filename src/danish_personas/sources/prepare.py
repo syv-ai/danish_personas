@@ -340,8 +340,8 @@ def prepare_bundle(
             "code and label; it is neither ethnicity nor citizenship.",
             "FOLK2 origin categories are retained verbatim, including Stateless "
             "and Not stated; no continents, regions, or correlations are inferred.",
-            "FOLK2 is sampled independently into Phase 2 origin fields and "
-            "withheld from both LLM stages.",
+            "FOLK2 is sampled independently into Phase 2 origin fields; only the "
+            "official Danish label reaches the LLM request.",
             "LONS20 supplies only a 2024 sex-conditional marginal over exactly "
             "the 42 two-digit DISCO-08 job-function groups.",
             "LONS20 covers all public employees and private organisations with "
@@ -350,8 +350,8 @@ def prepare_bundle(
             "Job function is a synthetic allocation for eligible RAS202 employee "
             "statuses, not an observed occupation or an all-worker distribution.",
             "Job function is not conditioned on municipality, origin, age, "
-            "education, OCEAN, or any unsupported joint and is withheld from both "
-            "LLM stages.",
+            "education, OCEAN, or any unsupported joint; only its human-readable "
+            "label reaches the LLM request.",
             "OCEAN traits are a documented design distribution, not official "
             "statistics.",
         ],

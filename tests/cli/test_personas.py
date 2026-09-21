@@ -1,4 +1,4 @@
-"""Tests for persona commands and the explicit LLM execution guard."""
+"""Tests for persona commands and the configuration execution guard."""
 
 from pathlib import Path
 
@@ -6,40 +6,26 @@ import pytest
 from click.testing import CliRunner
 
 from danish_personas import cli
-from scripts.generate_persona import main
 
 RUNNER = CliRunner()
 
 
-def test_llm_generation_is_disabled() -> None:
-    """The committed configuration blocks every live LLM call."""
-    result = CliRunner().invoke(
-        main,
-        [
-            "--input",
-            "missing.parquet",
-            "--sample-manifest",
-            "missing.json",
-            "--config",
-            str(Path("config/generation.yaml")),
-            "--output-dir",
-            "data/test-output",
-            "--live",
-        ],
-    )
-    assert result.exit_code != 0
-    assert "LLM generation is disabled" in result.output
-
-
-def test_persona_live_gates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shards default to planning while pilots require explicit approval."""
-    live_values: list[bool] = []
+def test_persona_commands_execute_without_live_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persona commands execute directly without a separate approval flag."""
+    calls: list[dict[str, object]] = []
 
     def generate(**kwargs: object) -> Path:
-        live_values.append(bool(kwargs["live"]))
+        calls.append(kwargs)
         return Path("shard")
 
+    def pilot(**kwargs: object) -> Path:
+        calls.append(kwargs)
+        return Path("pilot")
+
     monkeypatch.setattr(cli, "generate_personas", generate)
+    monkeypatch.setattr(cli, "run_pilot", pilot)
     shard_args = [
         "personas",
         "shard",
@@ -56,7 +42,6 @@ def test_persona_live_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     result = RUNNER.invoke(cli.main, shard_args)
     assert result.exit_code == 0
-    assert live_values == [False]
 
     result = RUNNER.invoke(
         cli.main,
@@ -81,5 +66,6 @@ def test_persona_live_gates(monkeypatch: pytest.MonkeyPatch) -> None:
             "0",
         ],
     )
-    assert result.exit_code != 0
-    assert "--live" in result.output
+    assert result.exit_code == 0
+    assert len(calls) == 2
+    assert all("live" not in call for call in calls)

@@ -1,4 +1,4 @@
-"""Resumable two-stage persona generation orchestration."""
+"""Resumable single-request persona generation orchestration."""
 
 import collections.abc as c
 import logging
@@ -10,7 +10,7 @@ from pathlib import Path
 import polars as pl
 from pydantic import BaseModel, ValidationError
 
-from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
+from ..io import canonical_json, sha256_file, sha256_text, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
     FROZEN_SAMPLE_SCHEMA_VERSION,
@@ -28,7 +28,8 @@ from ..origin_labels import (
     origin_label_contract_sha256 as origin_label_contract_sha256_file,
 )
 from .client import OpenAIClient, RequestBudgetExceeded
-from .grounding import EDUCATION_DANISH, build_persona_grounding_facts
+from .config import load_generation_config
+from .grounding import EDUCATION_DANISH
 from .identity import generation_run_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
@@ -37,9 +38,9 @@ from .job_titles import (
 )
 from .job_titles import job_title_mapping_sha256 as mapping_file_sha256
 from .models import (
-    AttributeCheckpoint,
     FrozenSampleManifest,
     GeneratedAttributes,
+    GeneratedPersona,
     GenerationConfig,
     GenerationManifest,
     LLMResponse,
@@ -48,7 +49,12 @@ from .models import (
     RequestLedger,
 )
 from .personality import allowed_personality_tendencies
-from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
+from .validation import (
+    VALIDATOR_VERSION,
+    parse_attributes,
+    parse_descriptions,
+    parse_generated_persona,
+)
 
 LOGGER = logging.getLogger(__name__)
 # Codes and sampler provenance are withheld from prompts. Human-readable labels are
@@ -100,17 +106,7 @@ OCEAN_PROMPT_FIELDS = (
     "neuroticism_score",
     "neuroticism_label",
 )
-STAGE_ONE_PROMPT_FIELDS = PROMPT_FIELDS
-STAGE_TWO_PROMPT_FIELDS = (
-    "origin_country_da",
-    "municipality",
-    "job_function",
-    "age",
-    "sex",
-    "education_level",
-    "labour_market_status",
-    "current_status",
-)
+GENERATION_PROMPT_FIELDS = PROMPT_FIELDS
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
@@ -120,10 +116,9 @@ def generate_personas(
     config_path: Path,
     output_dir: Path,
     rows: int,
-    live: bool,
     offset: int = 0,
 ) -> Path:
-    """Generate structured attributes and one persona description.
+    """Generate structured attributes and one persona in one model request.
 
     Args:
         input_path:
@@ -136,8 +131,6 @@ def generate_personas(
             Root directory for generation runs.
         rows:
             Number of records, capped at five per invocation.
-        live:
-            Whether network calls are explicitly authorised.
         offset:
             Zero-based position within the ordered frozen sample.
 
@@ -148,8 +141,8 @@ def generate_personas(
         ValueError:
             If the requested range is outside the frozen sample.
     """
-    config = load_yaml_model(path=config_path, model=GenerationConfig)
-    _validate_guards(config=config, rows=rows, live=live)
+    config = load_generation_config(config_path)
+    _validate_guards(config=config, rows=rows)
     upstream_run = validate_upstream_sample(
         input_path=input_path, sample_manifest_path=sample_manifest_path
     )
@@ -184,16 +177,6 @@ def generate_personas(
         ordered_persona_ids_sha256=ordered_ids_sha,
     )
     run_dir = output_dir / run_id
-    if not live:
-        LOGGER.info(
-            "Dry run %s: %s rows, %s planned requests, model=%s",
-            run_id,
-            rows,
-            rows * 2,
-            config.model,
-        )
-        return run_dir
-
     api_key = os.environ.get(config.api_key_env) if config.api_key_env else None
     ledger_path = run_dir / "request-ledger.json"
     ledger = _load_request_ledger(
@@ -217,16 +200,30 @@ def generate_personas(
         record_request=record_request,
     )
     checkpoints: list[PersonaCheckpoint] = []
+    persisted_http_requests = sum(
+        PersonaCheckpoint.model_validate_json(
+            path.read_text(encoding="utf-8")
+        ).http_requests
+        for path in (run_dir / "checkpoints").glob("*.json")
+        if not path.name.endswith(".attributes.json")
+    )
+    unattributed_http_requests = ledger.attempts - persisted_http_requests
+    if unattributed_http_requests < 0:
+        raise ValueError("Checkpoint requests exceed the persisted request ledger")
     try:
         for row in frame.iter_rows(named=True):
+            typed_row = t.cast(dict[str, object], row)
+            checkpoint_path = (
+                run_dir / "checkpoints" / f"{typed_row['persona_id']}.json"
+            )
+            checkpoint_exists = checkpoint_path.exists()
             checkpoints.append(
                 _generate_one(
-                    row=t.cast(dict[str, object], row),
+                    row=typed_row,
                     run_dir=run_dir,
                     config=config,
                     client=client,
-                    attributes_prompt=attributes_prompt,
-                    personas_prompt=personas_prompt,
+                    generation_prompt=f"{attributes_prompt}\n\n{personas_prompt}",
                     generation_context_sha=generation_context_sha,
                     job_title_mapping=job_title_mapping,
                     job_title_mapping_sha256=mapping_sha,
@@ -234,8 +231,13 @@ def generate_personas(
                     origin_label_contract=origin_contract,
                     origin_label_contract_sha256=origin_contract_sha,
                     origin_label_contract_path=origin_contract_path,
+                    prior_http_requests=(
+                        0 if checkpoint_exists else unattributed_http_requests
+                    ),
                 )
             )
+            if not checkpoint_exists:
+                unattributed_http_requests = 0
     finally:
         client.close()
     output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
@@ -266,7 +268,7 @@ def generate_personas(
         rows=rows,
         offset=offset,
         requests=ledger.attempts,
-        retries=max(0, ledger.attempts - rows * 2),
+        retries=max(0, ledger.attempts - rows),
         prompt_tokens=sum(response.prompt_tokens for response in responses),
         completion_tokens=sum(response.completion_tokens for response in responses),
         total_tokens=sum(response.total_tokens for response in responses),
@@ -283,9 +285,7 @@ def generate_personas(
         llm_generation=True,
     )
     write_json(path=run_dir / "generation-manifest.json", payload=manifest)
-    LOGGER.info(
-        "Completed persona smoke run %s with %s requests", run_id, manifest.requests
-    )
+    LOGGER.info("Completed persona run %s with %s requests", run_id, manifest.requests)
     return run_dir
 
 
@@ -294,8 +294,7 @@ def _generate_one(
     run_dir: Path,
     config: GenerationConfig,
     client: OpenAIClient,
-    attributes_prompt: str,
-    personas_prompt: str,
+    generation_prompt: str,
     generation_context_sha: str,
     job_title_mapping: JobFunctionTitleMapping,
     job_title_mapping_sha256: str,
@@ -303,13 +302,17 @@ def _generate_one(
     origin_label_contract: OriginLabelContract,
     origin_label_contract_sha256: str,
     origin_label_contract_path: Path,
+    prior_http_requests: int,
 ) -> PersonaCheckpoint:
+    """Generate or resume one persona with one combined provider response.
+
+    Returns:
+        The validated persona checkpoint.
+    """
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
-    stage_one_demographics = _stage_one_demographics(row=row)
-    checkpoint_dir = run_dir / "checkpoints"
-    checkpoint_path = checkpoint_dir / f"{persona_id}.json"
-    attribute_path = checkpoint_dir / f"{persona_id}.attributes.json"
+    demographics = _generation_demographics(row=row)
+    checkpoint_path = run_dir / "checkpoints" / f"{persona_id}.json"
     if checkpoint_path.exists():
         checkpoint = PersonaCheckpoint.model_validate_json(
             checkpoint_path.read_text(encoding="utf-8")
@@ -327,110 +330,30 @@ def _generate_one(
             origin_label_contract_sha256=origin_label_contract_sha256,
             origin_label_contract_path=origin_label_contract_path,
         )
-        parse_descriptions(
-            checkpoint.descriptions.model_dump_json(), row, checkpoint.attributes
-        )
         return checkpoint
 
-    if attribute_path.exists():
-        attribute_checkpoint = AttributeCheckpoint.model_validate_json(
-            attribute_path.read_text(encoding="utf-8")
-        )
-        _validate_checkpoint(
-            checkpoint=attribute_checkpoint,
-            input_sha=input_sha,
-            generation_context_sha=generation_context_sha,
-            model=config.model or "",
-            demographic=row,
-            job_title_mapping=job_title_mapping,
-            job_title_mapping_sha256=job_title_mapping_sha256,
-            job_title_mapping_path=job_title_mapping_path,
-            origin_label_contract=origin_label_contract,
-            origin_label_contract_sha256=origin_label_contract_sha256,
-            origin_label_contract_path=origin_label_contract_path,
-        )
-        attributes = attribute_checkpoint.attributes
-        responses = list(attribute_checkpoint.responses)
-        http_requests = attribute_checkpoint.http_requests
-    else:
-        responses = []
-        request_start = client.requests_made
-        attributes = _complete_validated(
-            client=client,
-            prompt=attributes_prompt,
-            payload=_stage_one_payload(
-                demographics=stage_one_demographics,
-                allowed_job_titles=_allowed_job_titles(
-                    row=row, mapping=job_title_mapping
-                ),
-            ),
-            schema_name="generated_attributes",
-            schema=t.cast(dict[str, object], GeneratedAttributes.model_json_schema()),
-            parser=lambda content: parse_attributes(
-                content, row, job_title_mapping=job_title_mapping
-            ),
-            maximum_attempts=config.maximum_validation_attempts,
-            responses=responses,
-        )
-        http_requests = client.requests_made - request_start
-        attribute_checkpoint = AttributeCheckpoint(
-            persona_id=persona_id,
-            input_sha256=input_sha,
-            generation_context_sha256=generation_context_sha,
-            validator_version=VALIDATOR_VERSION,
-            job_title_mapping_sha256=job_title_mapping_sha256,
-            job_title_mapping_version=job_title_mapping.version,
-            job_title_mapping_file=job_title_mapping_path,
-            job_title_mapping_content=job_title_mapping,
-            origin_label_contract_file=origin_label_contract_path,
-            origin_label_contract_sha256=origin_label_contract_sha256,
-            origin_label_contract_version=origin_label_contract.version,
-            origin_label_contract_content=origin_label_contract,
-            attributes=attributes,
-            responses=responses,
-            http_requests=http_requests,
-        )
-        write_json(path=attribute_path, payload=attribute_checkpoint)
-
+    responses: list[LLMResponse] = []
     request_start = client.requests_made
-    try:
-        descriptions = _complete_validated(
-            client=client,
-            prompt=personas_prompt,
-            payload=_stage_two_payload(
-                row=row,
-                personality_tendencies=allowed_personality_tendencies(
-                    context=stage_one_demographics
-                ),
-                attributes=attributes,
-            ),
-            schema_name="persona_descriptions",
-            schema=t.cast(dict[str, object], PersonaDescriptions.model_json_schema()),
-            parser=lambda content: parse_descriptions(content, row, attributes),
-            maximum_attempts=config.maximum_validation_attempts,
-            responses=responses,
-        )
-    except Exception:
-        attribute_checkpoint = AttributeCheckpoint(
-            persona_id=persona_id,
-            input_sha256=input_sha,
-            generation_context_sha256=generation_context_sha,
-            validator_version=VALIDATOR_VERSION,
-            job_title_mapping_sha256=job_title_mapping_sha256,
-            job_title_mapping_version=job_title_mapping.version,
-            job_title_mapping_file=job_title_mapping_path,
-            job_title_mapping_content=job_title_mapping,
-            origin_label_contract_file=origin_label_contract_path,
-            origin_label_contract_sha256=origin_label_contract_sha256,
-            origin_label_contract_version=origin_label_contract.version,
-            origin_label_contract_content=origin_label_contract,
-            attributes=attributes,
-            responses=responses,
-            http_requests=http_requests + client.requests_made - request_start,
-        )
-        write_json(path=attribute_path, payload=attribute_checkpoint)
-        raise
-    http_requests += client.requests_made - request_start
+    generated = _complete_validated(
+        client=client,
+        prompt=generation_prompt,
+        payload=_generation_payload(
+            demographics=demographics,
+            allowed_job_titles=_allowed_job_titles(row=row, mapping=job_title_mapping),
+            personality_tendencies=allowed_personality_tendencies(context=demographics),
+        ),
+        schema_name="generated_persona",
+        schema=t.cast(dict[str, object], GeneratedPersona.model_json_schema()),
+        parser=lambda content: parse_generated_persona(
+            content, row, job_title_mapping=job_title_mapping
+        ),
+        maximum_attempts=config.maximum_validation_attempts,
+        responses=responses,
+    )
+    attributes = GeneratedAttributes.model_validate(
+        {field: getattr(generated, field) for field in GeneratedAttributes.model_fields}
+    )
+    descriptions = PersonaDescriptions(persona=generated.persona)
     checkpoint = PersonaCheckpoint(
         persona_id=persona_id,
         input_sha256=input_sha,
@@ -448,10 +371,9 @@ def _generate_one(
         descriptions=descriptions,
         responses=responses,
         attempts=len(responses),
-        http_requests=http_requests,
+        http_requests=(prior_http_requests + client.requests_made - request_start),
     )
     write_json(path=checkpoint_path, payload=checkpoint)
-    attribute_path.unlink(missing_ok=True)
     return checkpoint
 
 
@@ -501,13 +423,13 @@ def _complete_validated(
     raise last_error
 
 
-def _stage_one_demographics(*, row: dict[str, object]) -> dict[str, object]:
-    """Build the first-stage demographic boundary, including raw OCEAN fields.
+def _generation_demographics(*, row: dict[str, object]) -> dict[str, object]:
+    """Build the single-request demographic boundary, including OCEAN fields.
 
     Returns:
-        Human-readable demographic fields allowed in stage one.
+        Human-readable demographic and personality fields.
     """
-    return _prompt_demographics(row=row, fields=STAGE_ONE_PROMPT_FIELDS)
+    return _prompt_demographics(row=row, fields=GENERATION_PROMPT_FIELDS)
 
 
 def _prompt_demographics(
@@ -523,7 +445,7 @@ def _prompt_demographics(
 
 
 def _normalise_prompt_row(*, row: dict[str, object]) -> dict[str, object]:
-    """Build the human-readable demographic context shared by both stages.
+    """Build the human-readable demographic context for generation.
 
     Returns:
         Normalised labels and values before stage-specific field selection.
@@ -556,46 +478,26 @@ def _normalise_prompt_row(*, row: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-def _stage_one_payload(
-    *, demographics: dict[str, object], allowed_job_titles: list[str]
+def _generation_payload(
+    *,
+    demographics: dict[str, object],
+    allowed_job_titles: list[str],
+    personality_tendencies: tuple[str, ...],
 ) -> dict[str, object]:
-    """Build the complete first-stage payload boundary.
+    """Build the complete single-request provider payload boundary.
 
     Returns:
-        The first-stage demographics and reviewed job-title inputs.
+        The generation payload with allowed titles and personality tendencies.
     """
     return {
         "demographics_and_personality": demographics,
         "allowed_job_titles": allowed_job_titles,
-    }
-
-
-def _stage_two_payload(
-    *,
-    row: dict[str, object],
-    personality_tendencies: tuple[str, ...],
-    attributes: GeneratedAttributes,
-) -> dict[str, object]:
-    """Build the second-stage boundary without raw OCEAN fields.
-
-    Returns:
-        The second-stage demographics, compatible terms, and generated attributes.
-    """
-    grounding_facts = build_persona_grounding_facts(
-        demographic=row, attributes=attributes
-    )
-    return {
-        "demographics_and_personality": _prompt_demographics(
-            row=row, fields=STAGE_TWO_PROMPT_FIELDS
-        ),
-        "grounding_facts": grounding_facts.model_dump(mode="json"),
         "allowed_personality_tendencies": list(personality_tendencies),
-        "generated_attributes": attributes.model_dump(mode="json"),
     }
 
 
 def _validate_checkpoint(
-    checkpoint: AttributeCheckpoint | PersonaCheckpoint,
+    checkpoint: PersonaCheckpoint,
     input_sha: str,
     generation_context_sha: str,
     model: str,
@@ -637,12 +539,9 @@ def _validate_checkpoint(
         demographic,
         job_title_mapping=job_title_mapping,
     )
-    if isinstance(checkpoint, PersonaCheckpoint):
-        parse_descriptions(
-            checkpoint.descriptions.model_dump_json(),
-            demographic,
-            checkpoint.attributes,
-        )
+    parse_descriptions(
+        checkpoint.descriptions.model_dump_json(), demographic, checkpoint.attributes
+    )
     if any(
         not models_match(configured=model, returned=response.model)
         for response in checkpoint.responses
@@ -704,7 +603,7 @@ def _load_request_ledger(
             message = "Stale request ledger does not match generation context"
             raise ValueError(message)
     else:
-        checkpoints: dict[str, AttributeCheckpoint | PersonaCheckpoint] = {}
+        checkpoints: dict[str, PersonaCheckpoint] = {}
         checkpoint_dir = run_dir / "checkpoints"
         for checkpoint_path in checkpoint_dir.glob("*.json"):
             if checkpoint_path.name.endswith(".attributes.json"):
@@ -713,11 +612,6 @@ def _load_request_ledger(
                 checkpoint_path.read_text(encoding="utf-8")
             )
             checkpoints[checkpoint.persona_id] = checkpoint
-        for checkpoint_path in checkpoint_dir.glob("*.attributes.json"):
-            checkpoint = AttributeCheckpoint.model_validate_json(
-                checkpoint_path.read_text(encoding="utf-8")
-            )
-            checkpoints.setdefault(checkpoint.persona_id, checkpoint)
         ledger = RequestLedger(
             generation_context_sha256=generation_context_sha,
             attempts=sum(item.http_requests for item in checkpoints.values()),
@@ -737,18 +631,15 @@ def _sum_estimated_cost(responses: list[LLMResponse]) -> float | None:
     return sum(t.cast(list[float], costs))
 
 
-def _validate_guards(config: GenerationConfig, rows: int, live: bool) -> None:
-    if rows < 1 or rows > config.maximum_smoke_rows:
-        message = f"Rows must be between 1 and {config.maximum_smoke_rows}"
+def _validate_guards(config: GenerationConfig, rows: int) -> None:
+    if rows < 1 or rows > config.maximum_rows_per_shard:
+        message = f"Rows must be between 1 and {config.maximum_rows_per_shard}"
         raise ValueError(message)
-    if live and not config.llm_generation_enabled:
-        message = "LLM generation is disabled in the selected configuration"
+    if rows > config.maximum_total_requests:
+        message = "Planned rows exceed the configured HTTP request budget"
         raise ValueError(message)
-    if rows * 2 > config.maximum_total_requests:
-        message = "Planned stages exceed the configured HTTP request budget"
-        raise ValueError(message)
-    if live and (not config.base_url or not config.model):
-        message = "Live generation requires base_url and model"
+    if not config.base_url or not config.model:
+        message = "Generation requires base_url and model"
         raise ValueError(message)
 
 
@@ -796,9 +687,9 @@ def generation_context_sha256(
         config:
             Validated generation configuration.
         attributes_prompt:
-            Prompt used for the structured attributes stage.
+            Structured-attribute instructions included in the combined prompt.
         personas_prompt:
-            Prompt used for the persona descriptions stage.
+            Persona-writing instructions included in the combined prompt.
         job_title_mapping:
             Validated reviewed title mapping.
         job_title_mapping_sha256:
@@ -845,15 +736,11 @@ def generation_context_sha256(
                 "origin_label_contract_sha256": effective_origin_sha256,
                 "attributes_prompt_sha256": sha256_text(attributes_prompt),
                 "personas_prompt_sha256": sha256_text(personas_prompt),
-                "attributes_schema": GeneratedAttributes.model_json_schema(),
-                "personas_schema": PersonaDescriptions.model_json_schema(),
+                "generated_persona_schema": GeneratedPersona.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
                 "prompt_fields": PROMPT_FIELDS,
-                "stage_payload_fields": {
-                    "attributes": sorted(STAGE_ONE_PROMPT_FIELDS),
-                    "descriptions": sorted(STAGE_TWO_PROMPT_FIELDS),
-                    "ocean": sorted(OCEAN_PROMPT_FIELDS),
-                },
+                "generation_payload_fields": sorted(GENERATION_PROMPT_FIELDS),
+                "ocean_payload_fields": sorted(OCEAN_PROMPT_FIELDS),
                 "withheld_fields": sorted(
                     set(DemographicRecord.model_fields) - set(PROMPT_FIELDS)
                 ),

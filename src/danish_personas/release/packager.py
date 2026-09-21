@@ -28,6 +28,7 @@ else:
 import polars as pl
 import yaml
 
+from ..generation.config import load_generation_config
 from ..generation.job_titles import load_job_title_mapping
 from ..generation.models import (
     GenerationConfig,
@@ -149,7 +150,7 @@ _PUBLIC_FILES = (
     "provenance/pilot-validation-report.json",
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
-    "provenance/config/generation.yaml",
+    "provenance/config/config.yaml",
     "provenance/config/job-function-titles.yaml",
     "provenance/config/folk2-ieland-labels-da.yaml",
     "provenance/config/sources.lock.yaml",
@@ -221,9 +222,7 @@ def package_release(
         repository_root, pilot_manifest.generation_config_file
     )
     _capture_path(path=config_path, inventory=inventory)
-    config = _load_captured_yaml(
-        inventory=inventory, path=config_path, model=GenerationConfig
-    )
+    config = load_generation_config(config_path)
     mapping_path = _repository_path(
         repository_root,
         config.job_title_mapping or Path("config/job-function-titles.yaml"),
@@ -1012,16 +1011,14 @@ def _install_files(**kwargs: object) -> None:
         ),
     }
     for name in (
-        "generation.yaml",
+        "config.yaml",
         "sources.lock.yaml",
         "categories.yaml",
         "sampling.yaml",
         "validation.yaml",
     ):
         source = (
-            config_path
-            if name == "generation.yaml"
-            else repository_root / "config" / name
+            config_path if name == "config.yaml" else repository_root / "config" / name
         )
         payloads[f"provenance/config/{name}"] = _captured_bytes(inventory, source)
     for name in (
@@ -1421,8 +1418,8 @@ def _assert_manifest_bindings(
     attributes_path: Path,
     personas_path: Path,
 ) -> None:
-    if manifest.llm_generation is not True or not config.llm_generation_enabled:
-        raise ReleasePackagingError("Release requires enabled LLM generation")
+    if manifest.llm_generation is not True:
+        raise ReleasePackagingError("Release requires LLM-generated output")
     if not _mapping_binding_matches(
         config=config,
         mapping_path=mapping_path,
@@ -1430,9 +1427,9 @@ def _assert_manifest_bindings(
         config_path=config_path,
     ):
         raise ReleasePackagingError("Job-title mapping binding failed")
-    if attributes_path != config_path.parent / "prompts/attributes-da.md":
+    if attributes_path != config_path.parent / "config/prompts/attributes-da.md":
         raise ReleasePackagingError("Generation attributes prompt path binding failed")
-    if personas_path != config_path.parent / "prompts/personas-da.md":
+    if personas_path != config_path.parent / "config/prompts/personas-da.md":
         raise ReleasePackagingError("Generation personas prompt path binding failed")
     if sha256_file(config_path) != manifest.generation_config_sha256:
         raise ReleasePackagingError("Generation config binding failed")
@@ -1447,7 +1444,6 @@ def _assert_manifest_bindings(
         origin_contract_path=origin_contract_path,
         origin_contract=origin_contract,
     )
-    _require_generation_v4(config)
     context = generation_context_sha256(
         config=config,
         attributes_prompt=attributes_path.read_text(encoding="utf-8"),
@@ -1479,7 +1475,7 @@ def _assert_origin_contract_binding(
     """
     if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
         raise ReleasePackagingError("Origin-label contract path binding failed")
-    expected_path = config_path.parent / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.name
+    expected_path = config_path.parent / DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
     if origin_contract_path != expected_path:
         raise ReleasePackagingError("Origin-label contract path binding failed")
     if manifest.origin_label_contract_file != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
@@ -1509,7 +1505,7 @@ def _mapping_binding_matches(
     expected_path = Path("config/job-function-titles.yaml")
     if config.job_title_mapping != expected_path:
         return False
-    if mapping_path != config_path.parent / expected_path.name:
+    if mapping_path != config_path.parent / expected_path:
         return False
     if manifest.job_title_mapping_file != expected_path:
         return False
@@ -1520,11 +1516,6 @@ def _mapping_binding_matches(
     except OSError, UnicodeError, ValueError:
         return False
     return manifest.job_title_mapping_version == mapping.version
-
-
-def _require_generation_v4(config: GenerationConfig) -> None:
-    if config.version != 4:
-        raise ReleasePackagingError("Release requires generation contract v4")
 
 
 def _derive_evidence(
@@ -1672,7 +1663,7 @@ def _derive_evidence(
         repository_root, manifest.generation_config_file
     )
     config_hashes = {
-        "generation.yaml": _source_sha256(effective_config_path, inventory),
+        "config.yaml": _source_sha256(effective_config_path, inventory),
         "job-function-titles.yaml": _source_sha256(
             repository_root / "config/job-function-titles.yaml", inventory
         ),

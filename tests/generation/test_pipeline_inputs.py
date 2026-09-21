@@ -24,11 +24,11 @@ from danish_personas.models import RunManifest
 def test_generation_rejects_origin_contract_and_row_mismatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """V2 configs and stale, missing, or mismatched origin inputs fail closed."""
+    """Obsolete config fields and mismatched origin inputs fail closed."""
     paths = write_generation_inputs(root=tmp_path)
     config = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
 
-    config["version"] = 2
+    config["version"] = 4
     paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
     with pytest.raises(ValueError):
         generate_personas(
@@ -37,10 +37,9 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
             config_path=paths["config"],
             output_dir=tmp_path / "v2",
             rows=1,
-            live=False,
         )
 
-    config["version"] = 4
+    config.pop("version")
     config.pop("origin_label_contract")
     paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
     with pytest.raises(ValueError):
@@ -61,7 +60,6 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
             config_path=paths["config"],
             output_dir=tmp_path / "missing",
             rows=1,
-            live=False,
         )
 
     tampered_contract = tmp_path / "tampered-origin-labels.yaml"
@@ -84,7 +82,6 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
                 config_path=paths["config"],
                 output_dir=tmp_path / "tampered",
                 rows=1,
-                live=False,
             )
 
     config["origin_label_contract"] = "config/folk2-ieland-labels-da.yaml"
@@ -115,14 +112,13 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
             config_path=paths["config"],
             output_dir=tmp_path / "mismatch",
             rows=1,
-            live=False,
         )
 
 
 def test_generation_withholds_resolution_provenance_from_both_prompts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both LLM stages receive values without sampler resolution metadata."""
+    """The LLM request receives values without sampler resolution metadata."""
     paths = write_generation_inputs(root=tmp_path)
     monkeypatch.setattr(
         "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
@@ -136,7 +132,6 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
 
     resolution_columns = (
@@ -153,15 +148,12 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     sample = pl.read_parquet(paths["sample"])
     assert set(resolution_columns) <= set(sample.columns)
-    assert len(MockGenerationClient.payloads) == 2
-    attributes_request = MockGenerationClient.payloads[0]
-    descriptions_request = MockGenerationClient.payloads[1]
-    attributes_payload = attributes_request["demographics_and_personality"]
-    descriptions_payload = descriptions_request["demographics_and_personality"]
-    assert isinstance(attributes_payload, dict)
-    assert isinstance(descriptions_payload, dict)
+    assert len(MockGenerationClient.payloads) == 1
+    generation_request = MockGenerationClient.payloads[0]
+    generation_payload = generation_request["demographics_and_personality"]
+    assert isinstance(generation_payload, dict)
 
-    stage_one_allowed = {
+    allowed_fields = {
         "origin_country_da",
         "municipality",
         "job_function",
@@ -181,17 +173,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "neuroticism_label",
         "current_status",
     }
-    stage_two_allowed = {
-        "origin_country_da",
-        "municipality",
-        "job_function",
-        "age",
-        "sex",
-        "education_level",
-        "labour_market_status",
-        "current_status",
-    }
-    stage_one_forbidden = {
+    forbidden_fields = {
         "age_resolution",
         "marital_resolution",
         "education_resolution",
@@ -207,45 +189,21 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "education_source_code",
         "persona_id",
     }
-    ocean_fields = {
-        "openness_score",
-        "openness_label",
-        "conscientiousness_score",
-        "conscientiousness_label",
-        "extraversion_score",
-        "extraversion_label",
-        "agreeableness_score",
-        "agreeableness_label",
-        "neuroticism_score",
-        "neuroticism_label",
-    }
-    assert set(attributes_request) == {
+    assert set(generation_request) == {
         "demographics_and_personality",
         "allowed_job_titles",
-    }
-    assert set(descriptions_request) == {
-        "demographics_and_personality",
-        "grounding_facts",
         "allowed_personality_tendencies",
-        "generated_attributes",
     }
-    assert set(attributes_payload) == stage_one_allowed
-    assert set(descriptions_payload) == stage_two_allowed
-    stage_two_forbidden = stage_one_forbidden | ocean_fields
-    assert stage_one_forbidden.isdisjoint(attributes_payload)
-    assert stage_two_forbidden.isdisjoint(descriptions_payload)
-    assert stage_one_allowed.isdisjoint(stage_one_forbidden)
-    assert stage_two_allowed.isdisjoint(stage_two_forbidden)
+    assert set(generation_payload) == allowed_fields
+    assert forbidden_fields.isdisjoint(generation_payload)
+    assert allowed_fields.isdisjoint(forbidden_fields)
     assert {"municipality", "origin_country_da", "job_function"} <= set(
-        attributes_payload
+        generation_payload
     )
-    assert {"municipality", "origin_country_da", "job_function"} <= set(
-        descriptions_payload
-    )
-    allowed_phrases = descriptions_request["allowed_personality_tendencies"]
+    allowed_phrases = generation_request["allowed_personality_tendencies"]
     assert isinstance(allowed_phrases, list)
     assert allowed_phrases == list(
-        allowed_personality_tendencies(context=attributes_payload)
+        allowed_personality_tendencies(context=generation_payload)
     )
     assert allowed_phrases
     assert all(
@@ -253,23 +211,13 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         for phrase in allowed_phrases
     )
     assert (
-        attributes_payload["job_function"]
+        generation_payload["job_function"]
         == "Business and administration professionals"
     )
-    assert attributes_payload["municipality"] == "København"
-    assert attributes_payload["origin_country_da"] == "Danmark"
-    assert "origin_country" not in attributes_payload
-    assert "origin_country" not in descriptions_payload
-    assert attributes_payload["education_level"] == "videregående uddannelse"
-    assert descriptions_payload["education_level"] == "videregående uddannelse"
-    assert descriptions_request["grounding_facts"] == {
-        "pronoun_age": "hun er 35 år",
-        "municipality": "bor i København",
-        "origin": "kommer fra Danmark",
-        "education": "har en videregående uddannelse",
-        "employment": "arbejder som forretningsspecialist",
-    }
-    assert "generated_attributes" in MockGenerationClient.payloads[1]
+    assert generation_payload["municipality"] == "København"
+    assert generation_payload["origin_country_da"] == "Danmark"
+    assert "origin_country" not in generation_payload
+    assert generation_payload["education_level"] == "videregående uddannelse"
 
     generation_manifest = json.loads(
         (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
@@ -312,7 +260,6 @@ def test_pipeline_selects_an_offset_range(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
         offset=1,
     )
     demographics = MockGenerationClient.payloads[0]["demographics_and_personality"]

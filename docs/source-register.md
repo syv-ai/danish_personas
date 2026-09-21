@@ -93,8 +93,8 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   `origin_country_code`, English `origin_country`, and mandatory Danish
   `origin_country_da` fields. Official unequal weights and labels, including Stateless
   and Not stated, are retained; zero-weight categories are excluded. The English label
-  remains official source/audit provenance. Only the Danish label reaches both provider
-  stages and exact persona grounding; code, English label, resolutions, and contract
+  remains official source/audit provenance. Only the Danish label reaches the provider
+  request and exact persona grounding; code, English label, resolutions, and contract
   metadata are withheld. Neither label is ethnicity, citizenship, residence, or
   appearance. Origin cannot drive culture, religion, job, interests, personality, or
   visual traits.

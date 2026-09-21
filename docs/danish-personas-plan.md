@@ -26,9 +26,9 @@ The initial release should:
 - include only a broad synthetic job-function allocation calibrated by sex to LONS20's
   incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
-- produce one short, grounded Danish `persona` under generation contract 4, with only
-  the official Danish FOLK2 origin label reaching both
-  provider stages and exact persona grounding;
+- produce one detailed, grounded Danish `persona` under generation contract 4, with
+  only the official Danish FOLK2 origin label reaching the provider request and exact
+  persona grounding;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
 - include reproducible source snapshots, prompts, model versions, validation reports,
@@ -49,7 +49,7 @@ Hugging Face.
 The NVIDIA dataset card describes 22 historical content fields: six persona fields and
 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
 physical columns. That historical count is not the current Danish contract. Generation
-contract 4 retains one short, grounded
+contract 4 retains one detailed, grounded
 `persona`; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
 ten-person smoke, and old pilots are not resumable under generation contract 4. The
 historical NVIDIA comparison must not be read as current Danish validation:
@@ -215,10 +215,10 @@ identity claims.
 
 #### Generated persona text
 
-- `persona`: one short, grounded Danish text preserving pronoun and age, municipality,
-  origin, broad education, and an allowlisted synthetic job title or canonical current
-  status through natural paraphrase, while allowing optional interests and cautious
-  OCEAN tendencies.
+- `persona`: one detailed, grounded Danish portrait preserving pronoun and age,
+  municipality, origin, education, and an allowlisted synthetic job title or canonical
+  current status, while incorporating concrete interests, skills, ambitions, fictional
+  biography, and cautious OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
 `origin_country_da`, and job-function labels for this grounding. It does not receive
@@ -226,9 +226,11 @@ municipality or job-function codes, the origin code, English `origin_country`, c
 metadata, or resolution fields. The English label remains source/audit provenance only.
 Neither origin label is ethnicity, citizenship, residence, or appearance. Origin cannot
 drive culture, religion, job, interests, personality, or visual traits. A job title is
-synthetic and must not imply unsupported work history. The persona must not make
-unsupported family claims and is not a visual description; downstream image models may
-still stereotype.
+synthetic and must not imply unsupported work history. Fictional given names, education
+detail, workplace settings, relationships, and family details are permitted, while
+surnames, real organisations, exact addresses, appearance, and sensitive traits remain
+prohibited. The persona is not a visual description; downstream image models may still
+stereotype.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -315,7 +317,7 @@ Important source limitations to carry into the dataset card include:
   source/audit provenance. The mandatory Danish label comes from the archived
   metadata-da 241-code contract (source metadata SHA-256
   `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`). Only the Danish
-  label reaches both provider stages and exact persona grounding; code, English label,
+  label reaches the provider request and exact persona grounding; code, English label,
   resolutions, and contract metadata do not.
 
 ## Required execution order
@@ -341,13 +343,13 @@ generation independently testable and restartable.
 Phases 0-2 are implemented and validated. The source bundle prepares the official FOLK2
 adult origin marginal. Phase 2 samples this marginal independently with deterministic
 quotas and retains the English code-label pair for source/audit provenance plus the
-mandatory Danish display label. Only the Danish label may reach both provider stages and
+mandatory Danish display label. Only the Danish label may reach the provider request and
 exact persona grounding; code, English label, resolutions, and contract metadata do not.
 Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot drive
 culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
-schema 3, generation contract 4, validator `persona-safety-v16`, and release
+schema 3, generation contract 4, validator `persona-safety-v17`, and release
 manifest/evidence schema 2. The current offline bundle is `8a4133e5a0a52050`; its
 passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
 The previous schema-5 bundle `cfc1b56f5586a2d7` and runs `f449f1de01d18c08` /
@@ -358,8 +360,8 @@ LONS20 extension assigns broad job functions within sex only to RAS202 employee 
 15, 20, 25, 30, 35, and 40, using deterministic largest-remainder quotas and an isolated
 fourth RNG stream. The human-readable job-function label may reach the provider for a
 synthetic title, while its code and resolution do not. See the [Phase 2 validation
-report][phase-2-report] for exact checksums and metrics. LLM generation remains disabled
-in configuration and guarded by an executable failure.
+report][phase-2-report] for exact checksums and metrics. LLM generation uses the root
+Hydra configuration and remains bounded by row and HTTP-request limits.
 
 The frozen text-development input remains a separate, deliberately stratified 1,000-row
 Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
@@ -464,10 +466,9 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for one short, grounded `persona`. Separating
-attribute and prose generation makes failures easier to detect and permits regeneration
-of text without changing the demographic sample. Both provider stages may receive the municipality,
-official Danish `origin_country_da`, and job-function labels as appropriate, but never
+Use one structured generation call returning attributes and one detailed, grounded
+`persona`. The provider request may receive the municipality, official Danish
+`origin_country_da`, and job-function labels as appropriate, but never
 their codes, English origin label, contract metadata, or resolution fields. The exact
 Danish label must ground the persona. It must use a synthetic job title or current
 nonemployee status, allow natural use of interests in prose, and express OCEAN only as
@@ -530,8 +531,8 @@ Automated tests should require:
   and job title or current nonemployee status, while allowing natural use of supplied
   interests in running prose and cautious OCEAN tendencies in `persona`;
 - no exact addresses, CPR-like values, phone numbers, or email addresses;
-- no unsupported family or appearance claims and no disallowed sensitive-attribute
-  claims;
+- no appearance claims, surnames, real organisations, exact addresses, or disallowed
+  sensitive-attribute claims;
 - Danish language above a pre-registered classifier threshold.
 
 ### Diversity and duplication
@@ -675,9 +676,9 @@ thresholds, and the demographic sampler configuration is frozen.
 
 ### Phase 3: Develop LLM generation
 
-This is the first phase that may call an LLM. The guarded provider adapter, two-stage
-schemas, checkpointing, deterministic validators, and a three-record smoke test are
-complete. Full development-sample generation and evaluation remain pending.
+This is the first phase that may call an LLM. The guarded provider adapter,
+single-response schema, checkpointing, deterministic validators, and a three-record
+smoke test are complete. Full development-sample generation and evaluation remain pending.
 
 #### Work
 
@@ -697,7 +698,8 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by one generation-4 persona text field.
+- Generate structured attributes and one generation-4 persona text field in a single
+  provider response per record.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 

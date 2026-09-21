@@ -38,12 +38,12 @@ def test_pilot_service_preserves_order_enforces_budget_and_resumes(
     pilot_dir = run_pilot(**pilot_kwargs, progress_callback=progress.append)
     output = pl.read_parquet(pilot_dir / "generated-personas.parquet")
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
-    assert MockGenerationClient.requests == 4
+    assert MockGenerationClient.requests == 2
     assert progress == [1, 1]
 
     progress.clear()
     run_pilot(**pilot_kwargs, progress_callback=progress.append)
-    assert MockGenerationClient.requests == 4
+    assert MockGenerationClient.requests == 2
     assert progress == [1, 1]
 
     with pytest.raises(ValueError, match="Worst-case pilot requests"):

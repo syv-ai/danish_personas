@@ -39,9 +39,7 @@ def persona(
         education
         or {
             "primary": "har gået i grundskolen",
-            "secondary_or_vocational": (
-                "har en ungdomsuddannelse eller erhvervsuddannelse"
-            ),
+            "secondary_or_vocational": "har en erhvervsuddannelse",
             "higher_education": "har en videregående uddannelse",
             "not_stated": "har en uddannelse, der ikke er oplyst",
         }[str(context["education_level"])]
@@ -50,10 +48,14 @@ def persona(
         f"arbejder som {JOB_TITLE}" if context["job_title"] else "er pensionist"
     )
     text = (
-        f"{pronoun.capitalize()} er {context['age']} år og bor i "
-        f"{context['municipality']}. {pronoun.capitalize()} kommer fra "
-        f"{context['origin_country_da']} og {education}. {pronoun.capitalize()} "
-        f"{employment}, og {extra[0].lower() + extra[1:]}"
+        f"Maja er {context['age']} år, og {pronoun} bor i "
+        f"{context['municipality']} og kommer fra {context['origin_country_da']}. "
+        f"{pronoun.capitalize()} {education} med en praktisk retning i Aarhus og "
+        f"{employment} i en mindre virksomhed i centrum. I fritiden holder "
+        f"{pronoun} af at læse og musik, mens planlægning giver plads til begge "
+        f"dele og til faste aftaler med venner. {pronoun.capitalize()} har ofte "
+        f"tendens til at være nysgerrig og bor sammen med kæresten Alex og deres "
+        f"barn Noa. {extra}"
     )
     return {"persona": text}
 

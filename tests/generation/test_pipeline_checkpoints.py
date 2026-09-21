@@ -19,6 +19,44 @@ from danish_personas.generation.report import validate_persona_run
 from danish_personas.io import sha256_file, write_json
 
 
+def test_interrupted_request_is_counted_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transport interruption remains counted when generation resumes."""
+    paths = write_generation_inputs(root=tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", InterruptingGenerationClient
+    )
+    InterruptingGenerationClient.requests = 0
+    InterruptingGenerationClient.interrupt_once = True
+    with pytest.raises(RequestBudgetExceeded):
+        generate_personas(
+            input_path=paths["sample"],
+            sample_manifest_path=paths["sample_manifest"],
+            config_path=paths["config"],
+            output_dir=tmp_path / "outputs",
+            rows=1,
+        )
+    assert InterruptingGenerationClient.requests == 1
+    assert not list((tmp_path / "outputs").glob("*/checkpoints/*.json"))
+
+    run_dir = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+    )
+    assert InterruptingGenerationClient.requests == 2
+    manifest = json.loads(
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["requests"] == 2
+    assert manifest["retries"] == 1
+    assert manifest["estimated_cost_usd"] == 0.001
+    assert manifest["inference_providers"] == ["mock-provider"]
+
+
 @pytest.mark.parametrize(
     "tamper",
     [
@@ -49,7 +87,6 @@ def test_persona_validation_rejects_independent_tampering(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     assert validate_persona_run(run_dir=run_dir).passed
     manifest_path = run_dir / "generation-manifest.json"
@@ -112,9 +149,8 @@ def test_pipeline_rejects_tampering_and_resumes(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
-    assert MockGenerationClient.requests == 2
+    assert MockGenerationClient.requests == 1
     assert (run_dir / "generated-personas.parquet").exists()
     assert validate_persona_run(run_dir=run_dir).passed
 
@@ -124,9 +160,8 @@ def test_pipeline_rejects_tampering_and_resumes(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
-    assert MockGenerationClient.requests == 2
+    assert MockGenerationClient.requests == 1
 
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -139,7 +174,6 @@ def test_pipeline_rejects_tampering_and_resumes(
             config_path=paths["config"],
             output_dir=tmp_path / "outputs",
             rows=1,
-            live=True,
         )
 
     sample = pl.read_parquet(paths["sample"]).with_columns(pl.lit(99).alias("age"))
@@ -155,7 +189,6 @@ def test_pipeline_rejects_tampering_and_resumes(
             config_path=paths["config"],
             output_dir=tmp_path / "outputs",
             rows=1,
-            live=True,
         )
 
 
@@ -175,52 +208,9 @@ def test_rejected_completion_text_is_not_checkpointed(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     responses = json.loads(checkpoint_path.read_text(encoding="utf-8"))["responses"]
     assert responses[0]["content"] == ""
     assert responses[0]["raw_response_sha256"] == "0" * 64
-    assert len(responses) == 3
-
-
-def test_stage_checkpoint_avoids_repeating_attributes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A descriptions-stage interruption preserves the billable attributes stage."""
-    paths = write_generation_inputs(root=tmp_path)
-    monkeypatch.setattr(
-        "danish_personas.generation.pipeline.OpenAIClient", InterruptingGenerationClient
-    )
-    InterruptingGenerationClient.requests = 0
-    InterruptingGenerationClient.interrupt_once = True
-    with pytest.raises(RequestBudgetExceeded):
-        generate_personas(
-            input_path=paths["sample"],
-            sample_manifest_path=paths["sample_manifest"],
-            config_path=paths["config"],
-            output_dir=tmp_path / "outputs",
-            rows=1,
-            live=True,
-        )
-    assert InterruptingGenerationClient.requests == 2
-    assert (
-        len(list((tmp_path / "outputs").glob("*/checkpoints/*.attributes.json"))) == 1
-    )
-
-    run_dir = generate_personas(
-        input_path=paths["sample"],
-        sample_manifest_path=paths["sample_manifest"],
-        config_path=paths["config"],
-        output_dir=tmp_path / "outputs",
-        rows=1,
-        live=True,
-    )
-    assert InterruptingGenerationClient.requests == 3
-    manifest = json.loads(
-        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["requests"] == 3
-    assert manifest["retries"] == 1
-    assert manifest["estimated_cost_usd"] == 0.002
-    assert manifest["inference_providers"] == ["mock-provider"]
+    assert len(responses) == 2

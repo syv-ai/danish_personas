@@ -3,7 +3,11 @@
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from danish_personas.generation.models import GeneratedAttributes, PersonaDescriptions
+from danish_personas.generation.models import (
+    GeneratedAttributes,
+    GeneratedPersona,
+    PersonaDescriptions,
+)
 
 
 def test_nullable_attribute_fields_require_explicit_null() -> None:
@@ -27,7 +31,9 @@ def test_nullable_attribute_fields_require_explicit_null() -> None:
             GeneratedAttributes.model_validate(omitted)
 
 
-@pytest.mark.parametrize("model", [GeneratedAttributes, PersonaDescriptions])
+@pytest.mark.parametrize(
+    "model", [GeneratedAttributes, PersonaDescriptions, GeneratedPersona]
+)
 def test_response_schemas_are_openai_strict(model: type[BaseModel]) -> None:
     """Every object in a response schema satisfies OpenAI strict mode."""
     schema = model.model_json_schema()

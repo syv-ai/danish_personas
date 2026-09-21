@@ -20,14 +20,14 @@ def test_verify_release_rejects_joint_config_tamper_with_stale_context(
 ) -> None:
     """Re-signing config and evidence cannot bypass their context binding."""
     release, _ = verifier_package
-    config_path = release / "provenance/config/generation.yaml"
+    config_path = release / "provenance/config/config.yaml"
     config_path.write_bytes(
         config_path.read_bytes().replace(b"TEST_TOKEN", b"NEW_TOKEN")
     )
     evidence_path = release / "provenance/evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     config_hash = sha256_file(config_path)
-    evidence["config_hashes"]["generation.yaml"] = config_hash
+    evidence["config_hashes"]["config.yaml"] = config_hash
     evidence["generation_config_sha256"] = config_hash
     evidence_path.write_text(
         json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -40,7 +40,7 @@ def test_verify_release_rejects_joint_config_tamper_with_stale_context(
         if artifact["path"] == "provenance/evidence.json":
             artifact["sha256"] = sha256_file(evidence_path)
             artifact["size"] = evidence_path.stat().st_size
-        elif artifact["path"] == "provenance/config/generation.yaml":
+        elif artifact["path"] == "provenance/config/config.yaml":
             artifact["sha256"] = config_hash
             artifact["size"] = config_path.stat().st_size
     digest = _refresh_manifest(release, **manifest)
@@ -124,7 +124,7 @@ def test_verify_release_rejects_title_map_config_path_substitution(
 ) -> None:
     """A re-signed config with a different title-map path cannot bypass binding."""
     release, _ = verifier_package
-    config_path = release / "provenance/config/generation.yaml"
+    config_path = release / "provenance/config/config.yaml"
     config_bytes = config_path.read_bytes()
     posix_path = b"config/job-function-titles.yaml"
     windows_path = b"config\\job-function-titles.yaml"
@@ -136,12 +136,12 @@ def test_verify_release_rejects_title_map_config_path_substitution(
     config_sha = sha256_file(config_path)
     evidence_path = release / "provenance/evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    evidence["config_hashes"]["generation.yaml"] = config_sha
+    evidence["config_hashes"]["config.yaml"] = config_sha
     evidence["generation_config_sha256"] = config_sha
     evidence_path.write_text(
         json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    digest = _refresh_artifact(release, "provenance/config/generation.yaml")
+    digest = _refresh_artifact(release, "provenance/config/config.yaml")
     digest = _refresh_artifact(release, "provenance/evidence.json")
     manifest = json.loads(
         (release / "release-manifest.json").read_text(encoding="utf-8")
@@ -162,7 +162,7 @@ def test_verify_release_rejects_title_map_substitution_even_with_recalculated_bi
         map_path.read_bytes().replace(b"forretningsspecialist", b"topchef")
     )
     map_sha = sha256_file(map_path)
-    config_path = release / "provenance/config/generation.yaml"
+    config_path = release / "provenance/config/config.yaml"
     config = load_yaml_model(path=config_path, model=GenerationConfig)
     context = generation_context_sha256(
         config=config,

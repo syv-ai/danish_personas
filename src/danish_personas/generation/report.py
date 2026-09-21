@@ -1,4 +1,4 @@
-"""Validation report for completed LLM persona smoke runs."""
+"""Validation reports for completed LLM persona runs."""
 
 import math
 import os
@@ -8,13 +8,14 @@ from pathlib import Path
 
 import polars as pl
 
-from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
+from ..io import canonical_json, sha256_file, sha256_text, write_json
 from ..models import MetricResult, ValidationReport
 from ..origin_labels import (
     OriginLabelContract,
     load_origin_label_contract,
     origin_label_contract_sha256,
 )
+from .config import load_generation_config
 from .identity import generation_run_id, persona_pilot_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
@@ -24,6 +25,7 @@ from .job_titles import (
 )
 from .models import (
     GeneratedAttributes,
+    GeneratedPersona,
     GenerationConfig,
     GenerationManifest,
     GenerationValidationReport,
@@ -38,7 +40,12 @@ from .pipeline import (
     models_match,
     validate_upstream_sample,
 )
-from .validation import VALIDATOR_VERSION, parse_attributes, parse_descriptions
+from .validation import (
+    VALIDATOR_VERSION,
+    parse_attributes,
+    parse_descriptions,
+    parse_generated_persona,
+)
 
 
 def validate_persona_pilot(
@@ -545,7 +552,7 @@ def _checkpoint_accounting_matches(
     if config_path is None or len(checkpoints) != manifest.rows:
         return False
     try:
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
         ledger = RequestLedger.model_validate_json(
             (run_dir / "request-ledger.json").read_text(encoding="utf-8")
         )
@@ -574,8 +581,8 @@ def _checkpoint_accounting_matches(
         and ledger.generation_context_sha256 == manifest.generation_context_sha256
         and ledger.maximum_attempts == config.maximum_total_requests
         and ledger.attempts <= ledger.maximum_attempts
-        and manifest.requests >= manifest.rows * 2
-        and manifest.retries == manifest.requests - manifest.rows * 2
+        and manifest.requests >= manifest.rows
+        and manifest.retries == manifest.requests - manifest.rows
         and manifest.prompt_tokens
         == sum(response.prompt_tokens for response in responses)
         and manifest.completion_tokens
@@ -649,59 +656,43 @@ def _responses_match_checkpoint(
     checkpoint: PersonaCheckpoint,
     demographic: dict[str, object],
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
-) -> tuple[bool, tuple[int, int]]:
-    """Replay the two response stages and bind accepted content to the checkpoint.
+) -> tuple[bool, tuple[int, ...]]:
+    """Replay combined responses and bind accepted content to the checkpoint.
 
     Returns:
-        Whether the sequence is valid and the number of responses for each stage.
+        Whether the sequence is valid and the number of response attempts.
     """
     if mapping_binding is None:
-        return False, (0, 0)
-    parsers = (
-        lambda content: parse_attributes(
-            content, demographic, job_title_mapping=mapping_binding[1]
-        ),
-        lambda content: parse_descriptions(content, demographic, checkpoint.attributes),
+        return False, (0,)
+    expected = GeneratedPersona(
+        **checkpoint.attributes.model_dump(), persona=checkpoint.descriptions.persona
     )
-    expected = (checkpoint.attributes, checkpoint.descriptions)
-    response_index = 0
-    stage_attempts: list[int] = []
-    for parser, expected_value in zip(parsers, expected, strict=True):
-        attempts = 0
-        accepted = False
-        while response_index < len(checkpoint.responses):
-            response = checkpoint.responses[response_index]
-            response_index += 1
-            attempts += 1
-            try:
-                parsed = parser(response.content)
-            except ValueError:
-                continue
-            if parsed != expected_value:
-                return False, (0, 0)
-            accepted = True
-            break
-        if not accepted:
-            return False, (0, 0)
-        stage_attempts.append(attempts)
-    return response_index == len(checkpoint.responses), (
-        stage_attempts[0],
-        stage_attempts[1],
-    )
+    for response_index, response in enumerate(checkpoint.responses, start=1):
+        try:
+            parsed = parse_generated_persona(
+                response.content, demographic, job_title_mapping=mapping_binding[1]
+            )
+        except ValueError:
+            continue
+        return (
+            parsed == expected and response_index == len(checkpoint.responses),
+            (response_index,),
+        )
+    return False, (0,)
 
 
 def _stage_attempts_within_config(
-    *, config_path: Path | None, stage_attempts: tuple[int, int]
+    *, config_path: Path | None, stage_attempts: tuple[int, ...]
 ) -> bool:
     """Check response attempts against the persisted generation configuration.
 
     Returns:
-        Whether each stage stayed within its validation-attempt limit.
+        Whether generation stayed within its validation-attempt limit.
     """
     if config_path is None:
         return False
     try:
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return False
     return all(
@@ -770,7 +761,7 @@ def _load_mapping_binding(
     if config_path is None:
         return None
     try:
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
         return _effective_mapping(config=config, repository_root=repository_root)
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return None
@@ -802,7 +793,7 @@ def _load_origin_binding(
     if config_path is None:
         return None
     try:
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
         return _effective_origin_contract(
             config=config, repository_root=repository_root
         )
@@ -857,7 +848,7 @@ def _persona_provenance_matches(
         if manifest.generation_config_file is None:
             return False
         config_path = _repository_path(repository_root, manifest.generation_config_file)
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
         mapping_path, mapping, mapping_sha256 = _effective_mapping(
             config=config, repository_root=repository_root
         )
@@ -892,13 +883,12 @@ def _persona_provenance_matches(
         return (
             manifest.llm_generation
             and manifest.validator_version == VALIDATOR_VERSION
-            and config.llm_generation_enabled
             and input_sha256 == manifest.input_sha256
             and _checksum_matches(config_path, manifest.generation_config_sha256)
             and validated_upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model
             and config.base_url == manifest.base_url
-            and manifest.rows <= config.maximum_smoke_rows
+            and manifest.rows <= config.maximum_rows_per_shard
             and manifest.requests <= config.maximum_total_requests
             and ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
             and sha256_text(attributes_prompt) == manifest.attributes_prompt_sha256
@@ -962,7 +952,7 @@ def _pilot_aggregates_match(
         and manifest.batches == len(batch_manifests)
         and manifest.batches == len(manifest.batch_runs)
         and manifest.requests == sum(item.requests for item in batch_manifests)
-        and manifest.retries == manifest.requests - manifest.rows * 2
+        and manifest.retries == manifest.requests - manifest.rows
         and manifest.retries == sum(item.retries for item in batch_manifests)
         and manifest.prompt_tokens == prompt_tokens
         and manifest.completion_tokens == completion_tokens
@@ -1017,7 +1007,7 @@ def _pilot_provenance_matches(
         upstream = validate_upstream_sample(
             input_path=input_path, sample_manifest_path=sample_manifest_path
         )
-        config = load_yaml_model(path=config_path, model=GenerationConfig)
+        config = load_generation_config(config_path)
         mapping_path, mapping, mapping_sha256 = _effective_mapping(
             config=config, repository_root=repository_root
         )
@@ -1052,7 +1042,7 @@ def _pilot_provenance_matches(
                 batch_size=identity_batch_size,
             )
             for identity_batch_size in range(
-                manifest.batch_size, config.maximum_smoke_rows + 1
+                manifest.batch_size, config.maximum_rows_per_shard + 1
             )
             if list(range(0, manifest.rows, identity_batch_size))
             == [reference.offset for reference in manifest.batch_runs]
@@ -1060,7 +1050,6 @@ def _pilot_provenance_matches(
         return (
             manifest.llm_generation
             and manifest.validator_version == VALIDATOR_VERSION
-            and config.llm_generation_enabled
             and manifest.pilot_id in expected_pilot_ids
             and pilot_dir.name == manifest.pilot_id
             and manifest.rows <= sample_rows
@@ -1068,7 +1057,7 @@ def _pilot_provenance_matches(
             and len(manifest.batch_runs) == expected_batches
             and manifest.batch_size
             == max(reference.rows for reference in manifest.batch_runs)
-            and manifest.batch_size <= config.maximum_smoke_rows
+            and manifest.batch_size <= config.maximum_rows_per_shard
             and manifest.maximum_shard_requests == config.maximum_total_requests
             and expected_batches * manifest.maximum_shard_requests
             <= manifest.maximum_total_requests

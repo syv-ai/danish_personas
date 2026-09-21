@@ -13,26 +13,28 @@ from danish_personas.release.packager import package_release
 from danish_personas.release.upload import upload_release
 from danish_personas.release.verifier import verify_release
 
+DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
+
 
 @click.command()
 @click.option(
     "--input",
     "input_path",
     type=click.Path(path_type=Path),
-    default=Path("data/text-development-seeds.parquet"),
+    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.parquet",
     show_default=True,
 )
 @click.option(
     "--sample-manifest",
     type=click.Path(path_type=Path),
-    default=Path("data/text-development-seeds.manifest.json"),
+    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.manifest.json",
     show_default=True,
 )
 @click.option(
     "--config",
     "config_path",
     type=click.Path(path_type=Path),
-    default=Path("config/generation.local.yaml"),
+    default=Path("config.yaml"),
     show_default=True,
 )
 @click.option(
@@ -82,7 +84,6 @@ from danish_personas.release.verifier import verify_release
     type=click.Path(path_type=Path),
     default=None,
 )
-@click.option("--live", is_flag=True, help="Explicitly authorise all model requests.")
 def main(
     input_path: Path,
     sample_manifest: Path,
@@ -102,7 +103,6 @@ def main(
     licence: Path | None,
     repository_root: Path | None,
     release_output_parent: Path | None,
-    live: bool,
 ) -> None:
     """Build a validated dataset, optionally packaging and uploading its release.
 
@@ -113,10 +113,6 @@ def main(
             If approval, generation, validation, packaging, or upload fails.
     """
     _configure_logging()
-    if not live:
-        raise click.ClickException(
-            "Dataset generation requires explicit --live approval"
-        )
     release_paths: tuple[Path, Path, Path, Path, Path, Path] | None = None
     if hf_repo is not None:
         release_paths = _require_release_options(
@@ -185,6 +181,19 @@ def _configure_logging() -> None:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
+def _merged_output_path(*, pilot_dir: Path) -> Path:
+    """Return the validated merged Parquet path.
+
+    Raises:
+        ValueError:
+            If the merged output file is missing.
+    """
+    output_path = pilot_dir / "generated-personas.parquet"
+    if not output_path.is_file():
+        raise ValueError("Validated pilot output Parquet file is missing")
+    return output_path
+
+
 def _require_release_options(
     *,
     attestation: Path | None,
@@ -233,19 +242,6 @@ def _require_release_options(
         repository_root,
         release_output_parent,
     )
-
-
-def _merged_output_path(*, pilot_dir: Path) -> Path:
-    """Return the validated merged Parquet path.
-
-    Raises:
-        ValueError:
-            If the merged output file is missing.
-    """
-    output_path = pilot_dir / "generated-personas.parquet"
-    if not output_path.is_file():
-        raise ValueError("Validated pilot output Parquet file is missing")
-    return output_path
 
 
 if __name__ == "__main__":

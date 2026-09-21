@@ -9,26 +9,28 @@ import polars as pl
 from danish_personas.generation.pipeline import generate_personas
 from danish_personas.generation.report import validate_persona_run
 
+DEFAULT_SAMPLE_DIR = Path("data/runs/statistical/55fb89fb303a67f0")
+
 
 @click.command()
 @click.option(
     "--input",
     "input_path",
     type=click.Path(path_type=Path),
-    default=Path("data/text-development-seeds.parquet"),
+    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.parquet",
     show_default=True,
 )
 @click.option(
     "--sample-manifest",
     type=click.Path(path_type=Path),
-    default=Path("data/text-development-seeds.manifest.json"),
+    default=DEFAULT_SAMPLE_DIR / "text-development-seeds.manifest.json",
     show_default=True,
 )
 @click.option(
     "--config",
     "config_path",
     type=click.Path(path_type=Path),
-    default=Path("config/generation.local.yaml"),
+    default=Path("config.yaml"),
     show_default=True,
 )
 @click.option(
@@ -38,14 +40,12 @@ from danish_personas.generation.report import validate_persona_run
     show_default=True,
 )
 @click.option("--offset", type=click.IntRange(min=0), default=0, show_default=True)
-@click.option("--live", is_flag=True, help="Explicitly authorise model requests.")
 def main(
     input_path: Path,
     sample_manifest: Path,
     config_path: Path,
     output_dir: Path,
     offset: int,
-    live: bool,
 ) -> None:
     """Generate exactly one persona and write only its text to stdout.
 
@@ -56,10 +56,6 @@ def main(
             If generation, upstream, guard, or validation checks fail.
     """
     _configure_logging()
-    if not live:
-        raise click.ClickException(
-            "Persona generation requires explicit --live approval"
-        )
     try:
         run_dir = generate_personas(
             input_path=input_path,
@@ -68,7 +64,6 @@ def main(
             output_dir=output_dir,
             rows=1,
             offset=offset,
-            live=live,
         )
         report = validate_persona_run(run_dir=run_dir)
         if not report.passed:

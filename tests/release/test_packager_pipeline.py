@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import polars as pl
 import pytest
-from support import ReleaseCase, _clean_provenance, _package, coherent_evidence
+from support import ReleaseCase, _clean_provenance, _package
 
-from danish_personas.generation.models import (
-    GenerationConfig,
-    GenerationManifest,
-    PilotBatchReference,
-)
-from danish_personas.generation.pipeline import generation_context_sha256
+from danish_personas.generation.models import GenerationManifest, PilotBatchReference
 from danish_personas.generation.validation import VALIDATOR_VERSION
-from danish_personas.io import load_yaml_model, sha256_file, write_json
+from danish_personas.io import sha256_file
 from danish_personas.release import packager
-from danish_personas.release.models import ReleaseEvidence
-from danish_personas.release.packager import ReleasePackagingError, package_release
+from danish_personas.release.packager import ReleasePackagingError
+
+
+def test_package_captures_root_generation_config(
+    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root Hydra config is captured as the effective generation config."""
+    result = _package(release_case, monkeypatch)
+    assert (result.path / "provenance/config/config.yaml").read_bytes() == (
+        release_case.repository / "config.yaml"
+    ).read_bytes()
 
 
 @pytest.mark.parametrize(
@@ -119,70 +122,6 @@ def test_package_uses_captured_bytes_during_copy_time_replacement(
     assert observed == [captured_card]
 
 
-def test_package_uses_manifest_effective_generation_config(
-    release_case: ReleaseCase, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An ignored local config is snapshotted as the effective generation config."""
-    local_path = release_case.repository / "config/generation.local.yaml"
-    local_path.write_bytes(
-        (release_case.repository / "config/generation.yaml")
-        .read_bytes()
-        .replace(b"TEST_TOKEN", b"LOCAL_TOKEN")
-    )
-    config = load_yaml_model(path=local_path, model=GenerationConfig)
-    context = generation_context_sha256(
-        config=config,
-        attributes_prompt=(
-            release_case.repository / "config/prompts/attributes-da.md"
-        ).read_text(encoding="utf-8"),
-        personas_prompt=(
-            release_case.repository / "config/prompts/personas-da.md"
-        ).read_text(encoding="utf-8"),
-    )
-    manifest = release_case.manifest.model_copy(
-        update={
-            "generation_config_file": Path("config/generation.local.yaml"),
-            "generation_config_sha256": sha256_file(local_path),
-            "generation_context_sha256": context,
-        }
-    )
-    write_json(path=release_case.pilot / "pilot-manifest.json", payload=manifest)
-    case = replace(release_case, manifest=manifest)
-    config_hashes = {
-        **coherent_evidence(case).config_hashes,
-        "generation.yaml": sha256_file(local_path),
-    }
-
-    def evidence(**kwargs: object) -> ReleaseEvidence:
-        snapshot_pilot = kwargs["pilot_dir"]
-        assert isinstance(snapshot_pilot, Path)
-        return coherent_evidence(case).model_copy(
-            update={
-                "config_hashes": config_hashes,
-                "pilot_validation_report_sha256": sha256_file(
-                    snapshot_pilot / "pilot-validation-report.json"
-                ),
-            }
-        )
-
-    monkeypatch.setattr(packager, "_git_provenance", _clean_provenance)
-    monkeypatch.setattr(packager, "validate_persona_pilot", lambda **_: case.report)
-    monkeypatch.setattr(packager, "_derive_consumed_files", lambda **_: [])
-    monkeypatch.setattr(packager, "_derive_evidence", evidence)
-    result = package_release(
-        pilot_dir=case.pilot,
-        attestation_path=case.attestation,
-        policy_path=case.policy,
-        dataset_card_path=case.card,
-        licence_path=case.licence,
-        repository_root=case.repository,
-        output_parent=case.output_parent,
-    )
-    assert (
-        result.path / "provenance/config/generation.yaml"
-    ).read_bytes() == local_path.read_bytes()
-
-
 def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
     release_case: ReleaseCase,
 ) -> None:
@@ -200,7 +139,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         sample_manifest_file=Path("sample-manifest.json"),
         input_sha256="a" * 64,
         ordered_persona_ids_sha256="b" * 64,
-        generation_config_file=Path("generation.yaml"),
+        generation_config_file=Path("config.yaml"),
         generation_config_sha256=release_case.manifest.generation_config_sha256,
         generation_context_sha256=release_case.manifest.generation_context_sha256,
         origin_label_contract_file=release_case.manifest.origin_label_contract_file,
@@ -217,7 +156,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         base_url="https://llm.example/v1",
         rows=2,
         offset=0,
-        requests=4,
+        requests=2,
         retries=0,
         prompt_tokens=0,
         completion_tokens=0,
@@ -255,7 +194,7 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
             "rows": 2,
             "batch_runs": [reference],
             "batches": 1,
-            "requests": 4,
+            "requests": 2,
             "output_file": Path("small-shard/output.parquet"),
             "output_sha256": sha256_file(shard_output),
         }
@@ -269,5 +208,5 @@ def test_real_small_shard_accounting_derivation_needs_no_shard_fanout(
         repository_root=release_case.repository,
     )
     assert evidence.shards[0].rows == 2
-    assert evidence.accounting.requests == 4
+    assert evidence.accounting.requests == 2
     assert evidence.accounting.retries == 0

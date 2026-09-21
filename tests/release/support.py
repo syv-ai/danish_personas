@@ -191,7 +191,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         origin_label_contract_file=manifest.origin_label_contract_file,
         origin_label_contract_sha256=manifest.origin_label_contract_sha256,
         origin_label_contract_version=manifest.origin_label_contract_version,
-        requests=20_000,
+        requests=10_000,
         retries=0,
         rejected_validation_responses=0,
         prompt_tokens=0,
@@ -201,16 +201,18 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         providers=("test-provider",),
     )
     config_hashes = {
-        name: sha256_file(case.repository / "config" / name)
-        for name in (
-            "generation.yaml",
-            "job-function-titles.yaml",
-            "sources.lock.yaml",
-            "categories.yaml",
-            "sampling.yaml",
-            "validation.yaml",
-            "folk2-ieland-labels-da.yaml",
-        )
+        "config.yaml": sha256_file(case.repository / "config.yaml"),
+        **{
+            name: sha256_file(case.repository / "config" / name)
+            for name in (
+                "job-function-titles.yaml",
+                "sources.lock.yaml",
+                "categories.yaml",
+                "sampling.yaml",
+                "validation.yaml",
+                "folk2-ieland-labels-da.yaml",
+            )
+        },
     }
     return ReleaseEvidence(
         version=2,
@@ -245,7 +247,7 @@ def coherent_evidence(case: ReleaseCase) -> ReleaseEvidence:
         config_hashes=config_hashes,
         shards=(shard,),
         accounting=Accounting(
-            requests=20_000,
+            requests=10_000,
             retries=0,
             rejected_validation_responses=0,
             dropped_rows=0,

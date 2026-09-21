@@ -106,7 +106,7 @@ These gates apply before any LLM integration may be enabled.
   religion, job, interests, personality, or visual traits.
 - Origin and job-function fields remain in upstream/generated outputs and
   input/checkpoint hashes. Human-readable municipality, Danish `origin_country_da`, and
-  job-function labels may reach both provider stages for grounding; origin code, English
+  job-function labels may reach the provider request for grounding; origin code, English
   `origin_country`, contract metadata, and all resolution fields do not. The exact
   Danish label is the origin fact in the grounded persona. Job titles are synthetic and
   must not imply unsupported work history.
@@ -117,10 +117,10 @@ is 3. These versions are part of content-addressed identities, so legacy bundles
 or samples cannot be silently reused. The previous schema-5 canonical IDs are historical
 and non-resumable; regenerate and record new IDs rather than inventing them.
 
-## Persona smoke runs
+## Persona runs
 
-- The committed configuration remains disabled and every live invocation requires
-  `--live` explicitly.
+- The root Hydra configuration names the endpoint and model explicitly. Each invocation
+  remains bounded by row and HTTP-request limits.
 - The input checksum and successful Phase-2 validation report match the upstream run.
   The upstream sampler schema must be version 6 and the frozen-sample schema must be
   version 3. Every frozen row and column must validate against the current
@@ -128,9 +128,12 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   the Phase-3 boundary.
 - No invocation can request more than five rows. The deliberately stratified 1,000-row
   text-development input is separate from the 2,000-row Phase-2 smoke run.
-- Generated attributes and the single generation-4 `persona` field satisfy strict
-  schemas. The persona is short, natural Danish prose and may use zero or more
-  supplied interests and personality tendencies; no fixed count is required.
+- One provider response contains both generated attributes and the generation-4
+  `persona` field. A valid first response costs one request per row; only validation or
+  transport retries add requests.
+- The persona is natural Danish prose of 300-900 characters and at least four
+  sentences. It uses at least two supplied interests, one supplied skill, one
+  compatible personality tendency, and any generated ambition.
 - The persona preserves age, the supplied `han` or `hun`, municipality,
   `origin_country_da`, broad education, and the synthetic allowlisted title or current
   status without requiring verbatim clauses. Natural paraphrase and benign consistent
@@ -138,7 +141,7 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   `vedkommende`, `personen`, `kan være`, and `ungdoms- eller
   erhvervsuddannelse` are rejected, along with redundant sex nouns and data-model
   jargon.
-- Both provider stages receive human-readable municipality, the official Danish
+- The provider receives human-readable municipality, the official Danish
   `origin_country_da`, and job-function labels, plus the reviewed allowlist of Danish
   titles for that label, but never origin code, English label, contract metadata, or
   resolution fields. A generated title must equal an allowlist entry exactly.
@@ -147,9 +150,11 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
-  patterns, and does not contain inflectional sensitive terms. It must make no
-  unsupported family claims or physical-appearance claims. Downstream image models may
-  stereotype, so this contract does not make image generation safe.
+  patterns, and does not contain inflectional sensitive terms or physical-appearance
+  claims. Fictional first names and ordinary relationship or family details are
+  allowed, but surnames, real employer or institution names, and exact addresses are
+  prohibited. Downstream image models may stereotype, so this contract does not make
+  image generation safe.
 - Exact duplicate persona descriptions are rejected across each run and pilot.
 - Current generation-4 per-record checkpoints support resume without repeating
   completed model calls. Historical v1-v3 outputs and old pilots are not resumable
@@ -174,14 +179,13 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract 4 and validator `persona-safety-v16`,
-  and retain only the short grounded `persona`. Broad education wording is
-  source-backed and must not imply a detailed qualification or institution. Release
-  manifest and evidence remain schema 2 because their structures are unchanged. The
-  package must record that both provider payloads contain approved human-readable
-  municipality, Danish origin, and job-function labels only, not origin code, English
-  label, contract metadata, or resolutions, and must disclose synthetic job titles and
-  image-model stereotyping risk.
+- A release must identify generation contract 4 and validator `persona-safety-v17`,
+  and retain only the detailed grounded `persona`. Detailed education is explicitly
+  fictional rather than source-backed. Release manifest and evidence remain schema 2
+  because their structures are unchanged. The package must record that the provider
+  request contains approved human-readable municipality, Danish origin, and job-function
+  labels only, not origin code, English label, contract metadata, or resolutions, and
+  must disclose synthetic job titles and image-model stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
   evidence checksums, provenance, row counts, and human-review evidence. Hugging Face
   upload may include only that verified package and must create a dataset pull request;

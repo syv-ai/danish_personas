@@ -122,8 +122,6 @@ def test_english_label_drift_is_not_just_a_nonblank_value() -> None:
 def test_generation_config_rejects_custom_contract_path() -> None:
     """Generation context creation accepts only the repository-relative path."""
     payload = {
-        "version": 4,
-        "llm_generation_enabled": False,
         "base_url": None,
         "model": None,
         "api_key_env": None,
@@ -132,7 +130,7 @@ def test_generation_config_rejects_custom_contract_path() -> None:
         "maximum_validation_attempts": 1,
         "maximum_total_requests": 1,
         "retry_backoff_seconds": 0.0,
-        "maximum_smoke_rows": 1,
+        "maximum_rows_per_shard": 1,
         "response_format": "json_object",
         "attributes_prompt": "config/prompts/attributes-da.md",
         "personas_prompt": "config/prompts/personas-da.md",
@@ -156,8 +154,6 @@ def test_legacy_three_column_origin_table_is_rejected() -> None:
 def test_windows_flavoured_contract_paths_serialise_portably() -> None:
     """Filesystem path flavour cannot leak into public generation config."""
     payload = {
-        "version": 4,
-        "llm_generation_enabled": False,
         "base_url": None,
         "model": None,
         "api_key_env": None,
@@ -166,7 +162,7 @@ def test_windows_flavoured_contract_paths_serialise_portably() -> None:
         "maximum_validation_attempts": 1,
         "maximum_total_requests": 1,
         "retry_backoff_seconds": 0.0,
-        "maximum_smoke_rows": 1,
+        "maximum_rows_per_shard": 1,
         "response_format": "json_object",
         "attributes_prompt": "config/prompts/attributes-da.md",
         "personas_prompt": "config/prompts/personas-da.md",

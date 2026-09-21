@@ -11,10 +11,10 @@ The design rationale and deferred work are documented in
 ## Status and scope
 
 The source-acquisition, preparation, deterministic sampling, and validation stages are
-implemented. The committed configuration keeps LLM generation disabled. The LLM code is
-smoke-test infrastructure only: each direct generation invocation is capped at five
-rows, while a pilot can span multiple shards. Release-scale generation and human
-approval remain pending; schema-2 package verification and evidence are required before
+implemented. The root Hydra config defaults to a local OpenAI-compatible endpoint. Each
+direct generation shard is capped at five rows, while a pilot can span multiple shards.
+Release-scale generation and human approval remain pending; schema-2 package verification
+and evidence are required before
 any release claim.
 
 The current municipality-native Phase 2 workflow uses prepared bundle
@@ -23,7 +23,7 @@ The current municipality-native Phase 2 workflow uses prepared bundle
 sampler schema 6 and passed validation offline. The adjacent 1,000-row development
 sample uses frozen-sample schema 3 and SHA-256
 `354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
-Generation contract 4, validator `persona-safety-v16`, and release manifest/evidence
+Generation contract 4, validator `persona-safety-v17`, and release manifest/evidence
 schema 2 are current. Earlier schema-5 IDs remain historical evidence and are not
 resumable under these contracts:
 
@@ -101,9 +101,9 @@ uv run src/scripts/build_dataset.py --help
 
 `generate_persona.py` emits one validated Danish persona to stdout. `build_dataset.py`
 generates a requested number of personas, saves the merged Parquet dataset below
-`data/`, and displays row progress on stderr. Both require explicit `--live` approval.
-The dataset builder can optionally package, verify, and upload an approved release to a
-Hugging Face dataset pull request.
+`data/`, and displays row progress on stderr. Both use the root Hydra `config.yaml` by
+default. The dataset builder can optionally package, verify, and upload an approved
+release to a Hugging Face dataset pull request.
 
 The remaining scripts restore and prepare the pinned Statistics Denmark sources,
 generate and freeze deterministic demographic inputs, and run validation gates. They
@@ -227,7 +227,7 @@ retained as official source and audit provenance. The Danish label is resolved f
 archived official FOLK2 `metadata-da` 241-code contract at
 `config/folk2-ieland-labels-da.yaml`, whose source metadata SHA-256 is
 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Only the Danish
-label reaches either provider stage and exact persona grounding. The code, English
+label reaches the provider request and exact persona grounding. The code, English
 label, resolution fields, and contract metadata are withheld. Neither label is
 ethnicity, citizenship, residence, or appearance; origin cannot drive culture, religion,
 job, interests, personality, or visual traits. FOLK1A, RAS209, and RAS202 ground the
@@ -246,80 +246,55 @@ This workflow is separate from the non-LLM pipeline and may incur provider charg
 sends frozen aggregate-derived records to the configured OpenAI-compatible endpoint.
 Automated checks are necessary but do not replace blinded human review.
 
-First create a local configuration. Keep the committed file disabled; the local copy
-must enable generation only for an explicitly approved live run:
+All model settings live in the root Hydra [`config.yaml`](config.yaml). Its defaults are:
 
-```bash
-cp config/generation.yaml config/generation.local.yaml
+```yaml
+base_url: http://127.0.0.1:18080/v1
+model: gpt-5.6-sol
+api_key_env: null
 ```
+
+Edit `base_url` and `model` there when changing providers or models. If authentication
+is required, set `api_key_env` to the environment-variable name containing the bearer
+token; never put the token itself in `config.yaml`. Generation commands execute
+immediately and can consume paid requests.
 
 The single-persona command validates the upstream report, sample checksum, prompts,
-schemas, and row/request limits before emitting the final Danish text. For an approved
-run, edit only the ignored local config: set `llm_generation_enabled: true`, `base_url`,
-and `model`. Set `api_key_env` to the name of a bearer-token variable if the endpoint
-requires authentication. Use a short-lived command-scoped token assignment and add
-`--live` explicitly:
+schemas, and request limits before emitting the final Danish text. With the current
+validated sample present under `data/runs/statistical`, run:
 
 ```bash
-OPENAI_API_KEY='replace-with-a-token' \
-uv run src/scripts/generate_persona.py \
-  --input "$RUN/text-development-seeds.parquet" \
-  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
-  --config config/generation.local.yaml \
-  --output-dir data/personas \
-  --live
+uv run src/scripts/generate_persona.py
 ```
 
-Each record uses two model stages: structured attributes, then one short Danish
-`persona`. Contract v4 passes only the official Danish `origin_country_da` label to
-both stages and uses it for persona grounding. The code, English `origin_country`,
-resolution fields, and origin-contract metadata never enter provider payloads. The
-persona preserves supplied demographic facts without requiring fixed clauses, permits
-benign consistent elaboration, and does not require any fixed count of interests or
-personality tendencies. Broad education remains source-backed and non-specific. The
-persona is not a visual description. See
-[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
-repeated live command resumes only valid v4 per-record checkpoints and does not repeat
-completed calls. v1-v3 checkpoints and old pilots are historical and not resumable under
-v4. Each `generate_persona.py` invocation emits one validated persona, while
-`build_dataset.py` can span multiple five-row shards. The default HTTP-attempt budget is
-15 per shard.
+Use `--input` and `--sample-manifest` to select another current frozen sample. Each
+record uses one model request returning both structured attributes and a detailed Danish
+`persona`. Only approved human-readable fields reach the provider. Source codes,
+resolution fields, the English origin label, and origin-contract metadata remain
+withheld. A repeated command resumes valid checkpoints without repeating completed
+requests.
 
-For a multi-shard pilot, use `build_dataset.py`. It requires `--live`, limits
-each shard to five rows, validates each shard, merges them, records token/cost
-accounting, and validates the merged pilot. A pilot can therefore contain more than five
-rows. Enter the provider's current list prices before running the live pilot. Use zero
-only when the configured endpoint is genuinely free:
+For a larger dataset, enter the provider's current list prices. Use zero only when the
+configured endpoint is genuinely free:
 
 ```bash
 read -r -p "Current input price (USD per million tokens): " \
   INPUT_PRICE_PER_MILLION
 read -r -p "Current output price (USD per million tokens): " \
   OUTPUT_PRICE_PER_MILLION
-```
 
-Then run the pilot with the configured bearer-token variable as a short-lived command
-assignment. Replace `OPENAI_API_KEY` below with the configured `api_key_env` name when
-needed:
-
-```bash
-OPENAI_API_KEY='replace-with-a-token' \
 uv run src/scripts/build_dataset.py \
-  --input "$RUN/text-development-seeds.parquet" \
-  --sample-manifest "$RUN/text-development-seeds.manifest.json" \
-  --config config/generation.local.yaml \
-  --output-dir data/persona-pilot \
   --rows 10 \
   --batch-size 5 \
   --concurrency 1 \
   --maximum-total-requests 30 \
   --input-price-per-million "$INPUT_PRICE_PER_MILLION" \
-  --output-price-per-million "$OUTPUT_PRICE_PER_MILLION" \
-  --live
+  --output-price-per-million "$OUTPUT_PRICE_PER_MILLION"
 ```
 
-Only commands with `--live` need provider reachability, and live commands can consume
-paid requests. By default, the completed Parquet path is the script's only stdout line.
+The builder limits each shard to five rows, validates and merges all shards, records
+request/token/cost accounting, shows `tqdm` progress on stderr, and writes only the
+completed Parquet path to stdout.
 
 Passing `--hf-repo OWNER/DATASET` additionally requires the blinded-review attestation,
 enabled release policy, dataset card, licence, repository root, and release output

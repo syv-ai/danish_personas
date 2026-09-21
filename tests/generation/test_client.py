@@ -39,8 +39,6 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
 
 def _config() -> GenerationConfig:
     return GenerationConfig(
-        version=4,
-        llm_generation_enabled=True,
         base_url="http://test/v1",
         model="gpt-test",
         api_key_env=None,
@@ -49,7 +47,7 @@ def _config() -> GenerationConfig:
         maximum_validation_attempts=2,
         maximum_total_requests=5,
         retry_backoff_seconds=0.0,
-        maximum_smoke_rows=5,
+        maximum_rows_per_shard=5,
         max_tokens=None,
         enable_thinking=None,
         reasoning_effort=None,

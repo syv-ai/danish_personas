@@ -54,7 +54,7 @@ def demographics(
 @main.command()
 @click.option("--run", "run_dir", type=click.Path(path_type=Path), required=True)
 def personas(run_dir: Path) -> None:
-    """Validate a generated persona smoke run.
+    """Validate a generated persona run.
 
     Raises:
         click.ClickException:

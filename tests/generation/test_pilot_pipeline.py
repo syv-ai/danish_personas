@@ -44,7 +44,6 @@ def test_pilot_identity_changes_when_prompt_context_changes(
         "0.3",
         "--output-price-per-million",
         "1.2",
-        "--live",
     ]
     first = CliRunner().invoke(pilot_main, arguments)
     assert first.exit_code == 0, first.output
@@ -121,14 +120,13 @@ def test_pilot_merges_validated_shards(
             "0.3",
             "--output-price-per-million",
             "1.2",
-            "--live",
         ],
     )
     assert result.exit_code == 0, result.output
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
-    assert MockGenerationClient.requests == 4
+    assert MockGenerationClient.requests == 2
 
 
 def test_pilot_revalidates_shards_without_rewriting_reports(
@@ -163,7 +161,6 @@ def test_pilot_revalidates_shards_without_rewriting_reports(
             "0.3",
             "--output-price-per-million",
             "1.2",
-            "--live",
         ],
     )
     assert result.exit_code == 0, result.output

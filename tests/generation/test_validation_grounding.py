@@ -115,7 +115,7 @@ def test_later_contradictory_grounding_cannot_be_hidden_by_correct_fact(
 @pytest.mark.parametrize(
     ("original", "contradiction", "message"),
     [
-        ("Hun er 35 år", "Hun er ikke 35 år", "pronoun or age"),
+        ("Maja er 35 år", "Maja er ikke 35 år", "pronoun or age"),
         ("bor i København", "bor ikke i København", "municipality"),
         ("kommer fra Danmark", "kommer ikke fra Danmark", "origin"),
         (
@@ -154,13 +154,14 @@ def test_origin_label_is_not_used_to_infer_sensitive_detail() -> None:
         parse_descriptions(json.dumps({"persona": text}), context, attributes())
 
 
-def test_persona_can_be_one_sentence_without_interest_or_personality_counts() -> None:
+def test_persona_rejects_a_bare_one_sentence_fact_list() -> None:
     context = demographic()
     text = (
         "Hun er 35 år, bor i København, kommer fra Danmark, har en videregående "
         "uddannelse og arbejder som forretningsspecialist."
     )
-    assert parse_descriptions(json.dumps({"persona": text}), context, attributes())
+    with pytest.raises(ValueError, match="at least 300 characters"):
+        parse_descriptions(json.dumps({"persona": text}), context, attributes())
 
 
 def test_personality_hedge_does_not_leak_across_assertions() -> None:
@@ -180,12 +181,14 @@ def test_secondary_wording_does_not_force_legacy_banned_phrase() -> None:
 
 def test_supplied_facts_can_be_naturally_paraphrased() -> None:
     context = demographic()
-    text = (
-        "Hun er 35 år og har base i København. Hun har Danmark som leveret "
-        "oprindelsesoplysning og har læst videregående uddannelse. Hun arbejder "
-        "som forretningsspecialist. Hun holder af en rolig hverdag."
+    payload = persona(context=context)
+    payload["persona"] = (
+        payload["persona"]
+        .replace("bor i København", "har base i København")
+        .replace("kommer fra Danmark", "har Danmark som leveret oprindelsesoplysning")
+        .replace("har en videregående uddannelse", "har læst videregående uddannelse")
     )
-    assert parse_descriptions(json.dumps({"persona": text}), context, attributes())
+    assert parse_descriptions(json.dumps(payload), context, attributes())
 
 
 @pytest.mark.parametrize(

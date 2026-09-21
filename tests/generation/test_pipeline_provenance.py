@@ -53,7 +53,6 @@ def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
             config_path=mismatch_config,
             output_dir=tmp_path / "mismatched-output",
             rows=1,
-            live=True,
         )
 
     run_dir = generate_personas(
@@ -62,7 +61,6 @@ def test_persona_validation_binds_custom_mapping_during_generation_and_replay(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     assert validate_persona_run(run_dir=run_dir).passed
 
@@ -97,7 +95,6 @@ def test_persona_validation_rejects_mapping_binding_tampering(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -128,7 +125,6 @@ def test_persona_validation_rejects_origin_binding_tampering(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     checkpoint_path = next((run_dir / "checkpoints").glob("*.json"))
     original_checkpoint = checkpoint_path.read_bytes()
@@ -169,7 +165,6 @@ def test_persona_validation_rejects_stale_validator_version(
         config_path=paths["config"],
         output_dir=tmp_path / "outputs",
         rows=1,
-        live=True,
     )
     path = (
         next((run_dir / "checkpoints").glob("*.json"))

@@ -18,7 +18,7 @@ __all__ = ["FrozenSampleManifest"]
 
 
 class GeneratedAttributes(StrictModel):
-    """First-stage generated persona attributes."""
+    """Generated structured persona attributes."""
 
     cultural_context: str = Field(min_length=20, max_length=600)
     skills_and_expertise: list[str] = Field(min_length=3, max_length=6)
@@ -77,11 +77,15 @@ class GeneratedAttributes(StrictModel):
         return stripped
 
 
+class GeneratedPersona(GeneratedAttributes):
+    """Single-response attributes and Danish persona text."""
+
+    persona: str = Field(min_length=300, max_length=900)
+
+
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: t.Literal[4]
-    llm_generation_enabled: bool
     base_url: str | None
     model: str | None
     api_key_env: str | None
@@ -90,7 +94,7 @@ class GenerationConfig(StrictModel):
     maximum_validation_attempts: int = Field(ge=1, le=3)
     maximum_total_requests: int = Field(ge=1, le=15)
     retry_backoff_seconds: float = Field(ge=0.0)
-    maximum_smoke_rows: int = Field(ge=1, le=5)
+    maximum_rows_per_shard: int = Field(ge=1, le=5)
     max_tokens: int | None = Field(default=None, ge=32, le=4_096)
     enable_thinking: bool | None = None
     reasoning_effort: t.Literal["none", "low", "medium", "high"] | None = None
@@ -135,7 +139,7 @@ class GenerationConfig(StrictModel):
 
 
 class GenerationManifest(StrictModel):
-    """Manifest for a completed persona smoke run."""
+    """Manifest for a completed persona generation run."""
 
     run_id: str
     upstream_run_id: str
@@ -228,49 +232,14 @@ class LLMResponse(StrictModel):
     raw_response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class AttributeCheckpoint(StrictModel):
-    """Durable first-stage progress for one persona."""
-
-    persona_id: str
-    input_sha256: str
-    generation_context_sha256: str
-    validator_version: str
-    job_title_mapping_sha256: str | None = None
-    job_title_mapping_version: int | None = None
-    job_title_mapping_file: Path | None = None
-    job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: OriginLabelContractPath
-    origin_label_contract_sha256: str
-    origin_label_contract_version: int
-    origin_label_contract_content: OriginLabelContract
-    attributes: GeneratedAttributes
-    responses: list[LLMResponse]
-    http_requests: int = Field(ge=1)
-
-    @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "AttributeCheckpoint":
-        """Require the exact compiled origin contract binding.
-
-        Returns:
-            The validated model.
-        """
-        validate_origin_contract_reference(
-            path=self.origin_label_contract_file,
-            version=self.origin_label_contract_version,
-            sha256=self.origin_label_contract_sha256,
-            content=self.origin_label_contract_content,
-        )
-        return self
-
-
 class PersonaDescriptions(StrictModel):
-    """Second-stage generated Danish persona text."""
+    """Generated Danish persona text."""
 
-    persona: str = Field(min_length=60, max_length=600)
+    persona: str = Field(min_length=300, max_length=900)
 
 
 class PersonaCheckpoint(StrictModel):
-    """Completed two-stage generation checkpoint for one persona."""
+    """Completed single-response generation checkpoint for one persona."""
 
     persona_id: str
     input_sha256: str
@@ -287,7 +256,7 @@ class PersonaCheckpoint(StrictModel):
     attributes: GeneratedAttributes
     descriptions: PersonaDescriptions
     responses: list[LLMResponse]
-    attempts: int = Field(ge=2)
+    attempts: int = Field(ge=1)
     http_requests: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")

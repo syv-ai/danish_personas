@@ -55,13 +55,14 @@ prompts are interpreted relative to that working directory.
 | `generate_demographics.py`     | Creates deterministic Phase 2 and OCEAN records.           |
 | `validate_dataset.py`          | Validates `sources`, `demographics`, or `personas`.        |
 | `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample.           |
-| `generate_persona.py`          | Guarded two-stage LLM run for one persona.                 |
-| `build_dataset.py`             | Merges validated shards; requires `--live`.                |
+| `generate_persona.py`          | Guarded single-request LLM run for one persona.            |
+| `build_dataset.py`             | Merges validated persona shards.                           |
 | `fix_dot_env_file.py`          | Creates `.env`; non-interactive leaves Git identity blank. |
 
 Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no
-`generate_attributes.py`; structured attributes are the first stage of
-`generate_persona.py` and `build_dataset.py`.
+`generate_attributes.py`; each persona request returns structured attributes and the
+persona together.
+
 ## Tests
 
 | Path                 | Coverage                                                    |
@@ -89,8 +90,7 @@ client when testing LLM paths.
 | `config/categories.yaml`             | Canonical demographic and labour-status mappings.         |
 | `config/sampling.yaml`               | Seed, rows, adult age range, region, OCEAN settings.      |
 | `config/validation.yaml`             | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config/generation.yaml`             | Disabled endpoint, guards, response mode, prompt paths.   |
-| `config/generation.local.yaml`       | Ignored local LLM override and provider settings.         |
+| `config.yaml`                        | Hydra LLM endpoint, model, prompts, guards, and budgets.  |
 | `config/prompts/attributes-da.md`    | Danish attributes schema and safety rules.                |
 | `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
 | `config/prompts/personas-da.md`      | Danish v4 persona writing brief and safety rules.         |
@@ -168,8 +168,7 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 3. Generate deterministic demographic/OCEAN records.
 4. Validate the smoke run, then generate and validate the statistical run.
 5. Freeze the stratified text-development sample.
-6. Dry-run LLM planning; it needs no provider, and only an approved operator may enable
-   `--live`.
+6. Configure the root `config.yaml` for the intended provider and model.
 7. Validate each persona run; `generate_persona.py` emits one row, while each
    `build_dataset.py` shard is capped at five rows before merge and pilot validation.
 
@@ -221,15 +220,15 @@ runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdow
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
 contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
 per-person attribute/final checkpoints, and `validation-report.json`. Current v4 outputs
-retain only one short grounded `persona`
-and do not contain the removed specialised fields or `visual_persona`. Pilots
+retain one detailed grounded `persona` and do not contain the removed specialised fields
+or `visual_persona`. Pilots
 additionally contain merged output, a pilot manifest, shard references, and
 `pilot-validation-report.json`. Release packages use release manifest
 schema 2 and evidence schema 2.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
 and request accounting. The current versions are prepared bundle 6, sampler 6, frozen
-sample 3, generation 4, validator `persona-safety-v16`, and release manifest/evidence 2.
+sample 3, generation 4, validator `persona-safety-v17`, and release manifest/evidence 2.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the
@@ -252,11 +251,11 @@ current contracts have been regenerated; use placeholders in instructions.
 
 ## Non-obvious gotchas and safety
 
-- The committed generation config is disabled. `generate_persona.py` and
-  `build_dataset.py` require `--live`, local enablement, an endpoint, a model, and
-  provider reachability, and may spend money. Dataset generation has its own global
-  request limit and requires current input and output prices; use zero only for a
-  genuinely free endpoint. `--concurrency` can issue requests in parallel.
+- `generate_persona.py` and `build_dataset.py` load the root Hydra `config.yaml` and
+  execute immediately. They require provider reachability and may spend money. Dataset
+  generation has its own global request limit and requires current input and output
+  prices; use zero only for a genuinely free endpoint. `--concurrency` can issue
+  requests in parallel.
 - `build_dataset.py --hf-repo` may upload only a freshly packaged and independently
   verified release after the configured policy and blinded-review gates pass. It creates
   a Hugging Face dataset pull request and obtains credentials from standard Hugging Face
@@ -264,19 +263,21 @@ current contracts have been regenerated; use placeholders in instructions.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
   validator context. Human-readable municipality, the official Danish
-  `origin_country_da`, and job-function labels reach both provider stages; the origin
+  `origin_country_da`, and job-function labels reach the provider request; the origin
   code, English `origin_country`, resolution fields, and origin-contract metadata do
   not. The Danish label is also the exact origin fact in the grounded persona.
-  Re-running a valid v4 live run resumes completed records, but v1-v3 checkpoints, the
+  Re-running a valid v4 run resumes completed records, but v1-v3 checkpoints, the
   previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
   under v4.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
 - LLM output must remain strict JSON, Danish, non-identifying, free of configured
-  sensitive terms, and free of exact duplicate descriptions. The short persona must be
-  grounded in its supplied facts, use a synthetic job title or current nonemployee
-  status, avoid unsupported family claims, and treat OCEAN as cautious tendencies.
+  sensitive terms, and free of exact duplicate descriptions. The detailed persona must
+  be grounded in its supplied facts, use a synthetic job title or current nonemployee
+  status, include concrete fictional biographical detail, and treat OCEAN as cautious
+  tendencies. Fictional first names and ordinary family details are allowed; surnames,
+  real organisations, exact addresses, appearance, and sensitive details are not.
   Automated validation is not a substitute for blinded human review; downstream image
   models may still stereotype.
 - The sampler backs off through ordered ladders when a conditional cell is missing, and
@@ -297,7 +298,7 @@ current contracts have been regenerated; use placeholders in instructions.
   `origin_country` remains official source/audit provenance, while the mandatory Danish
   `origin_country_da` comes from the archived official FOLK2 metadata-da 241-code
   contract (SHA-256 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`).
-  Only the Danish label reaches both provider stages and exact persona grounding; the
+  Only the Danish label reaches the provider request and exact persona grounding; the
   code, English label, resolutions, and contract metadata are withheld. Neither label is
   ethnicity, citizenship, residence, or appearance, and origin cannot drive culture,
   religion, job, interests, personality, or visual traits. Treat municipality-level

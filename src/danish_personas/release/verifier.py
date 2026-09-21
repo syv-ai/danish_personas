@@ -50,7 +50,7 @@ _PUBLIC_FILES = {
     "provenance/pilot-validation-report.json",
     "provenance/prompts/attributes-da.md",
     "provenance/prompts/personas-da.md",
-    "provenance/config/generation.yaml",
+    "provenance/config/config.yaml",
     "provenance/config/job-function-titles.yaml",
     "provenance/config/folk2-ieland-labels-da.yaml",
     "provenance/config/sources.lock.yaml",
@@ -466,9 +466,9 @@ def _check_shard_accounting(*, evidence: ReleaseEvidence) -> None:
     """
     expected_offset = 0
     for shard in evidence.shards:
-        if shard.offset != expected_offset or shard.requests < shard.rows * 2:
+        if shard.offset != expected_offset or shard.requests < shard.rows:
             raise ReleaseVerificationError("Shard ranges or request sums are invalid")
-        if shard.retries != shard.requests - shard.rows * 2:
+        if shard.retries != shard.requests - shard.rows:
             raise ReleaseVerificationError("Shard retry accounting mismatch")
         expected_offset += shard.rows
     accounting = evidence.accounting
@@ -586,7 +586,7 @@ def _check_config_hashes(*, release_dir: Path, evidence: ReleaseEvidence) -> Non
             If a configuration hash does not match.
     """
     expected_names = {
-        "generation.yaml",
+        "config.yaml",
         "job-function-titles.yaml",
         "sources.lock.yaml",
         "categories.yaml",
@@ -610,7 +610,7 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
         ReleaseVerificationError:
             If a packaged generation input or digest is inconsistent.
     """
-    config_path = release_dir / "provenance/config/generation.yaml"
+    config_path = release_dir / "provenance/config/config.yaml"
     config, attributes_path, personas_path = _load_generation_inputs(
         config_path=config_path, release_dir=release_dir, evidence=evidence
     )
@@ -664,7 +664,7 @@ def _load_bound_origin_contract(
 def _load_generation_inputs(
     *, release_dir: Path, config_path: Path, evidence: ReleaseEvidence
 ) -> tuple[GenerationConfig, Path, Path]:
-    """Load and check the packaged v4 generation inputs.
+    """Load and check the packaged generation inputs.
 
     Returns:
         The effective config and the two packaged prompt paths.
@@ -674,8 +674,6 @@ def _load_generation_inputs(
             If a generation input is missing, changed, or misbound.
     """
     config = _load_yaml(config_path, GenerationConfig)
-    if config.version != 4:
-        raise ReleaseVerificationError("Release requires generation contract v4")
     if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
     attributes_path = release_dir / "provenance/prompts/attributes-da.md"

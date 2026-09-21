@@ -128,7 +128,7 @@ def test_unsafe_job_titles_are_rejected(title: str) -> None:
         parse_attributes(json.dumps(attributes(job_title=title)), context)
 
 
-def test_valid_v4_persona_allows_no_interest_or_tendency_copy() -> None:
+def test_valid_v4_persona_preserves_rich_grounded_text() -> None:
     context = demographic()
     parsed_attributes = parse_attributes(json.dumps(attributes()), context)
     result = parse_descriptions(
@@ -136,10 +136,10 @@ def test_valid_v4_persona_allows_no_interest_or_tendency_copy() -> None:
         context,
         parsed_attributes,
     )
-    assert result.persona.startswith("Hun er 35 år")
+    assert result.persona.startswith("Maja er 35 år")
 
 
 def test_validator_and_education_exports_are_current() -> None:
-    assert validation_module.VALIDATOR_VERSION == "persona-safety-v16"
+    assert validation_module.VALIDATOR_VERSION == "persona-safety-v17"
     assert set(EDUCATION_DANISH) == set(EDUCATION_POOLING_VALUES)
     assert load_job_title_mapping().version == 1

@@ -71,15 +71,6 @@ def test_all_technical_grounding_wordings_fail(phrase: str) -> None:
 @pytest.mark.parametrize(
     "claim",
     [
-        "familie",
-        "børn",
-        "børnenes",
-        "barnet",
-        "forældre",
-        "søskende",
-        "husstand",
-        "ægtefælle",
-        "partner",
         "ansigter",
         "ansigtstræk",
         "hårene",
@@ -92,7 +83,7 @@ def test_all_technical_grounding_wordings_fail(phrase: str) -> None:
         "ser ud",
     ],
 )
-def test_all_unsupported_family_and_appearance_claims_fail(claim: str) -> None:
+def test_all_unsupported_appearance_claims_fail(claim: str) -> None:
     context = demographic()
     text = persona(context=context)["persona"] + f" Hun nævner {claim}."
     with pytest.raises(ValueError, match="unsupported"):
@@ -220,52 +211,6 @@ def test_person_directed_social_assertion_requires_local_hedge(assertion: str) -
     context = demographic()
     text = persona(context=context)["persona"] + " " + assertion
     with pytest.raises(ValueError):
-        parse_descriptions(json.dumps({"persona": text}), context, attributes())
-
-
-@pytest.mark.parametrize(
-    "noun",
-    [
-        "mand",
-        "manden",
-        "mandens",
-        "mands",
-        "mænd",
-        "mændene",
-        "mændenes",
-        "mænds",
-        "kvinde",
-        "kvinden",
-        "kvindens",
-        "kvindes",
-        "kvinder",
-        "kvinderne",
-        "kvindernes",
-        "kvinders",
-    ],
-    ids=[
-        "man",
-        "man-definite",
-        "man-possessive",
-        "men-genitive",
-        "men",
-        "men-definite",
-        "men-possessive",
-        "men-genitive-plural",
-        "woman",
-        "woman-definite",
-        "woman-possessive",
-        "woman-genitive",
-        "women",
-        "women-definite",
-        "women-possessive",
-        "women-genitive",
-    ],
-)
-def test_sex_noun_inflections_are_rejected(noun: str) -> None:
-    context = demographic()
-    text = persona(context=context)["persona"] + f" {noun} står ikke her."
-    with pytest.raises(ValueError, match="statistical sex"):
         parse_descriptions(json.dumps({"persona": text}), context, attributes())
 
 

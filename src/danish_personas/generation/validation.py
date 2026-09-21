@@ -15,14 +15,14 @@ from .job_titles import (
     JobFunctionTitleMapping,
     load_job_title_mapping,
 )
-from .models import GeneratedAttributes, PersonaDescriptions
+from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
 from .personality import (
     all_personality_phrases,
     all_personality_tendencies,
     allowed_personality_tendencies,
 )
 
-VALIDATOR_VERSION = "persona-safety-v16"
+VALIDATOR_VERSION = "persona-safety-v17"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -34,6 +34,7 @@ _ATTRIBUTE_FIELDS = frozenset(
     }
 )
 _DESCRIPTION_FIELDS = frozenset({"persona"})
+_GENERATED_PERSONA_FIELDS = _ATTRIBUTE_FIELDS | _DESCRIPTION_FIELDS
 EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
 _DOMAIN_LABEL = r"[a-z0-9æøå](?:[a-z0-9æøå-]{0,61}[a-z0-9æøå])?"
 EXPLICIT_URL = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -64,9 +65,6 @@ SENSITIVE_PATTERNS = (
     r"stemme\s+på|sygdom\w*|transkønnet\w*",
 )
 UNSUPPORTED_PATTERNS = (
-    r"familie(?:n|r|rne|s)?|ægtefælle(?:n|r|rne|s)?|partner(?:en|e|ne|s)?",
-    r"barn(?:et|ene|enes|s)?|børn(?:et|ene|enes|s)?|"
-    r"forældre(?:ne|s)?|søskende(?:ne|s)?|husstand(?:en|e|ene|s)?|bor\s+sammen",
     r"diagnos(?:e|er|en|erede)\w*|hår(?:et|ene|enes)?|"
     r"øjne?\w*",
     r"ansigt(?:et|er|ene|enes|stræk(?:ket|kene)?)?|"
@@ -103,24 +101,6 @@ DASH_TRANSLATION = str.maketrans(
         "－": "-",
     }
 )
-PERSONA_SEX_NOUNS = (
-    "mand",
-    "manden",
-    "mandens",
-    "mands",
-    "mænd",
-    "mændene",
-    "mændenes",
-    "mænds",
-    "kvinde",
-    "kvinden",
-    "kvindens",
-    "kvindes",
-    "kvinder",
-    "kvinderne",
-    "kvindernes",
-    "kvinders",
-)
 REDUNDANT_PERSONA_PHRASES = (
     "oprindelsesland",
     "oprindelsesetiket",
@@ -128,6 +108,76 @@ REDUNDANT_PERSONA_PHRASES = (
     "uddannelsesniveau",
     "aktuelle arbejdsforhold",
 )
+
+
+def parse_generated_persona(
+    content: str,
+    demographic: DemographicRecord | c.Mapping[str, object],
+    *,
+    job_title_mapping: JobFunctionTitleMapping | None = None,
+) -> GeneratedPersona:
+    """Parse and validate one combined attributes-and-persona response.
+
+    Returns:
+        Validated generated attributes and persona text.
+
+    Raises:
+        ValueError:
+            If the JSON, grounding, specificity, or safety rules are invalid.
+    """
+    try:
+        generated = GeneratedPersona.model_validate_json(content)
+    except ValidationError as error:
+        raise ValueError(
+            _format_schema_error(error=error, fields=_GENERATED_PERSONA_FIELDS)
+        ) from error
+    attributes = parse_attributes(
+        GeneratedAttributes.model_validate(
+            {
+                field: getattr(generated, field)
+                for field in GeneratedAttributes.model_fields
+            }
+        ).model_dump_json(),
+        demographic,
+        job_title_mapping=job_title_mapping,
+    )
+    parse_descriptions(
+        PersonaDescriptions(persona=generated.persona).model_dump_json(),
+        demographic,
+        attributes,
+    )
+    return generated
+
+
+def _format_schema_error(*, error: ValidationError, fields: frozenset[str]) -> str:
+    """Format Pydantic errors without exposing generated input values.
+
+    Returns:
+        Safe structural error messages.
+    """
+    messages: list[str] = []
+    for issue in error.errors():
+        location = _safe_schema_location(location=issue.get("loc", ()), fields=fields)
+        message = str(issue.get("msg", "Schema validation failed"))
+        messages.append(f"{location}: {message}")
+    return "; ".join(messages) or "response: Schema validation failed"
+
+
+def _safe_schema_location(*, location: object, fields: frozenset[str]) -> str:
+    """Keep schema locations while excluding arbitrary input keys.
+
+    Returns:
+        A response location containing only known fields and list indexes.
+    """
+    if not isinstance(location, tuple) or not location:
+        return "response"
+    field = location[0]
+    if not isinstance(field, str) or field not in fields:
+        return "response"
+    suffix = "".join(
+        f"[{part}]" for part in location[1:] if isinstance(part, int) and part >= 0
+    )
+    return f"{field}{suffix}"
 
 
 def parse_attributes(
@@ -194,37 +244,6 @@ def _context_values(
     if isinstance(demographic, DemographicRecord):
         return demographic.model_dump(mode="python")
     return dict(demographic)
-
-
-def _format_schema_error(*, error: ValidationError, fields: frozenset[str]) -> str:
-    """Format Pydantic errors without exposing generated input values.
-
-    Returns:
-        Safe structural error messages.
-    """
-    messages: list[str] = []
-    for issue in error.errors():
-        location = _safe_schema_location(location=issue.get("loc", ()), fields=fields)
-        message = str(issue.get("msg", "Schema validation failed"))
-        messages.append(f"{location}: {message}")
-    return "; ".join(messages) or "response: Schema validation failed"
-
-
-def _safe_schema_location(*, location: object, fields: frozenset[str]) -> str:
-    """Keep schema locations while excluding arbitrary input keys.
-
-    Returns:
-        A response location containing only known fields and list indexes.
-    """
-    if not isinstance(location, tuple) or not location:
-        return "response"
-    field = location[0]
-    if not isinstance(field, str) or field not in fields:
-        return "response"
-    suffix = "".join(
-        f"[{part}]" for part in location[1:] if isinstance(part, int) and part >= 0
-    )
-    return f"{field}{suffix}"
 
 
 def _validate_field(*, field: str, validator: c.Callable[[], None]) -> None:
@@ -472,9 +491,13 @@ def _validate_persona(
     sentences = _persona_sentences(text=text)
     _validate_persona_facts(text=text, demographic=context, attributes=attributes)
     _validate_personality(normalized=normalized, sentences=sentences, context=context)
+    _validate_persona_specificity(
+        normalized=normalized,
+        sentences=sentences,
+        context=context,
+        attributes=attributes,
+    )
     _validate_pronoun_consistency(text=normalized, context=context)
-    if any(_contains_term(normalized, noun) for noun in PERSONA_SEX_NOUNS):
-        raise ValueError("Persona must convey statistical sex only through its pronoun")
     if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
         raise ValueError("Persona must not contain redundant or technical wording")
     if FORMER_WORK.search(normalized):
@@ -741,6 +764,41 @@ def _validate_grounding_label(*, text: str, field: str, value: str) -> None:
     for clause in re.findall(relation, text):
         if not _contains_term(clause, value):
             raise ValueError(f"Persona contradicts the supplied {field}")
+
+
+def _validate_persona_specificity(
+    *,
+    normalized: str,
+    sentences: list[str],
+    context: dict[str, object],
+    attributes: GeneratedAttributes,
+) -> None:
+    """Require a substantial, person-centred persona rather than a fact list.
+
+    Raises:
+        ValueError:
+            If the persona omits required detail or supplied attributes.
+    """
+    if len(sentences) < 4:
+        raise ValueError("Persona must contain at least four sentences")
+    included_interests = sum(
+        _contains_term(normalized, interest)
+        for interest in attributes.hobbies_and_interests
+    )
+    if included_interests < 2:
+        raise ValueError("Persona must include at least two supplied interests")
+    if not any(
+        _contains_term(normalized, skill) for skill in attributes.skills_and_expertise
+    ):
+        raise ValueError("Persona must include at least one supplied skill")
+    if not any(
+        _contains_term(normalized, tendency)
+        for tendency in allowed_personality_tendencies(context=context)
+    ):
+        raise ValueError("Persona must include a supplied personality tendency")
+    goal = attributes.career_goals_and_ambitions
+    if goal is not None and not _contains_term(normalized, goal):
+        raise ValueError("Persona must include the supplied ambition")
 
 
 def _validate_personality(

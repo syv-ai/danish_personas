@@ -114,9 +114,6 @@ def personas() -> None:
 @click.option("--maximum-total-requests", type=click.IntRange(min=1), required=True)
 @click.option("--input-price-per-million", type=click.FloatRange(min=0), required=True)
 @click.option("--output-price-per-million", type=click.FloatRange(min=0), required=True)
-@click.option(
-    "--live", is_flag=True, help="Explicitly authorise all pilot model requests."
-)
 def personas_pilot(
     input_path: Path,
     sample_manifest: Path,
@@ -129,15 +126,12 @@ def personas_pilot(
     maximum_total_requests: int,
     input_price_per_million: float,
     output_price_per_million: float,
-    live: bool,
 ) -> None:
     """Generate a bounded, resumable persona pilot.
 
     Raises:
-        click.ClickException: If approval or generation fails.
+        click.ClickException: If generation fails.
     """
-    if not live:
-        raise click.ClickException("Pilot generation requires explicit --live approval")
     try:
         pilot_dir = run_pilot(
             input_path=input_path,
@@ -164,7 +158,6 @@ def personas_pilot(
 @click.option("--output-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--rows", type=click.IntRange(min=1, max=5), required=True)
 @click.option("--offset", type=click.IntRange(min=0), default=0, show_default=True)
-@click.option("--live", is_flag=True, help="Explicitly authorise model requests.")
 def personas_shard(
     input_path: Path,
     sample_manifest: Path,
@@ -172,9 +165,8 @@ def personas_shard(
     output_dir: Path,
     rows: int,
     offset: int,
-    live: bool,
 ) -> None:
-    """Plan or execute one guarded persona-generation shard.
+    """Execute one guarded persona-generation shard.
 
     Raises:
         click.ClickException: If generation or its guards fail.
@@ -187,7 +179,6 @@ def personas_shard(
             output_dir=output_dir,
             rows=rows,
             offset=offset,
-            live=live,
         )
     except Exception as error:
         raise click.ClickException(str(error)) from error

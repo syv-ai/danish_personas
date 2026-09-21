@@ -11,36 +11,10 @@ from danish_personas.release import upload as upload_service
 from scripts import build_dataset, generate_persona
 
 
-def test_generate_persona_emits_only_validated_text(
+def test_build_dataset_prints_merged_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The single-persona command keeps diagnostics off stdout."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
-        run_dir / "generated-personas.parquet"
-    )
-    monkeypatch.setattr(generate_persona, "generate_personas", lambda **_: run_dir)
-    monkeypatch.setattr(
-        generate_persona,
-        "validate_persona_run",
-        lambda **_: SimpleNamespace(passed=True),
-    )
-
-    blocked = CliRunner().invoke(generate_persona.main)
-    assert blocked.exit_code != 0
-    assert "requires explicit --live approval" in blocked.output
-
-    result = CliRunner().invoke(generate_persona.main, ["--live"])
-
-    assert result.exit_code == 0, result.output
-    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
-
-
-def test_build_dataset_requires_live_and_prints_merged_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The dataset command has an explicit live gate and a clean path output."""
+    """The dataset command keeps progress separate from its clean path output."""
     pilot_dir = tmp_path / "pilot"
     pilot_dir.mkdir()
     output_path = pilot_dir / "generated-personas.parquet"
@@ -60,7 +34,6 @@ def test_build_dataset_requires_live_and_prints_merged_path(
         "0",
         "--output-price-per-million",
         "0",
-        "--live",
     ]
 
     result = CliRunner().invoke(build_dataset.main, arguments)
@@ -94,13 +67,34 @@ def test_build_dataset_requires_release_inputs_before_running(
             "0",
             "--hf-repo",
             "org/dataset",
-            "--live",
         ],
     )
 
     assert result.exit_code != 0
     assert "--attestation" in result.output
     assert not called
+
+
+def test_generate_persona_emits_only_validated_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The single-persona command keeps diagnostics off stdout."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
+        run_dir / "generated-personas.parquet"
+    )
+    monkeypatch.setattr(generate_persona, "generate_personas", lambda **_: run_dir)
+    monkeypatch.setattr(
+        generate_persona,
+        "validate_persona_run",
+        lambda **_: SimpleNamespace(passed=True),
+    )
+
+    result = CliRunner().invoke(generate_persona.main)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
 
 
 def test_upload_release_delegates_without_accepting_a_token(

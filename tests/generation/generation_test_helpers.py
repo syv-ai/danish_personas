@@ -18,6 +18,7 @@ from danish_personas.generation.models import (
     GenerationConfig,
     LLMResponse,
 )
+from danish_personas.generation.personality import allowed_personality_tendencies
 from danish_personas.generation.validation import EDUCATION_DANISH
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import (
@@ -59,16 +60,11 @@ class MockGenerationClient:
             dict[str, object], payload["demographics_and_personality"]
         )
         employed = demographics["job_function"] is not None
-        content = (
-            attributes_json(
-                employed=employed, job_title=type(self).job_title if employed else None
-            )
-            if schema_name == "generated_attributes"
-            else descriptions_json(
-                employed=employed,
-                demographic=demographics,
-                job_title=type(self).job_title if employed else None,
-            )
+        assert schema_name == "generated_persona"
+        content = generated_persona_json(
+            employed=employed,
+            demographic=demographics,
+            job_title=type(self).job_title if employed else None,
         )
         return LLMResponse(
             response_id=f"response-{self.requests}",
@@ -93,7 +89,7 @@ class InterruptingGenerationClient(MockGenerationClient):
     interrupt_once = True
 
     def complete(self, schema_name: str, **kwargs: object) -> LLMResponse:
-        if schema_name == "persona_descriptions" and self.interrupt_once:
+        if schema_name == "generated_persona" and self.interrupt_once:
             type(self).interrupt_once = False
             type(self).requests += 1
             self._requests_made += 1
@@ -101,6 +97,24 @@ class InterruptingGenerationClient(MockGenerationClient):
                 self._record_request(self._requests_made)
             raise RequestBudgetExceeded("test interruption")
         return super().complete(schema_name=schema_name, **kwargs)
+
+
+def generated_persona_json(
+    *,
+    employed: bool = True,
+    demographic: dict[str, object] | None = None,
+    job_title: str | None = None,
+) -> str:
+    """Return one valid combined generation response."""
+    payload = json.loads(attributes_json(employed=employed, job_title=job_title))
+    payload.update(
+        json.loads(
+            descriptions_json(
+                employed=employed, demographic=demographic, job_title=job_title
+            )
+        )
+    )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def attributes_json(*, employed: bool = True, job_title: str | None = None) -> str:
@@ -147,13 +161,11 @@ def descriptions_json(
     }
     rendered_education = EDUCATION_DANISH.get(education_level, education_level)
     education = education_labels[rendered_education]
+    tendency = allowed_personality_tendencies(context=context)[0]
     if employed:
-        persona = (
-            f"{pronoun.capitalize()} er {context['age']} år og bor i "
-            f"{context['municipality']}. {pronoun.capitalize()} kommer fra "
-            f"{context['origin_country_da']} og {education}. {pronoun.capitalize()} "
-            f"arbejder som {job_title}. {pronoun.capitalize()} holder af en rolig "
-            "hverdag."
+        work = (
+            f"{pronoun.capitalize()} arbejder som {job_title} i en mindre "
+            "rådgivningsvirksomhed i centrum"
         )
     else:
         status = (
@@ -161,12 +173,17 @@ def descriptions_json(
             if context.get("labour_market_status") == "retired"
             else "uden for arbejdsmarkedet"
         )
-        persona = (
-            f"{pronoun.capitalize()} er {context['age']} år og bor i "
-            f"{context['municipality']}. {pronoun.capitalize()} kommer fra "
-            f"{context['origin_country_da']} og {education}. {pronoun.capitalize()} "
-            f"er {status} og holder af en rolig hverdag."
-        )
+        work = f"{pronoun.capitalize()} er {status}"
+    persona = (
+        f"Maja er {context['age']} år, og {pronoun} bor i "
+        f"{context['municipality']} og kommer fra {context['origin_country_da']}. "
+        f"{pronoun.capitalize()} {education} med en praktisk retning i Aarhus. "
+        f"{work}. I fritiden holder {pronoun} af at læse danske romaner og at "
+        f"lytte til musik i fritiden, og planlægning hjælper med at få tid til "
+        f"begge dele. {pronoun.capitalize()} bor sammen med kæresten Alex og "
+        f"deres barn Noa i en rolig del af kommunen. {pronoun.capitalize()} "
+        f"{tendency} og drømmer om at skabe mere plads til lokale fællesskaber."
+    )
     return json.dumps({"persona": persona}, ensure_ascii=False)
 
 
@@ -175,7 +192,7 @@ class RejectingGenerationClient(MockGenerationClient):
 
     def complete(self, schema_name: str, **kwargs: object) -> LLMResponse:
         response = super().complete(schema_name=schema_name, **kwargs)
-        if schema_name == "generated_attributes" and self.reject_once:
+        if schema_name == "generated_persona" and self.reject_once:
             type(self).reject_once = False
             invalid = json.loads(attributes_json())
             invalid["skills_and_expertise"] = [
@@ -284,10 +301,8 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
     )
     mapping_path = root / "config" / "job-function-titles.yaml"
     mapping_path.write_bytes((Path("config") / "job-function-titles.yaml").read_bytes())
-    config_path = root / "generation.yaml"
+    config_path = root / "config.yaml"
     config = {
-        "version": 4,
-        "llm_generation_enabled": True,
         "base_url": "http://test/v1",
         "model": "test-model",
         "api_key_env": None,
@@ -296,7 +311,7 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         "maximum_validation_attempts": 2,
         "maximum_total_requests": 5,
         "retry_backoff_seconds": 0.0,
-        "maximum_smoke_rows": 2,
+        "maximum_rows_per_shard": 2,
         "max_tokens": None,
         "enable_thinking": None,
         "reasoning_effort": None,

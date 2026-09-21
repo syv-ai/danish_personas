@@ -9,19 +9,15 @@ from pathlib import Path
 
 import polars as pl
 
-from ..io import load_yaml_model, sha256_file, write_json
+from ..io import sha256_file, write_json
+from .config import load_generation_config
 from .identity import persona_pilot_id
 from .job_titles import (
     DEFAULT_JOB_TITLE_MAPPING_PATH,
     job_title_mapping_sha256,
     load_job_title_mapping,
 )
-from .models import (
-    GenerationConfig,
-    GenerationManifest,
-    PilotBatchReference,
-    PilotManifest,
-)
+from .models import GenerationManifest, PilotBatchReference, PilotManifest
 from .pipeline import (
     generate_personas,
     generation_context_sha256,
@@ -50,7 +46,7 @@ def run_pilot(
     """Generate and merge a validated, resumable persona pilot.
 
     The caller is responsible for obtaining explicit operator approval before invoking
-    this live generation service. Each invocation remains bounded to five records by
+    this generation service. Each invocation remains bounded to five records by
     the generation pipeline and is validated before it is merged.
 
     Args:
@@ -99,12 +95,12 @@ def run_pilot(
     validate_upstream_sample(
         input_path=input_path, sample_manifest_path=sample_manifest_path
     )
-    config = load_yaml_model(path=config_path, model=GenerationConfig)
+    config = load_generation_config(config_path)
     sample = pl.read_parquet(input_path).sort("persona_id")
     if rows > sample.height:
         message = "Requested pilot exceeds the frozen sample"
         raise ValueError(message)
-    if batch_size > config.maximum_smoke_rows:
+    if batch_size > config.maximum_rows_per_shard:
         message = "Pilot batch size exceeds the per-invocation row limit"
         raise ValueError(message)
     offsets = list(range(0, rows, batch_size))
@@ -408,7 +404,6 @@ def _submit_batch(
         config_path=config_path,
         output_dir=output_dir,
         rows=min(batch_size, rows - offset),
-        live=True,
         offset=offset,
     )
 

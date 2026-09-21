@@ -53,9 +53,11 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit("not_applicable").alias("job_function_resolution"),
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
-                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark og har en "
-                "ungdomsuddannelse eller erhvervsuddannelse. Han er ledig og nyder "
-                "vandring og musik i hverdagen."
+                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark, har en "
+                "ungdomsuddannelse og er ledig. I hverdagen bruger han planlægning, "
+                "og i fritiden dyrker han vandring og musik sammen med lokale "
+                "fællesskaber. Han har ofte tendens til at være nysgerrig, når han "
+                "møder nye muligheder. At udvikle nye færdigheder."
             ).alias("persona"),
         )
     )
@@ -149,8 +151,6 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     shutil.copyfile(ROOT / "config/job-function-titles.yaml", mapping_path)
 
     generation_config = GenerationConfig(
-        version=4,
-        llm_generation_enabled=True,
         base_url="https://llm.example/v1",
         model=MODEL,
         api_key_env="TEST_TOKEN",
@@ -159,7 +159,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         maximum_validation_attempts=2,
         maximum_total_requests=15,
         retry_backoff_seconds=0,
-        maximum_smoke_rows=5,
+        maximum_rows_per_shard=5,
         response_format="json_schema",
         attributes_prompt=Path("config/prompts/attributes-da.md"),
         personas_prompt=Path("config/prompts/personas-da.md"),
@@ -168,7 +168,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     )
     pilot = tmp_path / "pilot"
     pilot.mkdir()
-    config_path = repository / "config/generation.yaml"
+    config_path = repository / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(generation_config.model_dump(mode="json"), sort_keys=False),
         encoding="utf-8",
@@ -189,9 +189,13 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             "career_goals_and_ambitions": ["At udvikle nye færdigheder."] * 10_000,
             "job_title": ["forretningsspecialist"] * 10_000,
             "persona": [
-                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark og har en "
-                "ungdomsuddannelse eller erhvervsuddannelse. Han arbejder som "
-                "forretningsspecialist og nyder vandring og musik i hverdagen."
+                "Han er 35 år og bor i Aarhus. Han kommer fra Danmark, har en "
+                "ungdomsuddannelse og arbejder som forretningsspecialist på en mindre "
+                "arbejdsplads i byen. I hverdagen bruger han planlægning, og i "
+                "fritiden "
+                "dyrker han vandring og musik sammen med lokale fællesskaber. Han har "
+                "ofte tendens til at være nysgerrig, når han møder nye opgaver. At "
+                "udvikle nye færdigheder."
             ]
             * 10_000,
         }
@@ -293,7 +297,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         input_sha256=input_hash,
         sample_manifest_file=Path("sample-manifest.json"),
         sample_manifest_sha256=sha256_file(sample_manifest),
-        generation_config_file=Path("config/generation.yaml"),
+        generation_config_file=Path("config.yaml"),
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=generation_context,
         validator_version=VALIDATOR_VERSION,
@@ -318,9 +322,9 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         batch_size=5,
         batches=1,
         batch_runs=[shard_reference],
-        maximum_total_requests=20_000,
+        maximum_total_requests=10_000,
         maximum_shard_requests=20,
-        requests=20_000,
+        requests=10_000,
         retries=0,
         prompt_tokens=0,
         completion_tokens=0,

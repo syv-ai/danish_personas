@@ -1,42 +1,36 @@
-# Danske baggrundsattributter
+# Danske personaattributter
 
-Du skaber strukturerede, syntetiske baggrundsattributter til en dansk persona.
-Returnér kun gyldigt JSON efter skemaet. Returnér altid alle skemafelter; brug
-null for nullable felter, når værdien ikke findes.
+Du skaber én detaljeret, syntetisk dansk persona i ét samlet JSON-svar. Returnér
+kun gyldigt JSON efter det leverede skema, og returnér alle skemafelter. Brug null
+for nullable felter, når en værdi ikke findes.
 
 Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
 `origin_country_da` er en bogstavelig officiel dansk kildeetiket, ikke en oplysning,
-der må bruges til at udlede kultur, etnicitet, udseende, beskæftigelse eller
+der må bruges til at udlede kultur, etnicitet, udseende, beskæftigelse, navn eller
 interesser. Feltet `allowed_job_titles` er den komplette, lukkede liste over tilladte
-titler for jobfunktionsetiketten.
-Hvis `allowed_job_titles` er tom, skal `job_title` være null. Ellers skal `job_title`
-være præcis én værdi fra listen, inklusive stavning og mellemrum. Brug aldrig koder.
-Opfind ikke arbejdsopgaver, arbejdsgiver, institution, anciennitet eller
-ledelsesansvar.
+titler for jobfunktionsetiketten. Hvis listen er tom, skal `job_title` være null.
+Ellers skal `job_title` være præcis én værdi fra listen, inklusive stavning og
+mellemrum.
 
-Regler:
+Regler for de strukturerede felter:
 
 - Bevar de faste demografiske og OCEAN-input uden at ændre dem.
-- Brug `education_level` som det leverede, sammenlagte uddannelsesniveau. Kategorien
-  ungdoms- eller erhvervsuddannelse er et midlertidigt, kildeunderbygget niveau,
-  indtil en særskilt DST-kilde kan give flere detaljer. Udled aldrig en bestemt
-  uddannelse eller uddannelsesinstitution.
-- Skriv naturligt dansk; jobtitlen skal være trimmet og må ikke indeholde linjeskift.
-- Opfind ikke navn, adresse, arbejdsplads, uddannelsesinstitution eller kontaktoplysninger.
-- Nævn ikke CPR-numre, telefonnumre, e-mailadresser, links eller præcise steder.
-- Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning eller
-  kriminalhistorik.
-- Undgå stereotyper baseret på køn, alder, region, oprindelsesetiket, uddannelse
-  eller arbejdsstatus.
-- Lad aldrig `origin_country_da` styre kultur, etnicitet, udseende, job, færdigheder
-  eller interesser.
+- Skriv 3-6 korte, forskellige færdigheder og 3-6 konkrete, forskellige interesser.
+- Hver interesse skal være en dansk fællesnavnefrase med små bogstaver og uden
+  afsluttende tegnsætning.
+- Interesser må ikke være OCEAN-personlighedstræk eller formuleringer som `kan være
+  rolig`.
+- Skriv et konkret, syntetisk karrieremål eller en anden fremtidsdrøm, når det er
+  naturligt. Brug ellers null.
+- Brug `current_status` som den nøjagtige aktuelle status, når den er leveret.
+- Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
-- Skriv 3-6 korte, forskellige færdigheder og 3-6 korte, forskellige interesser som
-  aktiviteter eller emner. Hver interesse skal være en dansk fællesnavnefrase med
-  små bogstaver og uden afsluttende tegnsætning. Interesser må ikke være
-  OCEAN-personlighedstræk eller formuleringer som `kan være rolig`.
-- Brug null til karrieremål, hvis et konkret mål ikke er naturligt ud fra inputtet.
-- Brug `current_status` som den nøjagtige aktuelle status, når den er leveret.
-- Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring. Undgå konkrete
-  arbejdsopgaver, arbejdsgivere, institutioner og tidligere arbejde.
+
+Alle uddannelses-, arbejds-, fritids- og familiedetaljer ud over inputtet er
+opdigtede dele af den syntetiske persona. De må gerne være konkrete, men må ikke
+ligne dokumentation om en virkelig person. Brug ingen efternavne, rigtige
+arbejdsgivernavne, præcise adresser, kontaktoplysninger eller administrative numre.
+Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning,
+kriminalhistorik eller fysisk udseende. Undgå stereotyper baseret på køn, alder,
+kommune, oprindelsesetiket, uddannelse eller arbejdsstatus.

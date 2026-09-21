@@ -22,21 +22,22 @@ clean-clone reproducibility path; they are not one-off migrations.
 
 ## Persona commands
 
-`generate_persona.py` requires explicit `--live` approval, validates the upstream frozen
-sample and generated run, stores resumable evidence below `data/personas` by default,
-and writes only the final Danish persona plus a newline to stdout. Diagnostics use
-stderr.
+`generate_persona.py` validates the upstream frozen sample and generated run, stores
+resumable evidence below `data/personas` by default, and writes only the final Danish
+persona plus a newline to stdout. It loads the root Hydra `config.yaml` by default and
+runs immediately. Diagnostics use stderr.
 
-`build_dataset.py` requires `--rows` and explicit `--live` approval. It generates
-validated shards of at most five rows, resumes valid checkpoints, merges and validates
+`build_dataset.py` requires `--rows`. It generates validated shards of at most five
+rows, resumes valid checkpoints, merges and validates
 the complete dataset, stores it below `data/persona-datasets` by default, displays a
 `tqdm` row progress bar on stderr, and writes only the merged Parquet path to stdout.
 The request budget, prices, concurrency, input sample, and output paths are explicit CLI
 options.
 
-Neither command loads `.env`. The committed generation configuration remains disabled;
-copy it to the ignored `config/generation.local.yaml`, enable only an approved run, and
-provide the configured token through a short-lived environment variable.
+Neither command loads `.env`. All model settings live in the root `config.yaml`. Set
+`api_key_env` to an environment-variable name if the provider requires authentication,
+and provide that variable only for the command invocation. Never store token values in
+the configuration. Commands can consume paid provider requests.
 
 ## Hugging Face upload
 
