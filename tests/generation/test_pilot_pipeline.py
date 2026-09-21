@@ -47,7 +47,7 @@ def test_pilot_identity_changes_when_prompt_context_changes(
     ]
     first = CliRunner().invoke(pilot_main, arguments)
     assert first.exit_code == 0, first.output
-    paths["personas_prompt"].write_text("En ændret dansk prompt", encoding="utf-8")
+    paths["prompt"].write_text("En ændret dansk prompt", encoding="utf-8")
     second = CliRunner().invoke(pilot_main, arguments)
     assert second.exit_code == 0, second.output
 

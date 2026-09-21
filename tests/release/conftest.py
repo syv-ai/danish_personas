@@ -142,10 +142,8 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         destination = repository / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
-    for relative in ("attributes-da.md", "personas-da.md"):
-        destination = repository / "config/prompts" / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / "config/prompts" / relative, destination)
+    destination = repository / "config/persona-da.md"
+    shutil.copyfile(ROOT / "config/persona-da.md", destination)
     mapping_path = repository / "config/job-function-titles.yaml"
     mapping_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "config/job-function-titles.yaml", mapping_path)
@@ -161,8 +159,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         retry_backoff_seconds=0,
         maximum_rows_per_shard=5,
         response_format="json_schema",
-        attributes_prompt=Path("config/prompts/attributes-da.md"),
-        personas_prompt=Path("config/prompts/personas-da.md"),
+        prompt=Path("config/persona-da.md"),
         job_title_mapping=Path("config/job-function-titles.yaml"),
         origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
     )
@@ -272,12 +269,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
     }
     generation_context = generation_context_sha256(
         config=generation_config,
-        attributes_prompt=(repository / "config/prompts/attributes-da.md").read_text(
-            encoding="utf-8"
-        ),
-        personas_prompt=(repository / "config/prompts/personas-da.md").read_text(
-            encoding="utf-8"
-        ),
+        prompt=(repository / "config/persona-da.md").read_text(encoding="utf-8"),
         job_title_mapping=packager.load_job_title_mapping(mapping_path),
         job_title_mapping_sha256=sha256_file(mapping_path),
         origin_label_contract=packager.load_origin_label_contract(
@@ -312,12 +304,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         origin_label_contract_content=packager.load_origin_label_contract(
             repository / "config/folk2-ieland-labels-da.yaml"
         ),
-        attributes_prompt_sha256=sha256_file(
-            repository / "config/prompts/attributes-da.md"
-        ),
-        personas_prompt_sha256=sha256_file(
-            repository / "config/prompts/personas-da.md"
-        ),
+        prompt_sha256=sha256_file(repository / "config/persona-da.md"),
         rows=10_000,
         batch_size=5,
         batches=1,

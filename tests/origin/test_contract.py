@@ -132,8 +132,7 @@ def test_generation_config_rejects_custom_contract_path() -> None:
         "retry_backoff_seconds": 0.0,
         "maximum_rows_per_shard": 1,
         "response_format": "json_object",
-        "attributes_prompt": "config/prompts/attributes-da.md",
-        "personas_prompt": "config/prompts/personas-da.md",
+        "prompt": "config/persona-da.md",
         "origin_label_contract": "config/custom.yaml",
     }
     with pytest.raises(ValidationError):
@@ -164,16 +163,14 @@ def test_windows_flavoured_contract_paths_serialise_portably() -> None:
         "retry_backoff_seconds": 0.0,
         "maximum_rows_per_shard": 1,
         "response_format": "json_object",
-        "attributes_prompt": "config/prompts/attributes-da.md",
-        "personas_prompt": "config/prompts/personas-da.md",
+        "prompt": "config/persona-da.md",
         "job_title_mapping": "config/job-function-titles.yaml",
         "origin_label_contract": PureWindowsPath(r"config\folk2-ieland-labels-da.yaml"),
     }
     config = GenerationConfig.model_validate(payload)
 
     expected_paths = {
-        "attributes_prompt": "config/prompts/attributes-da.md",
-        "personas_prompt": "config/prompts/personas-da.md",
+        "prompt": "config/persona-da.md",
         "job_title_mapping": "config/job-function-titles.yaml",
         "origin_label_contract": ORIGIN_LABEL_CONTRACT_PATH,
     }

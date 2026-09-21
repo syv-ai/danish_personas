@@ -90,10 +90,9 @@ client when testing LLM paths.
 | `config/categories.yaml`             | Canonical demographic and labour-status mappings.         |
 | `config/sampling.yaml`               | Seed, rows, adult age range, region, OCEAN settings.      |
 | `config/validation.yaml`             | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config/config.yaml`                 | Hydra LLM endpoint, model, prompts, guards, and budgets.  |
-| `config/prompts/attributes-da.md`    | Danish attributes schema and safety rules.                |
+| `config/config.yaml`                 | Hydra LLM endpoint, model, prompt, guards, and budgets.   |
+| `config/persona-da.md`               | Combined Danish attribute and persona instructions.       |
 | `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
-| `config/prompts/personas-da.md`      | Danish v4 persona writing brief and safety rules.         |
 
 `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that

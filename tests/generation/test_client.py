@@ -52,8 +52,7 @@ def _config() -> GenerationConfig:
         enable_thinking=None,
         reasoning_effort=None,
         response_format="json_schema",
-        attributes_prompt=Path("attributes.md"),
-        personas_prompt=Path("personas.md"),
+        prompt=Path("prompt.md"),
         origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
     )
 

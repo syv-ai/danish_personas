@@ -539,13 +539,13 @@ class ReleaseEvidence(StrictModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: t.Literal[2]
+    version: t.Literal[3]
 
     @field_validator("version", mode="before")
     @classmethod
     def _strict_version(_cls, value: object) -> object:
-        if type(value) is not int or value != 2:
-            raise ValueError("Release evidence version must be exactly integer 2")
+        if type(value) is not int or value != 3:
+            raise ValueError("Release evidence version must be exactly integer 3")
         return value
 
     pilot_id: StrictStr = Field(min_length=1)
@@ -561,8 +561,7 @@ class ReleaseEvidence(StrictModel):
     origin_label_contract_version: StrictInt
     origin_label_contract_content: OriginLabelContract
     validator_version: StrictStr = Field(min_length=1)
-    attributes_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
-    personas_prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    prompt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     upstream_run_id: StrictStr = Field(min_length=1)
     sample_source_run_id: StrictStr | None = None
     source_bundle_id: StrictStr | None = None

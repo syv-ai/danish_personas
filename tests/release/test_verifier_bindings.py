@@ -87,7 +87,7 @@ def test_verify_release_rejects_prompt_hash_mismatch(
 ) -> None:
     """Prompt bytes remain bound through portable evidence hashes."""
     release, _ = verifier_package
-    prompt = release / "provenance/prompts/personas-da.md"
+    prompt = release / "provenance/persona-da.md"
     prompt.write_bytes(prompt.read_bytes() + b"drift")
     digest = _refresh_artifact(release, prompt.relative_to(release).as_posix())
     with pytest.raises(ReleaseVerificationError, match="prompt|checksum"):
@@ -99,7 +99,7 @@ def test_verify_release_rejects_prompt_hash_mismatch(
     [
         ("README.md", b"local file /Users/example/secret.txt\n"),
         ("LICENSE.txt", b"file:///tmp/private-token\n"),
-        ("provenance/prompts/attributes-da.md", b"Authorization Bearer secret\n"),
+        ("provenance/persona-da.md", b"Authorization Bearer secret\n"),
         (
             "provenance/docs/source-register.md",
             b"https://user:password@example.invalid\n",
@@ -166,12 +166,7 @@ def test_verify_release_rejects_title_map_substitution_even_with_recalculated_bi
     config = load_yaml_model(path=config_path, model=GenerationConfig)
     context = generation_context_sha256(
         config=config,
-        attributes_prompt=(release / "provenance/prompts/attributes-da.md").read_text(
-            encoding="utf-8"
-        ),
-        personas_prompt=(release / "provenance/prompts/personas-da.md").read_text(
-            encoding="utf-8"
-        ),
+        prompt=(release / "provenance/persona-da.md").read_text(encoding="utf-8"),
         job_title_mapping=load_job_title_mapping(map_path),
         job_title_mapping_sha256=map_sha,
     )

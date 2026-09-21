@@ -161,12 +161,10 @@ def generate_personas(
     origin_contract = load_origin_label_contract(path=origin_contract_path)
     origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
     _validate_origin_labels(frame=sample, contract=origin_contract)
-    attributes_prompt = config.attributes_prompt.read_text(encoding="utf-8")
-    personas_prompt = config.personas_prompt.read_text(encoding="utf-8")
+    prompt = config.prompt.read_text(encoding="utf-8")
     generation_context_sha = generation_context_sha256(
         config=config,
-        attributes_prompt=attributes_prompt,
-        personas_prompt=personas_prompt,
+        prompt=prompt,
         job_title_mapping=job_title_mapping,
         job_title_mapping_sha256=mapping_sha,
         origin_label_contract=origin_contract,
@@ -225,7 +223,7 @@ def generate_personas(
                     run_dir=run_dir,
                     config=config,
                     client=client,
-                    generation_prompt=f"{attributes_prompt}\n\n{personas_prompt}",
+                    generation_prompt=prompt,
                     generation_context_sha=generation_context_sha,
                     job_title_mapping=job_title_mapping,
                     job_title_mapping_sha256=mapping_sha,
@@ -264,8 +262,7 @@ def generate_personas(
         origin_label_contract_sha256=origin_contract_sha,
         origin_label_contract_version=origin_contract.version,
         origin_label_contract_content=origin_contract,
-        attributes_prompt_sha256=sha256_text(attributes_prompt),
-        personas_prompt_sha256=sha256_text(personas_prompt),
+        prompt_sha256=sha256_text(prompt),
         model=config.model or "",
         base_url=config.base_url or "",
         rows=rows,
@@ -677,8 +674,7 @@ def _write_output(
 def generation_context_sha256(
     *,
     config: GenerationConfig,
-    attributes_prompt: str,
-    personas_prompt: str,
+    prompt: str,
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
     origin_label_contract: OriginLabelContract | None = None,
@@ -689,10 +685,8 @@ def generation_context_sha256(
     Args:
         config:
             Validated generation configuration.
-        attributes_prompt:
-            Structured-attribute instructions included in the combined prompt.
-        personas_prompt:
-            Persona-writing instructions included in the combined prompt.
+        prompt:
+            Combined Danish attribute and persona instructions.
         job_title_mapping:
             Validated reviewed title mapping.
         job_title_mapping_sha256:
@@ -737,8 +731,7 @@ def generation_context_sha256(
                     mode="json"
                 ),
                 "origin_label_contract_sha256": effective_origin_sha256,
-                "attributes_prompt_sha256": sha256_text(attributes_prompt),
-                "personas_prompt_sha256": sha256_text(personas_prompt),
+                "prompt_sha256": sha256_text(prompt),
                 "generated_persona_schema": GeneratedPersona.model_json_schema(),
                 "validator_version": VALIDATOR_VERSION,
                 "prompt_fields": PROMPT_FIELDS,

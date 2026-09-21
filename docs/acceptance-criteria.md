@@ -181,8 +181,9 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   stripped.
 - A release must identify generation contract 4 and validator `persona-safety-v17`,
   and retain only the detailed grounded `persona`. Detailed education is explicitly
-  fictional rather than source-backed. Release manifest and evidence remain schema 2
-  because their structures are unchanged. The package must record that the provider
+  fictional rather than source-backed. The release manifest remains schema 2, while
+  release evidence is schema 3 because its prompt provenance contract changed. The
+  package must record that the provider
   request contains approved human-readable municipality, Danish origin, and job-function
   labels only, not origin code, English label, contract metadata, or resolutions, and
   must disclose synthetic job titles and image-model stereotyping risk.
