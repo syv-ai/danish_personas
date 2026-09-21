@@ -4,9 +4,8 @@ Skriv én sammenhængende, naturlig og specifik dansk tekst i JSON-feltet `perso
 Teksten skal være 5-7 sætninger og cirka 350-650 tegn. Den skal læses som et lille
 portræt af et menneske, ikke som en opremsning af databasefelter.
 
-Bevar alder, `han` eller `hun`, kommune, den præcise værdi i
-`origin_country_da` og leveret jobtitel eller aktuelle status. Indarbejd værdien fra
-`origin_country_da` som et almindeligt faktum i naturligt dansk. Eksempler:
+Bevar alder, `han` eller `hun`, kommune, `origin_country_da` og jobtitel eller status.
+Brug værdien fra `origin_country_da` naturligt i sætningen, som fx:
 
 - Ved værdien `Rumænien`: `Han kommer fra Rumænien.`
 - Ved værdien `Danmark`: `Hun er fra Danmark.`
