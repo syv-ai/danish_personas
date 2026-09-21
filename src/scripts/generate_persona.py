@@ -56,6 +56,10 @@ def main(
             If generation, upstream, guard, or validation checks fail.
     """
     _configure_logging()
+    if not live:
+        raise click.ClickException(
+            "Persona generation requires explicit --live approval"
+        )
     try:
         run_dir = generate_personas(
             input_path=input_path,

@@ -27,6 +27,10 @@ def test_generate_persona_emits_only_validated_text(
         lambda **_: SimpleNamespace(passed=True),
     )
 
+    blocked = CliRunner().invoke(generate_persona.main)
+    assert blocked.exit_code != 0
+    assert "requires explicit --live approval" in blocked.output
+
     result = CliRunner().invoke(generate_persona.main, ["--live"])
 
     assert result.exit_code == 0, result.output

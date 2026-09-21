@@ -1,47 +1,52 @@
-# Unified CLI
+# Script interface
 
-The installed `danish-personas` command exposes the package services without shelling
-out to legacy scripts:
+Run scripts directly from the repository root with `uv run`:
 
 ```text
-sources restore | pack | prepare | resolve | fetch
-validate sources | demographics | personas | pilot
-demographics run
-sample freeze
-personas shard | pilot
-workflow deterministic --target smoke|statistical [--raw-parent PATH]
-release package | verify
+src/scripts/
+├── generate_persona.py          # one validated persona on stdout
+├── build_dataset.py             # validated dataset with tqdm progress
+├── restore_raw_sources.py       # restore the pinned offline source archive
+├── build_raw_archive.py         # reproducibly repack source snapshots
+├── download_sources.py          # intentionally refresh locked sources
+├── build_distributions.py       # prepare the offline distribution bundle
+├── generate_demographics.py     # generate deterministic demographic records
+├── freeze_demographic_sample.py # freeze the LLM input sample
+├── validate_dataset.py          # run source, demographic, or persona gates
+└── fix_dot_env_file.py          # bootstrap local environment and Git identity
 ```
 
-The deterministic workflow defaults to the committed raw archive and versioned
-configuration. It restores, prepares, validates, generates, and validates in order,
-passing each service's returned path to the next boundary. `--raw-parent` defaults to
-`data`; the restored and prepared path is always its fixed `raw-hardened-20260919`
-child. `statistical` runs the smoke stage first, then generates the configured
-statistical row count and freezes 1,000 rows by default. Use `--sample-rows` to change
-that development sample size. The frozen Parquet file and its manifest remain inside the
-returned content-addressed statistical run directory, beside `run-manifest.json` and
-`validation-report.json`; the workflow's final stdout line is the exact frozen-sample
-path accepted by `personas shard`.
+Use `uv run src/scripts/<name>.py --help` for exact options. The source,
+demographic, freeze, and validation commands are retained because they provide the
+clean-clone reproducibility path; they are not one-off migrations.
 
-Source `resolve` and `fetch` refuse to run without explicit `--network`. Persona shards
-are dry runs unless `--live` is supplied; pilots always require `--live`. The command
-never loads `.env`, and deterministic workflows make no network or LLM requests.
+## Persona commands
 
-Release packaging is offline and has no upload, authentication, or token options. A
-current package must bind release manifest schema 2 and evidence schema 2, including the
-current generation-4, validator-v16, origin-label, and artefact checksums. Do not reuse
-historical release IDs or invent new canonical IDs: package first, then copy the printed
-IDs and digests into release evidence. Retain `release-manifest.sha256` (or the printed
-digest) externally and pass it to `release verify` after relocating the package. After
-verification and an external digest check, an operator may upload manually. Before
-current regeneration, use `<new-release-id>`, `<new-pilot-id>`, and `<new-digest>` as
-documentation placeholders rather than historical values:
+`generate_persona.py` requires explicit `--live` approval, validates the upstream frozen
+sample and generated run, stores resumable evidence below `data/personas` by default,
+and writes only the final Danish persona plus a newline to stdout. Diagnostics use
+stderr.
 
-```bash
-hf upload OWNER/DATASET RELEASE_DIR --type dataset --create-pr
-```
+`build_dataset.py` requires `--rows` and explicit `--live` approval. It generates
+validated shards of at most five rows, resumes valid checkpoints, merges and validates
+the complete dataset, stores it below `data/persona-datasets` by default, displays a
+`tqdm` row progress bar on stderr, and writes only the merged Parquet path to stdout.
+The request budget, prices, concurrency, input sample, and output paths are explicit CLI
+options.
 
-Uploading is deliberately not implemented by Python; never upload before verification.
-The existing `uv run src/scripts/*.py` commands remain supported for compatibility. Run
-`uv run danish-personas --help` or append `--help` to any group for all options.
+Neither command loads `.env`. The committed generation configuration remains disabled;
+copy it to the ignored `config/generation.local.yaml`, enable only an approved run, and
+provide the configured token through a short-lived environment variable.
+
+## Hugging Face upload
+
+`build_dataset.py --hf-repo OWNER/DATASET` does not upload raw pilot files. It requires
+an enabled release policy, blinded-review attestation, dataset card, licence, repository
+root, and release output directory. The script packages the pilot with the existing
+release gates, independently verifies that package against its manifest digest, and only
+then uploads the verified directory to a Hugging Face dataset pull request.
+
+Authentication uses `HF_TOKEN` or standard cached Hugging Face credentials. The script
+has no token option and does not log credentials. A normal workflow therefore generates
+and reviews the dataset first, then repeats the resumable command with the upload and
+release options.

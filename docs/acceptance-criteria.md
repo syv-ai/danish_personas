@@ -183,9 +183,11 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   label, contract metadata, or resolutions, and must disclose synthetic job titles and
   image-model stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
-  evidence checksums, provenance, row counts, and human-review evidence. Until a current
-  package is regenerated, release IDs, checksums, and canonical output IDs are
-  placeholders rather than claims about historical artefacts.
+  evidence checksums, provenance, row counts, and human-review evidence. Hugging Face
+  upload may include only that verified package and must create a dataset pull request;
+  raw pilot files must never be uploaded. Until a current package is regenerated,
+  release IDs, checksums, and canonical output IDs are placeholders rather than claims
+  about historical artefacts.
 
 A failed mandatory gate returns a non-zero command exit code. Thresholds may not be
 changed retrospectively to make a completed statistical run pass.

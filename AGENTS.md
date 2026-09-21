@@ -59,7 +59,8 @@ prompts are interpreted relative to that working directory.
 | `build_dataset.py`             | Merges validated shards; requires `--live`.                |
 | `fix_dot_env_file.py`          | Creates `.env`; non-interactive leaves Git identity blank. |
 
-Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no `generate_attributes.py`; structured attributes are the first stage of
+Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no
+`generate_attributes.py`; structured attributes are the first stage of
 `generate_persona.py` and `build_dataset.py`.
 ## Tests
 
@@ -251,12 +252,15 @@ current contracts have been regenerated; use placeholders in instructions.
 
 ## Non-obvious gotchas and safety
 
-- The committed generation config is disabled. `generate_persona.py` performs
-  validation and planning only; it does not need provider reachability. `--live`
-  additionally requires local enablement, endpoint, model, provider reachability, and
-  may spend money. The pilot has its own global request limit and requires current input
-  and output prices; use zero only for a genuinely free endpoint. `--concurrency` can
-  issue requests in parallel.
+- The committed generation config is disabled. `generate_persona.py` and
+  `build_dataset.py` require `--live`, local enablement, an endpoint, a model, and
+  provider reachability, and may spend money. Dataset generation has its own global
+  request limit and requires current input and output prices; use zero only for a
+  genuinely free endpoint. `--concurrency` can issue requests in parallel.
+- `build_dataset.py --hf-repo` may upload only a freshly packaged and independently
+  verified release after the configured policy and blinded-review gates pass. It creates
+  a Hugging Face dataset pull request and obtains credentials from standard Hugging Face
+  authentication, never from a CLI token option.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
   validator context. Human-readable municipality, the official Danish

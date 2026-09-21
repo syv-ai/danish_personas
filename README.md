@@ -89,31 +89,26 @@ Makefile includes `.env` and exports all of its variables to subprocesses and ho
 do not use it as credential loading for direct LLM commands. Never commit `.env`,
 tokens, or generated data artefacts.
 
-### Unified CLI
+### Script interface
 
-The installed CLI is the recommended interface for new workflows. It keeps every service
-boundary in one process, passes returned artefact paths directly, and stops before the
-next validation boundary when a report fails:
+Run scripts directly from the repository root with `uv run`. The public persona workflow
+has two commands:
 
 ```bash
-uv run danish-personas workflow deterministic --target smoke
-uv run danish-personas workflow deterministic --target statistical \
-  --sample-rows 1000 \
-  --raw-parent data
+uv run src/scripts/generate_persona.py --help
+uv run src/scripts/build_dataset.py --help
 ```
 
-The default statistical workflow runs the configured smoke and statistical row counts,
-then freezes a 1,000-row sample. The sample and its adjacent manifest are written inside
-the exact content-addressed statistical run directory so its final stdout path can be
-passed directly to offline persona shard planning. Change that development sample size
-with `--sample-rows`. `--raw-parent` defaults to `data`; the workflow always restores
-and prepares `data/raw-hardened-20260919` (or the same fixed child below a custom
-parent). Configuration and run-root paths are also configurable. It is offline and makes
-no LLM calls. Source `resolve` and `fetch` need explicit `--network`, while persona
-shards are dry runs unless `--live` is supplied and pilots always require `--live`. See
-[`docs/cli.md`](docs/cli.md) for the command tree.
+`generate_persona.py` emits one validated Danish persona to stdout. `build_dataset.py`
+generates a requested number of personas, saves the merged Parquet dataset below
+`data/`, and displays row progress on stderr. Both require explicit `--live` approval.
+The dataset builder can optionally package, verify, and upload an approved release to a
+Hugging Face dataset pull request.
 
-The legacy script commands below remain supported and compatible.
+The remaining scripts restore and prepare the pinned Statistics Denmark sources,
+generate and freeze deterministic demographic inputs, and run validation gates. They
+are maintenance commands required for clean-clone reproducibility, not one-off data
+migrations. See [`docs/cli.md`](docs/cli.md) for the complete script list.
 
 ### Regenerate development data
 
@@ -283,11 +278,13 @@ persona preserves supplied demographic facts without requiring fixed clauses, pe
 benign consistent elaboration, and does not require any fixed count of interests or
 personality tendencies. Broad education remains source-backed and non-specific. The
 persona is not a visual description. See
-[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A repeated live command resumes only valid v4 per-record checkpoints and does not repeat
+[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
+repeated live command resumes only valid v4 per-record checkpoints and does not repeat
 completed calls. v1-v3 checkpoints and old pilots are historical and not resumable under
 v4. Each `generate_persona.py` invocation emits one validated persona, while
 `build_dataset.py` can span multiple five-row shards. The default HTTP-attempt budget is
 15 per shard.
+
 For a multi-shard pilot, use `build_dataset.py`. It requires `--live`, limits
 each shard to five rows, validates each shard, merges them, records token/cost
 accounting, and validates the merged pilot. A pilot can therefore contain more than five
@@ -322,7 +319,14 @@ uv run src/scripts/build_dataset.py \
 ```
 
 Only commands with `--live` need provider reachability, and live commands can consume
-paid requests.
+paid requests. By default, the completed Parquet path is the script's only stdout line.
+
+Passing `--hf-repo OWNER/DATASET` additionally requires the blinded-review attestation,
+enabled release policy, dataset card, licence, repository root, and release output
+directory options shown by `--help`. The script packages and independently verifies the
+release before uploading it to a Hugging Face dataset pull request. Authentication comes
+from the standard `HF_TOKEN` or cached Hugging Face credentials; tokens are never CLI
+arguments. Re-running after review resumes already validated generation shards.
 
 ## Outputs and data handling
 
