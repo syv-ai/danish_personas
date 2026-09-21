@@ -46,12 +46,16 @@ dansk. Eksempler:
 - Ved værdien `Rumænien`: `Han kommer fra Rumænien.`
 - Ved værdien `Danmark`: `Hun er fra Danmark.`
 
-Skriv aldrig om inputfelter, metadata, etiketter eller kategorier i personaen. Brug
-mindst to af de genererede interesser og mindst én af de genererede færdigheder
-ordret. Hvis `career_goals_and_ambitions` ikke er null, skal den formulering indgå
-ordret. Brug mindst én præcis formulering fra `allowed_personality_tendencies`
-ordret, så personligheden bliver tydelig uden at gøre OCEAN til en diagnose eller en
-sikker sandhed.
+Skriv aldrig om inputfelter, metadata, etiketter eller kategorier i personaen.
+Indarbejd mindst to af de genererede interesser og mindst én af de genererede
+færdigheder naturligt i teksten. Du må bøje, omskrive og sætte dem ind i en større
+sammenhæng, så sproget bliver grammatisk korrekt og flydende, når betydningen
+bevares. Hvis `career_goals_and_ambitions` ikke er null, skal ambitionen formidles
+naturligt, men den behøver ikke gengives ordret. Lad mindst én formulering fra
+`allowed_personality_tendencies` inspirere en tydelig, nuanceret beskrivelse af
+personligheden. Den må gerne omskrives, så længe betydningen bevares, og OCEAN ikke
+fremstilles som en diagnose eller en sikker sandhed. Prioritér altid naturligt dansk
+frem for ordret genbrug af de genererede formuleringer.
 
 Gør de syntetiske hverdagsdetaljer konkrete og indbyrdes konsistente:
 
