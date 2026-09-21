@@ -42,10 +42,9 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   enke/enkemand, men personaen kan stadig være `partnered` eller `not_partnered`.
 - Partnerkombinationer af samme køn, herunder male/male og female/female, er
   udtrykkeligt tilladt. Vælg `partner_gender` uden at foretrække kombinationer af
-  forskelligt køn. Ved `partnered` skal personaen i samme sætning nævne
-  `partner_first_name`, bruge et ord som partner, kæreste eller ægtefælle og skrive
-  mand eller kvinde i overensstemmelse med `partner_gender`. Skriv eller udled aldrig
-  en orienteringsbetegnelse.
+  forskelligt køn. Ved `partnered` skal personaen nævne `partner_first_name` sammen
+  med et ord som partner, kæreste eller ægtefælle. Lad forholdet fremgå naturligt
+  gennem partnerens fornavn uden at skrive eller udlede en orienteringsbetegnelse.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.

@@ -565,12 +565,6 @@ def _validate_relationship_prose(
             raise ValueError("Persona does not preserve the partner first name")
         if not any(_contains_term(text=text, term=term) for term in relationship_terms):
             raise ValueError("Persona does not preserve the partnered status")
-        gender_terms = {
-            "male": ("mand", "manden", "mandlig"),
-            "female": ("kvinde", "kvinden", "kvindelig", "kone", "hustru"),
-        }[attributes.partner_gender or "male"]
-        if not any(_contains_term(text=text, term=term) for term in gender_terms):
-            raise ValueError("Persona does not preserve the partner gender")
     elif not any(
         _contains_term(text=text, term=term)
         for term in ("single", "alene", "uden partner", "ikke i et forhold")
