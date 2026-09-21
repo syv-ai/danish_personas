@@ -93,41 +93,7 @@ def test_generate_persona_emits_only_validated_text(
         calls.update(kwargs)
         return run_dir
 
-    monkeypatch.setattr(generate_persona, "generate_personas", generate)
-    monkeypatch.setattr(
-        generate_persona,
-        "validate_persona_run",
-        lambda **_: SimpleNamespace(passed=True),
-    )
-
-    result = CliRunner().invoke(generate_persona.main, ["--offset", "0"])
-
-    assert result.exit_code == 0, result.output
-    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
-    assert calls["offset"] == 0
-
-
-def test_generate_persona_resolves_omitted_offset_with_helper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An omitted offset is resolved before invoking the generation pipeline."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
-        run_dir / "generated-personas.parquet"
-    )
-    calls: dict[str, object] = {}
-    helper_calls: dict[str, object] = {}
-
-    def resolve(**kwargs: object) -> int:
-        helper_calls.update(kwargs)
-        return 1
-
-    def generate(**kwargs: object) -> Path:
-        calls.update(kwargs)
-        return run_dir
-
-    monkeypatch.setattr(generate_persona, "_resolve_offset", resolve)
+    monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 1)
     monkeypatch.setattr(generate_persona, "generate_personas", generate)
     monkeypatch.setattr(
         generate_persona,
@@ -138,11 +104,11 @@ def test_generate_persona_resolves_omitted_offset_with_helper(
     result = CliRunner().invoke(generate_persona.main)
 
     assert result.exit_code == 0, result.output
+    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
-    assert helper_calls["offset"] is None
 
 
-def test_resolve_offset_samples_a_valid_frozen_row(
+def test_sample_offset_selects_a_valid_frozen_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The local sampler bounds its choice by the validated sample manifest."""
@@ -170,8 +136,8 @@ def test_resolve_offset_samples_a_valid_frozen_row(
     monkeypatch.setattr(generate_persona.secrets, "randbelow", randbelow)
 
     assert (
-        generate_persona._resolve_offset(
-            input_path=sample_path, sample_manifest_path=manifest_path, offset=None
+        generate_persona._sample_offset(
+            input_path=sample_path, sample_manifest_path=manifest_path
         )
         == 1
     )

@@ -4,5 +4,5 @@
 
 ### Fixed
 
-- Make `generate_persona.py` sample a frozen demographic when `--offset` is omitted;
-  pass `--offset N` to reproduce or resume a selection.
+- Make every `generate_persona.py` invocation sample a frozen demographic before
+  generating the persona.
