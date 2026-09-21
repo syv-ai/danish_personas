@@ -153,9 +153,7 @@ def descriptions_json(
     education_level = str(context["education_level"])
     education_labels = {
         "grundskole": "har gået i grundskolen",
-        "ungdomsuddannelse eller erhvervsuddannelse": (
-            "har en ungdomsuddannelse eller erhvervsuddannelse"
-        ),
+        "ungdomsuddannelse eller erhvervsuddannelse": "har en erhvervsuddannelse",
         "videregående uddannelse": "har en videregående uddannelse",
         "uddannelse ikke oplyst": "har en uddannelse, der ikke er oplyst",
     }

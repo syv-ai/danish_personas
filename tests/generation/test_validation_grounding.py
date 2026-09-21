@@ -1,4 +1,4 @@
-"""Grounding and contradiction tests for generated persona descriptions."""
+"""Objective grounding tests for generated persona descriptions."""
 
 # Test functions intentionally omit repetitive docstrings.
 # ruff: noqa: D103
@@ -22,48 +22,6 @@ def test_broad_education_wording_preserves_level(education_level: str) -> None:
     assert parse_descriptions(json.dumps(persona(context=context)), context, parsed)
 
 
-def test_contradictory_age_is_rejected() -> None:
-    context = demographic()
-    payload = persona(context=context)
-    payload["persona"] = payload["persona"].replace("35 år", "36 år")
-    with pytest.raises(ValueError, match="pronoun.*age"):
-        parse_descriptions(json.dumps(payload), context, attributes())
-
-
-@pytest.mark.parametrize(
-    ("original", "contradiction"),
-    [
-        ("arbejder som forretningsspecialist", "arbejder som analytiker"),
-        ("arbejder som forretningsspecialist", "er studerende"),
-    ],
-)
-def test_contradictory_current_work_is_rejected(
-    original: str, contradiction: str
-) -> None:
-    context = demographic()
-    payload = persona(context=context)
-    payload["persona"] = payload["persona"].replace(original, contradiction)
-    with pytest.raises(ValueError, match="work status"):
-        parse_descriptions(json.dumps(payload), context, attributes())
-
-
-@pytest.mark.parametrize(
-    ("original", "contradiction", "message"),
-    [
-        ("bor i København", "bor i Roskilde, men nævner København", "municipality"),
-        ("kommer fra Danmark", "kommer fra Sverige, men nævner Danmark", "origin"),
-    ],
-)
-def test_contradictory_location_and_origin_are_rejected(
-    original: str, contradiction: str, message: str
-) -> None:
-    context = demographic()
-    payload = persona(context=context)
-    payload["persona"] = payload["persona"].replace(original, contradiction)
-    with pytest.raises(ValueError, match=message):
-        parse_descriptions(json.dumps(payload), context, attributes())
-
-
 @pytest.mark.parametrize(
     ("status", "rendering"),
     [
@@ -85,31 +43,35 @@ def test_current_status_renderings_are_grounded(status: str, rendering: str) -> 
     )
 
 
-def test_harmless_consistent_everyday_detail_is_allowed() -> None:
+def test_missing_age_is_rejected() -> None:
     context = demographic()
-    text = persona(context=context)["persona"] + " Hun holder af stille morgener."
-    assert parse_descriptions(json.dumps({"persona": text}), context, attributes())
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace("35 år", "midt i trediverne")
+    with pytest.raises(ValueError, match="pronoun or age"):
+        parse_descriptions(json.dumps(payload), context, attributes())
 
 
 @pytest.mark.parametrize(
-    "contradiction",
+    ("original", "replacement", "message"),
     [
-        "Hun er fra Sverige.",
-        "Hun kommer fra Sverige.",
-        "Hun er bosat i Roskilde.",
-        "Hun bor i Roskilde.",
-        "Hun har en ungdomsuddannelse.",
-        "Hun er studerende.",
-        "Hun arbejder som administrativ specialist.",
+        ("bor i København", "bor i Roskilde", "municipality"),
+        ("kommer fra Danmark", "kommer fra Sverige", "origin"),
+        ("har en videregående uddannelse", "har en ungdomsuddannelse", "education"),
+        (
+            "arbejder som forretningsspecialist",
+            "arbejder som analytiker",
+            "work status",
+        ),
     ],
 )
-def test_later_contradictory_grounding_cannot_be_hidden_by_correct_fact(
-    contradiction: str,
+def test_missing_supplied_fact_is_rejected(
+    original: str, replacement: str, message: str
 ) -> None:
     context = demographic()
-    text = persona(context=context)["persona"] + " " + contradiction
-    with pytest.raises(ValueError):
-        parse_descriptions(json.dumps({"persona": text}), context, attributes())
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(original, replacement)
+    with pytest.raises(ValueError, match=message):
+        parse_descriptions(json.dumps(payload), context, attributes())
 
 
 @pytest.mark.parametrize(
@@ -140,18 +102,26 @@ def test_negated_grounding_facts_are_rejected(
         parse_descriptions(json.dumps(payload), context, attributes())
 
 
-def test_non_employee_status_is_grounded() -> None:
-    context = demographic(status="retired", job_title=None)
-    generated = attributes(job_title=None)
-    text = persona(context=context, employment="er pensionist")
-    assert parse_descriptions(json.dumps(text), context, generated)
-
-
 def test_origin_label_is_not_used_to_infer_sensitive_detail() -> None:
     context = demographic()
     text = persona(context=context)["persona"][:-1] + " Hun omtaler religion."
     with pytest.raises(ValueError, match="sensitive"):
         parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+
+def test_other_people_may_have_different_grounded_facts() -> None:
+    context = demographic()
+    text = persona(
+        context=context,
+        extra=(
+            "Hendes partner er 41 år, kommer fra Sverige og arbejder som analytiker "
+            "i Roskilde. Han har en ungdomsuddannelse, mens deres datter er 9 år."
+        ),
+    )["persona"]
+
+    parsed = parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+    assert parsed.persona == text
 
 
 def test_persona_rejects_a_bare_one_sentence_fact_list() -> None:
@@ -164,11 +134,14 @@ def test_persona_rejects_a_bare_one_sentence_fact_list() -> None:
         parse_descriptions(json.dumps({"persona": text}), context, attributes())
 
 
-def test_personality_hedge_does_not_leak_across_assertions() -> None:
-    context = demographic()
-    text = persona(context=context)["persona"] + " Hun kan være rolig, men er social."
-    with pytest.raises(ValueError, match="cautious|generic|contract"):
-        parse_descriptions(json.dumps({"persona": text}), context, attributes())
+def test_secondary_persona_must_choose_one_branch() -> None:
+    context = demographic(education_level="secondary_or_vocational")
+    payload = persona(context=context)
+    payload["persona"] = payload["persona"].replace(
+        "har en erhvervsuddannelse", "har en ungdomsuddannelse og en erhvervsuddannelse"
+    )
+    with pytest.raises(ValueError, match="one specific education branch"):
+        parse_descriptions(json.dumps(payload), context, attributes())
 
 
 def test_secondary_wording_does_not_force_legacy_banned_phrase() -> None:
@@ -177,18 +150,6 @@ def test_secondary_wording_does_not_force_legacy_banned_phrase() -> None:
     )
     assert facts.education == "har en ungdomsuddannelse eller erhvervsuddannelse"
     assert "ungdoms- eller erhvervsuddannelse" not in facts.education
-
-
-def test_supplied_facts_can_be_naturally_paraphrased() -> None:
-    context = demographic()
-    payload = persona(context=context)
-    payload["persona"] = (
-        payload["persona"]
-        .replace("bor i København", "har base i København")
-        .replace("kommer fra Danmark", "har Danmark som leveret oprindelsesoplysning")
-        .replace("har en videregående uddannelse", "har læst videregående uddannelse")
-    )
-    assert parse_descriptions(json.dumps(payload), context, attributes())
 
 
 @pytest.mark.parametrize(

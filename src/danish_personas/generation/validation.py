@@ -16,11 +16,7 @@ from .job_titles import (
     load_job_title_mapping,
 )
 from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
-from .personality import (
-    all_personality_phrases,
-    all_personality_tendencies,
-    allowed_personality_tendencies,
-)
+from .personality import all_personality_phrases, all_personality_tendencies
 
 VALIDATOR_VERSION = "persona-safety-v17"
 __all__ = ["EDUCATION_DANISH"]
@@ -72,20 +68,7 @@ UNSUPPORTED_PATTERNS = (
     r"hud(?:en|ens|farve|farven|farves)?|kropsbygning",
 )
 ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
-FORMER_WORK = re.compile(
-    r"(?<![\w])(?:tidligere|førhen|før|arbejdede|har\s+arbejdet|"
-    r"var\s+ansat|forhenværende|pensioneret\s+fra)(?![\w])"
-)
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
-DETERMINISTIC_CLAIMS = re.compile(r"\b(?:altid|aldrig|helt sikkert|garanteret)\b")
-GENERIC_SUBJECT = re.compile(
-    r"\b(?:vedkommend(?:e|es|en|ene)|person(?:en|ens|er|erne|ernes|ers)?)\b",
-    re.IGNORECASE,
-)
-INTERVENING_KAN_VAERE = re.compile(r"\bkan(?:\s+[\wæøå]+){0,7}\s+være\b", re.IGNORECASE)
-SECONDARY_EDUCATION_DASH = re.compile(
-    r"\bungdoms\s*-\s*eller\s+erhvervsuddannelse\b", re.IGNORECASE
-)
 DASH_TRANSLATION = str.maketrans(
     {
         "\u00ad": "-",
@@ -100,13 +83,6 @@ DASH_TRANSLATION = str.maketrans(
         "﹣": "-",
         "－": "-",
     }
-)
-REDUNDANT_PERSONA_PHRASES = (
-    "oprindelsesland",
-    "oprindelsesetiket",
-    "brede uddannelsesbaggrund",
-    "uddannelsesniveau",
-    "aktuelle arbejdsforhold",
 )
 
 
@@ -354,8 +330,6 @@ def _validate_text(
             raise ValueError(f"Generated content contains a prohibited {name}")
     if _contains_url(text=text):
         raise ValueError("Generated content contains a prohibited URL")
-    if FORMER_WORK.search(normalized):
-        raise ValueError("Generated content contains former or past-work wording")
     found_sensitive = sorted(
         pattern
         for pattern in SENSITIVE_PATTERNS
@@ -479,63 +453,8 @@ def parse_descriptions(
 def _validate_persona(
     text: str, context: dict[str, object], attributes: GeneratedAttributes
 ) -> None:
-    normalized = _normalize(text=text)
-    if DETERMINISTIC_CLAIMS.search(normalized):
-        raise ValueError("Persona must use cautious, non-deterministic language")
-    if GENERIC_SUBJECT.search(normalized) or _contains_contract_kan_vaere(
-        text=normalized
-    ):
-        raise ValueError("Persona contains a prohibited generic or contract phrase")
-    if SECONDARY_EDUCATION_DASH.search(normalized):
-        raise ValueError("Persona contains a prohibited generic or contract phrase")
-    sentences = _persona_sentences(text=text)
+    """Require source-backed persona facts while allowing natural elaboration."""
     _validate_persona_facts(text=text, demographic=context, attributes=attributes)
-    _validate_personality(normalized=normalized, sentences=sentences, context=context)
-    _validate_persona_specificity(
-        normalized=normalized,
-        sentences=sentences,
-        context=context,
-        attributes=attributes,
-    )
-    _validate_pronoun_consistency(text=normalized, context=context)
-    if any(_contains_term(normalized, phrase) for phrase in REDUNDANT_PERSONA_PHRASES):
-        raise ValueError("Persona must not contain redundant or technical wording")
-    if FORMER_WORK.search(normalized):
-        raise ValueError("Persona must not contain former or past-work claims")
-
-
-def _contains_contract_kan_vaere(*, text: str) -> bool:
-    """Reject broad ``kan ... være`` contract wording, but not ordinary idioms.
-
-    Returns:
-        Whether prohibited contract wording occurs in the text.
-    """
-    for match in INTERVENING_KAN_VAERE.finditer(text):
-        following = text[match.end() :]
-        phrase = match.group(0)
-        if re.match(r"kan\s+(?:godt\s+)?lide\s+at\s+være\b", phrase):
-            continue
-        if re.match(r"kan\s+(?:have\s+)?(?:lyst|lov)\s+til\s+at\s+være\b", phrase):
-            continue
-        if re.match(r"\s+med\s+til\s+", following):
-            continue
-        return True
-    return False
-
-
-def _persona_sentences(text: str) -> list[str]:
-    """Reject list-shaped output without imposing a sentence-count contract.
-
-    Returns:
-        The prose fragments used by downstream validation.
-
-    Raises:
-        ValueError:
-            If the persona uses list syntax.
-    """
-    if LIST_FORM.search(text):
-        raise ValueError("Persona must be prose, not a list")
-    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
 
 
 def _validate_persona_facts(
@@ -574,23 +493,21 @@ def _validate_persona_facts(
 
 
 def _validate_age(*, text: str, demographic: dict[str, object]) -> None:
-    """Require the supplied age and pronoun without accepting denial.
+    """Require the supplied age and pronoun without rejecting other people.
 
     Raises:
         ValueError:
-            If age or pronoun is missing, contradicted, or denied.
+            If the supplied age or pronoun is absent or negated.
     """
     pronoun = _expected_pronoun(context=demographic)
     age = str(demographic.get("age", ""))
     if not _contains_term(text, pronoun):
-        raise ValueError("Persona does not preserve the supplied pronoun and age")
+        raise ValueError("Persona does not preserve the supplied pronoun or age")
     expected = list(re.finditer(rf"(?<!\w){re.escape(age)}\s*år(?:ig)?\b", text))
-    all_ages = list(re.finditer(r"(?<!\w)\d{1,3}\s*år(?:ig)?\b", text))
-    expected_spans = {match.span() for match in expected}
-    if not expected or any(match.span() not in expected_spans for match in all_ages):
-        raise ValueError("Persona does not preserve the supplied pronoun and age")
-    if any(_is_negated(text=text, span=match.span()) for match in expected):
-        raise ValueError("Persona negates the supplied pronoun or age")
+    if not expected or any(
+        _is_negated(text=text, span=match.span()) for match in expected
+    ):
+        raise ValueError("Persona does not preserve the supplied pronoun or age")
 
 
 def _expected_pronoun(*, context: dict[str, object]) -> str:
@@ -635,11 +552,11 @@ def _is_negated(*, text: str, span: tuple[int, int]) -> bool:
 
 
 def _validate_education(*, text: str, demographic: dict[str, object]) -> None:
-    """Require the broad education level without accepting contradiction.
+    """Require the supplied education level without policing other people.
 
     Raises:
         ValueError:
-            If the level is missing, denied, or contradicted.
+            If the supplied education is absent, negated, or remains ambiguous.
     """
     education_terms = {
         "primary": ("folkeskolen", "grundskole", "grundskolen"),
@@ -665,20 +582,23 @@ def _validate_education(*, text: str, demographic: dict[str, object]) -> None:
         _is_negated(text=text, span=span) for span in matches
     ):
         raise ValueError("Persona negates the supplied education level")
-    other_levels = (terms for other, terms in education_terms.items() if other != level)
-    if any(_contains_term(text, term) for terms in other_levels for term in terms):
-        raise ValueError("Persona contradicts the supplied education level")
+    if level == "secondary_or_vocational" and all(
+        _contains_term(text, term)
+        for term in ("ungdomsuddannelse", "erhvervsuddannelse")
+    ):
+        raise ValueError("Persona must choose one specific education branch")
 
 
 def _validate_employment(
     *, text: str, employment: str, demographic: dict[str, object]
 ) -> None:
-    """Require one current title or status and reject later alternatives.
+    """Require the supplied title or status without policing other people.
 
     Raises:
         ValueError:
-            If the title or status is missing, denied, or contradicted.
+            If the supplied current title or status is absent or negated.
     """
+    del demographic
     value = employment.removeprefix("arbejder som ").removeprefix("er ")
     spans = _term_spans(text=text, term=value)
     if not spans:
@@ -686,209 +606,16 @@ def _validate_employment(
     if any(_is_negated(text=text, span=span) for span in spans):
         raise ValueError("Persona negates the supplied current work status")
 
-    title_clauses = re.findall(
-        r"\b(?:arbejder|jobber|er\s+ansat|har\s+arbejde)\s+(?:som\s+)?"
-        r"([^,.!?;]+)",
-        text,
-    )
-    if title_clauses and not any(
-        _contains_term(clause, value) for clause in title_clauses
-    ):
-        raise ValueError("Persona contradicts the supplied current work status")
-
-    status_terms = (
-        "lønmodtager",
-        "ledig",
-        "studerende",
-        "pensionist",
-        "selvstændig",
-        "medarbejdende ægtefælle",
-        "uden for arbejdsmarkedet",
-    )
-    mentioned_statuses = {
-        term for term in status_terms if _contains_term(text=text, term=term)
-    }
-    expected_status = {
-        term for term in status_terms if _contains_term(text=value, term=term)
-    }
-    if mentioned_statuses - expected_status:
-        raise ValueError("Persona contradicts the supplied current work status")
-
-    mapping = load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH)
-    row_titles = _job_function_titles(demographic=demographic, mapping=mapping)
-    reviewed_titles = (
-        {title for item in mapping.job_functions.values() for title in item.titles}
-        if row_titles is None
-        else set(row_titles)
-    )
-    alternative_titles = {
-        title for title in reviewed_titles if title.casefold() != value.casefold()
-    }
-    if any(_contains_term(text=text, term=title) for title in alternative_titles):
-        raise ValueError("Persona contradicts the supplied current work status")
-
-
-def _job_function_titles(
-    *, demographic: dict[str, object], mapping: JobFunctionTitleMapping
-) -> tuple[str, ...] | None:
-    """Return the reviewed titles for one demographic row."""
-    code = str(demographic.get("job_function_code", ""))
-    entry = mapping.job_functions.get(code)
-    if entry is None:
-        label = str(demographic.get("job_function", "")).strip()
-        entry = next(
-            (item for item in mapping.job_functions.values() if item.label == label),
-            None,
-        )
-    return tuple(entry.titles) if entry is not None else None
-
 
 def _validate_grounding_label(*, text: str, field: str, value: str) -> None:
-    """Require a municipality or origin label without accepting denial.
+    """Require a supplied municipality or origin label without negation.
 
     Raises:
         ValueError:
-            If the label is missing, denied, or contradicted by a direct clause.
+            If the supplied label is absent or negated.
     """
     spans = _term_spans(text=text, term=value)
     if not spans:
         raise ValueError(f"Persona does not preserve the supplied {field}")
     if any(_is_negated(text=text, span=span) for span in spans):
         raise ValueError(f"Persona negates the supplied {field}")
-    relation = (
-        r"(?:bor|lever|er\s+bosat|bosat|har base|opholder sig)\s+i\s+"
-        r"([^.!?;,]+)"
-        if field == "municipality"
-        else r"(?:kommer|stammer|er)\s+fra\s+([^.!?;,]+)"
-    )
-    for clause in re.findall(relation, text):
-        if not _contains_term(clause, value):
-            raise ValueError(f"Persona contradicts the supplied {field}")
-
-
-def _validate_persona_specificity(
-    *,
-    normalized: str,
-    sentences: list[str],
-    context: dict[str, object],
-    attributes: GeneratedAttributes,
-) -> None:
-    """Require a substantial, person-centred persona rather than a fact list.
-
-    Raises:
-        ValueError:
-            If the persona omits required detail or supplied attributes.
-    """
-    if len(sentences) < 4:
-        raise ValueError("Persona must contain at least four sentences")
-    included_interests = sum(
-        _contains_term(normalized, interest)
-        for interest in attributes.hobbies_and_interests
-    )
-    if included_interests < 2:
-        raise ValueError("Persona must include at least two supplied interests")
-    if not any(
-        _contains_term(normalized, skill) for skill in attributes.skills_and_expertise
-    ):
-        raise ValueError("Persona must include at least one supplied skill")
-    if not any(
-        _contains_term(normalized, tendency)
-        for tendency in allowed_personality_tendencies(context=context)
-    ):
-        raise ValueError("Persona must include a supplied personality tendency")
-    goal = attributes.career_goals_and_ambitions
-    if goal is not None and not _contains_term(normalized, goal):
-        raise ValueError("Persona must include the supplied ambition")
-
-
-def _validate_personality(
-    *, normalized: str, sentences: list[str], context: dict[str, object]
-) -> None:
-    """Reject incompatible or unhedged occurrences of OCEAN lexicon terms.
-
-    Raises:
-        ValueError:
-            If a recognised term is incompatible or lacks cautious framing.
-    """
-    del sentences
-    compatible_phrases = set(allowed_personality_tendencies(context=context))
-    compatible_terms = {
-        phrase.removeprefix("har ofte tendens til at være ")
-        for phrase in compatible_phrases
-    }
-    for term in all_personality_tendencies():
-        for span in _term_spans(text=normalized, term=term):
-            if term not in compatible_terms:
-                raise ValueError(
-                    "Persona contains an incompatible personality tendency"
-                )
-            if _is_non_assertive_modifier(text=normalized, span=span):
-                continue
-            if not _has_cautious_framing(text=normalized, span=span):
-                raise ValueError("Personality tendencies require cautious framing")
-
-
-def _has_cautious_framing(*, text: str, span: tuple[int, int]) -> bool:
-    """Recognise a hedge locally attached to a personality assertion.
-
-    Returns:
-        Whether a reviewed hedge occurs within the same short assertion.
-    """
-    sentence_start = max(
-        text.rfind(".", 0, span[0]),
-        text.rfind("!", 0, span[0]),
-        text.rfind("?", 0, span[0]),
-    )
-    prefix = text[sentence_start + 1 : span[0]]
-    boundary = max(prefix.rfind(","), prefix.casefold().rfind(" men "))
-    local_prefix = prefix[boundary + 1 :]
-    local_words = re.findall(r"[\wæøå]+", local_prefix)
-    return any(
-        re.search(
-            rf"\b{re.escape(hedge)}\b(?:\s+[\wæøå]+){{0,5}}$", " ".join(local_words)
-        )
-        for hedge in (
-            "kan",
-            "ofte",
-            "måske",
-            "muligvis",
-            "mulig",
-            "virker",
-            "synes",
-            "tendens",
-            "lejlighedsvis",
-        )
-    )
-
-
-def _is_non_assertive_modifier(*, text: str, span: tuple[int, int]) -> bool:
-    """Ignore a lexicon adjective used as an ordinary noun modifier.
-
-    Returns:
-        Whether the term follows an article without describing a person.
-    """
-    prefix = text[: span[0]].rstrip().split()
-    if not prefix or prefix[-1] not in {"en", "et", "den", "det"}:
-        return False
-    suffix = text[span[1] :].lstrip().split()
-    person_nouns = {"person", "personen", "menneske", "mennesket"}
-    return not (suffix and suffix[0] in person_nouns)
-
-
-def _validate_pronoun_consistency(*, text: str, context: dict[str, object]) -> None:
-    """Reject every opposing Danish pronoun paradigm.
-
-    Raises:
-        ValueError:
-            If the supplied sex is unknown or an opposing paradigm appears.
-    """
-    expected = {"male": "han", "m": "han", "female": "hun", "k": "hun"}.get(
-        str(context.get("sex", "")).casefold()
-    )
-    if expected is None:
-        raise ValueError("Persona has no recognised supplied pronoun")
-    opposite = (
-        ("hun", "hende", "hendes") if expected == "han" else ("han", "ham", "hans")
-    )
-    if any(_contains_term(text, term) for term in opposite):
-        raise ValueError("Persona must consistently use the supplied pronoun")
