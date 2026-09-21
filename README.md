@@ -268,12 +268,14 @@ validated sample present under `data/runs/statistical`, run:
 uv run src/scripts/generate_persona.py
 ```
 
-Use `--input` and `--sample-manifest` to select another current frozen sample. Each
-record uses one model request returning both structured attributes and a detailed Danish
-`persona`. Only approved human-readable fields reach the provider. Source codes,
-resolution fields, the English origin label, and origin-contract metadata remain
-withheld. A repeated command resumes valid checkpoints without repeating completed
-requests.
+Use `--input` and `--sample-manifest` to select another current frozen sample. When
+`--offset` is omitted, the command samples one demographic locally and logs the selected
+offset on stderr. Pass `--offset N` to reproduce that selection or resume its valid
+checkpoint. Each record uses one model request returning both structured attributes and
+a detailed Danish `persona`. Only approved human-readable fields reach the provider.
+Source codes, resolution fields, the English origin label, and origin-contract metadata
+remain withheld. A repeated command with the same offset resumes valid checkpoints
+without repeating completed requests.
 
 For a larger dataset, enter the provider's current list prices. Use zero only when the
 configured endpoint is genuinely free:

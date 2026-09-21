@@ -254,7 +254,15 @@ def test_pipeline_selects_an_offset_range(
     )
     MockGenerationClient.requests = 0
     MockGenerationClient.payloads = []
-    run_dir = generate_personas(
+    first_run = generate_personas(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=tmp_path / "outputs",
+        rows=1,
+        offset=0,
+    )
+    second_run = generate_personas(
         input_path=paths["sample"],
         sample_manifest_path=paths["sample_manifest"],
         config_path=paths["config"],
@@ -262,13 +270,16 @@ def test_pipeline_selects_an_offset_range(
         rows=1,
         offset=1,
     )
-    demographics = MockGenerationClient.payloads[0]["demographics_and_personality"]
+    assert first_run != second_run
+    first_output = pl.read_parquet(first_run / "generated-personas.parquet")
+    second_output = pl.read_parquet(second_run / "generated-personas.parquet")
+    assert first_output.get_column("persona_id").to_list() == ["persona-1"]
+    assert second_output.get_column("persona_id").to_list() == ["persona-2"]
+    demographics = MockGenerationClient.payloads[1]["demographics_and_personality"]
     assert isinstance(demographics, dict)
     assert demographics["origin_country_da"] == "Libanon"
     assert "origin_country" not in demographics
-    output = pl.read_parquet(run_dir / "generated-personas.parquet")
-    assert output.get_column("persona_id").to_list() == ["persona-2"]
-    assert validate_persona_run(run_dir=run_dir).passed
+    assert validate_persona_run(run_dir=second_run).passed
 
 
 def test_provider_qualified_model_alias_matches_case_insensitively() -> None:

@@ -7,8 +7,11 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
+from danish_personas.io import sha256_file, write_json
+from danish_personas.models import FROZEN_SAMPLE_SCHEMA_VERSION, FrozenSampleManifest
 from danish_personas.release import upload as upload_service
 from scripts import build_dataset, generate_persona
+from tests.generation.manifest_helpers import origin_contract_fields
 
 
 def test_build_dataset_prints_merged_path(
@@ -84,7 +87,48 @@ def test_generate_persona_emits_only_validated_text(
     pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
         run_dir / "generated-personas.parquet"
     )
-    monkeypatch.setattr(generate_persona, "generate_personas", lambda **_: run_dir)
+    calls: dict[str, object] = {}
+
+    def generate(**kwargs: object) -> Path:
+        calls.update(kwargs)
+        return run_dir
+
+    monkeypatch.setattr(generate_persona, "generate_personas", generate)
+    monkeypatch.setattr(
+        generate_persona,
+        "validate_persona_run",
+        lambda **_: SimpleNamespace(passed=True),
+    )
+
+    result = CliRunner().invoke(generate_persona.main, ["--offset", "0"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
+    assert calls["offset"] == 0
+
+
+def test_generate_persona_resolves_omitted_offset_with_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An omitted offset is resolved before invoking the generation pipeline."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
+        run_dir / "generated-personas.parquet"
+    )
+    calls: dict[str, object] = {}
+    helper_calls: dict[str, object] = {}
+
+    def resolve(**kwargs: object) -> int:
+        helper_calls.update(kwargs)
+        return 1
+
+    def generate(**kwargs: object) -> Path:
+        calls.update(kwargs)
+        return run_dir
+
+    monkeypatch.setattr(generate_persona, "_resolve_offset", resolve)
+    monkeypatch.setattr(generate_persona, "generate_personas", generate)
     monkeypatch.setattr(
         generate_persona,
         "validate_persona_run",
@@ -94,7 +138,44 @@ def test_generate_persona_emits_only_validated_text(
     result = CliRunner().invoke(generate_persona.main)
 
     assert result.exit_code == 0, result.output
-    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
+    assert calls["offset"] == 1
+    assert helper_calls["offset"] is None
+
+
+def test_resolve_offset_samples_a_valid_frozen_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The local sampler bounds its choice by the validated sample manifest."""
+    sample_path = tmp_path / "text-development-seeds.parquet"
+    pl.DataFrame({"persona_id": ["persona-1", "persona-2"]}).write_parquet(sample_path)
+    manifest = FrozenSampleManifest(
+        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
+        source_run_id="upstream-run",
+        rows=2,
+        strata=[],
+        method="test",
+        data_file=sample_path.name,
+        sha256=sha256_file(sample_path),
+        llm_calls=0,
+        **origin_contract_fields(),
+    )
+    manifest_path = tmp_path / "text-development-seeds.manifest.json"
+    write_json(path=manifest_path, payload=manifest)
+    bounds: list[int] = []
+
+    def randbelow(bound: int) -> int:
+        bounds.append(bound)
+        return bound - 1
+
+    monkeypatch.setattr(generate_persona.secrets, "randbelow", randbelow)
+
+    assert (
+        generate_persona._resolve_offset(
+            input_path=sample_path, sample_manifest_path=manifest_path, offset=None
+        )
+        == 1
+    )
+    assert bounds == [2]
 
 
 def test_upload_release_delegates_without_accepting_a_token(
