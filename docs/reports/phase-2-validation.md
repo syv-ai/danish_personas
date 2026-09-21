@@ -3,13 +3,16 @@
 This report records the previous schema-5 regeneration only. Its bundle and run IDs are
 historical evidence and are non-resumable under the current contracts. The current
 architecture requires prepared-bundle schema 6, sampler schema 6, frozen-sample schema
-3, generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
-schema 2. Regenerate before recording current canonical IDs; use placeholders until
-then.
+3, generation contract 4, validator `persona-safety-v16`, and release manifest/evidence
+schema 2. The active generation output is one grounded `persona` field, not the
+historical specialised texts. Regenerate before recording current canonical IDs; use
+placeholders until then.
 
 The historical deterministic sampler schema is version 5 and the prepared-bundle schema
 is version 5. Both municipality-native runs were regenerated offline from the 20260919
-archive with seed `20260914`, with no LLM calls and no threshold changes.
+archive with seed `20260914`, with no LLM calls and no threshold changes. The results
+below remain historical; current deterministic runs use sampler schema 6 and prepared-
+bundle schema 6.
 
 ## Regeneration commands
 
