@@ -80,7 +80,7 @@ class GeneratedAttributes(StrictModel):
 class GenerationConfig(StrictModel):
     """Guarded OpenAI-compatible generation configuration."""
 
-    version: t.Literal[3]
+    version: t.Literal[4]
     llm_generation_enabled: bool
     base_url: str | None
     model: str | None
@@ -264,13 +264,8 @@ class AttributeCheckpoint(StrictModel):
 
 
 class PersonaDescriptions(StrictModel):
-    """Second-stage generated Danish persona descriptions."""
+    """Second-stage generated Danish persona text."""
 
-    professional_persona: str = Field(min_length=40, max_length=1_200)
-    sports_persona: str = Field(min_length=40, max_length=1_200)
-    arts_persona: str = Field(min_length=40, max_length=1_200)
-    travel_persona: str = Field(min_length=40, max_length=1_200)
-    culinary_persona: str = Field(min_length=40, max_length=1_200)
     persona: str = Field(min_length=60, max_length=600)
 
 

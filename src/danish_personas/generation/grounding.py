@@ -1,4 +1,4 @@
-"""Canonical literal facts required in generated persona summaries."""
+"""Canonical demographic facts for generated persona summaries."""
 
 import collections.abc as c
 
@@ -15,7 +15,7 @@ EDUCATION_DANISH = {
 }
 EDUCATION_CLAUSES = {
     "primary": "har ingen uddannelse efter folkeskolen",
-    "secondary_or_vocational": "har en ungdoms- eller erhvervsuddannelse",
+    "secondary_or_vocational": "har en ungdomsuddannelse eller erhvervsuddannelse",
     "higher_education": "har en videregående uddannelse",
     "not_stated": "uddannelsen er ikke oplyst",
 }
@@ -51,7 +51,7 @@ DETAILED_STATUS_DANISH = {
 
 
 class PersonaGroundingFacts(StrictModel):
-    """Exact natural clauses that the short persona must reproduce literally."""
+    """Broad demographic grounding values supplied to the writing stage."""
 
     pronoun_age: str = Field(min_length=3)
     municipality: str = Field(min_length=1)

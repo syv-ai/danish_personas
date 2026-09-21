@@ -94,7 +94,7 @@ client when testing LLM paths.
 | `config/generation.local.yaml`       | Ignored local LLM override and provider settings.         |
 | `config/prompts/attributes-da.md`    | Danish attributes schema and safety rules.                |
 | `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
-| `config/prompts/personas-da.md`      | Danish six-description v3 schema and safety rules.        |
+| `config/prompts/personas-da.md`      | Danish v4 persona writing brief and safety rules.         |
 
 `config/sources.yaml` and `config/sources.lock.yaml` carry a top-level
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that
@@ -221,15 +221,16 @@ remain in generated records; landsdel stays inside the prepared bundle. Determin
 runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
 contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
-per-person attribute/final checkpoints, and `validation-report.json`. Current v3 outputs
-retain five specialised texts plus one short grounded persona; they do not contain
-`visual_persona`. Pilots additionally contain merged output, a pilot manifest, shard
-references, and `pilot-validation-report.json`. Release packages use release manifest
+per-person attribute/final checkpoints, and `validation-report.json`. Current v4 outputs
+retain only one short grounded `persona`
+and do not contain the removed specialised fields or `visual_persona`. Pilots
+additionally contain merged output, a pilot manifest, shard references, and
+`pilot-validation-report.json`. Release packages use release manifest
 schema 2 and evidence schema 2.
 
-Manifests bind outputs to input/config/prompt/schema/validator checksums, row order, and
-request accounting. The current versions are prepared bundle 6, sampler 6, frozen sample
-3, generation 3, validator `persona-safety-v15`, and release manifest/evidence 2.
+Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
+and request accounting. The current versions are prepared bundle 6, sampler 6, frozen
+sample 3, generation 4, validator `persona-safety-v16`, and release manifest/evidence 2.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the

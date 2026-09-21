@@ -23,7 +23,7 @@ The current municipality-native Phase 2 workflow uses prepared bundle
 sampler schema 6 and passed validation offline. The adjacent 1,000-row development
 sample uses frozen-sample schema 3 and SHA-256
 `354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
-Generation contract 3, validator `persona-safety-v15`, and release manifest/evidence
+Generation contract 4, validator `persona-safety-v16`, and release manifest/evidence
 schema 2 are current. Earlier schema-5 IDs remain historical evidence and are not
 resumable under these contracts:
 
@@ -294,24 +294,19 @@ test -n "$PERSONA_RUN" || exit 1
 uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
 ```
 
-Each record uses two model stages: structured attributes, then six Danish texts: five
-specialised descriptions (`professional_persona`, `sports_persona`, `arts_persona`,
-`travel_persona`, and `culinary_persona`) plus one short, grounded `persona`. Contract
-v3 passes only the official Danish `origin_country_da` label to both stages and uses
-that same label for exact persona grounding. The code, English `origin_country`,
-resolution fields, and origin-contract metadata never enter provider payloads. The v3
-persona uses exact natural Danish clauses for pronoun and age, municipality, origin,
-broad education, and an allowlisted synthetic job title (or canonical current status).
-It embeds two or three lowercase interests in running prose and adds cautious OCEAN
-tendencies. The pooled secondary/vocational clause is temporary and source-backed,
-pending a separate Statistics Denmark detailed-education source. The persona is not a
-visual description; `visual_persona` is removed. See
+Each record uses two model stages: structured attributes, then one short Danish
+`persona`. Contract v4 passes only the official Danish `origin_country_da` label to
+both stages and uses it for persona grounding. The code, English `origin_country`,
+resolution fields, and origin-contract metadata never enter provider payloads. The
+persona preserves supplied demographic facts without requiring fixed clauses, permits
+benign consistent elaboration, and does not require any fixed count of interests or
+personality tendencies. Broad education remains source-backed and non-specific. The
+persona is not a visual description. See
 [`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
-repeated live command resumes only valid v3 per-record checkpoints and does not repeat
-completed calls. v1/v2 checkpoints, the previous v2/v13 ten-person smoke, and old pilots
-are historical and not resumable under v3. Each `generate_personas.py` invocation is one
-shard capped at five rows, while a pilot can span multiple such shards. The default
-HTTP-attempt budget is 15 per shard.
+repeated live command resumes only valid v4 per-record checkpoints and does not repeat
+completed calls. v1-v3 checkpoints and old pilots are historical and not resumable under
+v4. Each `generate_personas.py` invocation is one shard capped at five rows, while a
+pilot can span multiple such shards. The default HTTP-attempt budget is 15 per shard.
 
 For a multi-shard pilot, use `generate_persona_pilot.py`. It requires `--live`, limits
 each shard to five rows, validates each shard, merges them, records token/cost
@@ -374,10 +369,10 @@ are:
   and pilot validation report.
 
 Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts, seeds,
-model metadata, request/retry/token accounting, and (when available) cost estimates. The
-current release documentation targets release manifest schema 2 and evidence schema 2;
-release identifiers and checksums are placeholders until regeneration and packaging
-produce them. Accepted LLM response metadata and response hashes are checkpointed;
+model metadata, request/retry/token accounting, and (when available) cost estimates.
+The current release documentation targets release manifest schema 2 and evidence
+schema 2; release identifiers and checksums are placeholders until regeneration and
+packaging produce them. Accepted LLM response metadata and response hashes are checkpointed;
 rejected completion text is not stored. Generated outputs remain local until privacy and
 human review approve any proposed release.
 
@@ -445,6 +440,6 @@ required.
 - [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md): design and deferred
   delivery phases;
 - [`docs/persona-prompt-format.md`](docs/persona-prompt-format.md): generation contract
-  v3, Danish origin-label contract, six persona texts, and provider boundary;
+  v4, Danish origin-label contract, one persona text, and provider boundary;
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): project contribution process;
 - [`LICENSE`](LICENSE): project licence.

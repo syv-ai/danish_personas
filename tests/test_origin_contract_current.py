@@ -122,7 +122,7 @@ def test_english_label_drift_is_not_just_a_nonblank_value() -> None:
 def test_generation_config_rejects_custom_contract_path() -> None:
     """Generation context creation accepts only the repository-relative path."""
     payload = {
-        "version": 3,
+        "version": 4,
         "llm_generation_enabled": False,
         "base_url": None,
         "model": None,
@@ -156,7 +156,7 @@ def test_legacy_three_column_origin_table_is_rejected() -> None:
 def test_windows_flavoured_contract_paths_serialise_portably() -> None:
     """Filesystem path flavour cannot leak into public generation config."""
     payload = {
-        "version": 3,
+        "version": 4,
         "llm_generation_enabled": False,
         "base_url": None,
         "model": None,

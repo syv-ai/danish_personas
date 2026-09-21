@@ -28,7 +28,7 @@ OCEAN_TERMS: dict[str, dict[str, tuple[str, ...]]] = {
 # These are deliberately closed phrases rather than terms that a caller can combine
 # with an arbitrary hedge.  The wording is shared by the prompt and the validator.
 PERSONALITY_PHRASES = {
-    term: f"kan være {term}"
+    term: f"har ofte tendens til at være {term}"
     for levels in OCEAN_TERMS.values()
     for terms in levels.values()
     for term in terms

@@ -149,22 +149,22 @@ def _descriptions_json(
     pronoun = "hun" if context["sex"] == "female" else "han"
     education_level = str(context["education_level"])
     education_labels = {
-        "grundskole": "har ingen uddannelse efter folkeskolen",
+        "grundskole": "har gået i grundskolen",
         "ungdomsuddannelse eller erhvervsuddannelse": (
-            "har en ungdoms- eller erhvervsuddannelse"
+            "har en ungdomsuddannelse eller erhvervsuddannelse"
         ),
         "videregående uddannelse": "har en videregående uddannelse",
-        "uddannelse ikke oplyst": "uddannelsen er ikke oplyst",
+        "uddannelse ikke oplyst": "har en uddannelse, der ikke er oplyst",
     }
     rendered_education = EDUCATION_DANISH.get(education_level, education_level)
     education = education_labels[rendered_education]
     if employed:
         persona = (
-            f"{pronoun.capitalize()} er {context['age']} år, bor i "
-            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
-            f"{education} og arbejder som {job_title}. {pronoun.capitalize()} "
-            "kan være rolig og holder af at læse danske romaner, at lytte til "
-            "musik i fritiden og at spille brætspil med venner."
+            f"{pronoun.capitalize()} er {context['age']} år og bor i "
+            f"{context['municipality']}. {pronoun.capitalize()} kommer fra "
+            f"{context['origin_country_da']} og {education}. {pronoun.capitalize()} "
+            f"arbejder som {job_title}. {pronoun.capitalize()} holder af en rolig "
+            "hverdag."
         )
     else:
         status = (
@@ -173,37 +173,12 @@ def _descriptions_json(
             else "uden for arbejdsmarkedet"
         )
         persona = (
-            f"{pronoun.capitalize()} er {context['age']} år, bor i "
-            f"{context['municipality']}, kommer fra {context['origin_country_da']}, "
-            f"{education} og er {status}. {pronoun.capitalize()} kan være rolig "
-            "og nyder at læse danske romaner og at lytte til musik i fritiden."
+            f"{pronoun.capitalize()} er {context['age']} år og bor i "
+            f"{context['municipality']}. {pronoun.capitalize()} kommer fra "
+            f"{context['origin_country_da']} og {education}. {pronoun.capitalize()} "
+            f"er {status} og holder af en rolig hverdag."
         )
-    return json.dumps(
-        {
-            "professional_persona": (
-                "På arbejdet kan personen lide tydelige opgaver og et godt "
-                "samarbejde med andre."
-            ),
-            "sports_persona": (
-                "Motion kan være en rolig aktivitet, og personen vælger gerne "
-                "fleksible rammer."
-            ),
-            "arts_persona": (
-                "Personen læser gerne og lytter til musik, når der er tid til "
-                "fordybelse."
-            ),
-            "travel_persona": (
-                "På rejser kan personen foretrække en enkel plan og tid til nye "
-                "oplevelser."
-            ),
-            "culinary_persona": (
-                "I køkkenet er der plads til enkle retter og hyggelige måltider "
-                "med andre."
-            ),
-            "persona": persona,
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps({"persona": persona}, ensure_ascii=False)
 
 
 class _RejectingClient(_MockClient):
@@ -242,7 +217,7 @@ def test_generation_rejects_origin_contract_and_row_mismatches(
             live=False,
         )
 
-    config["version"] = 3
+    config["version"] = 4
     config.pop("origin_label_contract")
     paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
     with pytest.raises(ValueError):
@@ -420,7 +395,7 @@ def _write_inputs(root: Path) -> dict[str, Path]:
     mapping_path.write_bytes((Path("config") / "job-function-titles.yaml").read_bytes())
     config_path = root / "generation.yaml"
     config = {
-        "version": 3,
+        "version": 4,
         "llm_generation_enabled": True,
         "base_url": "http://test/v1",
         "model": "test-model",
@@ -552,7 +527,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     }
     assert set(descriptions_request) == {
         "demographics_and_personality",
-        "required_persona_facts",
+        "grounding_facts",
         "allowed_personality_tendencies",
         "generated_attributes",
     }
@@ -576,7 +551,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     )
     assert allowed_phrases
     assert all(
-        isinstance(phrase, str) and phrase.startswith("kan være ")
+        isinstance(phrase, str) and phrase.startswith("har ofte tendens til at være ")
         for phrase in allowed_phrases
     )
     assert (
@@ -589,7 +564,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert "origin_country" not in descriptions_payload
     assert attributes_payload["education_level"] == "videregående uddannelse"
     assert descriptions_payload["education_level"] == "videregående uddannelse"
-    assert descriptions_request["required_persona_facts"] == {
+    assert descriptions_request["grounding_facts"] == {
         "pronoun_age": "hun er 35 år",
         "municipality": "bor i København",
         "origin": "kommer fra Danmark",

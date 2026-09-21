@@ -1345,7 +1345,7 @@ def _validate_pilot_for_release(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleasePackagingError(
-            "Persona output schema must match generation contract v3"
+            "Persona output schema must match generation contract v4"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
@@ -1357,7 +1357,7 @@ def _validate_pilot_for_release(
         )
     except ValueError as error:
         raise ReleasePackagingError(
-            "Persona output fails contextual generation-v3 validation"
+            "Persona output fails contextual generation-v4 validation"
         ) from error
     validate_release_approval(
         policy=policy,
@@ -1447,7 +1447,7 @@ def _assert_manifest_bindings(
         origin_contract_path=origin_contract_path,
         origin_contract=origin_contract,
     )
-    _require_generation_v3(config)
+    _require_generation_v4(config)
     context = generation_context_sha256(
         config=config,
         attributes_prompt=attributes_path.read_text(encoding="utf-8"),
@@ -1522,9 +1522,9 @@ def _mapping_binding_matches(
     return manifest.job_title_mapping_version == mapping.version
 
 
-def _require_generation_v3(config: GenerationConfig) -> None:
-    if config.version != 3:
-        raise ReleasePackagingError("Release requires generation contract v3")
+def _require_generation_v4(config: GenerationConfig) -> None:
+    if config.version != 4:
+        raise ReleasePackagingError("Release requires generation contract v4")
 
 
 def _derive_evidence(

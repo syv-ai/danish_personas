@@ -26,8 +26,8 @@ The initial release should:
 - include only a broad synthetic job-function allocation calibrated by sex to LONS20's
   incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
-- produce five Danish specialised texts plus one short, grounded persona under
-  generation contract 3, with only the official Danish FOLK2 origin label reaching both
+- produce one short, grounded Danish `persona` under generation contract 4, with only
+  the official Danish FOLK2 origin label reaching both
   provider stages and exact persona grounding;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
   other sensitive or high-risk fields;
@@ -49,16 +49,11 @@ Hugging Face.
 The NVIDIA dataset card describes 22 historical content fields: six persona fields and
 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
 physical columns. That historical count is not the current Danish contract. Generation
-contract 3 retains six text fields: five specialised texts and one short, grounded
+contract 4 retains one short, grounded
 `persona`; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
-ten-person smoke, and old pilots are not resumable under generation contract 3. The
+ten-person smoke, and old pilots are not resumable under generation contract 4. The
 historical NVIDIA comparison must not be read as current Danish validation:
 
-- `professional_persona`
-- `sports_persona`
-- `arts_persona`
-- `travel_persona`
-- `culinary_persona`
 - `persona`
 - `cultural_background`
 - `skills_and_expertise`
@@ -220,14 +215,9 @@ identity claims.
 
 #### Generated persona text
 
-- `professional_persona`
-- `sports_persona`
-- `arts_persona`
-- `travel_persona`
-- `culinary_persona`
 - `persona`: one short, grounded Danish text using exact natural clauses for pronoun and
   age, municipality, origin, broad education, and an allowlisted synthetic job title or
-  canonical current status, plus two or three lowercase interests in running prose and
+  canonical current status, while allowing natural use of supplied interests and
   cautious OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
@@ -357,7 +347,7 @@ Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot
 culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
-schema 3, generation contract 3, validator `persona-safety-v15`, and release
+schema 3, generation contract 4, validator `persona-safety-v16`, and release
 manifest/evidence schema 2. The current offline bundle is `8a4133e5a0a52050`; its
 passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
 The previous schema-5 bundle `cfc1b56f5586a2d7` and runs `f449f1de01d18c08` /
@@ -474,14 +464,13 @@ errors in a restricted intermediate area, not in the release artifact.
 
 ### 6. Persona description generation
 
-Use a second structured generation call for the six generation-3 persona fields: five
-specialised texts and one short, grounded `persona`. Separating attribute and prose
-generation makes failures easier to detect and permits regeneration of text without
-changing the demographic sample. Both provider stages may receive the municipality,
+Use a second structured generation call for one short, grounded `persona`. Separating
+attribute and prose generation makes failures easier to detect and permits regeneration
+of text without changing the demographic sample. Both provider stages may receive the municipality,
 official Danish `origin_country_da`, and job-function labels as appropriate, but never
 their codes, English origin label, contract metadata, or resolution fields. The exact
 Danish label must ground the persona. It must use a synthetic job title or current
-nonemployee status, include two or three interests in prose, and express OCEAN only as
+nonemployee status, allow natural use of interests in prose, and express OCEAN only as
 cautious tendencies. `visual_persona` is removed; the persona is not a visual
 description, and downstream image models may stereotype.
 
@@ -537,8 +526,8 @@ Automated tests should require:
 - no impossible age-education-status combinations;
 - correct use and labelling of the `67+` education proxy;
 - consistency between structured attributes and all persona texts;
-- exact natural Danish clauses grounding pronoun and age, municipality, origin, broad
-  education, and job title or current nonemployee status, plus two or three lowercase
+- natural Danish grounding for pronoun and age, municipality, origin, broad education,
+  and job title or current nonemployee status, while allowing natural use of supplied
   interests in running prose and cautious OCEAN tendencies in `persona`;
 - no exact addresses, CPR-like values, phone numbers, or email addresses;
 - no unsupported family or appearance claims and no disallowed sensitive-attribute
@@ -694,7 +683,7 @@ complete. Full development-sample generation and evaluation remain pending.
 
 - Finalize Danish prompts, validators, and safety rules against the already defined
   typed schemas.
-- Generate attributes and the six generation-3 persona text fields for the frozen,
+- Generate attributes and the generation-4 persona text field for the frozen,
   stratified 1,000-row development sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
@@ -708,8 +697,7 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes, followed by the six generation-3 persona text fields:
-  five specialised texts and one short, grounded persona.
+- Generate structured attributes, followed by one generation-4 persona text field.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
 
@@ -810,7 +798,7 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    personas aged 70 and over; no unsupported detailed attainment for those ages.
 6. No observed occupation, household, income, ancestry, citizenship, full name, or
    sensitive fields in v1; broad job function is the documented synthetic exception.
-7. Six generation-3 persona text fields: five specialised texts plus one short, grounded
+7. One generation-4 persona text field: a short, grounded
    persona; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
    ten-person smoke, and old pilots cannot be resumed under this contract.
 8. Native list columns and explicit provenance fields, even where this differs from the
