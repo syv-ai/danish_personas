@@ -4,12 +4,11 @@
 
 This report covers a three-record integration smoke test only. It does not approve the
 frozen 1,000-row development sample, the 10,000-row pilot, or any release-scale persona
-generation. It is a historical generation-contract v1 report from before the
-generation-3 change: its six-description results are not evidence for the current
-six-text grounded-persona schema or validation gates. The old run is retained for
-historical facts only and cannot be resumed under generation 3. It predates the
-mandatory Danish `origin_country_da` provider boundary and validator
-`persona-safety-v15`.
+generation. It is a historical generation-contract v1 report: its six-description
+results are not evidence for the current generation-4, persona-only schema or
+validation gates. The old run is retained for historical facts only and cannot be
+resumed under generation 4. It predates the mandatory Danish `origin_country_da`
+provider boundary and validator `persona-safety-v16`.
 
 The run used the first three persona identifiers from the checksum-locked, stratified
 Phase-3 seed file. Generation preserved the existing demographic and independently
@@ -21,8 +20,9 @@ sampled OCEAN fields.
 - Model: `gpt-5.6-sol` through provider `openai-codex`.
 - Response mode: strict JSON Schema.
 - Stages per record in this historical v1 run: structured attributes, then six persona
-  descriptions under the old prompt contract; current generation-3 runs return five
-  specialised texts plus one short grounded persona, with no `visual_persona`.
+descriptions under the old prompt contract; current generation-4 runs return structured
+attributes followed by one short grounded `persona`, with no specialised fields or
+`visual_persona`.
 - Sampling parameters: none; the proxy rejects temperature, seed, and token-limit
   parameters.
 
@@ -62,10 +62,11 @@ and cooking. The prompts were tightened before the final run to:
 
 Manual review of all 18 final historical descriptions found natural Danish, no
 identifying details, no sensitive-attribute inference, no demographic changes, and more
-varied interests. The text remains deliberately conservative when a specialised domain
-is unsupported. Some phrases still sound statistical, particularly translations of
-detailed labour status, and the sample is too small to assess systematic stereotyping,
-diversity, cross-record repetition, or broad language quality.
+varied interests. Those observations apply only to the historical six-text output. The
+current persona-only v4/v16 contract additionally rejects contradictory grounding,
+unsupported elaboration, and unhedged personality assertions; it has no historical
+persona-only run recorded here. The sample is too small to assess systematic
+stereotyping, diversity, cross-record repetition, or broad language quality.
 
 ## Gate status
 
