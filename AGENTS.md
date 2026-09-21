@@ -210,7 +210,7 @@ schema 2 and evidence schema 2.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
 and request accounting. The current versions are prepared bundle 6, sampler 6, frozen
-sample 3, generation 4, validator `persona-safety-v17`, and release manifest/evidence 2.
+sample 3, generation 4, validator `persona-safety-v18`, and release manifest/evidence 2.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the
@@ -244,8 +244,9 @@ current contracts have been regenerated; use placeholders in instructions.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
   validator context. Human-readable municipality, the official Danish
-  `origin_country_da`, and job-function labels reach the provider request; the origin
-  code, English `origin_country`, resolution fields, and origin-contract metadata do
+  `origin_country_da`, sampled legal `marital_status`, and job-function labels reach the
+  provider request; the origin code, English `origin_country`, resolution fields, and
+  origin-contract metadata do
   not. The Danish label is also the exact origin fact in the grounded persona.
   Re-running a valid v4 run resumes completed records, but v1-v3 checkpoints, the
   previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
@@ -257,7 +258,7 @@ current contracts have been regenerated; use placeholders in instructions.
   sensitive terms, and free of exact duplicate descriptions. The detailed persona must
   be grounded in its supplied facts, use a synthetic job title or current nonemployee
   status, include concrete fictional biographical detail, and treat OCEAN as cautious
-  tendencies. Fictional first names and ordinary family details are allowed; surnames,
+  tendencies. Ordinary first names and ordinary family details are allowed; surnames,
   real organisations, exact addresses, appearance, and sensitive details are not.
   Automated validation is not a substitute for blinded human review; downstream image
   models may still stereotype.

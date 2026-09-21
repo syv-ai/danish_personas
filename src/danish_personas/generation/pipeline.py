@@ -63,6 +63,7 @@ AUDIT_FIELDS = frozenset(
     (
         *MOST_SPECIFIC_RESOLUTION,
         "education_resolution",
+        "marital_resolution",
         "origin_country_code",
         "origin_country",
         "education_source_code",
@@ -93,6 +94,7 @@ PROMPT_FIELDS = (
     "neuroticism_score",
     "neuroticism_label",
     "current_status",
+    "marital_status",
 )
 OCEAN_PROMPT_FIELDS = (
     "openness_score",

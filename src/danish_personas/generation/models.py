@@ -25,6 +25,11 @@ class GeneratedAttributes(StrictModel):
     hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
     career_goals_and_ambitions: str | None = Field(max_length=500)
     job_title: str | None = Field(max_length=80)
+    first_name: str = Field(min_length=2, max_length=40)
+    current_relationship_status: t.Literal["partnered", "not_partnered"]
+    partner_first_name: str | None = Field(min_length=2, max_length=40)
+    partner_gender: t.Literal["male", "female"] | None
+    legal_status_detail: t.Literal["married", "separated"] | None
 
     @field_validator("job_title")
     @classmethod
@@ -51,6 +56,29 @@ class GeneratedAttributes(StrictModel):
             raise ValueError("job_title must contain 2-80 characters")
         return stripped
 
+    @field_validator("first_name", "partner_first_name")
+    @classmethod
+    def require_stripped_single_line_name(_cls, value: str | None) -> str | None:
+        """Normalise a name while rejecting multiline or padded output.
+
+        Args:
+            value:
+                Candidate generated first name.
+
+        Returns:
+            The validated first name or null.
+
+        Raises:
+            ValueError:
+                If the name is not a short, stripped, single-line string.
+        """
+        if value is None:
+            return None
+        stripped = value.strip()
+        if stripped != value or "\n" in value or "\r" in value:
+            raise ValueError("first names must be stripped single-line strings")
+        return stripped
+
     @field_validator("skills_and_expertise", "hobbies_and_interests")
     @classmethod
     def require_unique_items(_cls, values: list[str]) -> list[str]:
@@ -75,6 +103,25 @@ class GeneratedAttributes(StrictModel):
             message = "Generated list entries must be unique"
             raise ValueError(message)
         return stripped
+
+    @model_validator(mode="after")
+    def validate_relationship_fields(self) -> "GeneratedAttributes":
+        """Require partner fields to agree with the current relationship status."""
+        has_partner = self.partner_first_name is not None
+        has_gender = self.partner_gender is not None
+        if self.current_relationship_status == "partnered" and not (
+            has_partner and has_gender
+        ):
+            raise ValueError(
+                "partnered responses require partner_first_name and partner_gender"
+            )
+        if self.current_relationship_status == "not_partnered" and (
+            has_partner or has_gender
+        ):
+            raise ValueError(
+                "not_partnered responses must not include partner fields"
+            )
+        return self
 
 
 class GeneratedPersona(GeneratedAttributes):

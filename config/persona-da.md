@@ -10,15 +10,15 @@ Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
 `origin_country_da` indeholder den præcise danske værdi, som skal indgå naturligt i
 personaen, for eksempel `Han kommer fra Rumænien`. Omtal aldrig værdien som et felt,
 metadata, en etiket eller en kategori. Brug den ikke til at udlede kultur,
-nationalitet, etnicitet, udseende, beskæftigelse, navn eller interesser.
+nationalitet, etnicitet, udseende, beskæftigelse eller interesser.
 
 Feltet `allowed_job_titles` er den komplette, lukkede liste over tilladte titler for
 jobfunktionsetiketten. Hvis listen er tom, skal `job_title` være null. Ellers skal
 `job_title` være præcis én værdi fra listen, inklusive stavning og mellemrum.
 
-Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel eller status
-samt de faste demografiske og OCEAN-input uden at ændre dem. Brug `current_status`
-som den nøjagtige aktuelle status, når den er leveret.
+Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status og
+`marital_status` samt de faste demografiske og OCEAN-input uden at ændre dem. Brug
+`current_status` som den nøjagtige aktuelle status, når den er leveret.
 
 ## Strukturerede felter
 
@@ -29,6 +29,19 @@ som den nøjagtige aktuelle status, når den er leveret.
   rolig`.
 - Skriv et konkret, syntetisk karrieremål eller en anden fremtidsdrøm, når det er
   naturligt. Brug ellers null.
+- `first_name` skal være personaens almindelige fornavn.
+- Vælg `current_relationship_status` som `partnered` eller `not_partnered`. Ved
+  `partnered` skal `partner_first_name` og `partner_gender` udfyldes; ved
+  `not_partnered` skal begge være null.
+- `marital_status` er juridisk status og er separat fra det aktuelle forhold:
+  `married_or_separated` kræver `legal_status_detail` som `married` eller
+  `separated`, og den valgte status skal fremgå af personaen. `never_married` betyder
+  ikke, at personaen er single, og skal omtales som aldrig at have været gift.
+  `divorced` og `widowed` skal omtales som henholdsvis skilt eller enke/enkemand,
+  men personaen kan stadig være `partnered` eller `not_partnered`.
+- Partnerkombinationer af samme køn, herunder male/male og female/female, er
+  udtrykkeligt tilladt. Brug partnerens navn og ord som mand eller kvinde til at
+  afspejle `partner_gender`, men skriv eller udled aldrig en orienteringsbetegnelse.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
@@ -57,13 +70,12 @@ frem for ordret genbrug af de genererede formuleringer.
 
 Gør de syntetiske hverdagsdetaljer konkrete og indbyrdes konsistente:
 
-- Giv personaen et almindeligt fornavn, som ikke vælges ud fra værdien i
-  `origin_country_da`.
+- Giv personaen et almindeligt fornavn.
 - Beskriv en plausibel type arbejdsplads og dens by eller område uden at bruge navnet
   på en virkelig virksomhed.
 - Beskriv fritiden gennem konkrete aktiviteter, steder eller fællesskaber.
-- Beskriv en syntetisk civil- eller familiesituation. Fornavne på opdigtede partnere
-  eller børn er tilladt, men efternavne er ikke.
+- Beskriv en syntetisk civil- eller familiesituation. Fornavne på partnere eller
+  børn er tilladt, men efternavne er ikke.
 - Nævn en konkret drøm, plan eller ambition, hvis den findes.
 
 Hvis `education_level` er `ungdomsuddannelse eller erhvervsuddannelse`, skal du
@@ -84,9 +96,8 @@ administrative numre, CPR-numre, telefonnumre eller links.
 Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning,
 kriminalhistorik eller fysisk udseende. Undgå stereotyper baseret på køn, alder,
 kommune, værdien i `origin_country_da`, uddannelse eller arbejdsstatus. Værdien i
-`origin_country_da` må heller ikke bruges til at udlede nationalitet, navn, job,
-interesser eller personlighed.
-
+`origin_country_da` må heller ikke bruges til at udlede nationalitet, job, interesser
+eller personlighed.
 Brug aldrig `vedkommende`, `personen` eller bare `person`, formuleringer med `kan ...
 være` eller `ungdoms- eller erhvervsuddannelse`. Skriv ikke tekniske feltnavne,
 datamodeller eller rå OCEAN-scorer. Returnér kun JSON efter skemaet.

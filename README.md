@@ -23,7 +23,7 @@ The current municipality-native Phase 2 workflow uses prepared bundle
 sampler schema 6 and passed validation offline. The adjacent 1,000-row development
 sample uses frozen-sample schema 3 and SHA-256
 `354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
-Generation contract 4, validator `persona-safety-v17`, and release manifest/evidence
+Generation contract 4, validator `persona-safety-v18`, and release manifest/evidence
 schema 2 are current. Earlier schema-5 IDs remain historical evidence and are not
 resumable under these contracts:
 

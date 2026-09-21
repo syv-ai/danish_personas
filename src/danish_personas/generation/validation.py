@@ -18,7 +18,7 @@ from .job_titles import (
 from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
 from .personality import all_personality_phrases, all_personality_tendencies
 
-VALIDATOR_VERSION = "persona-safety-v17"
+VALIDATOR_VERSION = "persona-safety-v18"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -27,6 +27,11 @@ _ATTRIBUTE_FIELDS = frozenset(
         "hobbies_and_interests",
         "career_goals_and_ambitions",
         "job_title",
+        "first_name",
+        "current_relationship_status",
+        "partner_first_name",
+        "partner_gender",
+        "legal_status_detail",
     }
 )
 _DESCRIPTION_FIELDS = frozenset({"persona"})
@@ -59,6 +64,8 @@ SENSITIVE_PATTERNS = (
     r"helbred|heteroseksuel\w*|homoseksuel\w*|kræft|kristen\w*",
     r"muslim\w*|politisk\s+parti|religion\w*|seksualitet|skizofreni",
     r"stemme\s+på|sygdom\w*|transkønnet\w*",
+    r"lesbisk\w*|biseksuel\w*|panseksuel\w*|aseksuel\w*|queer\w*|"
+    r"bøsse\w*|gay\b|hetero\b|homofili\w*|seksuel\s+orientering",
 )
 UNSUPPORTED_PATTERNS = (
     r"diagnos(?:e|er|en|erede)\w*|hår(?:et|ene|enes)?|"
@@ -209,6 +216,23 @@ def parse_attributes(
             context=context,
             mapping=job_title_mapping
             or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
+        ),
+    )
+    for field, value in (
+        ("first_name", attributes.first_name),
+        ("partner_first_name", attributes.partner_first_name),
+    ):
+        if value is not None:
+            _validate_field(
+                field=field,
+                validator=lambda value=value: _validate_text(
+                    text=value, require_danish=False
+                ),
+            )
+    _validate_field(
+        field="relationship",
+        validator=lambda: _validate_relationship_attributes(
+            attributes=attributes, demographic=context
         ),
     )
     return attributes
@@ -490,6 +514,73 @@ def _validate_persona_facts(
     _validate_employment(
         text=normalized, employment=facts.employment, demographic=demographic
     )
+    _validate_relationship_prose(
+        text=normalized, demographic=demographic, attributes=attributes
+    )
+
+
+def _validate_relationship_attributes(
+    *, attributes: GeneratedAttributes, demographic: dict[str, object]
+) -> None:
+    """Validate the generated relationship fields against legal status semantics."""
+    marital_status = str(demographic.get("marital_status", "")).casefold()
+    detail = attributes.legal_status_detail
+    if marital_status == "married_or_separated":
+        if detail is None:
+            raise ValueError(
+                "married_or_separated requires legal_status_detail"
+            )
+    elif marital_status in {"never_married", "divorced", "widowed"}:
+        if detail is not None:
+            raise ValueError(
+                f"{marital_status} must not include legal_status_detail"
+            )
+    else:
+        raise ValueError(f"Unknown marital_status: {marital_status}")
+
+
+def _validate_relationship_prose(
+    *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
+) -> None:
+    """Require legal and current relationship fields in the persona prose."""
+    if not _contains_term(text=text, term=attributes.first_name):
+        raise ValueError("Persona does not preserve the generated first name")
+
+    relationship_terms = ("partner", "kæreste", "ægtefælle")
+    if attributes.current_relationship_status == "partnered":
+        partner_name = attributes.partner_first_name
+        if partner_name is None or not _contains_term(text=text, term=partner_name):
+            raise ValueError("Persona does not preserve the partner first name")
+        if not any(_contains_term(text=text, term=term) for term in relationship_terms):
+            raise ValueError("Persona does not preserve the partnered status")
+        gender_terms = {
+            "male": ("mand", "manden", "mandlig"),
+            "female": ("kvinde", "kvinden", "kvindelig"),
+        }[attributes.partner_gender or "male"]
+        if not any(_contains_term(text=text, term=term) for term in gender_terms):
+            raise ValueError("Persona does not preserve the partner gender")
+    elif not any(
+        _contains_term(text=text, term=term)
+        for term in ("single", "alene", "uden partner", "ikke i et forhold")
+    ):
+        raise ValueError("Persona does not preserve the not_partnered status")
+
+    marital_status = str(demographic.get("marital_status", "")).casefold()
+    detail = attributes.legal_status_detail
+    legal_terms = {
+        "married": ("gift",),
+        "separated": ("separeret",),
+        "never_married": ("aldrig været gift", "har aldrig været gift"),
+        "divorced": ("skilt",),
+        "widowed": ("enke", "enkemand"),
+    }
+    expected_terms = (
+        legal_terms[detail]
+        if marital_status == "married_or_separated" and detail is not None
+        else legal_terms.get(marital_status, ())
+    )
+    if not any(_contains_term(text=text, term=term) for term in expected_terms):
+        raise ValueError("Persona does not preserve the supplied legal marital status")
 
 
 def _validate_age(*, text: str, demographic: dict[str, object]) -> None:
