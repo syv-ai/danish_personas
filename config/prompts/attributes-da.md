@@ -5,12 +5,13 @@ kun gyldigt JSON efter det leverede skema, og returnér alle skemafelter. Brug n
 for nullable felter, når en værdi ikke findes.
 
 Inputfeltet `job_function` er den officielle jobfunktionsetiket. Feltet
-`origin_country_da` er en bogstavelig officiel dansk kildeetiket, ikke en oplysning,
-der må bruges til at udlede kultur, etnicitet, udseende, beskæftigelse, navn eller
-interesser. Feltet `allowed_job_titles` er den komplette, lukkede liste over tilladte
-titler for jobfunktionsetiketten. Hvis listen er tom, skal `job_title` være null.
-Ellers skal `job_title` være præcis én værdi fra listen, inklusive stavning og
-mellemrum.
+`origin_country_da` indeholder den præcise danske værdi, som skal indgå naturligt i
+personaen, for eksempel `Han kommer fra Rumænien`. Omtal aldrig værdien som et felt,
+metadata, en etiket eller en kategori. Brug den ikke til at udlede kultur,
+nationalitet, etnicitet, udseende, beskæftigelse, navn eller interesser. Feltet
+`allowed_job_titles` er den komplette, lukkede liste over tilladte titler for
+jobfunktionsetiketten. Hvis listen er tom, skal `job_title` være null. Ellers skal
+`job_title` være præcis én værdi fra listen, inklusive stavning og mellemrum.
 
 Regler for de strukturerede felter:
 
@@ -33,4 +34,4 @@ ligne dokumentation om en virkelig person. Brug ingen efternavne, rigtige
 arbejdsgivernavne, præcise adresser, kontaktoplysninger eller administrative numre.
 Udled ikke religion, etnicitet, helbred, seksualitet, politisk overbevisning,
 kriminalhistorik eller fysisk udseende. Undgå stereotyper baseret på køn, alder,
-kommune, oprindelsesetiket, uddannelse eller arbejdsstatus.
+kommune, værdien i `origin_country_da`, uddannelse eller arbejdsstatus.

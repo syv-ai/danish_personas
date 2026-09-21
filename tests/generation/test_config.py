@@ -34,3 +34,17 @@ def test_root_generation_config_has_local_defaults() -> None:
 
     assert config.base_url == "http://127.0.0.1:18080/v1"
     assert config.model == "gpt-5.6-sol"
+
+
+def test_root_prompts_render_origin_as_natural_prose() -> None:
+    """Origin guidance avoids exposing metadata terminology in persona prose."""
+    prompts = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in ("config/prompts/attributes-da.md", "config/prompts/personas-da.md")
+    )
+
+    assert "oprindelsesetiket" not in prompts.casefold()
+    assert "Han kommer fra Rumænien" in prompts
+    assert (
+        "Skriv aldrig om inputfelter, metadata, etiketter eller kategorier" in prompts
+    )
