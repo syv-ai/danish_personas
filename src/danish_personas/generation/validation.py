@@ -530,6 +530,11 @@ def _validate_relationship_attributes(
             raise ValueError(
                 "married_or_separated requires legal_status_detail"
             )
+        if (
+            detail == "married"
+            and attributes.current_relationship_status != "partnered"
+        ):
+            raise ValueError("married responses must be partnered")
     elif marital_status in {"never_married", "divorced", "widowed"}:
         if detail is not None:
             raise ValueError(
@@ -546,7 +551,14 @@ def _validate_relationship_prose(
     if not _contains_term(text=text, term=attributes.first_name):
         raise ValueError("Persona does not preserve the generated first name")
 
-    relationship_terms = ("partner", "kæreste", "ægtefælle")
+    relationship_terms = (
+        "partner",
+        "kæreste",
+        "ægtefælle",
+        "mand",
+        "kone",
+        "hustru",
+    )
     if attributes.current_relationship_status == "partnered":
         partner_name = attributes.partner_first_name
         if partner_name is None or not _contains_term(text=text, term=partner_name):
@@ -555,7 +567,7 @@ def _validate_relationship_prose(
             raise ValueError("Persona does not preserve the partnered status")
         gender_terms = {
             "male": ("mand", "manden", "mandlig"),
-            "female": ("kvinde", "kvinden", "kvindelig"),
+            "female": ("kvinde", "kvinden", "kvindelig", "kone", "hustru"),
         }[attributes.partner_gender or "male"]
         if not any(_contains_term(text=text, term=term) for term in gender_terms):
             raise ValueError("Persona does not preserve the partner gender")

@@ -35,10 +35,11 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   `not_partnered` skal begge være null.
 - `marital_status` er juridisk status og er separat fra det aktuelle forhold:
   `married_or_separated` kræver `legal_status_detail` som `married` eller
-  `separated`, og den valgte status skal fremgå af personaen. `never_married` betyder
-  ikke, at personaen er single, og skal omtales som aldrig at have været gift.
-  `divorced` og `widowed` skal omtales som henholdsvis skilt eller enke/enkemand,
-  men personaen kan stadig være `partnered` eller `not_partnered`.
+  `separated`, og den valgte status skal fremgå af personaen. `married` kræver
+  `partnered`, mens `separated` kan have begge aktuelle forholdsstatusser.
+  `never_married` betyder ikke, at personaen er single, og skal omtales som aldrig at
+  have været gift. `divorced` og `widowed` skal omtales som henholdsvis skilt eller
+  enke/enkemand, men personaen kan stadig være `partnered` eller `not_partnered`.
 - Partnerkombinationer af samme køn, herunder male/male og female/female, er
   udtrykkeligt tilladt. Brug partnerens navn og ord som mand eller kvinde til at
   afspejle `partner_gender`, men skriv eller udled aldrig en orienteringsbetegnelse.
