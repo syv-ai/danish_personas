@@ -145,6 +145,8 @@ def run_pilot(
         sample_manifest_path=sample_manifest_path,
         config_path=config_path,
         output_dir=batch_root,
+        expected_generation_context_sha256=generation_context_sha,
+        maximum_total_requests=maximum_total_requests,
         progress_callback=progress_callback,
     )
     manifests = [
@@ -309,6 +311,75 @@ def _merge_pilot(
     return pilot_dir
 
 
+def _find_completed_batches(
+    *,
+    offsets: list[int],
+    rows: int,
+    batch_size: int,
+    output_dir: Path,
+    expected_generation_context_sha256: str,
+    progress_callback: c.Callable[[int], None] | None,
+) -> dict[int, Path]:
+    """Find and validate completed shards left by an earlier pilot attempt."""
+    if not output_dir.exists():
+        return {}
+    expected_offsets = set(offsets)
+    run_dirs: dict[int, Path] = {}
+    for run_dir in sorted(output_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        manifest_path = run_dir / "generation-manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = GenerationManifest.model_validate_json(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            message = f"Invalid completed pilot batch manifest: {manifest_path}"
+            raise ValueError(message) from error
+        expected_rows = (
+            min(batch_size, rows - manifest.offset)
+            if manifest.offset in expected_offsets
+            else None
+        )
+        if (
+            manifest.run_id != run_dir.name
+            or manifest.offset not in expected_offsets
+            or manifest.rows != expected_rows
+            or manifest.generation_context_sha256
+            != expected_generation_context_sha256
+        ):
+            message = f"Conflicting completed pilot batch manifest: {manifest_path}"
+            raise ValueError(message)
+        if manifest.offset in run_dirs:
+            message = f"Duplicate completed pilot batch offset: {manifest.offset}"
+            raise ValueError(message)
+        if manifest.output_file.is_absolute():
+            message = f"Pilot batch output must be relative: {manifest_path}"
+            raise ValueError(message)
+        output_path = (run_dir / manifest.output_file).resolve()
+        try:
+            output_path.relative_to(run_dir.resolve())
+            output_checksum = sha256_file(output_path)
+        except (OSError, ValueError) as error:
+            message = f"Invalid completed pilot batch output: {manifest_path}"
+            raise ValueError(message) from error
+        if output_checksum != manifest.output_sha256:
+            message = f"Pilot batch output checksum mismatch: {manifest_path}"
+            raise ValueError(message)
+        report = validate_persona_run(run_dir=run_dir)
+        if not report.passed:
+            message = f"Completed pilot batch failed validation: {manifest_path}"
+            raise ValueError(message)
+        run_dirs[manifest.offset] = run_dir
+        _report_progress(
+            callback=progress_callback,
+            rows=min(batch_size, rows - manifest.offset),
+        )
+    return run_dirs
+
+
 def _run_batches(
     *,
     offsets: list[int],
@@ -320,59 +391,70 @@ def _run_batches(
     sample_manifest_path: Path,
     config_path: Path,
     output_dir: Path,
+    expected_generation_context_sha256: str,
+    maximum_total_requests: int | None,
     progress_callback: c.Callable[[int], None] | None,
 ) -> list[Path]:
-    run_dirs: dict[int, Path] = {}
-    remaining = iter(offsets)
+    run_dirs = _find_completed_batches(
+        offsets=offsets,
+        rows=rows,
+        batch_size=batch_size,
+        output_dir=output_dir,
+        expected_generation_context_sha256=expected_generation_context_sha256,
+        progress_callback=progress_callback,
+    )
+    remaining = iter(offset for offset in offsets if offset not in run_dirs)
+    if len(run_dirs) == len(offsets):
+        return [run_dirs[offset] for offset in offsets]
     executor = futures.ThreadPoolExecutor(max_workers=concurrency)
     pending: dict[futures.Future[Path], int] = {}
+
+    def submit(offset: int) -> None:
+        pending[
+            _submit_batch(
+                executor=executor,
+                offset=offset,
+                rows=rows,
+                batch_size=batch_size,
+                input_path=input_path,
+                sample_manifest_path=sample_manifest_path,
+                config_path=config_path,
+                output_dir=output_dir,
+            )
+        ] = offset
+
     try:
-        for _ in range(min(concurrency, len(offsets))):
-            offset = next(remaining)
-            pending[
-                _submit_batch(
-                    executor=executor,
-                    offset=offset,
-                    rows=rows,
-                    batch_size=batch_size,
-                    input_path=input_path,
-                    sample_manifest_path=sample_manifest_path,
-                    config_path=config_path,
-                    output_dir=output_dir,
-                )
-            ] = offset
+        for _ in range(min(concurrency, len(offsets) - len(run_dirs))):
+            next_offset = next(remaining, None)
+            if next_offset is not None:
+                submit(next_offset)
         while pending:
             completed, _ = futures.wait(pending, return_when=futures.FIRST_COMPLETED)
-            completed_runs = [
-                (pending.pop(completed_future), completed_future.result())
-                for completed_future in completed
-            ]
-            for offset, run_dir in completed_runs:
+            completed_count = 0
+            for completed_future in completed:
+                offset = pending.pop(completed_future)
+                try:
+                    run_dir = completed_future.result()
+                except Exception:
+                    if maximum_total_requests is None:
+                        submit(offset)
+                        continue
+                    raise
                 report = validate_persona_run(run_dir=run_dir)
                 if not report.passed:
                     message = f"Pilot batch at offset {offset} failed validation"
                     raise ValueError(message)
                 run_dirs[offset] = run_dir
+                completed_count += 1
                 _report_progress(
                     callback=progress_callback, rows=min(batch_size, rows - offset)
                 )
             if delay_between_batches and not pending:
                 time.sleep(delay_between_batches)
-            for _ in completed_runs:
+            for _ in range(completed_count):
                 next_offset = next(remaining, None)
                 if next_offset is not None:
-                    pending[
-                        _submit_batch(
-                            executor=executor,
-                            offset=next_offset,
-                            rows=rows,
-                            batch_size=batch_size,
-                            input_path=input_path,
-                            sample_manifest_path=sample_manifest_path,
-                            config_path=config_path,
-                            output_dir=output_dir,
-                        )
-                    ] = next_offset
+                    submit(next_offset)
     except Exception:
         for pending_future in pending:
             pending_future.cancel()
