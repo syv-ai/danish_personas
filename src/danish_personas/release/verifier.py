@@ -48,8 +48,7 @@ _PUBLIC_FILES = {
     "provenance/release-policy.yaml",
     "provenance/evidence.json",
     "provenance/pilot-validation-report.json",
-    "provenance/prompts/attributes-da.md",
-    "provenance/prompts/personas-da.md",
+    "provenance/persona-da.md",
     "provenance/config/config.yaml",
     "provenance/config/job-function-titles.yaml",
     "provenance/config/folk2-ieland-labels-da.yaml",
@@ -66,7 +65,6 @@ _PUBLIC_FILES = {
 _PUBLIC_DIRS = {
     "attestations",
     "provenance",
-    "provenance/prompts",
     "provenance/config",
     "provenance/docs",
     "provenance/code",
@@ -555,16 +553,8 @@ def _check_provenance_bindings(
         != manifest.evidence_sha256
     ):
         raise ReleaseVerificationError("Evidence checksum binding failed")
-    if (
-        sha256_file(release_dir / "provenance/prompts/attributes-da.md")
-        != evidence.attributes_prompt_sha256
-    ):
-        raise ReleaseVerificationError("Attributes prompt checksum mismatch")
-    if (
-        sha256_file(release_dir / "provenance/prompts/personas-da.md")
-        != evidence.personas_prompt_sha256
-    ):
-        raise ReleaseVerificationError("Personas prompt checksum mismatch")
+    if sha256_file(release_dir / "provenance/persona-da.md") != evidence.prompt_sha256:
+        raise ReleaseVerificationError("Generation prompt checksum mismatch")
     _check_origin_contract(
         release_dir=release_dir, manifest=manifest, evidence=evidence
     )
@@ -611,7 +601,7 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
             If a packaged generation input or digest is inconsistent.
     """
     config_path = release_dir / "provenance/config/config.yaml"
-    config, attributes_path, personas_path = _load_generation_inputs(
+    config, prompt_path = _load_generation_inputs(
         config_path=config_path, release_dir=release_dir, evidence=evidence
     )
     try:
@@ -623,8 +613,7 @@ def _check_generation_context(*, release_dir: Path, evidence: ReleaseEvidence) -
         origin_path = release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
         context = generation_context_sha256(
             config=config,
-            attributes_prompt=attributes_path.read_text(encoding="utf-8"),
-            personas_prompt=personas_path.read_text(encoding="utf-8"),
+            prompt=prompt_path.read_text(encoding="utf-8"),
             job_title_mapping=mapping,
             job_title_mapping_sha256=sha256_file(mapping_path),
             origin_label_contract=origin_contract,
@@ -663,11 +652,11 @@ def _load_bound_origin_contract(
 
 def _load_generation_inputs(
     *, release_dir: Path, config_path: Path, evidence: ReleaseEvidence
-) -> tuple[GenerationConfig, Path, Path]:
+) -> tuple[GenerationConfig, Path]:
     """Load and check the packaged generation inputs.
 
     Returns:
-        The effective config and the two packaged prompt paths.
+        The effective config and the packaged prompt path.
 
     Raises:
         ReleaseVerificationError:
@@ -676,21 +665,16 @@ def _load_generation_inputs(
     config = _load_yaml(config_path, GenerationConfig)
     if evidence.generation_config_sha256 != sha256_file(config_path):
         raise ReleaseVerificationError("Generation config checksum binding failed")
-    attributes_path = release_dir / "provenance/prompts/attributes-da.md"
-    personas_path = release_dir / "provenance/prompts/personas-da.md"
-    if config.attributes_prompt != Path("config/prompts/attributes-da.md"):
-        raise ReleaseVerificationError("Generation attributes prompt binding failed")
-    if config.personas_prompt != Path("config/prompts/personas-da.md"):
-        raise ReleaseVerificationError("Generation personas prompt binding failed")
+    prompt_path = release_dir / "provenance/persona-da.md"
+    if config.prompt != Path("config/persona-da.md"):
+        raise ReleaseVerificationError("Generation prompt path binding failed")
     if config.job_title_mapping != Path("config/job-function-titles.yaml"):
         raise ReleaseVerificationError("Job-title mapping path binding failed")
     if config.origin_label_contract != DEFAULT_ORIGIN_LABEL_CONTRACT_PATH:
         raise ReleaseVerificationError("Origin-label contract path binding failed")
-    if sha256_file(attributes_path) != evidence.attributes_prompt_sha256:
-        raise ReleaseVerificationError("Attributes prompt checksum mismatch")
-    if sha256_file(personas_path) != evidence.personas_prompt_sha256:
-        raise ReleaseVerificationError("Personas prompt checksum mismatch")
-    return config, attributes_path, personas_path
+    if sha256_file(prompt_path) != evidence.prompt_sha256:
+        raise ReleaseVerificationError("Generation prompt checksum mismatch")
+    return config, prompt_path
 
 
 def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:

@@ -38,10 +38,7 @@ def test_root_generation_config_has_local_defaults() -> None:
 
 def test_root_prompts_render_origin_as_natural_prose() -> None:
     """Origin guidance avoids exposing metadata terminology in persona prose."""
-    prompts = "\n".join(
-        Path(path).read_text(encoding="utf-8")
-        for path in ("config/prompts/attributes-da.md", "config/prompts/personas-da.md")
-    )
+    prompts = Path("config/persona-da.md").read_text(encoding="utf-8")
 
     assert "oprindelsesetiket" not in prompts.casefold()
     assert "Han kommer fra Rumænien" in prompts

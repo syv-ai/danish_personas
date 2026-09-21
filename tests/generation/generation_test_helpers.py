@@ -288,10 +288,8 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
     )
     sample_manifest_path = sample_path.with_suffix(".manifest.json")
     write_json(path=sample_manifest_path, payload=sample_manifest)
-    attributes_prompt = root / "attributes.md"
-    personas_prompt = root / "personas.md"
-    attributes_prompt.write_text("Danske attributter")
-    personas_prompt.write_text("Danske personaer")
+    prompt = root / "prompt.md"
+    prompt.write_text("Danske personaer")
     contract_path = root / "config" / "folk2-ieland-labels-da.yaml"
     contract_path.parent.mkdir()
     contract_path.write_bytes(
@@ -314,8 +312,7 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         "enable_thinking": None,
         "reasoning_effort": None,
         "response_format": "json_schema",
-        "attributes_prompt": str(attributes_prompt),
-        "personas_prompt": str(personas_prompt),
+        "prompt": str(prompt),
         "origin_label_contract": "config/folk2-ieland-labels-da.yaml",
     }
     config_path.write_text(yaml.safe_dump(config))
@@ -323,5 +320,5 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         "sample": sample_path,
         "sample_manifest": sample_manifest_path,
         "config": config_path,
-        "personas_prompt": personas_prompt,
+        "prompt": prompt,
     }

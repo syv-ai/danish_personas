@@ -87,7 +87,6 @@ def test_package_release_builds_allowlisted_release_and_verifies(
         | {
             "attestations",
             "provenance",
-            "provenance/prompts",
             "provenance/config",
             "provenance/docs",
             "provenance/code",
