@@ -25,7 +25,9 @@ clean-clone reproducibility path; they are not one-off migrations.
 `generate_persona.py` validates the upstream frozen sample and generated run, stores
 resumable evidence below `data/personas` by default, and writes only the final Danish
 persona plus a newline to stdout. It loads Hydra `config/config.yaml` by default and
-runs immediately. Diagnostics use stderr.
+runs immediately. When `--offset` is omitted, it samples one frozen demographic locally
+and logs the offset on stderr; pass `--offset N` to reproduce or resume that selection.
+Diagnostics use stderr.
 
 `build_dataset.py` requires `--rows`. It generates validated shards of at most five
 rows, resumes valid checkpoints, merges and validates
