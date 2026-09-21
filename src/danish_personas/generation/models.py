@@ -139,7 +139,7 @@ class GenerationConfig(StrictModel):
     timeout_seconds: float = Field(gt=0.0)
     maximum_http_attempts: int = Field(ge=1, le=5)
     maximum_validation_attempts: int = Field(ge=1, le=3)
-    maximum_total_requests: int = Field(ge=1, le=15)
+    maximum_total_requests: int | None = Field(ge=1, le=15)
     retry_backoff_seconds: float = Field(ge=0.0)
     maximum_rows_per_shard: int = Field(ge=1, le=5)
     max_tokens: int | None = Field(default=None, ge=32, le=4_096)
@@ -367,8 +367,8 @@ class PilotManifest(StrictModel):
     batch_size: int = Field(ge=1, le=5)
     batches: int = Field(ge=1)
     batch_runs: list[PilotBatchReference]
-    maximum_total_requests: int = Field(ge=1)
-    maximum_shard_requests: int = Field(ge=1)
+    maximum_total_requests: int | None = Field(ge=1)
+    maximum_shard_requests: int | None = Field(ge=1)
     requests: int = Field(ge=0)
     retries: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
@@ -385,8 +385,8 @@ class PilotManifest(StrictModel):
 
 
 class RequestLedger(StrictModel):
-    """Durable HTTP-attempt budget for one bounded generation run."""
+    """Durable HTTP-attempt budget for one generation run."""
 
     generation_context_sha256: str
     attempts: int = Field(ge=0)
-    maximum_attempts: int = Field(ge=1)
+    maximum_attempts: int | None = Field(ge=1)

@@ -103,7 +103,10 @@ class OpenAIClient:
         )
         last_error: httpx.HTTPStatusError | httpx.TransportError | None = None
         for attempt in range(self._config.maximum_http_attempts):
-            if self._requests_made >= self._config.maximum_total_requests:
+            if (
+                self._config.maximum_total_requests is not None
+                and self._requests_made >= self._config.maximum_total_requests
+            ):
                 message = "Generation HTTP request budget is exhausted"
                 raise RequestBudgetExceeded(message)
             started = monotonic()

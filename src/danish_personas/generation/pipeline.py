@@ -188,7 +188,10 @@ def generate_personas(
 
     def record_request(attempts: int) -> None:
         nonlocal ledger
-        if attempts > ledger.maximum_attempts:
+        if (
+            ledger.maximum_attempts is not None
+            and attempts > ledger.maximum_attempts
+        ):
             message = "Generation HTTP request budget is exhausted"
             raise RequestBudgetExceeded(message)
         ledger = ledger.model_copy(update={"attempts": attempts})
@@ -591,7 +594,7 @@ def models_match(configured: str, returned: str) -> bool:
 
 
 def _load_request_ledger(
-    run_dir: Path, generation_context_sha: str, maximum_attempts: int
+    run_dir: Path, generation_context_sha: str, maximum_attempts: int | None
 ) -> RequestLedger:
     ledger_path = run_dir / "request-ledger.json"
     if ledger_path.exists():
@@ -620,7 +623,7 @@ def _load_request_ledger(
             maximum_attempts=maximum_attempts,
         )
         write_json(path=ledger_path, payload=ledger)
-    if ledger.attempts > maximum_attempts:
+    if maximum_attempts is not None and ledger.attempts > maximum_attempts:
         message = "Persisted HTTP requests exceed the generation budget"
         raise RequestBudgetExceeded(message)
     return ledger
@@ -637,7 +640,10 @@ def _validate_guards(config: GenerationConfig, rows: int) -> None:
     if rows < 1 or rows > config.maximum_rows_per_shard:
         message = f"Rows must be between 1 and {config.maximum_rows_per_shard}"
         raise ValueError(message)
-    if rows > config.maximum_total_requests:
+    if (
+        config.maximum_total_requests is not None
+        and rows > config.maximum_total_requests
+    ):
         message = "Planned rows exceed the configured HTTP request budget"
         raise ValueError(message)
     if not config.base_url or not config.model:
