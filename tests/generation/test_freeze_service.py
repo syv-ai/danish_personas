@@ -4,12 +4,10 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from click.testing import CliRunner
 from generation_test_helpers import write_generation_inputs
 
 from danish_personas.io import sha256_file
 from danish_personas.sampling.freeze import SampleSizeError, freeze_sample
-from scripts.freeze_demographic_sample import main as freeze_main
 
 
 def test_freeze_service_is_deterministic_and_bounds_size(tmp_path: Path) -> None:
@@ -119,18 +117,3 @@ def test_freeze_service_rejects_traversal_alias(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="traversal"):
         freeze_sample(run_dir=run_dir, rows=1, output=output)
-
-
-def test_legacy_freeze_script_remains_compatible(tmp_path: Path) -> None:
-    """The legacy freezer keeps its Click options and output contract."""
-    paths = write_generation_inputs(root=tmp_path)
-    output = paths["sample"].parent / "legacy.parquet"
-
-    result = CliRunner().invoke(
-        freeze_main,
-        ["--run", str(paths["sample"].parent), "--rows", "2", "--output", str(output)],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert output.exists()
-    assert output.with_suffix(".manifest.json").exists()

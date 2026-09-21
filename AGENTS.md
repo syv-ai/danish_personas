@@ -40,28 +40,24 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sources/prepare.py`        | Aggregate normalisation and calibration.            |
 | `danish_personas/validation/__init__.py`    | Validation package marker.                          |
 | `danish_personas/validation/checks.py`      | Source, structure, distribution, OCEAN.             |
+| `danish_personas/workflows.py`              | Standard deterministic input orchestration.          |
 
 ## Scripts
 
-Run every script from the repository root with `uv run`. Paths in config files and
-prompts are interpreted relative to that working directory.
+Run the three public scripts from the repository root with `uv run`. Paths in config
+files and prompts are interpreted relative to that working directory.
 
-| Script                         | Responsibility and invocation                              |
-| ------------------------------ | ---------------------------------------------------------- |
-| `restore_raw_sources.py`       | Safely restores the archive after validating its members.  |
-| `build_raw_archive.py`         | Packs restored raw snapshots into a byte-stable archive.   |
-| `download_sources.py`          | `resolve` locks selectors; `fetch` refreshes snapshots.    |
-| `build_distributions.py`       | Builds a checksummed offline bundle from raw snapshots.    |
-| `generate_demographics.py`     | Creates deterministic Phase 2 and OCEAN records.           |
-| `validate_dataset.py`          | Validates `sources`, `demographics`, or `personas`.        |
-| `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample.           |
-| `generate_persona.py`          | Guarded single-request LLM run for one persona.            |
-| `build_dataset.py`             | Merges validated persona shards.                           |
-| `fix_dot_env_file.py`          | Creates `.env`; non-interactive leaves Git identity blank. |
+| Script                 | Responsibility and invocation                              |
+| ---------------------- | ---------------------------------------------------------- |
+| `generate_persona.py` | Guarded single-request LLM run for one persona.            |
+| `build_dataset.py`    | Builds and optionally publishes validated persona datasets. |
+| `fix_dot_env_file.py` | Creates `.env`; non-interactive leaves Git identity blank. |
 
-Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no
-`generate_attributes.py`; each persona request returns structured attributes and the
-persona together.
+When either persona script omits `--input`, it calls
+`danish_personas.workflows.prepare_standard_sample` to restore, prepare, validate, and
+reuse the deterministic prerequisites. Source refresh, archive, and deterministic
+maintenance operations remain importable services, not public scripts. Each persona
+request returns structured attributes and the persona together.
 
 ## Tests
 
@@ -98,8 +94,8 @@ client when testing LLM paths.
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that
 lock schema. Statistics Denmark publishes classifications as attachments on dst.dk
 rather than through the StatBank data API, so they use `classification.py` instead of a
-StatBank selector. `download_sources.py resolve` warns and rewrites a lock that predates
-the current schema, and `download_sources.py fetch` fetches classifications as well as
+StatBank selector. `danish_personas.sources.acquisition.resolve_sources` warns and rewrites a lock that
+predates the current schema, while `fetch_sources` fetches classifications as well as
 tables.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
@@ -171,42 +167,29 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 7. Validate each persona run; `generate_persona.py` emits one row, while each
    `build_dataset.py` shard is capped at five rows before merge and pilot validation.
 
-The normal non-LLM stages are:
-
-```bash
-uv run src/scripts/restore_raw_sources.py
-uv run src/scripts/build_distributions.py \
-  --lock config/sources.lock.yaml --categories config/categories.yaml \
-  --raw-dir data/raw-hardened-20260919 --output-dir data/processed
-uv run src/scripts/validate_dataset.py sources --bundle "$BUNDLE"
-uv run src/scripts/generate_demographics.py \
-  --bundle "$BUNDLE" --rows 1000 --seed 20260914 \
-  --output-dir data/runs/smoke
-uv run src/scripts/validate_dataset.py demographics \
-  --run "$RUN" --bundle "$BUNDLE"
-```
-
-Use the full copy-pasteable workflows in `README.md` to capture exact bundle/run paths,
-produce the 100,000-row run, and freeze a sample. Run `download_sources.py resolve` and
-`fetch` only for an intentional source refresh: both require network access to
-Statistics Denmark, and refreshed responses create a new provenance chain. Review
-changes to the lock and source register before accepting refreshed snapshots.
+The normal deterministic stages are orchestrated by
+`danish_personas.workflows.prepare_standard_sample()`. The public persona scripts call
+this service automatically when `--input` is omitted. It restores the archive when the
+raw snapshot tree is absent, prepares and validates sources, validates smoke and
+statistical demographic runs, and freezes the standard sample. Source refresh and
+archive repacking remain deliberate importable maintenance operations; refreshed
+responses create a new provenance chain and require review.
 
 ## Outputs and provenance
 
-`data/raw-hardened-20260919.tar.zst` and `data/README.md` are tracked. The restore
-script rejects empty archives and unsafe members, permits only regular files under the
-expected root, and stages extraction before installing the ignored, immutable snapshots
-into `data/raw-hardened-20260919/`. It does not compare the archive's top-level SHA-256
-or validate snapshot manifests and checksums; bundle preparation validates each locked
-snapshot's manifest, provenance, query, and file checksums.
+`data/raw-hardened-20260919.tar.zst` and `data/README.md` are tracked. The archive
+restoration service rejects empty archives and unsafe members, permits only regular files
+under the expected root, and stages extraction before installing the ignored, immutable
+snapshots into `data/raw-hardened-20260919/`. It does not compare the archive's top-level
+SHA-256 or validate snapshot manifests and checksums; bundle preparation validates each
+locked snapshot's manifest, provenance, query, and file checksums.
 
 Table snapshots sit under `<table>/<query-hash>/`. Classification snapshots sit under
 `classifications/<classification-id>/<url-hash>/` and hold three files: `data.csv`,
-`response-headers.json`, and `snapshot-manifest.json`. `build_raw_archive.py` repacks
-the restored snapshots byte-stably, sorting members by archive path and fixing mode,
-owner, and timestamp, so an unchanged snapshot tree always produces identical archive
-bytes.
+`response-headers.json`, and `snapshot-manifest.json`. The
+`danish_personas.sources.archive.build_raw_archive` service repacks the restored
+snapshots byte-stably, sorting members by archive path and fixing mode, owner, and
+timestamp, so an unchanged snapshot tree always produces identical archive bytes.
 
 Prepared bundles contain normalised Parquet files, `bundle-manifest.json`, and source
 preparation reports. `normalized/geography_hierarchy.parquet` holds the official region,

@@ -29,9 +29,11 @@ def test_build_dataset_prints_merged_path(
         lambda **_: SimpleNamespace(passed=True),
     )
     arguments = [
+        "--input",
+        str(tmp_path / "sample.parquet"),
         "--rows",
         "1",
-        "--maximum-total-requests",
+        "--request-limit",
         "2",
         "--input-price-per-million",
         "0",
@@ -63,7 +65,7 @@ def test_build_dataset_requires_release_inputs_before_running(
         [
             "--rows",
             "1",
-            "--maximum-total-requests",
+            "--request-limit",
             "2",
             "--input-price-per-million",
             "0",
@@ -94,6 +96,11 @@ def test_generate_persona_emits_only_validated_text(
         calls.update(kwargs)
         return run_dir
 
+    monkeypatch.setattr(
+        generate_persona,
+        "prepare_standard_sample",
+        lambda: (tmp_path / "sample.parquet", tmp_path / "sample.manifest.json"),
+    )
     monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 1)
     monkeypatch.setattr(generate_persona, "generate_personas", generate)
     monkeypatch.setattr(
@@ -107,6 +114,7 @@ def test_generate_persona_emits_only_validated_text(
     assert result.exit_code == 0, result.output
     assert result.stdout == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
+    assert calls["sample_manifest_path"] == tmp_path / "sample.manifest.json"
     assert "Loading and validating persona inputs" in result.stderr
     assert "Dette er en dansk syntetisk persona." not in result.stderr
 

@@ -750,12 +750,9 @@ src/danish_personas/
   generation/
   validation/
 src/scripts/
-  download_sources.py
-  build_distributions.py
-  generate_demographics.py
-  generate_personas.py
-  validate_dataset.py
-  export_release.py
+  fix_dot_env_file.py
+  generate_persona.py
+  build_dataset.py
 tests/
   sources/
   sampling/
