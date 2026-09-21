@@ -207,6 +207,11 @@ not be inferred from sex, ancestry, geography, education, or labour-market statu
 - `hobbies_and_interests`
 - `hobbies_and_interests_list`: native `list[string]`
 - `career_goals_and_ambitions`
+- `first_name`
+- `current_relationship_status`
+- `partner_first_name`
+- `partner_gender`
+- `legal_status_detail` for the married/separated source category
 
 `cultural_context` should describe plausible everyday context without claiming a
 religion, ethnicity, political view, diagnosis, sexuality, or other sensitive trait. The
@@ -221,16 +226,16 @@ identity claims.
   biography, and cautious OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
-`origin_country_da`, and job-function labels for this grounding. It does not receive
-municipality or job-function codes, the origin code, English `origin_country`, contract
-metadata, or resolution fields. The English label remains source/audit provenance only.
-Neither origin label is ethnicity, citizenship, residence, or appearance. Origin cannot
-drive culture, religion, job, interests, personality, or visual traits. A job title is
-synthetic and must not imply unsupported work history. Fictional given names, education
-detail, workplace settings, relationships, and family details are permitted, while
-surnames, real organisations, exact addresses, appearance, and sensitive traits remain
-prohibited. The persona is not a visual description; downstream image models may still
-stereotype.
+`origin_country_da`, sampled legal `marital_status`, and job-function labels for this
+purpose. It does not receive municipality or job-function codes, the origin code,
+English `origin_country`, contract metadata, or resolution fields. The English label
+remains source/audit provenance only. Neither origin label is ethnicity, citizenship,
+residence, or appearance. Origin cannot drive culture, religion, job, interests,
+personality, or visual traits. A job title is synthetic and must not imply unsupported
+work history. Ordinary first names, education detail, workplace settings, relationships,
+and family details are permitted, while surnames, real organisations, exact addresses,
+appearance, and sensitive traits remain prohibited. The persona is not a visual
+description; downstream image models may still stereotype.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with
@@ -349,7 +354,7 @@ Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot
 culture, religion, job, interests, personality, or visual traits.
 
 The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
-schema 3, generation contract 4, validator `persona-safety-v17`, and release
+schema 3, generation contract 4, validator `persona-safety-v18`, and release
 release manifest schema 2 and evidence schema 3. The current offline bundle is
 `8a4133e5a0a52050`; its
 passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
@@ -469,7 +474,8 @@ errors in a restricted intermediate area, not in the release artifact.
 
 Use one structured generation call returning attributes and one detailed, grounded
 `persona`. The provider request may receive the municipality, official Danish
-`origin_country_da`, and job-function labels as appropriate, but never
+`origin_country_da`, sampled legal `marital_status`, and job-function labels as
+appropriate, but never
 their codes, English origin label, contract metadata, or resolution fields. The exact
 Danish label must ground the persona. It must use a synthetic job title or current
 nonemployee status, allow natural use of interests in prose, and express OCEAN only as

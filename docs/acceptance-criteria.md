@@ -105,11 +105,11 @@ These gates apply before any LLM integration may be enabled.
   ethnicity, citizenship, residence, or appearance. Origin cannot drive culture,
   religion, job, interests, personality, or visual traits.
 - Origin and job-function fields remain in upstream/generated outputs and
-  input/checkpoint hashes. Human-readable municipality, Danish `origin_country_da`, and
-  job-function labels may reach the provider request for grounding; origin code, English
-  `origin_country`, contract metadata, and all resolution fields do not. The exact
-  Danish label is the origin fact in the grounded persona. Job titles are synthetic and
-  must not imply unsupported work history.
+  input/checkpoint hashes. Human-readable municipality, Danish `origin_country_da`,
+  sampled legal `marital_status`, and job-function labels may reach the provider request
+  for grounding; origin code, English `origin_country`, contract metadata, and all
+  resolution fields do not. The exact Danish label is the origin fact in the grounded
+  persona. Job titles are synthetic and must not imply unsupported work history.
 
 `SAMPLER_SCHEMA_VERSION` is 6 and must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. The frozen-sample schema
@@ -142,18 +142,19 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   erhvervsuddannelse` are rejected, along with redundant sex nouns and data-model
   jargon.
 - The provider receives human-readable municipality, the official Danish
-  `origin_country_da`, and job-function labels, plus the reviewed allowlist of Danish
-  titles for that label, but never origin code, English label, contract metadata, or
-  resolution fields. A generated title must equal an allowlist entry exactly.
+  `origin_country_da`, sampled legal `marital_status`, and job-function labels, plus the
+  reviewed allowlist of Danish titles for that label, but never origin code, English
+  label, contract metadata, or resolution fields. A generated title must equal an
+  allowlist entry exactly.
 - The versioned 42-code title mapping is checksum-bound into generation context,
   checkpoints, shards, pilots, and the offline release package.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
   patterns, and does not contain inflectional sensitive terms or physical-appearance
-  claims. Fictional first names and ordinary relationship or family details are
-  allowed, but surnames, real employer or institution names, and exact addresses are
-  prohibited. Downstream image models may stereotype, so this contract does not make
+  claims. Ordinary first names and relationship or family details are allowed, but
+  surnames, real employer or institution names, and exact addresses are prohibited.
+  Downstream image models may stereotype, so this contract does not make
   image generation safe.
 - Exact duplicate persona descriptions are rejected across each run and pilot.
 - Current generation-4 per-record checkpoints support resume without repeating
@@ -179,13 +180,13 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract 4 and validator `persona-safety-v17`,
+- A release must identify generation contract 4 and validator `persona-safety-v18`,
   and retain only the detailed grounded `persona`. Detailed education is explicitly
   fictional rather than source-backed. The release manifest remains schema 2, while
   release evidence is schema 3 because its prompt provenance contract changed. The
-  package must record that the provider
-  request contains approved human-readable municipality, Danish origin, and job-function
-  labels only, not origin code, English label, contract metadata, or resolutions, and
+  package must record that the provider request contains approved human-readable
+  municipality, Danish origin, sampled legal marital status, and job-function labels
+  only, not origin code, English label, contract metadata, or resolution fields, and
   must disclose synthetic job titles and image-model stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
   evidence checksums, provenance, row counts, and human-review evidence. Hugging Face

@@ -21,6 +21,11 @@ PERSONA_OUTPUT_COLUMNS = (
     "hobbies_and_interests",
     "career_goals_and_ambitions",
     "job_title",
+    "first_name",
+    "current_relationship_status",
+    "partner_first_name",
+    "partner_gender",
+    "legal_status_detail",
     "persona",
 )
 
@@ -56,7 +61,14 @@ def persona_output_dtypes_are_valid(output: pl.DataFrame) -> bool:
         if name == "age" and actual_dtype in {pl.Int32, pl.Int64}:
             continue
         if (
-            name in {"career_goals_and_ambitions", "job_title"}
+            name
+            in {
+                "career_goals_and_ambitions",
+                "job_title",
+                "partner_first_name",
+                "partner_gender",
+                "legal_status_detail",
+            }
             and actual_dtype == pl.Null
         ):
             continue
