@@ -251,47 +251,28 @@ This workflow is separate from the non-LLM pipeline and may incur provider charg
 sends frozen aggregate-derived records to the configured OpenAI-compatible endpoint.
 Automated checks are necessary but do not replace blinded human review.
 
-First create a local configuration. Keep the committed file disabled; for a dry run, the
-local copy can retain `false`, null endpoint/model values, and no token:
+First create a local configuration. Keep the committed file disabled; the local copy
+must enable generation only for an explicitly approved live run:
 
 ```bash
 cp config/generation.yaml config/generation.local.yaml
 ```
 
-Run the safe plan first. It validates the upstream report, sample checksum, prompts,
-schemas, and row/request limits without making network requests or creating output
-files:
+The single-persona command validates the upstream report, sample checksum, prompts,
+schemas, and row/request limits before emitting the final Danish text. For an approved
+run, edit only the ignored local config: set `llm_generation_enabled: true`, `base_url`,
+and `model`. Set `api_key_env` to the name of a bearer-token variable if the endpoint
+requires authentication. Use a short-lived command-scoped token assignment and add
+`--live` explicitly:
 
 ```bash
-uv run src/scripts/generate_personas.py \
+OPENAI_API_KEY='replace-with-a-token' \
+uv run src/scripts/generate_persona.py \
   --input "$RUN/text-development-seeds.parquet" \
   --sample-manifest "$RUN/text-development-seeds.manifest.json" \
   --config config/generation.local.yaml \
-  --output-dir data/persona-smoke \
-  --rows 3
-```
-
-For an approved smoke test, edit only the ignored local config: set
-`llm_generation_enabled: true`, `base_url`, and `model`. Set `api_key_env` to the name
-of a bearer-token variable if the endpoint requires authentication. Use a short-lived
-command-scoped token assignment and add `--live` explicitly. Replace `OPENAI_API_KEY`
-below with the configured `api_key_env` name when needed:
-
-```bash
-set -o pipefail
-PERSONA_RUN=$( \
-  OPENAI_API_KEY='replace-with-a-token' \
-  uv run src/scripts/generate_personas.py \
-    --input "$RUN/text-development-seeds.parquet" \
-    --sample-manifest "$RUN/text-development-seeds.manifest.json" \
-    --config config/generation.local.yaml \
-    --output-dir data/persona-smoke \
-    --rows 3 \
-    --live \
-    2>&1 | tee /dev/stderr | sed -n 's/^INFO Persona generation run: //p' \
-)
-test -n "$PERSONA_RUN" || exit 1
-uv run src/scripts/validate_dataset.py personas --run "$PERSONA_RUN"
+  --output-dir data/personas \
+  --live
 ```
 
 Each record uses two model stages: structured attributes, then one short Danish
@@ -302,13 +283,12 @@ persona preserves supplied demographic facts without requiring fixed clauses, pe
 benign consistent elaboration, and does not require any fixed count of interests or
 personality tendencies. Broad education remains source-backed and non-specific. The
 persona is not a visual description. See
-[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A
-repeated live command resumes only valid v4 per-record checkpoints and does not repeat
+[`docs/persona-prompt-format.md`](docs/persona-prompt-format.md) for the contract. A repeated live command resumes only valid v4 per-record checkpoints and does not repeat
 completed calls. v1-v3 checkpoints and old pilots are historical and not resumable under
-v4. Each `generate_personas.py` invocation is one shard capped at five rows, while a
-pilot can span multiple such shards. The default HTTP-attempt budget is 15 per shard.
-
-For a multi-shard pilot, use `generate_persona_pilot.py`. It requires `--live`, limits
+v4. Each `generate_persona.py` invocation emits one validated persona, while
+`build_dataset.py` can span multiple five-row shards. The default HTTP-attempt budget is
+15 per shard.
+For a multi-shard pilot, use `build_dataset.py`. It requires `--live`, limits
 each shard to five rows, validates each shard, merges them, records token/cost
 accounting, and validates the merged pilot. A pilot can therefore contain more than five
 rows. Enter the provider's current list prices before running the live pilot. Use zero
@@ -327,7 +307,7 @@ needed:
 
 ```bash
 OPENAI_API_KEY='replace-with-a-token' \
-uv run src/scripts/generate_persona_pilot.py \
+uv run src/scripts/build_dataset.py \
   --input "$RUN/text-development-seeds.parquet" \
   --sample-manifest "$RUN/text-development-seeds.manifest.json" \
   --config config/generation.local.yaml \
@@ -341,8 +321,8 @@ uv run src/scripts/generate_persona_pilot.py \
   --live
 ```
 
-The dry-run commands above do not contact a provider. Only commands with `--live` need
-provider reachability, and live commands can consume paid requests.
+Only commands with `--live` need provider reachability, and live commands can consume
+paid requests.
 
 ## Outputs and data handling
 

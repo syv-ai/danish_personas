@@ -19,6 +19,7 @@ from .policy import (
     required_review_count,
     validate_release_approval,
 )
+from .upload import upload_release
 from .verifier import ReleaseVerificationError, verify_release
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "required_review_count",
     "validate_release_approval",
     "verify_release",
+    "upload_release",
 ]

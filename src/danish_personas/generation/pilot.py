@@ -1,5 +1,6 @@
 """Resumable, bounded persona-pilot orchestration service."""
 
+import collections.abc as c
 import concurrent.futures as futures
 import logging
 import time
@@ -44,6 +45,7 @@ def run_pilot(
     maximum_total_requests: int,
     input_price_per_million: float,
     output_price_per_million: float,
+    progress_callback: c.Callable[[int], None] | None = None,
 ) -> Path:
     """Generate and merge a validated, resumable persona pilot.
 
@@ -74,6 +76,8 @@ def run_pilot(
             Input-token price used for cost accounting.
         output_price_per_million:
             Output-token price used for cost accounting.
+        progress_callback (optional):
+            Callback invoked with the number of rows in each validated shard.
 
     Returns:
         Completed pilot directory.
@@ -142,6 +146,7 @@ def run_pilot(
         sample_manifest_path=sample_manifest_path,
         config_path=config_path,
         output_dir=batch_root,
+        progress_callback=progress_callback,
     )
     manifests = [
         GenerationManifest.model_validate_json(
@@ -317,6 +322,7 @@ def _run_batches(
     sample_manifest_path: Path,
     config_path: Path,
     output_dir: Path,
+    progress_callback: c.Callable[[int], None] | None,
 ) -> list[Path]:
     run_dirs: dict[int, Path] = {}
     remaining = iter(offsets)
@@ -349,6 +355,9 @@ def _run_batches(
                     message = f"Pilot batch at offset {offset} failed validation"
                     raise ValueError(message)
                 run_dirs[offset] = run_dir
+                _report_progress(
+                    callback=progress_callback, rows=min(batch_size, rows - offset)
+                )
             if delay_between_batches and not pending:
                 time.sleep(delay_between_batches)
             for _ in completed_runs:
@@ -373,6 +382,12 @@ def _run_batches(
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
     return [run_dirs[offset] for offset in offsets]
+
+
+def _report_progress(*, callback: c.Callable[[int], None] | None, rows: int) -> None:
+    """Report rows after a shard has passed validation."""
+    if callback is not None:
+        callback(rows)
 
 
 def _submit_batch(

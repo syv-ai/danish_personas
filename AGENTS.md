@@ -55,14 +55,12 @@ prompts are interpreted relative to that working directory.
 | `generate_demographics.py`     | Creates deterministic Phase 2 and OCEAN records.           |
 | `validate_dataset.py`          | Validates `sources`, `demographics`, or `personas`.        |
 | `freeze_demographic_sample.py` | Makes a deterministic stratified Phase 3 sample.           |
-| `generate_personas.py`         | Guarded two-stage LLM run, max five rows per shard.        |
-| `generate_persona_pilot.py`    | Merges validated shards; requires `--live`.                |
+| `generate_persona.py`          | Guarded two-stage LLM run for one persona.                 |
+| `build_dataset.py`             | Merges validated shards; requires `--live`.                |
 | `fix_dot_env_file.py`          | Creates `.env`; non-interactive leaves Git identity blank. |
 
-Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no
-`generate_attributes.py`; structured attributes are the first stage of
-`generate_personas.py`.
-
+Use `uv run src/scripts/<script>.py --help` to inspect Click options. There is no `generate_attributes.py`; structured attributes are the first stage of
+`generate_persona.py` and `build_dataset.py`.
 ## Tests
 
 | Path                 | Coverage                                                    |
@@ -171,8 +169,8 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 5. Freeze the stratified text-development sample.
 6. Dry-run LLM planning; it needs no provider, and only an approved operator may enable
    `--live`.
-7. Validate each persona run; each `generate_personas.py` shard is capped at five rows,
-   while a pilot may span multiple validated shards before merge and pilot validation.
+7. Validate each persona run; `generate_persona.py` emits one row, while each
+   `build_dataset.py` shard is capped at five rows before merge and pilot validation.
 
 The normal non-LLM stages are:
 
@@ -253,7 +251,7 @@ current contracts have been regenerated; use placeholders in instructions.
 
 ## Non-obvious gotchas and safety
 
-- The committed generation config is disabled. `generate_personas.py` dry-run performs
+- The committed generation config is disabled. `generate_persona.py` performs
   validation and planning only; it does not need provider reachability. `--live`
   additionally requires local enablement, endpoint, model, provider reachability, and
   may spend money. The pilot has its own global request limit and requires current input

@@ -11,7 +11,7 @@ from generation_test_helpers import MockGenerationClient, write_generation_input
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.report import validate_persona_pilot
 from danish_personas.io import sha256_file, write_json
-from scripts.generate_persona_pilot import main as pilot_main
+from scripts.build_dataset import main as pilot_main
 
 
 def test_pilot_identity_changes_when_prompt_context_changes(

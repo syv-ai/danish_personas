@@ -6,7 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from danish_personas import cli
-from scripts.generate_personas import main
+from scripts.generate_persona import main
 
 RUNNER = CliRunner()
 
@@ -24,8 +24,6 @@ def test_llm_generation_is_disabled() -> None:
             str(Path("config/generation.yaml")),
             "--output-dir",
             "data/test-output",
-            "--rows",
-            "1",
             "--live",
         ],
     )

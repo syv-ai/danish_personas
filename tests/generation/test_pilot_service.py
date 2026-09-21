@@ -34,13 +34,17 @@ def test_pilot_service_preserves_order_enforces_budget_and_resumes(
         "input_price_per_million": 0.3,
         "output_price_per_million": 1.2,
     }
-    pilot_dir = run_pilot(**pilot_kwargs)
+    progress: list[int] = []
+    pilot_dir = run_pilot(**pilot_kwargs, progress_callback=progress.append)
     output = pl.read_parquet(pilot_dir / "generated-personas.parquet")
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
     assert MockGenerationClient.requests == 4
+    assert progress == [1, 1]
 
-    run_pilot(**pilot_kwargs)
+    progress.clear()
+    run_pilot(**pilot_kwargs, progress_callback=progress.append)
     assert MockGenerationClient.requests == 4
+    assert progress == [1, 1]
 
     with pytest.raises(ValueError, match="Worst-case pilot requests"):
         run_pilot(**{**pilot_kwargs, "maximum_total_requests": 1})
@@ -95,6 +99,7 @@ def test_pilot_service_stops_after_early_shard_failure(
     monkeypatch.setattr(
         "danish_personas.generation.pilot.generate_personas", fail_generation
     )
+    progress: list[int] = []
     with pytest.raises(ValueError, match="synthetic shard failure"):
         run_pilot(
             input_path=paths["sample"],
@@ -108,5 +113,7 @@ def test_pilot_service_stops_after_early_shard_failure(
             maximum_total_requests=10,
             input_price_per_million=0.3,
             output_price_per_million=1.2,
+            progress_callback=progress.append,
         )
+    assert progress == []
     assert not list((tmp_path / "failed-pilot").glob("*/pilot-manifest.json"))
