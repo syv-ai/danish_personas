@@ -95,6 +95,62 @@ def test_freeze_applies_mode_within_each_origin(
     ]
 
 
+def test_freeze_fallback_preserves_origin_quota_when_strata_are_infeasible() -> None:
+    """An infeasible exact swap uses the documented maximum-overlap fallback."""
+    frame = pl.DataFrame(
+        [
+            {
+                "persona_id": f"{origin}-{municipality}-{index}",
+                "origin_country_code": origin,
+                "municipality_code": municipality,
+                "education_level": "higher_education",
+                "labour_market_status": "employed",
+            }
+            for origin, municipality, count in (
+                ("5100", "101", 3),
+                ("5100", "265", 3),
+                ("5456", "999", 1),
+            )
+            for index in range(count)
+        ]
+    )
+
+    sample = _select_sample(frame=frame, rows=4, mode="population_proportional")
+
+    assert sample.height == 4
+    assert sample.get_column("persona_id").n_unique() == 4
+    assert sample.get_column("origin_country_code").value_counts().sort(
+        "origin_country_code"
+    ).to_dicts() == [
+        {"origin_country_code": "5100", "count": 3},
+        {"origin_country_code": "5456", "count": 1},
+    ]
+    assert sample.get_column("municipality_code").value_counts().sort(
+        "municipality_code"
+    ).to_dicts() == [
+        {"municipality_code": "101", "count": 2},
+        {"municipality_code": "265", "count": 1},
+        {"municipality_code": "999", "count": 1},
+    ]
+
+
+def test_freeze_origin_ties_use_sorted_codes_not_input_order() -> None:
+    """Equal origin remainders select the lowest sorted codes first."""
+    frame = _source_frame(("5999", 2), ("5100", 2), ("5456", 2))
+    reversed_frame = frame.reverse()
+
+    first = _select_sample(frame=frame, rows=2, mode="population_proportional")
+    second = _select_sample(
+        frame=reversed_frame, rows=2, mode="population_proportional"
+    )
+
+    assert first.get_column("origin_country_code").to_list() == ["5100", "5456"]
+    assert (
+        first.get_column("persona_id").to_list()
+        == second.get_column("persona_id").to_list()
+    )
+
+
 @pytest.mark.parametrize("mode", ["population_proportional", "stratified_round_robin"])
 def test_freeze_preserves_global_strata_after_origin_swaps(
     mode: t.Literal["population_proportional", "stratified_round_robin"],
@@ -150,62 +206,6 @@ def _strata_counts(frame: pl.DataFrame) -> list[dict[str, object]]:
         .len()
         .sort(["municipality_code", "education_level", "labour_market_status"])
         .to_dicts()
-    )
-
-
-def test_freeze_fallback_preserves_origin_quota_when_strata_are_infeasible() -> None:
-    """An infeasible exact swap uses the documented maximum-overlap fallback."""
-    frame = pl.DataFrame(
-        [
-            {
-                "persona_id": f"{origin}-{municipality}-{index}",
-                "origin_country_code": origin,
-                "municipality_code": municipality,
-                "education_level": "higher_education",
-                "labour_market_status": "employed",
-            }
-            for origin, municipality, count in (
-                ("5100", "101", 3),
-                ("5100", "265", 3),
-                ("5456", "999", 1),
-            )
-            for index in range(count)
-        ]
-    )
-
-    sample = _select_sample(frame=frame, rows=4, mode="population_proportional")
-
-    assert sample.height == 4
-    assert sample.get_column("persona_id").n_unique() == 4
-    assert sample.get_column("origin_country_code").value_counts().sort(
-        "origin_country_code"
-    ).to_dicts() == [
-        {"origin_country_code": "5100", "count": 3},
-        {"origin_country_code": "5456", "count": 1},
-    ]
-    assert sample.get_column("municipality_code").value_counts().sort(
-        "municipality_code"
-    ).to_dicts() == [
-        {"municipality_code": "101", "count": 2},
-        {"municipality_code": "265", "count": 1},
-        {"municipality_code": "999", "count": 1},
-    ]
-
-
-def test_freeze_origin_ties_use_sorted_codes_not_input_order() -> None:
-    """Equal origin remainders select the lowest sorted codes first."""
-    frame = _source_frame(("5999", 2), ("5100", 2), ("5456", 2))
-    reversed_frame = frame.reverse()
-
-    first = _select_sample(frame=frame, rows=2, mode="population_proportional")
-    second = _select_sample(
-        frame=reversed_frame, rows=2, mode="population_proportional"
-    )
-
-    assert first.get_column("origin_country_code").to_list() == ["5100", "5456"]
-    assert (
-        first.get_column("persona_id").to_list()
-        == second.get_column("persona_id").to_list()
     )
 
 

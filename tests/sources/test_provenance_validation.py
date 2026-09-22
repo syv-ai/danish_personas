@@ -143,25 +143,6 @@ def test_raw_query_must_match_source_lock(tmp_path: Path) -> None:
     assert snapshot.query_sha256 == sha256_text(contents["query.json"])
 
 
-def test_schema_8_bundle_requires_folk2_eligibility_report(tmp_path: Path) -> None:
-    """A passing source report cannot omit the FOLK2 eligibility gate."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    source_report = bundle_dir / "source-preparation-report.json"
-    write_json(
-        path=source_report, payload={"passed": True, "origin_country_checks": {}}
-    )
-    manifest_path = bundle_dir / "bundle-manifest.json"
-    manifest = BundleManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
-    )
-    files = dict(manifest.files)
-    files[source_report.name] = sha256_file(source_report)
-    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
-
-    with pytest.raises(ValueError, match="missing the FOLK2 eligibility block"):
-        verify_prepared_bundle(bundle_dir=bundle_dir)
-
-
 def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
     tmp_path: Path,
 ) -> None:
@@ -190,6 +171,25 @@ def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
 
     with pytest.raises(ValueError, match="differs from recomputed validation"):
         validate_sources(bundle_dir=bundle_dir)
+
+
+def test_schema_8_bundle_requires_folk2_eligibility_report(tmp_path: Path) -> None:
+    """A passing source report cannot omit the FOLK2 eligibility gate."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    source_report = bundle_dir / "source-preparation-report.json"
+    write_json(
+        path=source_report, payload={"passed": True, "origin_country_checks": {}}
+    )
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    files = dict(manifest.files)
+    files[source_report.name] = sha256_file(source_report)
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
+
+    with pytest.raises(ValueError, match="missing the FOLK2 eligibility block"):
+        verify_prepared_bundle(bundle_dir=bundle_dir)
 
 
 def test_source_validation_binds_origin_eligibility_threshold(tmp_path: Path) -> None:

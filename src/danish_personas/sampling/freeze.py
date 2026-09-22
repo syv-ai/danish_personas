@@ -167,8 +167,8 @@ def _select_sample(
     """Select rows with an origin marginal and the requested inner strategy.
 
     The unconstrained selection is made before applying the origin marginal. A
-    A deterministic flow fallback finds a selection with the same STRATA margins,
-    when one exists. This is equivalent to deterministic swaps within a STRATA
+    deterministic flow fallback finds a selection with the same STRATA margins when
+    one exists. This is equivalent to deterministic swaps within a STRATA
     cell and avoids making the origin marginal distort the global allocation.
 
     Returns:
@@ -250,13 +250,6 @@ def _build_cells(
     )
 
 
-def _ordered_cells(
-    *, cell_rows: dict[tuple[tuple[object, ...], str], list[int]]
-) -> list[tuple[tuple[object, ...], str]]:
-    """Return cells in sorted STRATA and origin order."""
-    return sorted(cell_rows, key=lambda cell: (cell[0], cell[1]))
-
-
 def _choose_cell_rows(
     *, positions: list[int], count: int, baseline_positions: set[int]
 ) -> list[int]:
@@ -270,6 +263,38 @@ def _choose_cell_rows(
         position for position in positions if position not in baseline_positions
     ]
     return (retained + replacements)[:count]
+
+
+def _largest_remainder_quotas(
+    *, groups: list[pl.DataFrame], rows: int, group_key: str | None
+) -> list[int]:
+    """Allocate rows proportionally, resolving ties by sorted group code.
+
+    Returns:
+        One non-negative quota for each input group.
+    """
+    total = sum(group.height for group in groups)
+    numerators = [group.height * rows for group in groups]
+    quotas = [numerator // total for numerator in numerators]
+    remaining = rows - sum(quotas)
+    if group_key is None:
+        tie_keys = list(range(len(groups)))
+    else:
+        tie_keys = [group.item(0, group_key) for group in groups]
+    remainders = [numerator % total for numerator in numerators]
+    remainder_order = sorted(
+        range(len(groups)), key=lambda index: (-remainders[index], tie_keys[index])
+    )
+    for index in remainder_order[:remaining]:
+        quotas[index] += 1
+    return quotas
+
+
+def _ordered_cells(
+    *, cell_rows: dict[tuple[tuple[object, ...], str], list[int]]
+) -> list[tuple[tuple[object, ...], str]]:
+    """Return cells in sorted STRATA and origin order."""
+    return sorted(cell_rows, key=lambda cell: (cell[0], cell[1]))
 
 
 def _select_cell_counts(
@@ -382,17 +407,6 @@ def _greedy_strata_swaps(
     return {cell: selected.get(cell, 0) for cell in cell_capacity}
 
 
-class _FlowEdge:
-    """Mutable residual edge for the deterministic min-cost flow solver."""
-
-    def __init__(self, *, target: int, reverse: int, capacity: int, cost: int) -> None:
-        self.target = target
-        self.reverse = reverse
-        self.capacity = capacity
-        self.cost = cost
-        self.initial_capacity = capacity
-
-
 def _run_cell_flow(
     *,
     cell_capacity: dict[tuple[tuple[object, ...], str], int],
@@ -467,29 +481,15 @@ def _run_cell_flow(
     }
 
 
-def _flow_layout(
-    *, strata: list[tuple[object, ...]], origins: list[str], preserve_strata: bool
-) -> tuple[int, int, int, dict[tuple[object, ...], int], dict[str, int]]:
-    """Allocate deterministic node identifiers for a flow network.
+class _FlowEdge:
+    """Mutable residual edge for the deterministic min-cost flow solver."""
 
-    Returns:
-        Source, sink, node count, and node maps for the network.
-    """
-    if preserve_strata:
-        stratum_nodes = {stratum: index + 1 for index, stratum in enumerate(strata)}
-        origin_start = len(strata) + 1
-        origin_nodes = {
-            origin: origin_start + index for index, origin in enumerate(origins)
-        }
-        sink = origin_start + len(origins)
-    else:
-        origin_nodes = {origin: index + 1 for index, origin in enumerate(origins)}
-        stratum_start = len(origins) + 1
-        stratum_nodes = {
-            stratum: stratum_start + index for index, stratum in enumerate(strata)
-        }
-        sink = stratum_start + len(strata)
-    return 0, sink, sink + 1, stratum_nodes, origin_nodes
+    def __init__(self, *, target: int, reverse: int, capacity: int, cost: int) -> None:
+        self.target = target
+        self.reverse = reverse
+        self.capacity = capacity
+        self.cost = cost
+        self.initial_capacity = capacity
 
 
 def _add_flow_boundaries(
@@ -522,23 +522,6 @@ def _add_flow_boundaries(
         _add_flow_edge(graph, stratum_nodes[stratum], sink, capacity, 0)
 
 
-def _cell_endpoints(
-    *,
-    cell: tuple[tuple[object, ...], str],
-    stratum_nodes: dict[tuple[object, ...], int],
-    origin_nodes: dict[str, int],
-    preserve_strata: bool,
-) -> tuple[int, int]:
-    """Return the network endpoints for one cell.
-
-    Returns:
-        Source-side and sink-side node identifiers for the cell edge.
-    """
-    if preserve_strata:
-        return stratum_nodes[cell[0]], origin_nodes[cell[1]]
-    return origin_nodes[cell[1]], stratum_nodes[cell[0]]
-
-
 def _add_flow_edge(
     graph: list[list[_FlowEdge]], source: int, target: int, capacity: int, cost: int
 ) -> tuple[int, int]:
@@ -556,6 +539,48 @@ def _add_flow_edge(
         _FlowEdge(target=source, reverse=source_index, capacity=0, cost=-cost)
     )
     return source, source_index
+
+
+def _cell_endpoints(
+    *,
+    cell: tuple[tuple[object, ...], str],
+    stratum_nodes: dict[tuple[object, ...], int],
+    origin_nodes: dict[str, int],
+    preserve_strata: bool,
+) -> tuple[int, int]:
+    """Return the network endpoints for one cell.
+
+    Returns:
+        Source-side and sink-side node identifiers for the cell edge.
+    """
+    if preserve_strata:
+        return stratum_nodes[cell[0]], origin_nodes[cell[1]]
+    return origin_nodes[cell[1]], stratum_nodes[cell[0]]
+
+
+def _flow_layout(
+    *, strata: list[tuple[object, ...]], origins: list[str], preserve_strata: bool
+) -> tuple[int, int, int, dict[tuple[object, ...], int], dict[str, int]]:
+    """Allocate deterministic node identifiers for a flow network.
+
+    Returns:
+        Source, sink, node count, and node maps for the network.
+    """
+    if preserve_strata:
+        stratum_nodes = {stratum: index + 1 for index, stratum in enumerate(strata)}
+        origin_start = len(strata) + 1
+        origin_nodes = {
+            origin: origin_start + index for index, origin in enumerate(origins)
+        }
+        sink = origin_start + len(origins)
+    else:
+        origin_nodes = {origin: index + 1 for index, origin in enumerate(origins)}
+        stratum_start = len(origins) + 1
+        stratum_nodes = {
+            stratum: stratum_start + index for index, stratum in enumerate(strata)
+        }
+        sink = stratum_start + len(strata)
+    return 0, sink, sink + 1, stratum_nodes, origin_nodes
 
 
 def _max_flow(
@@ -638,31 +663,6 @@ def _send_blocking_flow(
                 return sent
         cursors[node] += 1
     return 0
-
-
-def _largest_remainder_quotas(
-    *, groups: list[pl.DataFrame], rows: int, group_key: str | None
-) -> list[int]:
-    """Allocate rows proportionally, resolving ties by sorted group code.
-
-    Returns:
-        One non-negative quota for each input group.
-    """
-    total = sum(group.height for group in groups)
-    numerators = [group.height * rows for group in groups]
-    quotas = [numerator // total for numerator in numerators]
-    remaining = rows - sum(quotas)
-    if group_key is None:
-        tie_keys = list(range(len(groups)))
-    else:
-        tie_keys = [group.item(0, group_key) for group in groups]
-    remainders = [numerator % total for numerator in numerators]
-    remainder_order = sorted(
-        range(len(groups)), key=lambda index: (-remainders[index], tie_keys[index])
-    )
-    for index in remainder_order[:remaining]:
-        quotas[index] += 1
-    return quotas
 
 
 def _select_within_origin(

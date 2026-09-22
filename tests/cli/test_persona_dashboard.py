@@ -112,6 +112,38 @@ def _run_dashboard(
     )
 
 
+def test_dashboard_accepts_current_valid_origin_rows(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """Current threshold-bound origin rows render without changing UMAP."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+
+    document = build_dashboard(
+        frame=_origin_dashboard_frame(bundle_dir=bundle_dir),
+        bundle_path=bundle_dir,
+        embedding_client=embedding_client[0],
+    )
+
+    assert "deterministic two-dimensional UMAP" in document
+
+
+def _origin_dashboard_frame(*, bundle_dir: Path, code: str = "5100") -> pl.DataFrame:
+    """Return two generated rows using one official origin mapping."""
+    source = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    ).filter(pl.col("origin_country_code") == code)
+    row = source.to_dicts()[0]
+    return pl.DataFrame(
+        {
+            "persona_id": ["p-1", "p-2"],
+            "persona": ["En rolig hverdag.", "En travl hverdag."],
+            "origin_country_code": [code, code],
+            "origin_country": [row["origin_country"]] * 2,
+            "origin_country_da": [row["origin_country_da"]] * 2,
+        }
+    )
+
+
 def test_dashboard_handles_frame_without_colour_fields(
     tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
 ) -> None:
@@ -219,6 +251,57 @@ def _personas() -> pl.DataFrame:
     )
 
 
+def test_dashboard_rejects_ineligible_generated_origin_rows(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """Rows using a positive but sub-threshold origin are never embedded."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+
+    with pytest.raises(ValueError, match="ineligible"):
+        build_dashboard(
+            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
+            bundle_path=bundle_dir,
+            embedding_client=embedding_client[0],
+        )
+
+
+def test_dashboard_rejects_origin_flag_tampering(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """A forged eligibility flag cannot override the manifest threshold."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    path = bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    source = pl.read_parquet(path).with_columns(
+        pl.when(pl.col("origin_country_code") == "5103")
+        .then(pl.lit(True))
+        .otherwise(pl.col("eligible_for_sampling"))
+        .alias("eligible_for_sampling")
+    )
+    source.write_parquet(path)
+    refresh_bundle_manifest(bundle_dir=bundle_dir)
+
+    with pytest.raises(ValueError, match="does not match bundle minimum_source_count"):
+        build_dashboard(
+            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
+            bundle_path=bundle_dir,
+            embedding_client=embedding_client[0],
+        )
+
+
+def test_dashboard_rejects_origin_label_mismatch(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """A code paired with another official label is rejected before rendering."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    frame = _origin_dashboard_frame(bundle_dir=bundle_dir)
+    frame = frame.with_columns(pl.lit("Forkert").alias("origin_country_da"))
+
+    with pytest.raises(ValueError, match="labels do not match"):
+        build_dashboard(
+            frame=frame, bundle_path=bundle_dir, embedding_client=embedding_client[0]
+        )
+
+
 def test_domestic_origin_is_removed_and_remaining_values_are_renormalised() -> None:
     """The origin chart compares only non-Danish origin labels."""
     frame = pl.DataFrame(
@@ -305,6 +388,34 @@ def test_embedding_http_errors_are_not_silenced() -> None:
         persona_embedding(frame=frame, http_client=client)
 
 
+def test_embedding_projection_uses_umap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dashboard delegates non-trivial projections to deterministic UMAP."""
+    calls: dict[str, object] = {}
+
+    class FakeUMAP:
+        def __init__(self, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+
+        def fit_transform(self, matrix: object) -> list[list[float]]:
+            calls["matrix"] = matrix
+            return [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]
+
+    monkeypatch.setattr(dashboard, "UMAP", FakeUMAP)
+
+    coordinates = _umap_coordinates(
+        vectors=[[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]
+    )
+
+    assert coordinates == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]
+    assert calls["kwargs"] == {
+        "n_neighbors": 3,
+        "n_components": 2,
+        "random_state": 0,
+        "transform_seed": 0,
+        "init": "random",
+    }
+
+
 @pytest.mark.parametrize("indices", [[0, 0], [-1, 1], [0, 2], [True, 1], [0, None]])
 def test_embedding_rejects_invalid_batch_indices(indices: list[object]) -> None:
     """Embedding vectors are ordered only after an exact index-set check."""
@@ -337,50 +448,6 @@ def test_embedding_requests_are_batched_and_configured(
     assert all(isinstance(value, list) for value in inputs)
     assert [len(value) for value in inputs if isinstance(value, list)] == [2, 2, 1]
     assert all(request["model"] == "test-model" for request in embedding_client[1])
-
-
-def test_embedding_projection_uses_umap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The dashboard delegates non-trivial projections to deterministic UMAP."""
-    calls: dict[str, object] = {}
-
-    class FakeUMAP:
-        def __init__(self, **kwargs: object) -> None:
-            calls["kwargs"] = kwargs
-
-        def fit_transform(self, matrix: object) -> list[list[float]]:
-            calls["matrix"] = matrix
-            return [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]
-
-    monkeypatch.setattr(dashboard, "UMAP", FakeUMAP)
-
-    coordinates = _umap_coordinates(
-        vectors=[[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]
-    )
-
-    assert coordinates == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]
-    assert calls["kwargs"] == {
-        "n_neighbors": 3,
-        "n_components": 2,
-        "random_state": 0,
-        "transform_seed": 0,
-        "init": "random",
-    }
-
-
-@pytest.mark.parametrize(
-    ("vectors", "expected"),
-    [
-        ([], []),
-        ([[1.0, 2.0]], [(0.0, 0.0)]),
-        ([[1.0, 2.0], [1.0, 2.0]], [(0.0, 0.0), (0.0, 0.0)]),
-        ([[1.0, 2.0], [3.0, 4.0]], [(0.0, 0.0), (1.0, 0.0)]),
-    ],
-)
-def test_umap_projection_handles_small_and_constant_inputs(
-    vectors: list[list[float]], expected: list[tuple[float, float]]
-) -> None:
-    """Small or degenerate inputs do not make UMAP fail."""
-    assert _umap_coordinates(vectors=vectors) == expected
 
 
 def test_horizontal_layout_has_card_title_only() -> None:
@@ -538,89 +605,6 @@ def test_origin_chart_note_warns_about_small_outputs() -> None:
         in chart.lower()
     )
     assert "merged/frozen outputs are the meaningful comparison" in chart
-
-
-def _origin_dashboard_frame(*, bundle_dir: Path, code: str = "5100") -> pl.DataFrame:
-    """Return two generated rows using one official origin mapping."""
-    source = pl.read_parquet(
-        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
-    ).filter(pl.col("origin_country_code") == code)
-    row = source.to_dicts()[0]
-    return pl.DataFrame(
-        {
-            "persona_id": ["p-1", "p-2"],
-            "persona": ["En rolig hverdag.", "En travl hverdag."],
-            "origin_country_code": [code, code],
-            "origin_country": [row["origin_country"]] * 2,
-            "origin_country_da": [row["origin_country_da"]] * 2,
-        }
-    )
-
-
-def test_dashboard_accepts_current_valid_origin_rows(
-    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
-) -> None:
-    """Current threshold-bound origin rows render without changing UMAP."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-
-    document = build_dashboard(
-        frame=_origin_dashboard_frame(bundle_dir=bundle_dir),
-        bundle_path=bundle_dir,
-        embedding_client=embedding_client[0],
-    )
-
-    assert "deterministic two-dimensional UMAP" in document
-
-
-def test_dashboard_rejects_ineligible_generated_origin_rows(
-    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
-) -> None:
-    """Rows using a positive but sub-threshold origin are never embedded."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-
-    with pytest.raises(ValueError, match="ineligible"):
-        build_dashboard(
-            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
-            bundle_path=bundle_dir,
-            embedding_client=embedding_client[0],
-        )
-
-
-def test_dashboard_rejects_origin_flag_tampering(
-    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
-) -> None:
-    """A forged eligibility flag cannot override the manifest threshold."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    path = bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
-    source = pl.read_parquet(path).with_columns(
-        pl.when(pl.col("origin_country_code") == "5103")
-        .then(pl.lit(True))
-        .otherwise(pl.col("eligible_for_sampling"))
-        .alias("eligible_for_sampling")
-    )
-    source.write_parquet(path)
-    refresh_bundle_manifest(bundle_dir=bundle_dir)
-
-    with pytest.raises(ValueError, match="does not match bundle minimum_source_count"):
-        build_dashboard(
-            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
-            bundle_path=bundle_dir,
-            embedding_client=embedding_client[0],
-        )
-
-
-def test_dashboard_rejects_origin_label_mismatch(
-    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
-) -> None:
-    """A code paired with another official label is rejected before rendering."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    frame = _origin_dashboard_frame(bundle_dir=bundle_dir)
-    frame = frame.with_columns(pl.lit("Forkert").alias("origin_country_da"))
-
-    with pytest.raises(ValueError, match="labels do not match"):
-        build_dashboard(
-            frame=frame, bundle_path=bundle_dir, embedding_client=embedding_client[0]
-        )
 
 
 def test_origin_target_excludes_zero_and_subthreshold_audit_rows(
@@ -783,3 +767,19 @@ def test_tied_singular_embedding_is_exactly_repeatable(
     ]
 
     assert outputs[0] == outputs[1]
+
+
+@pytest.mark.parametrize(
+    ("vectors", "expected"),
+    [
+        ([], []),
+        ([[1.0, 2.0]], [(0.0, 0.0)]),
+        ([[1.0, 2.0], [1.0, 2.0]], [(0.0, 0.0), (0.0, 0.0)]),
+        ([[1.0, 2.0], [3.0, 4.0]], [(0.0, 0.0), (1.0, 0.0)]),
+    ],
+)
+def test_umap_projection_handles_small_and_constant_inputs(
+    vectors: list[list[float]], expected: list[tuple[float, float]]
+) -> None:
+    """Small or degenerate inputs do not make UMAP fail."""
+    assert _umap_coordinates(vectors=vectors) == expected

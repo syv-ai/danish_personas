@@ -134,6 +134,7 @@ regenerate and record new IDs rather than inventing
  them.
 
 ## Persona runs
+
 - The Hydra configuration names the endpoint and model explicitly. Each invocation
   remains bounded by row and HTTP-request limits.
 - Library and dataset/release validation require the input checksum and successful
