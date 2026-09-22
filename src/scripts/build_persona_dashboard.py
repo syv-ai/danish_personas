@@ -455,15 +455,26 @@ def _lsa_coordinates(*, matrix: csr_matrix) -> list[tuple[float, float]]:
     """
     if min(matrix.shape) <= 1:
         return [(float(matrix[index].sum()), 0.0) for index in range(matrix.shape[0])]
-    components = min(2, min(matrix.shape) - 1)
-    left, singular, _ = svds(matrix, k=components, solver="arpack", random_state=0)
-    order = np.argsort(singular)[::-1]
-    singular = singular[order]
+    maximum_components = min(matrix.shape) - 1
+    components = min(3, maximum_components)
+    while True:
+        left, singular, _ = svds(matrix, k=components, solver="arpack", random_state=0)
+        order = np.argsort(singular)[::-1]
+        singular = singular[order]
+        left = left[:, order]
+        if not _tie_reaches_component_boundary(
+            singular=singular, shape=matrix.shape, maximum=maximum_components
+        ):
+            break
+        components += 1
+    left = _canonicalise_tied_subspaces(
+        left=left, singular=singular, shape=matrix.shape
+    )
     tolerance = (
         np.finfo(float).eps * max(matrix.shape) * singular[0] if singular.size else 0.0
     )
     singular[singular <= tolerance] = 0.0
-    coordinates = left[:, order] * singular
+    coordinates = left * singular
     for component in range(coordinates.shape[1]):
         pivot = int(np.argmax(np.abs(coordinates[:, component])))
         if coordinates[pivot, component] < 0:
@@ -472,6 +483,82 @@ def _lsa_coordinates(*, matrix: csr_matrix) -> list[tuple[float, float]]:
     coordinates[coordinates == 0.0] = 0.0
     result = [tuple(float(value) for value in row) for row in coordinates]
     return [(row[0], row[1] if len(row) > 1 else 0.0) for row in result]
+
+
+def _canonicalise_tied_subspaces(
+    *, left: np.ndarray, singular: np.ndarray, shape: tuple[int, int]
+) -> np.ndarray:
+    """Choose row-index anchored bases for numerically tied singular values.
+
+    A singular-vector basis is otherwise only defined up to an orthogonal rotation
+    when singular values are tied.  Projecting successive standard row anchors into
+    each tied left-singular subspace gives a basis independent of the ARPACK basis.
+
+    Returns:
+        Left singular vectors with tied subspaces in canonical bases.
+    """
+    if singular.size < 2:
+        return left
+
+    scale = max(1.0, float(singular[0]))
+    tie_tolerance = 8.0 * np.finfo(float).eps * max(shape) * scale
+    canonical = left.copy()
+    start = 0
+    while start < singular.size:
+        end = start + 1
+        while (
+            end < singular.size
+            and abs(singular[end] - singular[start]) <= tie_tolerance
+        ):
+            end += 1
+        if end - start > 1:
+            canonical[:, start:end] = _anchor_subspace(
+                basis=left[:, start:end], tolerance=tie_tolerance
+            )
+        start = end
+    return canonical
+
+
+def _anchor_subspace(*, basis: np.ndarray, tolerance: float) -> np.ndarray:
+    """Construct an orthonormal subspace basis from fixed row-index anchors.
+
+    Returns:
+        An orthonormal basis selected by the lowest available row indices.
+
+    Raises:
+        ValueError:
+            If the supplied basis does not span the requested dimension.
+    """
+    dimension = basis.shape[1]
+    vectors: list[np.ndarray] = []
+    for row_index in range(basis.shape[0]):
+        vector = basis @ basis[row_index, :]
+        for previous in vectors:
+            vector -= np.dot(previous, vector) * previous
+        norm = float(np.linalg.norm(vector))
+        if norm <= tolerance:
+            continue
+        vectors.append(vector / norm)
+        if len(vectors) == dimension:
+            break
+    if len(vectors) != dimension:
+        raise ValueError("Unable to construct a basis for a tied singular subspace")
+    return np.column_stack(vectors)
+
+
+def _tie_reaches_component_boundary(
+    *, singular: np.ndarray, shape: tuple[int, int], maximum: int
+) -> bool:
+    """Report whether another component may belong to the final tied subspace.
+
+    Returns:
+        Whether the final computed singular value is tied at the truncation boundary.
+    """
+    if singular.size < 2 or singular.size >= maximum:
+        return False
+    scale = max(1.0, float(singular[0]))
+    tolerance = 8.0 * np.finfo(float).eps * max(shape) * scale
+    return singular[-1] > tolerance and abs(singular[-1] - singular[-2]) <= tolerance
 
 
 def _tfidf_matrix(*, texts: list[str]) -> csr_matrix:
