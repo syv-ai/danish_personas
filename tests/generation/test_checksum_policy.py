@@ -16,82 +16,6 @@ from danish_personas.workflows import _valid_existing_sample
 from scripts import generate_persona
 
 
-def _persona_config(*, paths: dict[str, Path], input_path: Path | None) -> DictConfig:
-    """Compose the Hydra sections needed by the single-persona command.
-
-    Returns:
-        Composed Hydra configuration.
-    """
-    llm_config = load_generation_config(paths["config"])
-    config = OmegaConf.create(
-        {
-            "llm": llm_config.model_dump(mode="json"),
-            "generate_persona": {
-                "input": str(input_path) if input_path is not None else None,
-                "output_dir": "outputs",
-            },
-        }
-    )
-    assert isinstance(config, DictConfig)
-    return config
-
-
-@pytest.mark.parametrize("input_option", ["explicit", "omitted"])
-def test_generate_persona_allows_neutral_origin_contract_byte_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, input_option: str
-) -> None:
-    """The relaxed CLI paths accept semantic-preserving contract byte drift."""
-    paths = write_generation_inputs(root=tmp_path)
-    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
-    contract_path.write_text(
-        "# A comment must not change the reviewed contract semantics.\n"
-        + contract_path.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
-    )
-    monkeypatch.setattr(generate_persona.secrets, "randbelow", lambda bound: 0)
-    MockGenerationClient.requests = 0
-    input_path: Path | None = paths["sample"]
-    if input_option == "omitted":
-        monkeypatch.setattr(
-            generate_persona,
-            "prepare_standard_sample",
-            lambda **_: (paths["sample"], paths["sample_manifest"]),
-        )
-        input_path = None
-    config = _persona_config(paths=paths, input_path=input_path)
-
-    generate_persona._run(config=config)
-
-    assert MockGenerationClient.requests == 1
-
-
-def test_generate_persona_rejects_semantic_origin_contract_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Relaxed checksum handling does not relax origin-label semantics."""
-    paths = write_generation_inputs(root=tmp_path)
-    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
-    contract = contract_path.read_text(encoding="utf-8").replace(
-        "Danmark", "Ikke Danmark", 1
-    )
-    contract_path.write_text(contract, encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
-    )
-    MockGenerationClient.requests = 0
-    config = _persona_config(paths=paths, input_path=paths["sample"])
-
-    with pytest.raises(ValueError, match="Origin"):
-        generate_persona._run(config=config)
-
-    assert MockGenerationClient.requests == 0
-
-
 def test_checksum_only_upstream_mismatches_are_scoped_to_ignore_policy(
     tmp_path: Path,
 ) -> None:
@@ -188,6 +112,82 @@ def test_checksum_tolerant_upstream_validation_keeps_membership_strict(
             sample_manifest_path=paths["sample_manifest"],
             checksum_policy=ChecksumValidationPolicy.IGNORE,
         )
+
+
+@pytest.mark.parametrize("input_option", ["explicit", "omitted"])
+def test_generate_persona_allows_neutral_origin_contract_byte_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, input_option: str
+) -> None:
+    """The relaxed CLI paths accept semantic-preserving contract byte drift."""
+    paths = write_generation_inputs(root=tmp_path)
+    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
+    contract_path.write_text(
+        "# A comment must not change the reviewed contract semantics.\n"
+        + contract_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
+    )
+    monkeypatch.setattr(generate_persona.secrets, "randbelow", lambda bound: 0)
+    MockGenerationClient.requests = 0
+    input_path: Path | None = paths["sample"]
+    if input_option == "omitted":
+        monkeypatch.setattr(
+            generate_persona,
+            "prepare_standard_sample",
+            lambda **_: (paths["sample"], paths["sample_manifest"]),
+        )
+        input_path = None
+    config = _persona_config(paths=paths, input_path=input_path)
+
+    generate_persona._run(config=config)
+
+    assert MockGenerationClient.requests == 1
+
+
+def _persona_config(*, paths: dict[str, Path], input_path: Path | None) -> DictConfig:
+    """Compose the Hydra sections needed by the single-persona command.
+
+    Returns:
+        Composed Hydra configuration.
+    """
+    llm_config = load_generation_config(paths["config"])
+    config = OmegaConf.create(
+        {
+            "llm": llm_config.model_dump(mode="json"),
+            "generate_persona": {
+                "input": str(input_path) if input_path is not None else None,
+                "output_dir": "outputs",
+            },
+        }
+    )
+    assert isinstance(config, DictConfig)
+    return config
+
+
+def test_generate_persona_rejects_semantic_origin_contract_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relaxed checksum handling does not relax origin-label semantics."""
+    paths = write_generation_inputs(root=tmp_path)
+    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
+    contract = contract_path.read_text(encoding="utf-8").replace(
+        "Danmark", "Ikke Danmark", 1
+    )
+    contract_path.write_text(contract, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
+    )
+    MockGenerationClient.requests = 0
+    config = _persona_config(paths=paths, input_path=paths["sample"])
+
+    with pytest.raises(ValueError, match="Origin"):
+        generate_persona._run(config=config)
+
+    assert MockGenerationClient.requests == 0
 
 
 def test_origin_hash_only_mismatch_is_tolerated_without_content_relaxation(

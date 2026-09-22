@@ -535,6 +535,15 @@ def _check_output(
         raise ReleaseVerificationError("Pilot report subject does not match")
 
 
+def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:
+    try:
+        return load_yaml_model(path=path, model=model)
+    except Exception as error:
+        raise ReleaseVerificationError(
+            f"Invalid public YAML contract: {path}"
+        ) from error
+
+
 def _check_provenance_bindings(
     *, release_dir: Path, manifest: ReleaseManifest, evidence: ReleaseEvidence
 ) -> None:
@@ -677,15 +686,6 @@ def _load_generation_inputs(
     if sha256_file(prompt_path) != evidence.prompt_sha256:
         raise ReleaseVerificationError("Generation prompt checksum mismatch")
     return config, prompt_path
-
-
-def _load_yaml(path: Path, model: type[ModelType]) -> ModelType:
-    try:
-        return load_yaml_model(path=path, model=model)
-    except Exception as error:
-        raise ReleaseVerificationError(
-            f"Invalid public YAML contract: {path}"
-        ) from error
 
 
 def _check_origin_contract(

@@ -17,34 +17,77 @@ from danish_personas.release.packager import ReleasePackagingError
 
 
 @pytest.mark.parametrize(
-    "version", [True, 1.0, "1", b"1"], ids=["bool", "float", "string", "bytes"]
+    "construction",
+    [
+        "Partneren hedder Aarhus.",
+        "Hendes datter ved navn Danmark.",
+        "Aarhus er hendes kæreste.",
+        "Aarhus er 35 år.",
+        "Aarhus's partner bor i byen.",
+        "Aarhus’s partner bor i byen.",
+        "Aarhus´s partner bor i byen.",
+    ],
 )
-def test_release_versions_require_exact_integer_one(
-    release_case: ReleaseCase, version: object
+def test_release_allows_required_place_and_origin_labels(
+    release_case: ReleaseCase, construction: str
 ) -> None:
-    """Release contracts reject values that Pydantic could coerce to one."""
-    manifest = release_case.manifest
-    manifest_payload = {
-        "version": version,
-        "release_id": "a" * 32,
-        "created_at": "2026-09-17T00:00:00+00:00",
-        "pilot_id": manifest.pilot_id,
-        "model": manifest.model,
-        "rows": 1,
-        "git_head": "a" * 40,
-        "origin_url": "https://example.invalid/repo.git",
-        "uv_lock_sha256": "a" * 64,
-        "evidence_sha256": "a" * 64,
-        "artifacts": [
-            {"path": "README.md", "role": "dataset-card", "sha256": "a" * 64, "size": 0}
+    """Release validation preserves required grounded labels in name patterns."""
+    output = (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.col("persona").str.replace(
+                "Han er 35 år", f"Han er 35 år. {construction}"
+            )
+        )
+    )
+
+    validate_persona_output_rows(output)
+
+
+def test_release_checks_partner_target_for_each_persona_id(
+    release_case: ReleaseCase,
+) -> None:
+    """Release validation does not cache rows across target-dependent IDs."""
+    config = load_generation_config(Path("config/config.yaml")).model_copy(
+        update={"same_sex_partner_probability": 0.5}
+    )
+    candidate_ids = [f"cache-target-{index}" for index in range(1000)]
+    first_id, second_id = next(
+        (left, right)
+        for left in candidate_ids
+        for right in candidate_ids
+        if left != right
+        and not same_sex_partner_target(
+            persona_id=left, probability=config.same_sex_partner_probability
+        )
+        and same_sex_partner_target(
+            persona_id=right, probability=config.same_sex_partner_probability
+        )
+    )
+    base = (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.col("persona")
+            .str.replace("single", "gift med sin partner")
+            .str.replace("har aldrig været gift", "er gift"),
+            pl.lit("married_or_separated").alias("marital_status"),
+            pl.lit("married").alias("legal_status_detail"),
+            pl.lit("partnered").alias("current_relationship_status"),
+            pl.lit("female").alias("partner_gender"),
+        )
+    )
+    output = pl.concat(
+        [
+            base.with_columns(pl.lit(first_id).alias("persona_id")),
+            base.with_columns(pl.lit(second_id).alias("persona_id")),
         ],
-    }
-    evidence_payload = coherent_evidence(release_case).model_dump(mode="json")
-    evidence_payload["version"] = version
-    with pytest.raises(ValueError):
-        ReleaseManifest.model_validate(manifest_payload)
-    with pytest.raises(ValueError):
-        ReleaseEvidence.model_validate(evidence_payload)
+        how="vertical",
+    )
+
+    with pytest.raises(ValueError, match="generation-v5"):
+        validate_persona_output_rows(output, generation_config=config)
 
 
 @pytest.mark.parametrize(
@@ -97,78 +140,35 @@ def test_release_replays_no_person_name_validation(
         validate_persona_output_rows(output)
 
 
-def test_release_checks_partner_target_for_each_persona_id(
-    release_case: ReleaseCase,
-) -> None:
-    """Release validation does not cache rows across target-dependent IDs."""
-    config = load_generation_config(Path("config/config.yaml")).model_copy(
-        update={"same_sex_partner_probability": 0.5}
-    )
-    candidate_ids = [f"cache-target-{index}" for index in range(1000)]
-    first_id, second_id = next(
-        (left, right)
-        for left in candidate_ids
-        for right in candidate_ids
-        if left != right
-        and not same_sex_partner_target(
-            persona_id=left, probability=config.same_sex_partner_probability
-        )
-        and same_sex_partner_target(
-            persona_id=right, probability=config.same_sex_partner_probability
-        )
-    )
-    base = (
-        pl.read_parquet(release_case.output)
-        .head(1)
-        .with_columns(
-            pl.col("persona")
-            .str.replace("single", "gift med sin partner")
-            .str.replace("har aldrig været gift", "er gift"),
-            pl.lit("married_or_separated").alias("marital_status"),
-            pl.lit("married").alias("legal_status_detail"),
-            pl.lit("partnered").alias("current_relationship_status"),
-            pl.lit("female").alias("partner_gender"),
-        )
-    )
-    output = pl.concat(
-        [
-            base.with_columns(pl.lit(first_id).alias("persona_id")),
-            base.with_columns(pl.lit(second_id).alias("persona_id")),
-        ],
-        how="vertical",
-    )
-
-    with pytest.raises(ValueError, match="generation-v5"):
-        validate_persona_output_rows(output, generation_config=config)
-
-
 @pytest.mark.parametrize(
-    "construction",
-    [
-        "Partneren hedder Aarhus.",
-        "Hendes datter ved navn Danmark.",
-        "Aarhus er hendes kæreste.",
-        "Aarhus er 35 år.",
-        "Aarhus's partner bor i byen.",
-        "Aarhus’s partner bor i byen.",
-        "Aarhus´s partner bor i byen.",
-    ],
+    "version", [True, 1.0, "1", b"1"], ids=["bool", "float", "string", "bytes"]
 )
-def test_release_allows_required_place_and_origin_labels(
-    release_case: ReleaseCase, construction: str
+def test_release_versions_require_exact_integer_one(
+    release_case: ReleaseCase, version: object
 ) -> None:
-    """Release validation preserves required grounded labels in name patterns."""
-    output = (
-        pl.read_parquet(release_case.output)
-        .head(1)
-        .with_columns(
-            pl.col("persona").str.replace(
-                "Han er 35 år", f"Han er 35 år. {construction}"
-            )
-        )
-    )
-
-    validate_persona_output_rows(output)
+    """Release contracts reject values that Pydantic could coerce to one."""
+    manifest = release_case.manifest
+    manifest_payload = {
+        "version": version,
+        "release_id": "a" * 32,
+        "created_at": "2026-09-17T00:00:00+00:00",
+        "pilot_id": manifest.pilot_id,
+        "model": manifest.model,
+        "rows": 1,
+        "git_head": "a" * 40,
+        "origin_url": "https://example.invalid/repo.git",
+        "uv_lock_sha256": "a" * 64,
+        "evidence_sha256": "a" * 64,
+        "artifacts": [
+            {"path": "README.md", "role": "dataset-card", "sha256": "a" * 64, "size": 0}
+        ],
+    }
+    evidence_payload = coherent_evidence(release_case).model_dump(mode="json")
+    evidence_payload["version"] = version
+    with pytest.raises(ValueError):
+        ReleaseManifest.model_validate(manifest_payload)
+    with pytest.raises(ValueError):
+        ReleaseEvidence.model_validate(evidence_payload)
 
 
 def test_scanner_accepts_only_nullable_v2_fields(release_case: ReleaseCase) -> None:

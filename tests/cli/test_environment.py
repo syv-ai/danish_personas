@@ -14,6 +14,59 @@ SCRIPTS = tuple(sorted((ROOT / "src/scripts").glob("*.py")))
 
 
 @pytest.mark.parametrize("script_path", SCRIPTS, ids=lambda path: path.name)
+def test_direct_script_execution_bootstraps_environment(
+    script_path: Path, tmp_path: Path
+) -> None:
+    """Direct CLI execution loads dotenv values before parsing command options."""
+    marker = "DANISH_PERSONAS_DIRECT_BOOTSTRAP"
+    env_path = tmp_path / ".env"
+    env_path.write_text(f"{marker}=from-dotenv\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "-c",
+            """
+import os
+import runpy
+import sys
+from pathlib import Path
+
+import danish_personas.environment as environment
+
+env_path = Path(sys.argv[1])
+script_path = sys.argv[2]
+load_environment = environment.load_repository_environment
+
+
+def bootstrap() -> None:
+    load_environment(env_path=env_path)
+
+
+environment.load_repository_environment = bootstrap
+sys.argv = [script_path, "--help"]
+try:
+    runpy.run_path(script_path, run_name="__main__")
+except SystemExit as error:
+    if error.code not in (None, 0):
+        raise
+assert os.environ["DANISH_PERSONAS_DIRECT_BOOTSTRAP"] == "from-dotenv"
+""",
+            str(env_path),
+            str(script_path),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={key: value for key, value in os.environ.items() if key != marker},
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("script_path", SCRIPTS, ids=lambda path: path.name)
 def test_every_script_bootstraps_repository_environment(script_path: Path) -> None:
     """Each public script loads the environment immediately before its CLI."""
     tree = ast.parse(script_path.read_text(encoding="utf-8"))
@@ -88,59 +141,6 @@ assert os.environ[marker] == "from-process"
 
     assert result.returncode == 0, result.stderr
     assert marker not in result.stderr
-
-
-@pytest.mark.parametrize("script_path", SCRIPTS, ids=lambda path: path.name)
-def test_direct_script_execution_bootstraps_environment(
-    script_path: Path, tmp_path: Path
-) -> None:
-    """Direct CLI execution loads dotenv values before parsing command options."""
-    marker = "DANISH_PERSONAS_DIRECT_BOOTSTRAP"
-    env_path = tmp_path / ".env"
-    env_path.write_text(f"{marker}=from-dotenv\n", encoding="utf-8")
-    result = subprocess.run(
-        [
-            "uv",
-            "run",
-            "python",
-            "-c",
-            """
-import os
-import runpy
-import sys
-from pathlib import Path
-
-import danish_personas.environment as environment
-
-env_path = Path(sys.argv[1])
-script_path = sys.argv[2]
-load_environment = environment.load_repository_environment
-
-
-def bootstrap() -> None:
-    load_environment(env_path=env_path)
-
-
-environment.load_repository_environment = bootstrap
-sys.argv = [script_path, "--help"]
-try:
-    runpy.run_path(script_path, run_name="__main__")
-except SystemExit as error:
-    if error.code not in (None, 0):
-        raise
-assert os.environ["DANISH_PERSONAS_DIRECT_BOOTSTRAP"] == "from-dotenv"
-""",
-            str(env_path),
-            str(script_path),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={key: value for key, value in os.environ.items() if key != marker},
-    )
-
-    assert result.returncode == 0, result.stderr
 
 
 def test_load_repository_environment_ignores_absent_file(

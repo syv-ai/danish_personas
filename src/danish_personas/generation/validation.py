@@ -510,6 +510,81 @@ def _validate_job_title(
         raise ValueError("job_title must be a single plain Danish line")
 
 
+def _validate_no_person_names(*, text: str, context: dict[str, object]) -> None:
+    """Reject explicit personal-name constructions without guessing from vocabulary.
+
+    The generation contract permits required place and origin labels, so this check
+    deliberately looks only at reviewed name-bearing constructions. It does not scan
+    capitalised words: that would reject sentence starts and grounded proper nouns.
+
+    Raises:
+        ValueError:
+            If a name appears after an own-name or relationship construction.
+    """
+    allowed_labels = {
+        _normalize(text=str(context.get(field, "")))
+        for field in ("municipality", "origin_country_da")
+        if context.get(field)
+    }
+    for pattern in _PERSON_NAME_PATTERNS:
+        for match in pattern.finditer(text):
+            if not _is_allowed_grounding_label(
+                text=text, match=match, allowed_labels=allowed_labels
+            ):
+                raise ValueError("Generated content contains a prohibited person name")
+
+
+def _is_allowed_grounding_label(
+    *, text: str, match: re.Match[str], allowed_labels: set[str]
+) -> bool:
+    """Return whether a captured construction contains a complete grounded label.
+
+    Most name patterns capture only the first capitalised token so they also catch
+    prose that continues without punctuation. Compare the complete text at that
+    position to each grounded label rather than treating that token as the whole
+    label.
+    """
+    start, _ = match.span("name")
+    if start and not _is_grounding_boundary(text=text, index=start - 1):
+        return False
+    tail = _normalize(text=text[start:])
+    for label in allowed_labels:
+        normalised_label = _normalize(text=label)
+        if not tail.startswith(normalised_label):
+            continue
+        if (
+            "bounded_name" in match.re.groupindex
+            and _normalize(text=match.group("bounded_name")) != normalised_label
+        ):
+            continue
+        remainder = tail[len(normalised_label) :]
+        if not remainder or _is_grounding_boundary(text=remainder, index=0):
+            return True
+        if "possessive" not in match.re.groupindex:
+            continue
+        boundary_end = match.end("possessive")
+        captured = _normalize(text=text[start:boundary_end])
+        possessive = _normalize(text=match.group("possessive"))
+        if captured == f"{normalised_label}{possessive}" and _is_grounding_boundary(
+            text=text, index=boundary_end
+        ):
+            return True
+    return False
+
+
+def _is_grounding_boundary(*, text: str, index: int) -> bool:
+    """Return whether the character at ``index`` terminates a grounded label."""
+    return index >= len(text) or not _is_grounding_continuation_character(text[index])
+
+
+def _is_grounding_continuation_character(character: str) -> bool:
+    """Return whether a character can extend a grounded label or name."""
+    normalised = unicodedata.normalize("NFKC", character).translate(DASH_TRANSLATION)
+    return (
+        normalised.isalnum() or normalised == "_" or normalised in {"-", "'", "’", "´"}
+    )
+
+
 def _validate_relationship_attributes(
     *,
     attributes: GeneratedAttributes,
@@ -615,81 +690,6 @@ def parse_descriptions(
     if len(set(normalized)) != len(normalized):
         raise ValueError("persona: Persona descriptions must not be exact duplicates")
     return descriptions
-
-
-def _validate_no_person_names(*, text: str, context: dict[str, object]) -> None:
-    """Reject explicit personal-name constructions without guessing from vocabulary.
-
-    The generation contract permits required place and origin labels, so this check
-    deliberately looks only at reviewed name-bearing constructions. It does not scan
-    capitalised words: that would reject sentence starts and grounded proper nouns.
-
-    Raises:
-        ValueError:
-            If a name appears after an own-name or relationship construction.
-    """
-    allowed_labels = {
-        _normalize(text=str(context.get(field, "")))
-        for field in ("municipality", "origin_country_da")
-        if context.get(field)
-    }
-    for pattern in _PERSON_NAME_PATTERNS:
-        for match in pattern.finditer(text):
-            if not _is_allowed_grounding_label(
-                text=text, match=match, allowed_labels=allowed_labels
-            ):
-                raise ValueError("Generated content contains a prohibited person name")
-
-
-def _is_allowed_grounding_label(
-    *, text: str, match: re.Match[str], allowed_labels: set[str]
-) -> bool:
-    """Return whether a captured construction contains a complete grounded label.
-
-    Most name patterns capture only the first capitalised token so they also catch
-    prose that continues without punctuation. Compare the complete text at that
-    position to each grounded label rather than treating that token as the whole
-    label.
-    """
-    start, _ = match.span("name")
-    if start and not _is_grounding_boundary(text=text, index=start - 1):
-        return False
-    tail = _normalize(text=text[start:])
-    for label in allowed_labels:
-        normalised_label = _normalize(text=label)
-        if not tail.startswith(normalised_label):
-            continue
-        if (
-            "bounded_name" in match.re.groupindex
-            and _normalize(text=match.group("bounded_name")) != normalised_label
-        ):
-            continue
-        remainder = tail[len(normalised_label) :]
-        if not remainder or _is_grounding_boundary(text=remainder, index=0):
-            return True
-        if "possessive" not in match.re.groupindex:
-            continue
-        boundary_end = match.end("possessive")
-        captured = _normalize(text=text[start:boundary_end])
-        possessive = _normalize(text=match.group("possessive"))
-        if captured == f"{normalised_label}{possessive}" and _is_grounding_boundary(
-            text=text, index=boundary_end
-        ):
-            return True
-    return False
-
-
-def _is_grounding_boundary(*, text: str, index: int) -> bool:
-    """Return whether the character at ``index`` terminates a grounded label."""
-    return index >= len(text) or not _is_grounding_continuation_character(text[index])
-
-
-def _is_grounding_continuation_character(character: str) -> bool:
-    """Return whether a character can extend a grounded label or name."""
-    normalised = unicodedata.normalize("NFKC", character).translate(DASH_TRANSLATION)
-    return (
-        normalised.isalnum() or normalised == "_" or normalised in {"-", "'", "’", "´"}
-    )
 
 
 def _validate_persona(
