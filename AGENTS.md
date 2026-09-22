@@ -250,13 +250,14 @@ current contracts have been regenerated; use placeholders in instructions.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
   demographic report. Checkpoints reject changed inputs, prompts, config, model, or
   validator context. Human-readable municipality, the official Danish
-  `origin_country_da`, sampled legal `marital_status`, and job-function labels reach the
-  provider request; the origin code, English `origin_country`, resolution fields, and
-  origin-contract metadata do
-  not. The Danish label is also the exact origin fact in the grounded persona.
-  Re-running a valid v5 run resumes completed records, but v1-v4 checkpoints, the
-  previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
-  under v5.
+  `origin_country_da`, sampled legal `marital_status`, job-function labels, and an
+  internal deterministic same-sex-partner target reach the provider request. The target
+  is synthetic, non-public, not observed individual data, and not sexual orientation.
+  The origin code, English `origin_country`, resolution fields, and origin-contract
+  metadata do not reach the provider. The Danish label is also the exact origin fact in
+  the grounded persona. Re-running a valid current-v5 run resumes completed records, but
+  v1-v4 checkpoints, v5 contexts predating the partner-target policy, the previous
+  v2/v13 ten-person smoke, and old pilots are historical and not resumable.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.

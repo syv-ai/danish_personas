@@ -504,6 +504,7 @@ def _embedding_chart(
             "grouping."
         ),
         wide=True,
+        height=700,
     )
 
 
@@ -521,6 +522,7 @@ def _add_embedding_trace(
         x=[coordinates[index][0] for index in indices],
         y=[coordinates[index][1] for index in indices],
         mode="markers",
+        marker={"opacity": 0.6},
         name=name,
         customdata=[_hover_row(frame, index) for index in indices],
         hovertemplate=(

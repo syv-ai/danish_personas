@@ -514,6 +514,9 @@ def _check_output(
             "Persona output contains an invalid logical dtype"
         )
     try:
+        generation_config = _load_yaml(
+            release_dir / "provenance/config/config.yaml", GenerationConfig
+        )
         validate_persona_output_rows(
             output,
             job_title_mapping=load_job_title_mapping(
@@ -522,6 +525,7 @@ def _check_output(
             origin_label_contract=load_origin_label_contract(
                 release_dir / "provenance/config/folk2-ieland-labels-da.yaml"
             ),
+            generation_config=generation_config,
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
