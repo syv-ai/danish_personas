@@ -29,10 +29,9 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   rolig`.
 - Skriv et konkret, syntetisk karrieremål eller en anden fremtidsdrøm, når det er
   naturligt. Brug ellers null.
-- `first_name` skal være personaens almindelige fornavn.
 - Vælg `current_relationship_status` som `partnered` eller `not_partnered`. Ved
-  `partnered` skal `partner_first_name` og `partner_gender` udfyldes; ved
-  `not_partnered` skal begge være null.
+  `partnered` skal `partner_gender` udfyldes; ved `not_partnered` skal det være
+  null.
 - `marital_status` er juridisk status og er separat fra det aktuelle forhold:
   `married_or_separated` kræver `legal_status_detail` som `married` eller
   `separated`, og den valgte status skal fremgå af personaen. `married` kræver
@@ -42,9 +41,9 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   enke/enkemand, men personaen kan stadig være `partnered` eller `not_partnered`.
 - Partnerkombinationer af samme køn, herunder male/male og female/female, er
   udtrykkeligt tilladt. Vælg `partner_gender` uden at foretrække kombinationer af
-  forskelligt køn. Ved `partnered` skal personaen nævne `partner_first_name` sammen
-  med et ord som partner, kæreste eller ægtefælle. Lad forholdet fremgå naturligt
-  gennem partnerens fornavn uden at skrive eller udlede en orienteringsbetegnelse.
+  forskelligt køn. Ved `partnered` skal personaen omtale sin partner med et ord som
+  partner, kæreste eller ægtefælle. Brug aldrig partnerens navn, og skriv eller
+  udled ikke en orienteringsbetegnelse.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.
@@ -73,12 +72,12 @@ frem for ordret genbrug af de genererede formuleringer.
 
 Gør de syntetiske hverdagsdetaljer konkrete og indbyrdes konsistente:
 
-- Giv personaen et almindeligt fornavn.
+- Skriv om personaen med `han` eller `hun`, ikke med et navn.
 - Beskriv en plausibel type arbejdsplads og dens by eller område uden at bruge navnet
   på en virkelig virksomhed.
 - Beskriv fritiden gennem konkrete aktiviteter, steder eller fællesskaber.
-- Beskriv en syntetisk civil- eller familiesituation. Fornavne på partnere eller
-  børn er tilladt, men efternavne er ikke.
+- Beskriv en syntetisk civil- eller familiesituation uden at navngive personaen,
+  partneren eller familiemedlemmer.
 - Nævn en konkret drøm, plan eller ambition, hvis den findes.
 
 Hvis `education_level` er `ungdomsuddannelse eller erhvervsuddannelse`, skal du

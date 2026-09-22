@@ -77,7 +77,7 @@ def test_missing_supplied_fact_is_rejected(
 @pytest.mark.parametrize(
     ("original", "contradiction", "message"),
     [
-        ("Maja er 35 år", "Maja er ikke 35 år", "pronoun or age"),
+        ("Hun er 35 år", "Hun er ikke 35 år", "pronoun or age"),
         ("bor i København", "bor ikke i København", "municipality"),
         ("kommer fra Danmark", "kommer ikke fra Danmark", "origin"),
         (

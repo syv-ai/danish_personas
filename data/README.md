@@ -32,14 +32,12 @@ citizenship, residence, or appearance. Origin cannot drive culture, religion, jo
 interests, personality, or visual traits. RAS209 remains locked to all 99 official
 level-3 areas, including Christiansø.
 
-The current offline source bundle is `8a4133e5a0a52050` (prepared-bundle schema 6).
-Its passing runs are `f4dffe214a2faf0b` (2,000 rows) and `55fb89fb303a67f0`
-(100,000 rows), both using sampler schema 6. The statistical run's adjacent 1,000-row
-sample uses frozen-sample schema 3 and SHA-256
-`354616ddcf601e5a02f03a0a3b09b8711f97f314bf4c300c9172ceb5b9ca8629`.
-Generation contract 4, validator `persona-safety-v18`, and release manifest/evidence
-schema 2 are current. The former schema-5 bundle `cfc1b56f5586a2d7` and runs
-`f449f1de01d18c08` / `3ebc00282c621ef2` are historical and non-resumable.
+Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
+and generation contract 5 with validator `persona-safety-v19`. The default frozen
+sample mode is population-proportional; stratified round-robin remains an explicit
+alternative. No new bundle, deterministic run, frozen sample, persona output, or
+release has been generated for this contract change. Existing IDs and checksums are
+historical and non-resumable under these contracts.
 
 Archive SHA-256 (reproducible from the restored snapshot tree):
 

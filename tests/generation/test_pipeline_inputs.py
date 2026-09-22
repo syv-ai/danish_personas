@@ -172,6 +172,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "neuroticism_score",
         "neuroticism_label",
         "current_status",
+        "marital_status",
     }
     forbidden_fields = {
         "age_resolution",

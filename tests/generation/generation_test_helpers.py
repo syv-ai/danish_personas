@@ -107,6 +107,19 @@ def generated_persona_json(
 ) -> str:
     """Return one valid combined generation response."""
     payload = json.loads(attributes_json(employed=employed, job_title=job_title))
+    partnered = (
+        demographic is None
+        or demographic.get("marital_status") == "married_or_separated"
+    )
+    payload.update(
+        {
+            "current_relationship_status": "partnered"
+            if partnered
+            else "not_partnered",
+            "partner_gender": "male" if partnered else None,
+            "legal_status_detail": "married" if partnered else None,
+        }
+    )
     payload.update(
         json.loads(
             descriptions_json(
@@ -131,6 +144,9 @@ def attributes_json(*, employed: bool = True, job_title: str | None = None) -> s
             ],
             "career_goals_and_ambitions": None,
             "job_title": job_title if employed else None,
+            "current_relationship_status": "partnered",
+            "partner_gender": "male",
+            "legal_status_detail": "married",
         },
         ensure_ascii=False,
     )
@@ -172,14 +188,26 @@ def descriptions_json(
             else "uden for arbejdsmarkedet"
         )
         work = f"{pronoun.capitalize()} er {status}"
+    married = context.get("marital_status") == "married_or_separated"
+    legal = (
+        f"{pronoun.capitalize()} er gift. "
+        if married
+        else f"{pronoun.capitalize()} har aldrig været gift. "
+    )
+    relationship = (
+        f"{pronoun.capitalize()} bor sammen med sin kæreste og deres barn i en "
+        "rolig del af kommunen."
+        if married
+        else f"{pronoun.capitalize()} er single og holder af rolige aftaler med "
+        "venner i en rolig del af kommunen."
+    )
     persona = (
-        f"Maja er {context['age']} år, og {pronoun} bor i "
+        f"{pronoun.capitalize()} er {context['age']} år, og {pronoun} bor i "
         f"{context['municipality']} og kommer fra {context['origin_country_da']}. "
         f"{pronoun.capitalize()} {education} med en praktisk retning i Aarhus. "
         f"{work}. I fritiden holder {pronoun} af at læse danske romaner og at "
         f"lytte til musik i fritiden, og planlægning hjælper med at få tid til "
-        f"begge dele. {pronoun.capitalize()} bor sammen med kæresten Alex og "
-        f"deres barn Noa i en rolig del af kommunen. {pronoun.capitalize()} "
+        f"begge dele. {legal}{relationship} {pronoun.capitalize()} "
         f"{tendency} og drømmer om at skabe mere plads til lokale fællesskaber."
     )
     return json.dumps({"persona": persona}, ensure_ascii=False)

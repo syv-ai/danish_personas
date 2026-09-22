@@ -15,7 +15,7 @@ def test_standard_sample_runs_all_gates_in_order(
     """The standard workflow validates smoke output before statistical output."""
     order: list[str] = []
     sampling = SamplingConfig(
-        version=3,
+        version=4,
         seed=1,
         smoke_rows=2,
         statistical_rows=3,
