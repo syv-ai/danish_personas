@@ -238,7 +238,7 @@ are:
 Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts, seeds,
 model metadata, request/retry/token accounting, and (when available) cost estimates.
 The current release documentation targets release manifest schema 2 and evidence
-schema 2; release identifiers and checksums are placeholders until regeneration and
+schema 3; release identifiers and checksums are placeholders until regeneration and
 packaging produce them. Accepted LLM response metadata and response hashes are
 checkpointed; rejected completion text is not stored. Generated outputs remain local
 until privacy and human review approve any proposed release.
