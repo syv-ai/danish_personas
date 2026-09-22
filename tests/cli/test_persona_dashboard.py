@@ -22,6 +22,7 @@ from scripts.build_persona_dashboard import (
     load_dst_targets,
     persona_embedding,
 )
+from tests.support.bundles import _write_bundle, refresh_bundle_manifest
 
 ROOT = Path(__file__).parents[2]
 
@@ -537,6 +538,89 @@ def test_origin_chart_note_warns_about_small_outputs() -> None:
         in chart.lower()
     )
     assert "merged/frozen outputs are the meaningful comparison" in chart
+
+
+def _origin_dashboard_frame(*, bundle_dir: Path, code: str = "5100") -> pl.DataFrame:
+    """Return two generated rows using one official origin mapping."""
+    source = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    ).filter(pl.col("origin_country_code") == code)
+    row = source.to_dicts()[0]
+    return pl.DataFrame(
+        {
+            "persona_id": ["p-1", "p-2"],
+            "persona": ["En rolig hverdag.", "En travl hverdag."],
+            "origin_country_code": [code, code],
+            "origin_country": [row["origin_country"]] * 2,
+            "origin_country_da": [row["origin_country_da"]] * 2,
+        }
+    )
+
+
+def test_dashboard_accepts_current_valid_origin_rows(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """Current threshold-bound origin rows render without changing UMAP."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+
+    document = build_dashboard(
+        frame=_origin_dashboard_frame(bundle_dir=bundle_dir),
+        bundle_path=bundle_dir,
+        embedding_client=embedding_client[0],
+    )
+
+    assert "deterministic two-dimensional UMAP" in document
+
+
+def test_dashboard_rejects_ineligible_generated_origin_rows(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """Rows using a positive but sub-threshold origin are never embedded."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+
+    with pytest.raises(ValueError, match="ineligible"):
+        build_dashboard(
+            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
+            bundle_path=bundle_dir,
+            embedding_client=embedding_client[0],
+        )
+
+
+def test_dashboard_rejects_origin_flag_tampering(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """A forged eligibility flag cannot override the manifest threshold."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    path = bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    source = pl.read_parquet(path).with_columns(
+        pl.when(pl.col("origin_country_code") == "5103")
+        .then(pl.lit(True))
+        .otherwise(pl.col("eligible_for_sampling"))
+        .alias("eligible_for_sampling")
+    )
+    source.write_parquet(path)
+    refresh_bundle_manifest(bundle_dir=bundle_dir)
+
+    with pytest.raises(ValueError, match="does not match bundle minimum_source_count"):
+        build_dashboard(
+            frame=_origin_dashboard_frame(bundle_dir=bundle_dir, code="5103"),
+            bundle_path=bundle_dir,
+            embedding_client=embedding_client[0],
+        )
+
+
+def test_dashboard_rejects_origin_label_mismatch(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
+    """A code paired with another official label is rejected before rendering."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    frame = _origin_dashboard_frame(bundle_dir=bundle_dir)
+    frame = frame.with_columns(pl.lit("Forkert").alias("origin_country_da"))
+
+    with pytest.raises(ValueError, match="labels do not match"):
+        build_dashboard(
+            frame=frame, bundle_path=bundle_dir, embedding_client=embedding_client[0]
+        )
 
 
 def test_origin_target_excludes_zero_and_subthreshold_audit_rows(

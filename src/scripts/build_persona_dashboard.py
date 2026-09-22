@@ -162,7 +162,10 @@ def build_dashboard(
         A single HTML document with all JavaScript and data embedded.
     """
     _require_columns(frame, {"persona", "persona_id"})
-    target_cache = load_dst_targets(bundle_path=bundle_path, frame=frame)
+    origin_threshold = _validate_dashboard_origins(frame=frame, bundle_path=bundle_path)
+    target_cache = load_dst_targets(
+        bundle_path=bundle_path, frame=frame, minimum_source_count=origin_threshold
+    )
     sections = [_overview_cards(frame=frame)]
     sections.extend(
         _distribution_chart(
@@ -866,7 +869,10 @@ def _require_columns(frame: pl.DataFrame, columns: set[str]) -> None:
 
 
 def load_dst_targets(
-    *, bundle_path: Path, frame: pl.DataFrame | None = None
+    *,
+    bundle_path: Path,
+    frame: pl.DataFrame | None = None,
+    minimum_source_count: int | None = None,
 ) -> dict[str, dict[str, float]]:
     """Load equivalent Statistics Denmark marginal targets.
 
@@ -881,13 +887,24 @@ def load_dst_targets(
         frame (optional):
             Generated records used to condition job-function targets. Defaults to
             ``None``, which omits that target.
+        minimum_source_count (optional):
+            Bundle-bound FOLK2 eligibility threshold. Defaults to ``None``; a current
+            bundle manifest is used automatically, while manifest-less synthetic target
+            fixtures retain their existing flags for direct inspection.
 
     Returns:
         Target proportions by generated semantic field and displayed label.
     """
     normalized = bundle_path / "normalized"
     targets: dict[str, dict[str, float]] = {}
-    origin_target = _origin_dashboard_target(normalized=normalized)
+    minimum_source_count = _resolve_origin_threshold(
+        bundle_path=bundle_path,
+        normalized=normalized,
+        minimum_source_count=minimum_source_count,
+    )
+    origin_target = _origin_dashboard_target(
+        normalized=normalized, minimum_source_count=minimum_source_count
+    )
     if origin_target is not None:
         targets["origin_country_da"] = origin_target
 
@@ -1014,7 +1031,200 @@ def _eligible_ras209_dashboard_rows(*, source: pl.DataFrame) -> pl.DataFrame:
     return eligible
 
 
-def _origin_dashboard_target(*, normalized: Path) -> dict[str, float] | None:
+def _resolve_origin_threshold(
+    *, bundle_path: Path, normalized: Path, minimum_source_count: int | None
+) -> int | None:
+    """Resolve the explicit or manifest-bound origin threshold.
+
+    Returns:
+        The threshold, or ``None`` when no origin target is present.
+    """
+    if minimum_source_count is not None:
+        return minimum_source_count
+    if not (normalized / "folk2_origin_country_marginal.parquet").exists():
+        return None
+    if not (bundle_path / "bundle-manifest.json").exists():
+        return None
+    return _dashboard_origin_threshold(bundle_path=bundle_path)
+
+
+def _validate_dashboard_origins(
+    *, frame: pl.DataFrame, bundle_path: Path
+) -> int | None:
+    """Validate generated origin rows before embedding them in dashboard HTML.
+
+    Synthetic-only development frames may omit all origin fields, but a frame and
+    bundle that claim to contain origins must use a current, threshold-bound source
+    bundle. Full rows are embedded in the output, so rejecting a bad row is safer
+    than rendering it with a warning.
+
+    Returns:
+        The bundle-bound origin eligibility threshold, or ``None`` for a synthetic-only
+        dashboard.
+
+    """
+    origin_fields = {"origin_country_code", "origin_country", "origin_country_da"}
+    present_fields = origin_fields & set(frame.columns)
+    target_path = bundle_path / "normalized" / "folk2_origin_country_marginal.parquet"
+    if not target_path.exists() and present_fields <= {"origin_country_da"}:
+        return None
+    _require_dashboard_origin_shape(
+        present_fields=present_fields, target_exists=target_path.exists()
+    )
+    threshold = _dashboard_origin_threshold(bundle_path=bundle_path)
+    source = _dashboard_origin_source(target_path=target_path)
+    _validate_origin_threshold(source=source, minimum_source_count=threshold)
+    _validate_dashboard_origin_rows(
+        frame=frame, source=source, minimum_source_count=threshold
+    )
+    return threshold
+
+
+def _require_dashboard_origin_shape(
+    *, present_fields: set[str], target_exists: bool
+) -> None:
+    """Reject incomplete origin claims instead of rendering full bad rows.
+
+    Raises:
+        ValueError:
+            If generated origin fields are incomplete for the selected bundle.
+    """
+    origin_fields = {"origin_country_code", "origin_country", "origin_country_da"}
+    if present_fields != origin_fields:
+        if not target_exists and not present_fields:
+            raise ValueError(
+                "Generated frame claims origin data, but its target is missing"
+            )
+        raise ValueError(
+            "Dashboard origin data must contain origin_country_code, "
+            "origin_country, and origin_country_da together"
+        )
+
+
+def _dashboard_origin_source(*, target_path: Path) -> pl.DataFrame:
+    """Load the complete origin target required for generated-row validation.
+
+    Returns:
+        The validated origin target.
+
+    Raises:
+        ValueError:
+            If the target is missing or lacks required columns.
+    """
+    source = _read_origin_target(normalized=target_path.parent)
+    if source is None:
+        raise ValueError("Dashboard origin target is missing")
+    required = {
+        "origin_country_code",
+        "origin_country",
+        "origin_country_da",
+        "count",
+        ORIGIN_ELIGIBILITY_COLUMN,
+    }
+    missing = sorted(required - set(source.columns))
+    if missing:
+        raise ValueError(f"Dashboard origin target is missing columns: {missing}")
+    return source
+
+
+def _validate_dashboard_origin_rows(
+    *, frame: pl.DataFrame, source: pl.DataFrame, minimum_source_count: int
+) -> None:
+    """Reject unknown, mismatched, or ineligible generated origin rows.
+
+    Raises:
+        ValueError:
+            If any generated row has an unknown, mismatched, or ineligible origin.
+    """
+    expected = {
+        str(row["origin_country_code"]): (
+            row["origin_country"],
+            row["origin_country_da"],
+            bool(row[ORIGIN_ELIGIBILITY_COLUMN]),
+            int(row["count"]),
+        )
+        for row in source.to_dicts()
+    }
+    invalid_rows: list[str] = []
+    for index, row in enumerate(
+        frame.select(
+            "origin_country_code", "origin_country", "origin_country_da"
+        ).to_dicts()
+    ):
+        code = row["origin_country_code"]
+        details = expected.get(str(code)) if code is not None else None
+        if details is None:
+            invalid_rows.append(f"row {index}: unknown origin code {code!r}")
+            continue
+        english, danish, eligible, count = details
+        if row["origin_country"] != english or row["origin_country_da"] != danish:
+            invalid_rows.append(
+                f"row {index}: origin labels do not match code {code!r}"
+            )
+        if not eligible or count < minimum_source_count:
+            invalid_rows.append(f"row {index}: origin code {code!r} is ineligible")
+    if invalid_rows:
+        raise ValueError(
+            "Generated dashboard origin rows are invalid: "
+            + "; ".join(invalid_rows[:3])
+        )
+
+
+def _dashboard_origin_threshold(*, bundle_path: Path) -> int:
+    """Read the current bundle's FOLK2 eligibility threshold.
+
+    Returns:
+        The non-negative threshold bound into the manifest.
+
+    Raises:
+        ValueError:
+            If the manifest is absent, malformed, legacy, or has no valid threshold.
+    """
+    manifest_path = bundle_path / "bundle-manifest.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "Origin dashboard data requires a readable current bundle-manifest.json"
+        ) from error
+    if not isinstance(payload, dict):
+        raise ValueError("Origin dashboard bundle manifest is malformed")
+    schema = payload.get("prepared_bundle_schema_version")
+    if schema != 8:
+        raise ValueError(
+            f"Origin dashboard data requires prepared bundle schema 8; found {schema!r}"
+        )
+    threshold = payload.get("minimum_source_count")
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
+        raise ValueError(
+            "Origin dashboard bundle manifest has an invalid minimum_source_count"
+        )
+    return threshold
+
+
+def _validate_origin_threshold(
+    *, source: pl.DataFrame, minimum_source_count: int
+) -> None:
+    """Ensure origin flags are derived from the bundle-bound threshold.
+
+    Raises:
+        ValueError:
+            If counts are invalid or eligibility flags do not match the threshold.
+    """
+    try:
+        expected = source.get_column("count") >= minimum_source_count
+    except (TypeError, pl.exceptions.PolarsError) as error:
+        raise ValueError("Dashboard origin target has invalid count values") from error
+    actual = source.get_column(ORIGIN_ELIGIBILITY_COLUMN)
+    if actual.to_list() != expected.to_list():
+        raise ValueError(
+            "Dashboard origin eligibility does not match bundle minimum_source_count"
+        )
+
+
+def _origin_dashboard_target(
+    *, normalized: Path, minimum_source_count: int | None = None
+) -> dict[str, float] | None:
     """Load the eligible, non-Danish origin target for display.
 
     Returns:
@@ -1024,6 +1234,10 @@ def _origin_dashboard_target(*, normalized: Path) -> dict[str, float] | None:
     source = _read_origin_target(normalized=normalized)
     if source is None:
         return None
+    if minimum_source_count is not None:
+        _validate_origin_threshold(
+            source=source, minimum_source_count=minimum_source_count
+        )
     source = source.filter(pl.col(ORIGIN_ELIGIBILITY_COLUMN))
     value_column = _target_column(field="origin_country_da", columns=source.columns)
     if value_column is None:

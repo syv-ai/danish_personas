@@ -356,8 +356,8 @@ def prepare_bundle(
                 "BEFOLK3 and RAS210 are held-out diagnostics, not fitted microdata.",
                 "The municipality-region hierarchy comes from the official DST "
                 "classification, not from StatBank metadata ordering.",
-                "FOLK2 is an independent national adult marginal by official IELAND "
-                "code and label; it is neither ethnicity nor citizenship.",
+                "FOLK2 is an independent national adult marginal keyed by official "
+                "IELAND codes and labels; it is neither ethnicity nor citizenship.",
                 "FOLK2 origin categories are retained verbatim, including Stateless "
                 "and Not stated; no continents, regions, or correlations are inferred.",
                 "FOLK2 is sampled independently into Phase 2 origin fields; only the "
