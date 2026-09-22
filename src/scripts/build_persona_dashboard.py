@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import polars as pl
 from omegaconf import DictConfig
 from plotly.offline import get_plotlyjs
+from umap import UMAP
 
 from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
@@ -474,8 +475,8 @@ def _embedding_chart(
         )
         buttons = []
     figure.update_layout(
-        xaxis_title="PCA dimension 1",
-        yaxis_title="PCA dimension 2",
+        xaxis_title="UMAP dimension 1",
+        yaxis_title="UMAP dimension 2",
         updatemenus=(
             [{"buttons": buttons, "x": 0, "y": 1.15, "xanchor": "left"}]
             if buttons
@@ -490,7 +491,7 @@ def _embedding_chart(
         source=(
             "Semantic source: full persona prose embedded by the configured local "
             f"OpenAI-compatible model ({model}), then reduced with "
-            "deterministic two-dimensional PCA; colour selector changes demographic "
+            "deterministic two-dimensional UMAP; colour selector changes demographic "
             "grouping."
         ),
         wide=True,
@@ -621,7 +622,7 @@ def persona_embedding(
             HTTP client, useful for offline tests. Defaults to ``None``.
 
     Returns:
-        Deterministic two-dimensional PCA coordinates in input row order.
+        Deterministic two-dimensional UMAP coordinates in input row order.
 
     Raises:
         ValueError:
@@ -641,7 +642,7 @@ def persona_embedding(
     finally:
         if owns_client:
             client.close()
-    return _pca_coordinates(vectors=vectors)
+    return _umap_coordinates(vectors=vectors)
 
 
 class OpenAIEmbeddingClient:
@@ -743,30 +744,35 @@ def _vectors_from_response(*, payload: object, expected: int) -> list[list[float
     return vectors
 
 
-def _pca_coordinates(*, vectors: list[list[float]]) -> list[tuple[float, float]]:
-    """Centre vectors and return deterministic two-dimensional PCA coordinates.
+def _umap_coordinates(*, vectors: list[list[float]]) -> list[tuple[float, float]]:
+    """Return deterministic two-dimensional UMAP coordinates.
 
     Returns:
-        Two-dimensional coordinates in input order.
+        Two-dimensional coordinates in input order. Empty and constant input is
+        represented by the origin, while two distinct points use a deterministic
+        line because UMAP requires at least two neighbours.
     """
     if not vectors:
         return []
     matrix = np.asarray(vectors, dtype=float)
-    centred = matrix - matrix.mean(axis=0, keepdims=True)
-    if min(centred.shape) == 0 or not np.any(centred):
+    if matrix.shape[1] == 0 or not np.any(matrix - matrix[0]):
         return [(0.0, 0.0) for _ in vectors]
-    left, singular, _ = np.linalg.svd(centred, full_matrices=False)
-    coordinates = left[:, :2] * singular[:2]
-    for component in range(coordinates.shape[1]):
-        pivot = int(np.argmax(np.abs(coordinates[:, component])))
-        if coordinates[pivot, component] < 0:
-            coordinates[:, component] *= -1
+    if len(vectors) == 1:
+        return [(0.0, 0.0)]
+    if len(vectors) == 2:
+        return [(0.0, 0.0), (1.0, 0.0)]
+
+    reducer = UMAP(
+        n_neighbors=min(15, len(vectors) - 1),
+        n_components=2,
+        random_state=0,
+        transform_seed=0,
+        init="random",
+    )
+    coordinates = np.asarray(reducer.fit_transform(matrix), dtype=float)
     coordinates = np.round(coordinates, decimals=EMBEDDING_DECIMALS)
     coordinates[coordinates == 0.0] = 0.0
-    return [
-        (float(row[0]), float(row[1]) if coordinates.shape[1] > 1 else 0.0)
-        for row in coordinates
-    ]
+    return [(float(row[0]), float(row[1])) for row in coordinates]
 
 
 def _json_safe_row(row: dict[str, object]) -> dict[str, object]:

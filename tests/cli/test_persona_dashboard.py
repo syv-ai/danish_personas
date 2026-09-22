@@ -16,6 +16,7 @@ from scripts.build_persona_dashboard import (
     _distribution_chart,
     _generated_distribution,
     _relationship_pairs,
+    _umap_coordinates,
     _vectors_from_response,
     build_dashboard,
     load_dst_targets,
@@ -137,6 +138,9 @@ def test_dashboard_handles_frame_without_colour_fields(
 
     assert "All personas" in document
     assert "Persona text embedding" in document
+    assert "UMAP dimension 1" in document
+    assert "deterministic two-dimensional UMAP" in document
+    assert "PCA" not in document
 
 
 def test_dashboard_is_one_inline_plotly_html(
@@ -334,6 +338,50 @@ def test_embedding_requests_are_batched_and_configured(
     assert all(request["model"] == "test-model" for request in embedding_client[1])
 
 
+def test_embedding_projection_uses_umap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dashboard delegates non-trivial projections to deterministic UMAP."""
+    calls: dict[str, object] = {}
+
+    class FakeUMAP:
+        def __init__(self, **kwargs: object) -> None:
+            calls["kwargs"] = kwargs
+
+        def fit_transform(self, matrix: object) -> list[list[float]]:
+            calls["matrix"] = matrix
+            return [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]
+
+    monkeypatch.setattr(dashboard, "UMAP", FakeUMAP)
+
+    coordinates = _umap_coordinates(
+        vectors=[[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [3.0, 1.0]]
+    )
+
+    assert coordinates == [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]
+    assert calls["kwargs"] == {
+        "n_neighbors": 3,
+        "n_components": 2,
+        "random_state": 0,
+        "transform_seed": 0,
+        "init": "random",
+    }
+
+
+@pytest.mark.parametrize(
+    ("vectors", "expected"),
+    [
+        ([], []),
+        ([[1.0, 2.0]], [(0.0, 0.0)]),
+        ([[1.0, 2.0], [1.0, 2.0]], [(0.0, 0.0), (0.0, 0.0)]),
+        ([[1.0, 2.0], [3.0, 4.0]], [(0.0, 0.0), (1.0, 0.0)]),
+    ],
+)
+def test_umap_projection_handles_small_and_constant_inputs(
+    vectors: list[list[float]], expected: list[tuple[float, float]]
+) -> None:
+    """Small or degenerate inputs do not make UMAP fail."""
+    assert _umap_coordinates(vectors=vectors) == expected
+
+
 def test_horizontal_layout_has_card_title_only() -> None:
     """Long labels use horizontal bars without a duplicated Plotly title."""
     chart = _distribution_chart(
@@ -352,7 +400,7 @@ def test_horizontal_layout_has_card_title_only() -> None:
 def test_identical_prose_embedding_is_exactly_repeatable(
     embedding_client: tuple[httpx.Client, list[dict[str, object]]],
 ) -> None:
-    """Rank-deficient identical prose is stable across calls and processes."""
+    """Identical prose remains stable across repeated UMAP projections."""
     frame = pl.DataFrame(
         {
             "persona": ["Samme rolige tekst."] * 4,
@@ -363,7 +411,7 @@ def test_identical_prose_embedding_is_exactly_repeatable(
     second = persona_embedding(frame=frame, http_client=embedding_client[0])
 
     assert first == second
-    assert {coordinate[1] for coordinate in first} == {0.0}
+    assert any(coordinate != (0.0, 0.0) for coordinate in first)
     assert len(embedding_client[1]) == 2
 
 
@@ -501,7 +549,7 @@ def test_ras209_h90_is_removed_from_all_dashboard_targets(tmp_path: Path) -> Non
 def test_rank_deficient_embedding_is_exactly_repeatable(
     embedding_client: tuple[httpx.Client, list[dict[str, object]]],
 ) -> None:
-    """Duplicate-document rank deficiency does not change repeated coordinates."""
+    """Duplicate documents do not change repeated UMAP coordinates."""
     frame = pl.DataFrame(
         {
             "persona": ["rolig cykeltur", "rolig cykeltur", "travl arbejdsdag"] * 2,
@@ -544,7 +592,7 @@ def test_relationship_pair_chart_uses_partnered_gender_pairs() -> None:
 def test_tied_singular_embedding_is_exactly_repeatable(
     embedding_client: tuple[httpx.Client, list[dict[str, object]]],
 ) -> None:
-    """Tied singular subspaces have identical coordinates in fresh processes."""
+    """Tied embedding inputs have identical UMAP coordinates across calls."""
     frame = pl.DataFrame(
         {
             "persona": [
