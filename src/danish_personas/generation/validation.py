@@ -74,6 +74,16 @@ UNSUPPORTED_PATTERNS = (
 )
 ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
 _PERSON_NAME_TOKEN = r"[A-ZÆØÅ][A-Za-zÆØÅæøå]+(?:[-'][A-ZÆØÅ][A-Za-zÆØÅæøå]+)*"
+_RELATIONSHIP_ROLE = (
+    r"kæreste(?:n)?|partner(?:en)?|mand(?:en)?|kone(?:n)?|hustru(?:en)?|"
+    r"ægtefælle(?:n)?|datter(?:en)?|søn(?:nen)?|mor(?:en)?|far(?:en)?|"
+    r"søster(?:en)?|bror(?:en)?|broderen|barn(?:et)?|ven(?:nen)?|"
+    r"veninde(?:n)?|kollega(?:en)?"
+)
+_RELATIONSHIP_POSSESSIVE = r"sin|min|din|hans|hendes|deres|vores|jeres"
+_NAME_POSSESSIVE = (
+    r"mit|dit|min|din|sin|hans|hendes|deres|vores|jeres|personaens|personens"
+)
 _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"(?m)(?:^|[.!?]\s+)(?P<name>"
@@ -82,20 +92,36 @@ _PERSON_NAME_PATTERNS = (
     ),
     re.compile(
         rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+"
-        rf"(?:(?i:hedder|kaldes|går under navnet))\s+"
+        rf"(?:(?i:hedder|kaldes|går under navnet|er\s+ved\s+navn))\s+"
         rf"(?P<name>{_PERSON_NAME_TOKEN})"
     ),
     re.compile(
-        rf"\b(?:(?i:mit|hans|hendes))\s+navn\s+"
+        rf"\b(?:(?i:{_NAME_POSSESSIVE}))\s+navn\s+"
         rf"(?:(?i:er))\s+(?P<name>{_PERSON_NAME_TOKEN})"
     ),
     re.compile(
-        rf"\b(?:(?i:sin|min|din|hans|hendes|deres))\s+"
-        rf"(?:(?i:kæreste|kæresten|partner|partneren|mand|manden|"
-        rf"kone|konen|hustru|hustruen|ægtefælle|ægtefællen|datter|"
-        rf"datteren|søn|sønnen|mor|moren|far|faren|søster|søsteren|"
-        rf"bror|broderen|barn|barnet|ven|vennen|veninde|veninden|"
-        rf"kollega|kollegaen))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"\b(?:(?i:navnet|navn))\s+(?:(?i:er))\s+"
+        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
+        rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+"
+        rf"(?:(?i:hedder|kaldes))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
+        rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+(?:(?i:er)\s+)?"
+        rf"(?i:ved navn)\s+(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
+        rf"(?:(?i:{_RELATIONSHIP_ROLE}))(?:\s+(?i:er)\s+|[,:]?\s+)"
+        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?P<name>{_PERSON_NAME_TOKEN})\s+(?:(?i:er))\s+"
+        rf"(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
+        rf"(?:(?i:{_RELATIONSHIP_ROLE}))\b"
     ),
 )
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
