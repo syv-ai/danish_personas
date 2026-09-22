@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import pytest
 from support import ReleaseCase, coherent_evidence
 
+from danish_personas.generation.config import load_generation_config
+from danish_personas.generation.partner_target import same_sex_partner_target
 from danish_personas.release import packager
 from danish_personas.release.common import validate_persona_output_rows
 from danish_personas.release.models import ReleaseEvidence, ReleaseManifest
@@ -91,6 +95,51 @@ def test_release_replays_no_person_name_validation(
 
     with pytest.raises(ValueError, match="generation-v5"):
         validate_persona_output_rows(output)
+
+
+def test_release_checks_partner_target_for_each_persona_id(
+    release_case: ReleaseCase,
+) -> None:
+    """Release validation does not cache rows across target-dependent IDs."""
+    config = load_generation_config(Path("config/config.yaml")).model_copy(
+        update={"same_sex_partner_probability": 0.5}
+    )
+    candidate_ids = [f"cache-target-{index}" for index in range(1000)]
+    first_id, second_id = next(
+        (left, right)
+        for left in candidate_ids
+        for right in candidate_ids
+        if left != right
+        and not same_sex_partner_target(
+            persona_id=left, probability=config.same_sex_partner_probability
+        )
+        and same_sex_partner_target(
+            persona_id=right, probability=config.same_sex_partner_probability
+        )
+    )
+    base = (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.col("persona")
+            .str.replace("single", "gift med sin partner")
+            .str.replace("har aldrig været gift", "er gift"),
+            pl.lit("married_or_separated").alias("marital_status"),
+            pl.lit("married").alias("legal_status_detail"),
+            pl.lit("partnered").alias("current_relationship_status"),
+            pl.lit("female").alias("partner_gender"),
+        )
+    )
+    output = pl.concat(
+        [
+            base.with_columns(pl.lit(first_id).alias("persona_id")),
+            base.with_columns(pl.lit(second_id).alias("persona_id")),
+        ],
+        how="vertical",
+    )
+
+    with pytest.raises(ValueError, match="generation-v5"):
+        validate_persona_output_rows(output, generation_config=config)
 
 
 @pytest.mark.parametrize(

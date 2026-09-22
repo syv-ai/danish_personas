@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+import yaml
 from generation_test_helpers import MockGenerationClient, write_generation_inputs
 
 from danish_personas.generation.pilot import run_pilot
@@ -81,6 +82,29 @@ def test_pilot_identity_supports_a_batch_larger_than_rows(
     )
 
     assert validate_persona_pilot(pilot_dir=pilot_dir).passed
+
+
+def test_pilot_merged_content_validation_recomputes_partner_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merged validation uses the current config when replaying target semantics."""
+    paths = write_generation_inputs(root=tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
+    )
+    MockGenerationClient.requests = 0
+    pilot_dir = _run_test_pilot(paths=paths, output_dir=tmp_path / "pilot", rows=1)
+
+    config = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
+    config["same_sex_partner_probability"] = 1.0
+    paths["config"].write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    report = validate_persona_pilot(pilot_dir=pilot_dir)
+    metric = next(
+        metric for metric in report.metrics if metric.name == "generated_content_errors"
+    )
+    assert metric.value == 1
+    assert not report.passed
 
 
 def test_pilot_merges_validated_shards(

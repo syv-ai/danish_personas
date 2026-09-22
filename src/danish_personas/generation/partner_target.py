@@ -1,10 +1,12 @@
 """Deterministic same-sex partner target policy."""
 
 import hashlib
+from fractions import Fraction
 
 DEFAULT_SAME_SEX_PARTNER_PROBABILITY = 0.00701
 SAME_SEX_PARTNER_POLICY_VERSION = "same-sex-partner-target-v1"
 _SAME_SEX_PARTNER_DOMAIN = "danish-personas/same-sex-partner-target"
+_UINT64_CARDINALITY = 2**64
 
 
 def required_partner_gender(*, sex: str, same_sex_target: bool) -> str:
@@ -48,21 +50,33 @@ def same_sex_partner_target(*, persona_id: str, probability: float) -> bool:
     """
     if not 0.0 <= probability <= 1.0:
         raise ValueError("Same-sex partner probability must be between 0 and 1")
-    return same_sex_partner_draw(persona_id) < probability
+    if probability == 0.0:
+        return False
+    if probability == 1.0:
+        return True
+    threshold = _probability_threshold(probability)
+    return same_sex_partner_draw(persona_id) < threshold
 
 
-def same_sex_partner_draw(persona_id: str) -> float:
-    """Return the stable unit-interval draw for one persona ID.
+def _probability_threshold(probability: float) -> int:
+    """Return the exact integer threshold represented by a float probability."""
+    fraction = Fraction.from_float(probability)
+    return (
+        fraction.numerator * _UINT64_CARDINALITY + fraction.denominator - 1
+    ) // fraction.denominator
+
+
+def same_sex_partner_draw(persona_id: str) -> int:
+    """Return the stable unsigned 64-bit draw for one persona ID.
 
     Args:
         persona_id:
             Stable identifier for the generated persona.
 
     Returns:
-        A deterministic value in the half-open interval ``[0, 1)``.
+        A deterministic integer in the inclusive interval ``[0, 2**64 - 1]``.
     """
     material = "\0".join(
         (SAME_SEX_PARTNER_POLICY_VERSION, _SAME_SEX_PARTNER_DOMAIN, persona_id)
     ).encode("utf-8")
-    integer = int.from_bytes(hashlib.sha256(material).digest()[:8], "big")
-    return integer / 2**64
+    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big")

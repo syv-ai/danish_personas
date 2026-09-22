@@ -16,7 +16,8 @@ llm:
   maximum_total_requests: 15
   retry_backoff_seconds: 1.0
   maximum_rows_per_shard: 5
-  # Formalised-couple lower-bound proxy from DST FAM100N; not sexual orientation.
+  # 2026 FAM100N share among legally formalised couples; applied to partnered
+  # personas, not an all-partnership rate or sexual orientation estimate.
   same_sex_partner_probability: 0.00701
   max_tokens: null
   enable_thinking: null

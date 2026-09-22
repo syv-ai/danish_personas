@@ -153,9 +153,7 @@ def validate_persona_output_rows(
     labels = contract.labels_da
     validated_rows: set[str] = set()
     for index, row in enumerate(output.iter_rows(named=True)):
-        cache_key = canonical_json(
-            {name: row[name] for name in PERSONA_OUTPUT_COLUMNS if name != "persona_id"}
-        )
+        cache_key = canonical_json({name: row[name] for name in PERSONA_OUTPUT_COLUMNS})
         if cache_key in validated_rows:
             continue
         try:
