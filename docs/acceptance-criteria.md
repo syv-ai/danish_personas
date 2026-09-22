@@ -157,6 +157,18 @@ rather than inventing them.
   allowlist entry exactly.
 - The versioned 42-code title mapping is checksum-bound into generation context,
   checkpoints, shards, pilots, and the offline release package.
+- The internal same-sex-partner target is a stable Bernoulli decision from
+  `persona_id`, the versioned target-policy domain, and the configured probability;
+  it is independent of RNG state, shard order, and Python hash behaviour. For a
+  partnered response, `partner_gender` must match the target and the persona sex;
+  a not-partnered response must keep it null. The target is not a public column and
+  does not describe sexual orientation.
+- The default probability is `0.00701`, a lower-bound/formalised-couple proxy from
+  Statistics Denmark StatBank FAM100N at 1 January 2026 (selectors PARS 10,180
+  plus RP 4,376, divided by those plus PARF 2,060,670 = 14,556 / 2,075,226).
+  FAM100N does not identify most unmarried same-sex cohabitants, so this is not a
+  prevalence or orientation estimate.
+  Source: <https://www.statistikbanken.dk/FAM100N>.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number

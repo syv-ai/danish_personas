@@ -194,6 +194,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         "demographics_and_personality",
         "allowed_job_titles",
         "allowed_personality_tendencies",
+        "same_sex_partner_target",
     }
     assert set(generation_payload) == allowed_fields
     assert forbidden_fields.isdisjoint(generation_payload)

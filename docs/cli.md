@@ -63,7 +63,11 @@ uv run src/scripts/build_dataset.py \
 Both commands load all variables from the repository-root `.env` before Hydra starts;
 existing process variables take precedence and values are never logged. Shared model
 settings live under `llm` in `config/config.yaml`. Set `llm.api_key_env` to an
-environment-variable name if the provider requires authentication. Never store token
+environment-variable name if the provider requires authentication. The
+`llm.same_sex_partner_probability` setting is bounded to `[0, 1]` and defaults to
+`0.00701`; it is a deterministic formalised-couple lower-bound proxy from DST
+StatBank FAM100N (<https://www.statistikbanken.dk/FAM100N>), not sexual orientation.
+FAM100N does not identify most unmarried same-sex cohabitants. Never store token
 values in configuration. Commands can consume paid provider requests.
 
 Each persona command writes a deterministic, flat effective `GenerationConfig` YAML

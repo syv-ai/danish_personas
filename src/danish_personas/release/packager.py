@@ -1334,6 +1334,7 @@ def _validate_pilot_for_release(
             output,
             job_title_mapping=load_job_title_mapping(mapping_path),
             origin_label_contract=origin_contract,
+            generation_config=config,
         )
     except ValueError as error:
         raise ReleasePackagingError(
