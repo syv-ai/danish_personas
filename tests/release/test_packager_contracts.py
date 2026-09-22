@@ -53,8 +53,15 @@ def test_release_versions_require_exact_integer_one(
         "Partner ved navn Lars.",
         "Partneren Lars.",
         "Personaens navn er Maja.",
-        "Navnet er Maja.",
+        "Jeg er Maja.",
+        "Hun er Maja.",
+        "Han er Maja.",
+        "Personaen er Maja.",
+        "Personen er Maja.Navnet er Maja.",
         "Maja er hendes kæreste.",
+        "Majas partner bor i byen.",
+        "Maja's partner bor i byen.",
+        "Maja’s partner bor i byen.",
     ],
 )
 def test_release_replays_no_person_name_validation(

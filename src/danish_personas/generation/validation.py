@@ -74,6 +74,8 @@ UNSUPPORTED_PATTERNS = (
 )
 ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
 _PERSON_NAME_TOKEN = r"[A-ZÆØÅ][A-Za-zÆØÅæøå]+(?:[-'][A-ZÆØÅ][A-Za-zÆØÅæøå]+)*"
+_NAME_WORD = r"[A-Za-zÆØÅæøå]+(?:[-'][A-Za-zÆØÅæøå]+)*"
+_PERSON_NAME_EXPRESSION = rf"{_PERSON_NAME_TOKEN}(?:\s+{_NAME_WORD}){{0,3}}?"
 _RELATIONSHIP_ROLE = (
     r"kæreste(?:n)?|partner(?:en)?|mand(?:en)?|kone(?:n)?|hustru(?:en)?|"
     r"ægtefælle(?:n)?|datter(?:en)?|søn(?:nen)?|mor(?:en)?|far(?:en)?|"
@@ -84,42 +86,61 @@ _RELATIONSHIP_POSSESSIVE = r"sin|min|din|hans|hendes|deres|vores|jeres"
 _NAME_POSSESSIVE = (
     r"mit|dit|min|din|sin|hans|hendes|deres|vores|jeres|personaens|personens"
 )
+_NAME_LABEL_WORD = (
+    r"(?!(?i:er|har|hans|hendes|sin|deres|vores|jeres|mit|dit)\b)"
+    rf"{_NAME_WORD}"
+)
+_PERSON_NAME_LABEL_EXPRESSION = (
+    rf"{_PERSON_NAME_TOKEN}(?:\s+{_NAME_LABEL_WORD}){{0,3}}?"
+)
 _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"(?m)(?:^|[.!?]\s+)(?P<name>"
-        rf"(?!(?i:han|hun|personaen|personen)\b){_PERSON_NAME_TOKEN})\s+"
+        rf"(?!(?i:han|hun|personaen|personen|{_RELATIONSHIP_POSSESSIVE})\b)"
+        rf"{_PERSON_NAME_EXPRESSION})\s+"
         rf"(?i:er)\s+\d+\s+(?i:år)\b"
     ),
     re.compile(
         rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+"
         rf"(?:(?i:hedder|kaldes|går under navnet|er\s+ved\s+navn))\s+"
-        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+    ),
+    re.compile(
+        rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+(?:(?i:er))\s+"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
     ),
     re.compile(
         rf"\b(?:(?i:{_NAME_POSSESSIVE}))\s+navn\s+"
-        rf"(?:(?i:er))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?:(?i:er))\s+(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?:(?i:navnet|navn))\s+(?:(?i:er))\s+"
-        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+"
-        rf"(?:(?i:hedder|kaldes))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?:(?i:hedder|kaldes))\s+"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
     ),
     re.compile(
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+(?:(?i:er)\s+)?"
-        rf"(?i:ved navn)\s+(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?i:ved navn)\s+"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+    ),
+    re.compile(
+        rf"\b(?!(?i:{_RELATIONSHIP_POSSESSIVE})\b)"
+        rf"(?P<name>{_PERSON_NAME_LABEL_EXPRESSION})"
+        rf"(?P<possessive>(?i:s|['’´]s?))\s+(?:(?i:{_RELATIONSHIP_ROLE}))\b"
     ),
     re.compile(
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))(?:\s+(?i:er)\s+|[,:]?\s+)"
-        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
     ),
     re.compile(
-        rf"\b(?P<name>{_PERSON_NAME_TOKEN})\s+(?:(?i:er))\s+"
+        rf"\b(?P<name>{_PERSON_NAME_EXPRESSION})\s+(?:(?i:er))\s+"
         rf"(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))\b"
     ),
@@ -566,14 +587,37 @@ def _validate_no_person_names(*, text: str, context: dict[str, object]) -> None:
             If a name appears after an own-name or relationship construction.
     """
     allowed_labels = {
-        str(context.get(field, "")).casefold()
+        _normalize(text=str(context.get(field, "")))
         for field in ("municipality", "origin_country_da")
         if context.get(field)
     }
     for pattern in _PERSON_NAME_PATTERNS:
         for match in pattern.finditer(text):
-            if match.group("name").casefold() not in allowed_labels:
+            if not _is_allowed_grounding_label(
+                text=text, match=match, allowed_labels=allowed_labels
+            ):
                 raise ValueError("Generated content contains a prohibited person name")
+
+
+def _is_allowed_grounding_label(
+    *, text: str, match: re.Match[str], allowed_labels: set[str]
+) -> bool:
+    """Return whether a captured construction contains a complete grounded label.
+
+    The match starts at the candidate name, so comparing the complete capture avoids
+    treating the first capitalised word of a multiword origin as the whole label.
+    """
+    start, end = match.span("name")
+    boundary_end = (
+        match.end("possessive") if "possessive" in match.re.groupindex else end
+    )
+    if (start and (text[start - 1].isalnum() or text[start - 1] == "_")) or (
+        boundary_end < len(text)
+        and (text[boundary_end].isalnum() or text[boundary_end] == "_")
+    ):
+        return False
+    captured = _normalize(text=text[start:end])
+    return any(captured == label for label in allowed_labels)
 
 
 def _validate_persona(

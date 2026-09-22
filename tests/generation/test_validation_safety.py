@@ -93,7 +93,11 @@ def test_unrelated_kan_vaere_idiom_remains_allowed() -> None:
         " Maja er 35 år.",
         " Hun hedder Maja.",
         " Hun er ved navn Maja.",
-        " Personaens navn er Maja.",
+        " Jeg er Maja.",
+        " Hun er Maja.",
+        " Han er Maja.",
+        " Personaen er Maja.",
+        " Personen er Maja. Personaens navn er Maja.",
         " Navnet er Maja.",
         " Hendes datter hedder Emma.",
         " Partneren hedder Lars.",
@@ -103,6 +107,9 @@ def test_unrelated_kan_vaere_idiom_remains_allowed() -> None:
         " Hendes datter er Emma.",
         " Maja er hendes kæreste.",
         " Hun bor sammen med sin kæreste Maja.",
+        " Majas partner bor i byen.",
+        " Maja's partner bor i byen.",
+        " Maja’s partner bor i byen.",
         " Deres datter Emma går til håndbold.",
     ],
 )
@@ -124,8 +131,15 @@ def test_explicit_person_names_are_rejected(extra: str) -> None:
         "Partner ved navn Lars.",
         "Partneren Lars.",
         "Personaens navn er Maja.",
-        "Navnet er Maja.",
+        "Jeg er Maja.",
+        "Hun er Maja.",
+        "Han er Maja.",
+        "Personaen er Maja.",
+        "Personen er Maja.Navnet er Maja.",
         "Maja er hendes kæreste.",
+        "Majas partner bor i byen.",
+        "Maja's partner bor i byen.",
+        "Maja’s partner bor i byen.",
     ],
 )
 def test_explicit_person_names_are_rejected_in_attributes(construction: str) -> None:
@@ -145,6 +159,28 @@ def test_combined_generation_rejects_partner_name() -> None:
 
     with pytest.raises(ValueError, match="person name"):
         parse_generated_persona(json.dumps(payload), context)
+
+
+@pytest.mark.parametrize(
+    "origin", ["Danmark", "San Marino", "Serbien og Montenegro", "Europa uoplyst"]
+)
+def test_single_and_multiword_origin_labels_are_allowed_in_name_patterns(
+    origin: str,
+) -> None:
+    context = demographic()
+    context["origin_country_da"] = origin
+    rendered_origin = origin[:1] + origin[1:].lower()
+    text = persona(
+        context=context,
+        extra=(
+            f" Hun er {rendered_origin}. {rendered_origin} er hendes kæreste. "
+            f"{rendered_origin}s partner bor i byen."
+        ),
+    )["persona"]
+
+    parsed = parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+    assert parsed.persona == text
 
 
 def test_required_place_and_origin_labels_are_allowed_in_name_patterns() -> None:
