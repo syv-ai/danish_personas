@@ -77,9 +77,24 @@ def test_origin_marginal_preserves_official_labels_and_weights() -> None:
     marginal = _origin_country_marginal(raw_frame=raw, official_labels=labels)
 
     assert marginal.to_dicts() == [
-        {"origin_country_code": "5100", "origin_country": "Denmark", "count": 107},
-        {"origin_country_code": "5103", "origin_country": "Stateless", "count": 2},
-        {"origin_country_code": "5999", "origin_country": "Not stated", "count": 0},
+        {
+            "origin_country_code": "5100",
+            "origin_country": "Denmark",
+            "count": 107,
+            "eligible_for_sampling": True,
+        },
+        {
+            "origin_country_code": "5103",
+            "origin_country": "Stateless",
+            "count": 2,
+            "eligible_for_sampling": False,
+        },
+        {
+            "origin_country_code": "5999",
+            "origin_country": "Not stated",
+            "count": 0,
+            "eligible_for_sampling": False,
+        },
     ]
 
 
@@ -119,7 +134,17 @@ def test_origin_materialises_only_approved_zero_codes() -> None:
     assert (
         marginal.filter(pl.col("origin_country_code") == "5103").item(0, "count") == 0
     )
+    assert (
+        marginal.filter(pl.col("origin_country_code") == "5103").item(
+            0, "eligible_for_sampling"
+        )
+        is False
+    )
     assert metrics["passed"]
+    eligibility = _nested_metric(metrics=metrics, name="eligibility")
+    assert eligibility["minimum_source_count"] == 50
+    assert eligibility["eligible_rows"] == 1
+    assert eligibility["excluded_rows"] == 1
     partition = _nested_metric(metrics=metrics, name="expected_partition")
     assert partition["missing_raw"] == ["5103"]
     assert partition["unexpected_missing"] == []

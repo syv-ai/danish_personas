@@ -139,7 +139,13 @@ REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
         }
     ),
     "normalized/folk2_origin_country_marginal.parquet": frozenset(
-        {"origin_country_code", "origin_country", "origin_country_da", "count"}
+        {
+            "origin_country_code",
+            "origin_country",
+            "origin_country_da",
+            "count",
+            "eligible_for_sampling",
+        }
     ),
     "normalized/job_function_sex_marginal.parquet": frozenset(
         {"job_function_code", "job_function", "sex", "count"}
@@ -1003,6 +1009,16 @@ def _verify_origin_table(
         or frame.null_count().sum_horizontal().item()
     ):
         raise ValueError("Prepared FOLK2 origin table is incomplete")
+    if frame.schema.get("eligible_for_sampling") != pl.Boolean:
+        raise ValueError("Prepared FOLK2 eligibility column must be Boolean")
+    expected_eligibility = frame.get_column("count") >= manifest.minimum_source_count
+    if (
+        frame.get_column("eligible_for_sampling").to_list()
+        != expected_eligibility.to_list()
+    ):
+        raise ValueError(
+            "Prepared FOLK2 eligibility does not match minimum_source_count"
+        )
     codes = frame.get_column("origin_country_code").to_list()
     danish = dict(
         zip(codes, frame.get_column("origin_country_da").to_list(), strict=True)

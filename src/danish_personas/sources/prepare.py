@@ -301,6 +301,7 @@ def prepare_bundle(
         selected_codes=origin_source.dimensions["IELAND"],
         expected_zero_codes=origin_source.expected_zero_codes,
         official_labels_da=danish_origin_labels,
+        minimum_source_count=lock.minimum_source_count,
     )
     source_metrics = _source_metrics(
         frames=frames,
@@ -339,6 +340,7 @@ def prepare_bundle(
             "reference_periods": {
                 source.role: source.period for source in lock.sources
             },
+            "minimum_source_count": lock.minimum_source_count,
             "lons20_contract_version": contract.version,
             "lons20_contract_sha256": contract_sha256,
             "origin_labels_contract_path": origin_labels_contract_relative_path,
@@ -559,6 +561,7 @@ def _normalise_frames(
         raw_frame=raw_frames["FOLK2"],
         official_labels=origin_labels or labels["FOLK2"]["IELAND"],
         official_labels_da=origin_labels_da,
+        minimum_source_count=minimum_source_count,
     )
     job_function = _job_function_sex_marginal(
         raw_frame=raw_frames["LONS20"],
@@ -895,6 +898,7 @@ def _origin_country_marginal(
     raw_frame: pl.DataFrame,
     official_labels: dict[str, str],
     official_labels_da: dict[str, str] | None = None,
+    minimum_source_count: int = 50,
 ) -> pl.DataFrame:
     """Aggregate FOLK2 to the official national origin marginal.
 
@@ -905,6 +909,8 @@ def _origin_country_marginal(
             Official IELAND code-to-label mapping from table metadata.
         official_labels_da (optional):
             Official Danish IELAND code-to-label mapping.
+        minimum_source_count (optional):
+            Minimum count required for origin sampling eligibility. Defaults to 50.
 
     Returns:
         One row per official IELAND value, including zero-count categories.
@@ -926,12 +932,18 @@ def _origin_country_marginal(
         categories.join(
             counts, left_on="origin_country_code", right_on="IELAND", how="left"
         )
-        .with_columns(pl.col("count").fill_null(0).cast(pl.Int64))
+        .with_columns(
+            pl.col("count").fill_null(0).cast(pl.Int64),
+            (pl.col("count").fill_null(0) >= minimum_source_count).alias(
+                "eligible_for_sampling"
+            ),
+        )
         .select(
             "origin_country_code",
             "origin_country",
             *(["origin_country_da"] if official_labels_da is not None else []),
             "count",
+            "eligible_for_sampling",
         )
     )
 
@@ -1061,6 +1073,7 @@ def _origin_country_metrics(
     selected_codes: list[str],
     expected_zero_codes: list[str] | None = None,
     official_labels_da: dict[str, str] | None = None,
+    minimum_source_count: int = 50,
 ) -> dict[str, object]:
     """Validate the FOLK2 origin marginal and its official partition.
 
@@ -1078,6 +1091,8 @@ def _origin_country_metrics(
             Defaults to an empty set.
         official_labels_da (optional):
             Official Danish IELAND code-to-label mapping.
+        minimum_source_count (optional):
+            Minimum count required for origin sampling eligibility. Defaults to 50.
 
     Returns:
         FOLK2-specific validation metrics.
@@ -1117,6 +1132,28 @@ def _origin_country_metrics(
             strict=True,
         )
     )
+    eligibility_values = prepared_frame.get_column("eligible_for_sampling")
+    expected_eligibility = prepared_frame.get_column("count") >= minimum_source_count
+    eligibility_matches = eligibility_values.to_list() == expected_eligibility.to_list()
+    eligibility_non_null = eligibility_values.null_count() == 0
+    eligible_rows = int(eligibility_values.sum())
+    excluded_rows = prepared_frame.height - eligible_rows
+    eligibility_check = {
+        "minimum_source_count": minimum_source_count,
+        "eligible_rows": eligible_rows,
+        "excluded_rows": excluded_rows,
+        "eligible_population_total": int(
+            prepared_frame.filter(pl.col("eligible_for_sampling"))
+            .get_column("count")
+            .sum()
+        ),
+        "excluded_population_total": int(
+            prepared_frame.filter(~pl.col("eligible_for_sampling"))
+            .get_column("count")
+            .sum()
+        ),
+        "passed": eligibility_non_null and eligibility_matches,
+    }
     nonzero_approved = sorted(
         code
         for code in approved_zero_codes
@@ -1171,9 +1208,11 @@ def _origin_country_metrics(
         and not unhandled_values
         and expected_partition
         and metadata_mapping
+        and eligibility_check["passed"]
     )
     return {
         "passed": passed,
+        "eligibility": eligibility_check,
         "positive_total": {"value": total, "passed": total > 0},
         "code_uniqueness": {
             "value": prepared_frame.height,
@@ -1446,6 +1485,10 @@ def _source_report_markdown(bundle_id: str, metrics: dict[str, object]) -> str:
             f"- Positive total: **{origin_results['positive_total']}**",
             f"- Code uniqueness: **{origin_results['code_uniqueness']}**",
             f"- Label uniqueness: **{origin_results['label_uniqueness']}**",
+            "- Minimum source count: "
+            f"**{origin['eligibility']['minimum_source_count']}**",
+            f"- Eligible categories: **{origin['eligibility']['eligible_rows']:,}**",
+            f"- Excluded categories: **{origin['eligibility']['excluded_rows']:,}**",
             "- Official code-to-label mapping: "
             f"**{origin_results['metadata_mapping']}**",
             f"- Zero suppression: **{origin_results['zero_suppression']}**",

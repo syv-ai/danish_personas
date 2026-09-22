@@ -70,6 +70,7 @@ def test_origin_stream_does_not_change_existing_fields(tmp_path: Path) -> None:
                 2 if code == "5100" else 107 if code == "5103" else 0
                 for code in contract.labels_en
             ],
+            "eligible_for_sampling": [code == "5103" for code in contract.labels_en],
         }
     ).write_parquet(origin_path)
     refresh_bundle_manifest(bundle_dir=second_paths[0])

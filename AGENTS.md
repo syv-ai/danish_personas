@@ -213,8 +213,8 @@ additionally contain merged output, a pilot manifest, shard references, and
 schema 2 and evidence schema 3.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
-and request accounting. The current versions are prepared bundle 7, sampler 7, frozen
-sample 4, generation 5, validator `persona-safety-v20`, release manifest 2, and release
+and request accounting. The current versions are prepared bundle 8, sampler 8, frozen
+sample 5, generation 5, validator `persona-safety-v20`, release manifest 2, and release
 evidence 3.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be

@@ -11,12 +11,12 @@ from .origin_labels import validate_origin_contract_reference
 # Increment when deterministic sampling semantics or generated record columns change.
 # The run identity includes this value so incompatible historical outputs cannot be
 # silently reused.
-SAMPLER_SCHEMA_VERSION: int = 7
+SAMPLER_SCHEMA_VERSION: int = 8
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 7
-FROZEN_SAMPLE_SCHEMA_VERSION: int = 4
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 8
+FROZEN_SAMPLE_SCHEMA_VERSION: int = 5
 GENERATION_SCHEMA_VERSION: int = 5
 SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({4})
 SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
@@ -414,6 +414,7 @@ class BundleManifest(StrictModel):
     files: dict[str, str]
     reference_periods: dict[str, str]
     assumptions: list[str]
+    minimum_source_count: int = Field(ge=0)
     lons20_contract_version: int = Field(ge=1)
     lons20_contract_sha256: str
     origin_labels_contract_path: str = Field(min_length=1)
