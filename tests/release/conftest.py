@@ -137,8 +137,6 @@ def release_case(tmp_path: Path) -> ReleaseCase:
         "config/validation.yaml",
         "config/folk2-ieland-labels-da.yaml",
         "docs/source-register.md",
-        "docs/privacy-risk-register.md",
-        "docs/acceptance-criteria.md",
     ):
         destination = repository / relative
         destination.parent.mkdir(parents=True, exist_ok=True)

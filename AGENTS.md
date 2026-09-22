@@ -305,6 +305,4 @@ current contracts have been regenerated; use placeholders in instructions.
 - `fix_dot_env_file.py` deletes `.name_and_email` after copying any values and does not
   populate optional token variables. Direct Python execution should still use `uv run`.
 
-Read `docs/acceptance-criteria.md` and `docs/privacy-risk-register.md` before changing
-validation or data fields. Report security issues privately as described in
-`SECURITY.md`.
+Report security issues privately as described in `SECURITY.md`.

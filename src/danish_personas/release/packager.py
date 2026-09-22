@@ -158,8 +158,6 @@ _PUBLIC_FILES = (
     "provenance/config/sampling.yaml",
     "provenance/config/validation.yaml",
     "provenance/docs/source-register.md",
-    "provenance/docs/privacy-risk-register.md",
-    "provenance/docs/acceptance-criteria.md",
     "provenance/code/uv.lock",
     "provenance/code/LICENSE",
 )
@@ -265,8 +263,6 @@ def package_release(
         "config/sampling.yaml",
         "config/validation.yaml",
         "docs/source-register.md",
-        "docs/privacy-risk-register.md",
-        "docs/acceptance-criteria.md",
     ):
         _capture_path(path=repository_root / name, inventory=inventory)
 
@@ -1006,11 +1002,7 @@ def _install_files(**kwargs: object) -> None:
             config_path if name == "config.yaml" else repository_root / "config" / name
         )
         payloads[f"provenance/config/{name}"] = _captured_bytes(inventory, source)
-    for name in (
-        "source-register.md",
-        "privacy-risk-register.md",
-        "acceptance-criteria.md",
-    ):
+    for name in ("source-register.md",):
         payloads[f"provenance/docs/{name}"] = _captured_bytes(
             inventory, repository_root / "docs" / name
         )

@@ -57,8 +57,6 @@ _PUBLIC_FILES = {
     "provenance/config/sampling.yaml",
     "provenance/config/validation.yaml",
     "provenance/docs/source-register.md",
-    "provenance/docs/privacy-risk-register.md",
-    "provenance/docs/acceptance-criteria.md",
     "provenance/code/uv.lock",
     "provenance/code/LICENSE",
 }
