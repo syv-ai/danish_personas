@@ -14,6 +14,7 @@ def test_equal_remainders_use_official_code_order_independently_of_input() -> No
             "origin_country_code": ["5100", "5101", "5102"],
             "origin_country": ["Denmark", "Country A", "Country B"],
             "count": [1, 1, 1],
+            "eligible_for_sampling": [True, True, True],
         }
     )
     shuffled = ordered.reverse()
@@ -50,6 +51,7 @@ def _marginal() -> pl.DataFrame:
             "origin_country_code": ["5100", "5103", "5999"],
             "origin_country": ["Denmark", "Stateless", "Not stated"],
             "count": [7, 2, 0],
+            "eligible_for_sampling": [True, True, False],
         }
     )
 
@@ -75,8 +77,27 @@ def test_origin_sampling_rejects_malformed_distributions() -> None:
         _marginal().with_columns(pl.lit(None).alias("origin_country")),
         _marginal().vstack(_marginal().head(1)),
         _marginal().with_columns(pl.lit(0).alias("count")),
+        _marginal().with_columns(pl.lit(None).alias("eligible_for_sampling")),
+        _marginal().with_columns(pl.lit("yes").alias("eligible_for_sampling")),
+        _marginal().drop("eligible_for_sampling"),
     ]
 
     for frame in cases:
         with pytest.raises(ValueError):
             _origin_quota_sample(frame=frame, rows=10, rng=np.random.default_rng(42))
+
+
+def test_origin_sampling_excludes_count_below_eligibility_threshold() -> None:
+    """A positive count of 49 is excluded while a count of 50 is included."""
+    frame = pl.DataFrame(
+        {
+            "origin_country_code": ["5100", "5101"],
+            "origin_country": ["Denmark", "Country A"],
+            "count": [49, 50],
+            "eligible_for_sampling": [False, True],
+        }
+    )
+
+    sampled = _origin_quota_sample(frame=frame, rows=10, rng=np.random.default_rng(42))
+
+    assert sampled.get_column("origin_country_code").unique().to_list() == ["5101"]

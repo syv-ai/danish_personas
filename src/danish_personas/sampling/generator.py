@@ -129,7 +129,11 @@ def generate_records(
     origin_frame = pl.read_parquet(source_dir / "folk2_origin_country_marginal.parquet")
     origin_frame = _ensure_origin_danish_labels(frame=origin_frame, bundle=bundle)
     sampled_origin = _origin_quota_sample(
-        frame=origin_frame, rows=rows, rng=origin_rng, require_danish=True
+        frame=origin_frame,
+        rows=rows,
+        rng=origin_rng,
+        require_danish=True,
+        minimum_source_count=bundle.minimum_source_count,
     )
     job_function_frame = pl.read_parquet(
         source_dir / "job_function_sex_marginal.parquet"
@@ -617,30 +621,52 @@ def _origin_quota_sample(
     rng: np.random.Generator,
     *,
     require_danish: bool = False,
+    minimum_source_count: int | None = None,
 ) -> pl.DataFrame:
-    """Sample the official FOLK2 marginal with exact deterministic quotas.
+    """Sample eligible rows of the official FOLK2 marginal.
 
-    Only positive-weight categories can be emitted. The code, label, and count
-    columns are validated here as a defence against a malformed prepared bundle.
-    Largest-remainder ties follow sorted official codes, then the independent
-    child RNG shuffles the resulting rows.
+    The complete audit marginal, including excluded rows, is validated before
+    eligibility is applied. Largest-remainder ties follow sorted official codes,
+    then the independent child RNG shuffles the resulting rows.
+
+    Args:
+        frame:
+            Complete prepared FOLK2 marginal, including eligibility flags.
+        rows:
+            Number of origin rows to return.
+        rng:
+            Isolated random generator for origin sampling.
+        require_danish (optional):
+            Whether the Danish label column is required. Defaults to False.
+        minimum_source_count (optional):
+            Threshold used to cross-check eligibility when supplied. Defaults to
+            no additional threshold check.
 
     Returns:
-        A shuffled frame containing exactly ``rows`` positive-weight categories.
+        A shuffled frame containing exactly ``rows`` eligible positive-weight
+        categories.
 
     Raises:
         ValueError:
-            If codes, labels, or counts are malformed, or the total is not
-            positive.
+            If the audit marginal is malformed, eligibility is inconsistent, or
+            no eligible category has positive weight.
     """
-    required = {"origin_country_code", "origin_country", "count"}
+    required = {
+        "origin_country_code",
+        "origin_country",
+        "count",
+        "eligible_for_sampling",
+    }
     if require_danish:
         required.add("origin_country_da")
     selected = _select_origin_columns(frame=frame, required=required)
-    _validate_origin_marginal(selected=selected)
-    positive = selected.filter(pl.col("count") > 0)
+    _validate_origin_marginal(
+        selected=selected, minimum_source_count=minimum_source_count
+    )
+    eligible = selected.filter(pl.col("eligible_for_sampling"))
+    positive = eligible.filter(pl.col("count") > 0)
     if positive.is_empty():
-        raise ValueError("FOLK2 marginal must have a positive total")
+        raise ValueError("FOLK2 eligible marginal must have a positive total")
     return _shuffle_origin_quota(positive=positive, rows=rows, rng=rng)
 
 
@@ -681,17 +707,24 @@ def _shuffle_origin_quota(
     return positive[indices]
 
 
-def _validate_origin_marginal(*, selected: pl.DataFrame) -> None:
-    """Validate labels, code uniqueness, and integer non-negative counts.
+def _validate_origin_marginal(
+    *, selected: pl.DataFrame, minimum_source_count: int | None = None
+) -> None:
+    """Validate the complete audit marginal before eligibility filtering.
 
     Raises:
         ValueError:
-            If the marginal contains malformed labels, codes, or counts.
+            If the marginal contains malformed labels, codes, counts, or flags.
     """
     if selected.is_empty():
         raise ValueError("FOLK2 marginal must contain at least one category")
+    _validate_origin_eligibility(
+        selected=selected, minimum_source_count=minimum_source_count
+    )
     if selected.null_count().sum_horizontal().item() > 0:
-        raise ValueError("FOLK2 marginal contains null code, label, or count")
+        raise ValueError(
+            "FOLK2 marginal contains null code, label, count, or eligibility"
+        )
     for column in ("origin_country", "origin_country_da"):
         if column in selected.columns and bool(
             (selected.get_column(column).str.strip_chars() == "").any()
@@ -719,3 +752,27 @@ def _validate_origin_marginal(*, selected: pl.DataFrame) -> None:
         raise ValueError("FOLK2 marginal counts must be integers")
     if bool((counts < 0).any()):
         raise ValueError("FOLK2 marginal counts cannot be negative")
+
+
+def _validate_origin_eligibility(
+    *, selected: pl.DataFrame, minimum_source_count: int | None
+) -> None:
+    """Validate the Boolean eligibility column and optional threshold binding.
+
+    Raises:
+        ValueError:
+            If eligibility is not Boolean or disagrees with the threshold.
+    """
+    if selected.schema.get("eligible_for_sampling") != pl.Boolean:
+        raise ValueError("FOLK2 marginal eligibility must be Boolean")
+    if minimum_source_count is None:
+        return
+    counts = selected.get_column("count")
+    expected_eligibility = counts >= minimum_source_count
+    if (
+        selected.get_column("eligible_for_sampling").to_list()
+        != expected_eligibility.to_list()
+    ):
+        raise ValueError(
+            "FOLK2 marginal eligibility does not match minimum_source_count"
+        )
