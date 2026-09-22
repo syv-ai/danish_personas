@@ -18,7 +18,7 @@ from .job_titles import (
 from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
 from .personality import all_personality_phrases, all_personality_tendencies
 
-VALIDATOR_VERSION = "persona-safety-v19"
+VALIDATOR_VERSION = "persona-safety-v20"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -73,6 +73,31 @@ UNSUPPORTED_PATTERNS = (
     r"hud(?:en|ens|farve|farven|farves)?|kropsbygning",
 )
 ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
+_PERSON_NAME_TOKEN = r"[A-ZÆØÅ][A-Za-zÆØÅæøå]+(?:[-'][A-ZÆØÅ][A-Za-zÆØÅæøå]+)*"
+_PERSON_NAME_PATTERNS = (
+    re.compile(
+        rf"(?m)(?:^|[.!?]\s+)(?P<name>"
+        rf"(?!(?i:han|hun|personaen|personen)\b){_PERSON_NAME_TOKEN})\s+"
+        rf"(?i:er)\s+\d+\s+(?i:år)\b"
+    ),
+    re.compile(
+        rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+"
+        rf"(?:(?i:hedder|kaldes|går under navnet))\s+"
+        rf"(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?:(?i:mit|hans|hendes))\s+navn\s+"
+        rf"(?:(?i:er))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+    re.compile(
+        rf"\b(?:(?i:sin|min|din|hans|hendes|deres))\s+"
+        rf"(?:(?i:kæreste|kæresten|partner|partneren|mand|manden|"
+        rf"kone|konen|hustru|hustruen|ægtefælle|ægtefællen|datter|"
+        rf"datteren|søn|sønnen|mor|moren|far|faren|søster|søsteren|"
+        rf"bror|broderen|barn|barnet|ven|vennen|veninde|veninden|"
+        rf"kollega|kollegaen))\s+(?P<name>{_PERSON_NAME_TOKEN})"
+    ),
+)
 LIST_FORM = re.compile(r"(?:^|\s)(?:[-*•]|\d+[.)])\s|[\[\]{};]", re.MULTILINE)
 DASH_TRANSLATION = str.maketrans(
     {
@@ -222,6 +247,16 @@ def parse_attributes(
             attributes=attributes, demographic=context
         ),
     )
+    for field, value in attributes.model_dump().items():
+        texts = value if isinstance(value, list) else [value]
+        for text in texts:
+            if isinstance(text, str):
+                _validate_field(
+                    field=field,
+                    validator=lambda text=text: _validate_no_person_names(
+                        text=text, context=context
+                    ),
+                )
     return attributes
 
 
@@ -476,6 +511,12 @@ def parse_descriptions(
         )
     _validate_field(
         field="persona",
+        validator=lambda: _validate_no_person_names(
+            text=descriptions.persona, context=context
+        ),
+    )
+    _validate_field(
+        field="persona",
         validator=lambda: _validate_persona(
             text=descriptions.persona, context=context, attributes=generated
         ),
@@ -485,6 +526,28 @@ def parse_descriptions(
     if len(set(normalized)) != len(normalized):
         raise ValueError("persona: Persona descriptions must not be exact duplicates")
     return descriptions
+
+
+def _validate_no_person_names(*, text: str, context: dict[str, object]) -> None:
+    """Reject explicit personal-name constructions without guessing from vocabulary.
+
+    The generation contract permits required place and origin labels, so this check
+    deliberately looks only at reviewed name-bearing constructions. It does not scan
+    capitalised words: that would reject sentence starts and grounded proper nouns.
+
+    Raises:
+        ValueError:
+            If a name appears after an own-name or relationship construction.
+    """
+    allowed_labels = {
+        str(context.get(field, "")).casefold()
+        for field in ("municipality", "origin_country_da")
+        if context.get(field)
+    }
+    for pattern in _PERSON_NAME_PATTERNS:
+        for match in pattern.finditer(text):
+            if match.group("name").casefold() not in allowed_labels:
+                raise ValueError("Generated content contains a prohibited person name")
 
 
 def _validate_persona(

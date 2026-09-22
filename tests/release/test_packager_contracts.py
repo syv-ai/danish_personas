@@ -7,6 +7,7 @@ import pytest
 from support import ReleaseCase, coherent_evidence
 
 from danish_personas.release import packager
+from danish_personas.release.common import validate_persona_output_rows
 from danish_personas.release.models import ReleaseEvidence, ReleaseManifest
 from danish_personas.release.packager import ReleasePackagingError
 
@@ -40,6 +41,20 @@ def test_release_versions_require_exact_integer_one(
         ReleaseManifest.model_validate(manifest_payload)
     with pytest.raises(ValueError):
         ReleaseEvidence.model_validate(evidence_payload)
+
+
+def test_release_replays_no_person_name_validation(release_case: ReleaseCase) -> None:
+    """Release validation rejects names that generation validation would reject."""
+    output = (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.col("persona").str.replace("Han er 35 år", "Han hedder Maja og er 35 år")
+        )
+    )
+
+    with pytest.raises(ValueError, match="generation-v5"):
+        validate_persona_output_rows(output)
 
 
 def test_scanner_accepts_only_nullable_v2_fields(release_case: ReleaseCase) -> None:

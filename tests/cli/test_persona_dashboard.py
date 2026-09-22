@@ -13,6 +13,7 @@ from scripts.build_persona_dashboard import (
     _distribution_chart,
     _generated_distribution,
     _relationship_pairs,
+    _vectors_from_response,
     build_dashboard,
     load_dst_targets,
     main,
@@ -254,6 +255,20 @@ def test_education_target_uses_generated_pooling_contract(tmp_path: Path) -> Non
     assert sum(target.values()) == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("indices", [[0, 0], [-1, 1], [0, 2], [True, 1], [0, None]])
+def test_embedding_rejects_invalid_batch_indices(indices: list[object]) -> None:
+    """Embedding vectors are ordered only after an exact index-set check."""
+    payload = {
+        "data": [
+            {"index": index, "embedding": [float(position), 1.0]}
+            for position, index in enumerate(indices)
+        ]
+    }
+
+    with pytest.raises(ValueError, match="indices"):
+        _vectors_from_response(payload=payload, expected=2)
+
+
 def test_embedding_http_errors_are_not_silenced() -> None:
     """Provider failures stop dashboard construction rather than fabricating points."""
     client = httpx.Client(
@@ -424,6 +439,31 @@ def test_not_stated_is_removed_before_distribution_normalisation(
         }
     ).write_parquet(normalized / "ras209_joint_unpooled.parquet")
     assert load_dst_targets(bundle_path=tmp_path)["education_level"] == {"primary": 1.0}
+
+
+def test_ras209_h90_is_removed_from_all_dashboard_targets(tmp_path: Path) -> None:
+    """H90 is excluded before education, labour, and municipality overlays are mixed."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    source = pl.DataFrame(
+        {
+            "municipality": ["A", "A", "B"],
+            "education_level": ["primary", "not_stated", "primary"],
+            "education_source_code": ["H10", "H90", "H10"],
+            "labour_market_status": ["employed", "unemployed", "employed"],
+            "count": [10, 90, 10],
+        }
+    )
+    path = normalized / "ras209_joint_unpooled.parquet"
+    source.write_parquet(path)
+    original = path.read_bytes()
+
+    targets = load_dst_targets(bundle_path=tmp_path)
+
+    assert targets["education_level"] == {"primary": 1.0}
+    assert targets["labour_market_status"] == {"employed": 1.0}
+    assert targets["municipality"] == {"A": 0.5, "B": 0.5}
+    assert path.read_bytes() == original
 
 
 def test_rank_deficient_embedding_is_exactly_repeatable(
