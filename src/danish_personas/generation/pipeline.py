@@ -49,6 +49,7 @@ from .models import (
     PersonaDescriptions,
     RequestLedger,
 )
+from .partner_target import SAME_SEX_PARTNER_POLICY_VERSION, same_sex_partner_target
 from .personality import allowed_personality_tendencies
 from .policy import ChecksumValidationPolicy
 from .validation import (
@@ -353,11 +354,15 @@ def _generate_one(
             origin_label_contract=origin_label_contract,
             origin_label_contract_sha256=origin_label_contract_sha256,
             origin_label_contract_path=origin_label_contract_path,
+            generation_config=config,
         )
         return checkpoint
 
     responses: list[LLMResponse] = []
     request_start = client.requests_made
+    same_sex_target = same_sex_partner_target(
+        persona_id=persona_id, probability=config.same_sex_partner_probability
+    )
     generated = _complete_validated(
         client=client,
         prompt=generation_prompt,
@@ -365,11 +370,12 @@ def _generate_one(
             demographics=demographics,
             allowed_job_titles=_allowed_job_titles(row=row, mapping=job_title_mapping),
             personality_tendencies=allowed_personality_tendencies(context=demographics),
+            same_sex_partner_target=same_sex_target,
         ),
         schema_name="generated_persona",
         schema=t.cast(dict[str, object], GeneratedPersona.model_json_schema()),
         parser=lambda content: parse_generated_persona(
-            content, row, job_title_mapping=job_title_mapping
+            content, row, job_title_mapping=job_title_mapping, generation_config=config
         ),
         maximum_attempts=config.maximum_validation_attempts,
         responses=responses,
@@ -512,6 +518,7 @@ def _generation_payload(
     demographics: dict[str, object],
     allowed_job_titles: list[str],
     personality_tendencies: tuple[str, ...],
+    same_sex_partner_target: bool,
 ) -> dict[str, object]:
     """Build the complete single-request provider payload boundary.
 
@@ -522,6 +529,7 @@ def _generation_payload(
         "demographics_and_personality": demographics,
         "allowed_job_titles": allowed_job_titles,
         "allowed_personality_tendencies": list(personality_tendencies),
+        "same_sex_partner_target": same_sex_partner_target,
     }
 
 
@@ -538,6 +546,7 @@ def _validate_checkpoint(
     origin_label_contract: OriginLabelContract | None = None,
     origin_label_contract_sha256: str | None = None,
     origin_label_contract_path: Path | None = None,
+    generation_config: GenerationConfig | None = None,
 ) -> None:
     if checksum_policy.validates_checksums and checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
@@ -577,6 +586,7 @@ def _validate_checkpoint(
         checkpoint.attributes.model_dump_json(),
         demographic,
         job_title_mapping=job_title_mapping,
+        generation_config=generation_config,
     )
     parse_descriptions(
         checkpoint.descriptions.model_dump_json(), demographic, checkpoint.attributes
@@ -788,6 +798,7 @@ def generation_context_sha256(
                 "generated_persona_schema": GeneratedPersona.model_json_schema(),
                 "generation_schema_version": GENERATION_SCHEMA_VERSION,
                 "validator_version": VALIDATOR_VERSION,
+                "same_sex_partner_policy_version": SAME_SEX_PARTNER_POLICY_VERSION,
                 "prompt_fields": PROMPT_FIELDS,
                 "generation_payload_fields": sorted(GENERATION_PROMPT_FIELDS),
                 "ocean_payload_fields": sorted(OCEAN_PROMPT_FIELDS),

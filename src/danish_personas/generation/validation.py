@@ -15,7 +15,13 @@ from .job_titles import (
     JobFunctionTitleMapping,
     load_job_title_mapping,
 )
-from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
+from .models import (
+    GeneratedAttributes,
+    GeneratedPersona,
+    GenerationConfig,
+    PersonaDescriptions,
+)
+from .partner_target import required_partner_gender, same_sex_partner_target
 from .personality import all_personality_phrases, all_personality_tendencies
 
 VALIDATOR_VERSION = "persona-safety-v20"
@@ -172,6 +178,7 @@ def parse_generated_persona(
     demographic: DemographicRecord | c.Mapping[str, object],
     *,
     job_title_mapping: JobFunctionTitleMapping | None = None,
+    generation_config: GenerationConfig | None = None,
 ) -> GeneratedPersona:
     """Parse and validate one combined attributes-and-persona response.
 
@@ -197,6 +204,7 @@ def parse_generated_persona(
         ).model_dump_json(),
         demographic,
         job_title_mapping=job_title_mapping,
+        generation_config=generation_config,
     )
     parse_descriptions(
         PersonaDescriptions(persona=generated.persona).model_dump_json(),
@@ -242,6 +250,7 @@ def parse_attributes(
     demographic: DemographicRecord | c.Mapping[str, object],
     *,
     job_title_mapping: JobFunctionTitleMapping | None = None,
+    generation_config: GenerationConfig | None = None,
 ) -> GeneratedAttributes:
     """Parse first-stage output against its demographic input.
 
@@ -295,7 +304,9 @@ def parse_attributes(
     _validate_field(
         field="relationship",
         validator=lambda: _validate_relationship_attributes(
-            attributes=attributes, demographic=context
+            attributes=attributes,
+            demographic=context,
+            generation_config=generation_config,
         ),
     )
     for field, value in attributes.model_dump().items():
@@ -492,15 +503,34 @@ def _validate_job_title(
 
 
 def _validate_relationship_attributes(
-    *, attributes: GeneratedAttributes, demographic: dict[str, object]
+    *,
+    attributes: GeneratedAttributes,
+    demographic: dict[str, object],
+    generation_config: GenerationConfig | None = None,
 ) -> None:
-    """Validate the generated relationship fields against legal status semantics.
+    """Validate relationship fields against legal and stable target semantics.
 
     Raises:
         ValueError:
-            If relationship fields do not match the supplied legal status.
+            If relationship fields do not match the supplied legal status or target.
     """
     marital_status = str(demographic.get("marital_status", "")).casefold()
+    if generation_config is not None:
+        persona_id = demographic.get("persona_id")
+        if not isinstance(persona_id, str):
+            raise ValueError("Generation target validation requires persona_id")
+        target = same_sex_partner_target(
+            persona_id=persona_id,
+            probability=generation_config.same_sex_partner_probability,
+        )
+        if attributes.current_relationship_status == "partnered":
+            expected_gender = required_partner_gender(
+                sex=str(demographic.get("sex", "")), same_sex_target=target
+            )
+            if attributes.partner_gender != expected_gender:
+                raise ValueError(
+                    "partner_gender does not match the stable relationship target"
+                )
     detail = attributes.legal_status_detail
     if marital_status == "married_or_separated":
         if detail is None:

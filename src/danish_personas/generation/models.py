@@ -142,6 +142,7 @@ class GenerationConfig(StrictModel):
     maximum_total_requests: int | None = Field(ge=1, le=15)
     retry_backoff_seconds: float = Field(ge=0.0)
     maximum_rows_per_shard: int = Field(ge=1, le=5)
+    same_sex_partner_probability: float = Field(default=0.00701, ge=0.0, le=1.0)
     max_tokens: int | None = Field(default=None, ge=32, le=4_096)
     enable_thinking: bool | None = None
     reasoning_effort: t.Literal["none", "low", "medium", "high"] | None = None

@@ -6,7 +6,11 @@ from datetime import datetime
 import polars as pl
 
 from ..generation.job_titles import JobFunctionTitleMapping
-from ..generation.models import GeneratedAttributes, PersonaDescriptions
+from ..generation.models import (
+    GeneratedAttributes,
+    GenerationConfig,
+    PersonaDescriptions,
+)
 from ..generation.validation import parse_attributes, parse_descriptions
 from ..io import canonical_json
 from ..models import DemographicRecord
@@ -117,6 +121,7 @@ def validate_persona_output_rows(
     *,
     job_title_mapping: JobFunctionTitleMapping | None = None,
     origin_label_contract: OriginLabelContract | None = None,
+    generation_config: GenerationConfig | None = None,
 ) -> None:
     """Replay generation-v5 contextual validation for every public output row.
 
@@ -129,6 +134,8 @@ def validate_persona_output_rows(
         origin_label_contract (optional):
             Official Danish FOLK2 labels bound to the release inputs. Defaults to
             the checked-in contract when omitted.
+        generation_config (optional):
+            Snapshotted generation settings used to replay the stable partner target.
 
     Raises:
         ValueError:
@@ -177,6 +184,7 @@ def validate_persona_output_rows(
                 attributes.model_dump_json(),
                 demographic,
                 job_title_mapping=job_title_mapping,
+                generation_config=generation_config,
             )
             parse_descriptions(descriptions.model_dump_json(), demographic, attributes)
             validated_rows.add(cache_key)
