@@ -43,18 +43,61 @@ def test_release_versions_require_exact_integer_one(
         ReleaseEvidence.model_validate(evidence_payload)
 
 
-def test_release_replays_no_person_name_validation(release_case: ReleaseCase) -> None:
-    """Release validation rejects names that generation validation would reject."""
+@pytest.mark.parametrize(
+    "construction",
+    [
+        "Hendes datter hedder Emma.",
+        "Partneren hedder Lars.",
+        "Partneren kaldes Lars.",
+        "Hendes datter ved navn Emma.",
+        "Partner ved navn Lars.",
+        "Partneren Lars.",
+        "Personaens navn er Maja.",
+        "Navnet er Maja.",
+        "Maja er hendes kæreste.",
+    ],
+)
+def test_release_replays_no_person_name_validation(
+    release_case: ReleaseCase, construction: str
+) -> None:
+    """Release validation rejects every reviewed name construction."""
     output = (
         pl.read_parquet(release_case.output)
         .head(1)
         .with_columns(
-            pl.col("persona").str.replace("Han er 35 år", "Han hedder Maja og er 35 år")
+            pl.col("persona").str.replace(
+                "Han er 35 år", f"Han er 35 år. {construction}"
+            )
         )
     )
 
     with pytest.raises(ValueError, match="generation-v5"):
         validate_persona_output_rows(output)
+
+
+@pytest.mark.parametrize(
+    "construction",
+    [
+        "Partneren hedder Aarhus.",
+        "Hendes datter ved navn Danmark.",
+        "Aarhus er hendes kæreste.",
+    ],
+)
+def test_release_allows_required_place_and_origin_labels(
+    release_case: ReleaseCase, construction: str
+) -> None:
+    """Release validation preserves required grounded labels in name patterns."""
+    output = (
+        pl.read_parquet(release_case.output)
+        .head(1)
+        .with_columns(
+            pl.col("persona").str.replace(
+                "Han er 35 år", f"Han er 35 år. {construction}"
+            )
+        )
+    )
+
+    validate_persona_output_rows(output)
 
 
 def test_scanner_accepts_only_nullable_v2_fields(release_case: ReleaseCase) -> None:

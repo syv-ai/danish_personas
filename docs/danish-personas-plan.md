@@ -778,7 +778,7 @@ A release is complete only when it includes:
 - code revision and environment lock file;
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
-- prepared-bundle 7, sampler 7, frozen-sample 4, generation 5, validator v19, and
+- prepared-bundle 7, sampler 7, frozen-sample 4, generation 5, validator v20, and
   release manifest schema 2 and evidence schema 3 version bindings;
 - official FOLK2 English provenance label and Danish 241-code display-label contract,
   including source metadata SHA-256
