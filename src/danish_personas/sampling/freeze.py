@@ -94,19 +94,22 @@ def freeze_sample(
         temporary.replace(output_path)
     finally:
         temporary.unlink(missing_ok=True)
-    sample_manifest = FrozenSampleManifest(
-        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
-        source_run_id=manifest.run_id,
-        rows=sample.height,
-        strata=["municipality_code", "education_level", "labour_market_status"],
-        method="deterministic round-robin within sorted strata",
-        data_file=output_path.name,
-        sha256=sha256_file(output_path),
-        llm_calls=0,
-        origin_labels_contract_path=manifest.origin_labels_contract_path,
-        origin_labels_contract_version=manifest.origin_labels_contract_version,
-        origin_labels_contract_sha256=manifest.origin_labels_contract_sha256,
-        origin_labels_contract_content=manifest.origin_labels_contract_content,
+    sample_manifest = FrozenSampleManifest.model_validate(
+        {
+            "sample_schema_version": FROZEN_SAMPLE_SCHEMA_VERSION,
+            "source_run_id": manifest.run_id,
+            "rows": sample.height,
+            "strata": ["municipality_code", "education_level", "labour_market_status"],
+            "method": "deterministic round-robin within sorted strata",
+            "data_file": output_path.name,
+            "sha256": sha256_file(output_path),
+            "llm_calls": 0,
+            "origin_labels_contract_path": manifest.origin_labels_contract_path,
+            "origin_labels_contract_version": manifest.origin_labels_contract_version,
+            "origin_labels_contract_sha256": manifest.origin_labels_contract_sha256,
+            "origin_labels_contract_content": manifest.origin_labels_contract_content,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     _write_manifest(
         path=manifest_path,

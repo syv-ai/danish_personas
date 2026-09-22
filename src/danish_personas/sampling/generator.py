@@ -163,23 +163,26 @@ def generate_records(
         {"job_function_code": pl.String, "job_function": pl.String}
     )
     frame.write_parquet(data_path, compression="zstd")
-    manifest = RunManifest(
-        run_id=run_id,
-        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
-        created_at=_now(),
-        bundle_id=bundle.bundle_id,
-        bundle_manifest_sha256=sha256_file(bundle_manifest_path),
-        sampling_config_sha256=sha256_file(sampling_config_path),
-        origin_labels_contract_path=bundle.origin_labels_contract_path,
-        origin_labels_contract_version=bundle.origin_labels_contract_version,
-        origin_labels_contract_sha256=bundle.origin_labels_contract_sha256,
-        origin_labels_contract_content=bundle.origin_labels_contract_content,
-        rows=rows,
-        seed=seed,
-        data_file=Path(data_path.name),
-        data_sha256=sha256_file(data_path),
-        logical_content_sha256=_logical_checksum(frame=frame),
-        llm_calls=0,
+    manifest = RunManifest.model_validate(
+        {
+            "run_id": run_id,
+            "sampler_schema_version": SAMPLER_SCHEMA_VERSION,
+            "created_at": _now(),
+            "bundle_id": bundle.bundle_id,
+            "bundle_manifest_sha256": sha256_file(bundle_manifest_path),
+            "sampling_config_sha256": sha256_file(sampling_config_path),
+            "origin_labels_contract_path": bundle.origin_labels_contract_path,
+            "origin_labels_contract_version": bundle.origin_labels_contract_version,
+            "origin_labels_contract_sha256": bundle.origin_labels_contract_sha256,
+            "origin_labels_contract_content": bundle.origin_labels_contract_content,
+            "rows": rows,
+            "seed": seed,
+            "data_file": Path(data_path.name),
+            "data_sha256": sha256_file(data_path),
+            "logical_content_sha256": _logical_checksum(frame=frame),
+            "llm_calls": 0,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=manifest_path, payload=manifest)
     LOGGER.info("Generated %s non-LLM records in run %s", f"{rows:,}", run_id)
