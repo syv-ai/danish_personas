@@ -46,8 +46,11 @@ def test_release_versions_require_exact_integer_one(
 @pytest.mark.parametrize(
     "construction",
     [
+        "Hun hedder Maja og bor i Aarhus.",
         "Hendes datter hedder Emma.",
+        "Hendes datter hedder Emma og går til håndbold.",
         "Partneren hedder Lars.",
+        "Partneren Maja bor ofte i byen.",
         "Partneren kaldes Lars.",
         "Hendes datter ved navn Emma.",
         "Partner ved navn Lars.",

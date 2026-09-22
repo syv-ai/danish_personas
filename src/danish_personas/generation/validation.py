@@ -93,6 +93,9 @@ _NAME_LABEL_WORD = (
 _PERSON_NAME_LABEL_EXPRESSION = (
     rf"{_PERSON_NAME_TOKEN}(?:\s+{_NAME_LABEL_WORD}){{0,3}}?"
 )
+# Capture the first token so a name is found even when prose continues without
+# punctuation. Grounded labels are checked separately against the full text span.
+_PERSON_NAME_EXPRESSION = _PERSON_NAME_TOKEN
 _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"(?m)(?:^|[.!?]\s+)(?P<name>"
@@ -103,11 +106,11 @@ _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+"
         rf"(?:(?i:hedder|kaldes|går under navnet|er\s+ved\s+navn))\s+"
-        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?:(?i:jeg|han|hun|personaen|personen))\s+(?:(?i:er))\s+"
-        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?:(?i:{_NAME_POSSESSIVE}))\s+navn\s+"
@@ -121,13 +124,13 @@ _PERSON_NAME_PATTERNS = (
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+"
         rf"(?:(?i:hedder|kaldes))\s+"
-        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))\s+(?:(?i:er)\s+)?"
         rf"(?i:ved navn)\s+"
-        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?!(?i:{_RELATIONSHIP_POSSESSIVE})\b)"
@@ -137,7 +140,7 @@ _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"\b(?:(?i:{_RELATIONSHIP_POSSESSIVE})\s+)?"
         rf"(?:(?i:{_RELATIONSHIP_ROLE}))(?:\s+(?i:er)\s+|[,:]?\s+)"
-        rf"(?P<name>{_PERSON_NAME_EXPRESSION})(?=$|[.!?,;:])"
+        rf"(?P<name>{_PERSON_NAME_EXPRESSION})"
     ),
     re.compile(
         rf"\b(?P<name>{_PERSON_NAME_EXPRESSION})\s+(?:(?i:er))\s+"
@@ -604,20 +607,32 @@ def _is_allowed_grounding_label(
 ) -> bool:
     """Return whether a captured construction contains a complete grounded label.
 
-    The match starts at the candidate name, so comparing the complete capture avoids
-    treating the first capitalised word of a multiword origin as the whole label.
+    Name patterns capture only the first capitalised token so they also catch prose
+    that continues without punctuation. Compare the complete text at that position
+    to each grounded label rather than treating that token as the whole label.
     """
-    start, end = match.span("name")
-    boundary_end = (
-        match.end("possessive") if "possessive" in match.re.groupindex else end
-    )
-    if (start and (text[start - 1].isalnum() or text[start - 1] == "_")) or (
-        boundary_end < len(text)
-        and (text[boundary_end].isalnum() or text[boundary_end] == "_")
-    ):
+    start, _ = match.span("name")
+    if start and (text[start - 1].isalnum() or text[start - 1] == "_"):
         return False
-    captured = _normalize(text=text[start:end])
-    return any(captured == label for label in allowed_labels)
+    tail = _normalize(text=text[start:])
+    for label in allowed_labels:
+        normalised_label = _normalize(text=label)
+        if not tail.startswith(normalised_label):
+            continue
+        remainder = tail[len(normalised_label) :]
+        if not remainder or not (remainder[0].isalnum() or remainder[0] == "_"):
+            return True
+        if "possessive" not in match.re.groupindex:
+            continue
+        boundary_end = match.end("possessive")
+        captured = _normalize(text=text[start:boundary_end])
+        possessive = _normalize(text=match.group("possessive"))
+        if captured == f"{normalised_label}{possessive}" and (
+            boundary_end == len(text)
+            or not (text[boundary_end].isalnum() or text[boundary_end] == "_")
+        ):
+            return True
+    return False
 
 
 def _validate_persona(

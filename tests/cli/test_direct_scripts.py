@@ -319,7 +319,10 @@ def test_generate_persona_emits_only_validated_text(
         ]
     )
 
-    generate_persona.main.__wrapped__(config)
+    with initialize_config_dir(
+        version_base=None, config_dir=str(Path("config").resolve())
+    ):
+        generate_persona.main.__wrapped__(config)
 
     captured = capsys.readouterr()
     assert captured.out == "Dette er en dansk syntetisk persona.\n"
