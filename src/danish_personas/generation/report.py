@@ -40,7 +40,7 @@ from .pipeline import (
     models_match,
     validate_upstream_sample,
 )
-from .policy import ChecksumValidationPolicy
+from .policy import ChecksumValidationPolicy, ContentValidationPolicy
 from .validation import (
     VALIDATOR_VERSION,
     parse_attributes,
@@ -316,11 +316,17 @@ def _build_persona_run_report(
 
     Returns:
         Validation report for the run.
+
+    Raises:
+        ValueError:
+            If the run uses the schema-only content policy.
     """
     manifest = GenerationManifest.model_validate_json(
         (run_dir / "generation-manifest.json").read_text(encoding="utf-8"),
         context={"checksum_policy": checksum_policy},
     )
+    if manifest.content_validation_policy is ContentValidationPolicy.SCHEMA_ONLY:
+        raise ValueError("Schema-only persona runs are not eligible for validation")
     output_path = run_dir / manifest.output_file
     try:
         output = pl.read_parquet(output_path)

@@ -13,9 +13,8 @@ The design rationale and deferred work are documented in
 The source-acquisition, preparation, deterministic sampling, and validation stages are
 implemented. The Hydra config defaults to a local OpenAI-compatible endpoint. Each
 direct generation shard is capped at five rows, while a pilot can span multiple shards.
-Release-scale generation and human approval remain pending; schema-2 package verification
-and evidence are required before
-any release claim.
+Release-scale generation and human approval remain pending; schema-2 package
+verification and evidence are required before any release claim.
 
 Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
 and generation contract 5 with validator `persona-safety-v20`. The default frozen
@@ -99,8 +98,10 @@ uv run src/scripts/build_persona_dashboard.py --help
 
 The three Hydra-based scripts use `config/config.yaml`. Override values
 with expressions such as `llm.model=MODEL`, `build_dataset.rows=10`, and
-`persona_dashboard.input=PATH`. `generate_persona.py` emits one validated Danish
-persona to stdout. `build_dataset.py` saves the merged Parquet dataset below `data/`
+`persona_dashboard.input=PATH`. `generate_persona.py` emits one schema-valid Danish
+persona to stdout; this direct command deliberately skips semantic content gates and is
+unsafe for release evidence. `build_dataset.py` saves the merged Parquet dataset below
+`data/`
 and displays row progress on stderr. The dataset builder can optionally package,
 verify, and upload an approved release to a Hugging Face dataset pull request. The
 dashboard builder writes a self-contained offline HTML file.
@@ -158,9 +159,11 @@ Generation commands execute immediately and can consume paid requests. Each comm
 persists the resolved, secret-free flat generation configuration below its output area
 and uses that immutable snapshot for generation provenance.
 
-The single-persona command validates the upstream report, sample checksum, prompts,
-schemas, and request limits before emitting the final Danish text. The standard sample
-is prepared automatically when needed:
+The single-persona command validates upstream provenance, prompts, the strict response
+schema, and request limits before emitting the final Danish text. It deliberately skips
+Danish, grounding, safety, relationship/title, duplicate, and final-run content gates,
+so its output is unsafe for release evidence. The standard sample is prepared
+automatically when needed:
 
 ```bash
 uv run src/scripts/generate_persona.py
@@ -242,7 +245,8 @@ Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts
 model metadata, request/retry/token accounting, and (when available) cost estimates.
 The current release documentation targets release manifest schema 2 and evidence
 schema 2; release identifiers and checksums are placeholders until regeneration and
-packaging produce them. Accepted LLM response metadata and response hashes are checkpointed;
+packaging produce them. Accepted LLM response metadata and response hashes are
+checkpointed;
 rejected completion text is not stored. Generated outputs remain local until privacy and
 human review approve any proposed release.
 

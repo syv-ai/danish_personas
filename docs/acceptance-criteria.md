@@ -128,18 +128,25 @@ rather than inventing them.
   remains bounded by row and HTTP-request limits.
 - Library and dataset/release validation require the input checksum and successful
   Phase-2 validation report to match the upstream run. The single-row
-  `generate_persona.py` command uses an explicit checksum-tolerant policy for stored
-  checksum mismatches only; all semantic, schema, provenance-content, and safety gates
-  remain active. The upstream sampler schema must be version 7 and the frozen-sample
-  schema must be version 4. Every frozen row and column must validate against the current
+  `generate_persona.py` command uses an explicit checksum-tolerant, schema-only policy:
+  strict `GeneratedPersona` parsing and upstream, provenance, and request-budget checks
+  remain,
+  while generated-content semantic and final-run gates are skipped. Its typed policy is
+  bound into the generation context, manifest, checkpoints, and run ID, so it cannot
+  collide with or resume guarded artefacts. The direct command is unsafe for release
+  evidence. The upstream sampler schema must be version 7 and the frozen-sample
+  schema must be version 4. Every frozen row and column must validate against the
+  current
   `DemographicRecord`; legacy, origin-less samples require migration and cannot cross
   the Phase-3 boundary.
 - No invocation can request more than five rows. The default population-proportional
   1,000-row text-development input is separate from the 2,000-row Phase-2 smoke run;
   stratified round-robin remains an explicit alternative mode.
 - One provider response contains both generated attributes and the generation-5
-  `persona` field. A valid first response costs one request per row; only validation or
-  transport retries add requests.
+  `persona` field. Guarded generation may add validation or transport retries. The
+  direct
+  schema-only command makes one completion per row; only transport-level retries add
+  requests.
 - The persona is natural Danish prose of 300-900 characters and at least four
   sentences. It uses at least two supplied interests, one supplied skill, one
   compatible personality tendency, and any generated ambition.
@@ -174,7 +181,9 @@ rather than inventing them.
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
   output checksum.
 - Automated validation is necessary but not sufficient: a blinded human review remains
-  mandatory before any development-sample or release-scale generation.
+  mandatory before any development-sample or release-scale generation. Direct
+  schema-only output cannot serve as release evidence; dataset, pilot, packaging, and
+  release validation remain guarded.
 
 ## Release eligibility contract
 

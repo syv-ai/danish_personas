@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from danish_personas.checksum import ChecksumValidationPolicy
 from danish_personas.generation.config import load_generation_config
+from danish_personas.generation.policy import ContentValidationPolicy
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import FROZEN_SAMPLE_SCHEMA_VERSION, FrozenSampleManifest
 from danish_personas.release import upload as upload_service
@@ -285,7 +286,7 @@ def test_build_dataset_requires_release_inputs_before_running(
     assert calls == []
 
 
-def test_generate_persona_emits_only_validated_text(
+def test_generate_persona_emits_only_schema_valid_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The single-persona command keeps diagnostics off stdout."""
@@ -307,11 +308,6 @@ def test_generate_persona_emits_only_validated_text(
     )
     monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 1)
     monkeypatch.setattr(generate_persona, "generate_personas", generate)
-    monkeypatch.setattr(
-        generate_persona,
-        "validate_persona_run",
-        lambda **_: SimpleNamespace(passed=True),
-    )
     config = _config(
         overrides=[
             f"generate_persona.output_dir={tmp_path / 'output'}",
@@ -329,6 +325,7 @@ def test_generate_persona_emits_only_validated_text(
     assert calls["offset"] == 1
     assert calls["sample_manifest_path"] == tmp_path / "sample.manifest.json"
     assert calls["checksum_policy"] is ChecksumValidationPolicy.IGNORE
+    assert calls["content_validation_policy"] is ContentValidationPolicy.SCHEMA_ONLY
     assert "Loading and validating persona inputs" in captured.err
     assert "Dette er en dansk syntetisk persona." not in captured.err
     config_path = calls["config_path"]

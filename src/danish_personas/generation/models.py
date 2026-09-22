@@ -24,7 +24,7 @@ from ..origin_labels import (
     validate_origin_contract_reference,
 )
 from .job_titles import JobFunctionTitleMapping
-from .policy import ChecksumValidationPolicy
+from .policy import ChecksumValidationPolicy, ContentValidationPolicy
 
 
 def _checksum_policy_from_context(info: ValidationInfo) -> ChecksumValidationPolicy:
@@ -38,6 +38,15 @@ def _checksum_policy_from_context(info: ValidationInfo) -> ChecksumValidationPol
         if isinstance(policy, ChecksumValidationPolicy):
             return policy
     return ChecksumValidationPolicy.STRICT
+
+
+def _content_validation_policy(info: ValidationInfo) -> ContentValidationPolicy:
+    """Return the content policy supplied to a Pydantic validation call."""
+    context = info.context or {}
+    value = context.get("content_validation_policy", ContentValidationPolicy.GUARDED)
+    if isinstance(value, ContentValidationPolicy):
+        return value
+    return ContentValidationPolicy(value)
 
 
 __all__ = ["FrozenSampleManifest"]
@@ -57,12 +66,16 @@ class GeneratedAttributes(StrictModel):
 
     @field_validator("job_title")
     @classmethod
-    def require_stripped_single_line_title(_cls, value: str | None) -> str | None:
+    def require_stripped_single_line_title(
+        _cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
         """Normalise an optional title while rejecting multiline output.
 
         Args:
             value:
                 Candidate generated title.
+            info:
+                Pydantic validation context containing the content policy.
 
         Returns:
             The validated title or null.
@@ -73,6 +86,8 @@ class GeneratedAttributes(StrictModel):
         """
         if value is None:
             return None
+        if _content_validation_policy(info) is ContentValidationPolicy.SCHEMA_ONLY:
+            return value
         stripped = value.strip()
         if stripped != value or "\n" in value or "\r" in value:
             raise ValueError("job_title must be a stripped single-line string")
@@ -82,12 +97,16 @@ class GeneratedAttributes(StrictModel):
 
     @field_validator("skills_and_expertise", "hobbies_and_interests")
     @classmethod
-    def require_unique_items(_cls, values: list[str]) -> list[str]:
+    def require_unique_items(
+        _cls, values: list[str], info: ValidationInfo
+    ) -> list[str]:
         """Require non-empty, case-insensitively unique list entries.
 
         Args:
             values:
                 Generated list entries.
+            info:
+                Pydantic validation context containing the content policy.
 
         Returns:
             Stripped list entries.
@@ -96,6 +115,8 @@ class GeneratedAttributes(StrictModel):
             ValueError:
                 If an entry is empty or duplicated.
         """
+        if _content_validation_policy(info) is ContentValidationPolicy.SCHEMA_ONLY:
+            return values
         stripped = [value.strip() for value in values]
         if any(not value for value in stripped):
             message = "Generated list entries cannot be empty"
@@ -106,7 +127,9 @@ class GeneratedAttributes(StrictModel):
         return stripped
 
     @model_validator(mode="after")
-    def validate_relationship_fields(self) -> "GeneratedAttributes":
+    def validate_relationship_fields(
+        self, info: ValidationInfo
+    ) -> "GeneratedAttributes":
         """Require partner fields to agree with the current relationship status.
 
         Returns:
@@ -116,6 +139,8 @@ class GeneratedAttributes(StrictModel):
             ValueError:
                 If partner gender disagrees with the relationship status.
         """
+        if _content_validation_policy(info) is ContentValidationPolicy.SCHEMA_ONLY:
+            return self
         has_gender = self.partner_gender is not None
         if self.current_relationship_status == "partnered" and not has_gender:
             raise ValueError("partnered responses require partner_gender")
@@ -218,6 +243,7 @@ class GenerationManifest(StrictModel):
     output_file: Path
     output_sha256: str
     llm_generation: bool
+    content_validation_policy: ContentValidationPolicy = ContentValidationPolicy.GUARDED
     generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
@@ -314,6 +340,7 @@ class PersonaCheckpoint(StrictModel):
     responses: list[LLMResponse]
     attempts: int = Field(ge=1)
     http_requests: int = Field(default=0, ge=0)
+    content_validation_policy: ContentValidationPolicy = ContentValidationPolicy.GUARDED
     generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
@@ -405,6 +432,7 @@ class PilotManifest(StrictModel):
     output_file: Path
     output_sha256: str
     llm_generation: bool
+    content_validation_policy: ContentValidationPolicy = ContentValidationPolicy.GUARDED
 
 
 class RequestLedger(StrictModel):
