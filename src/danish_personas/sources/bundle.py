@@ -15,6 +15,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..models import PREPARED_BUNDLE_SCHEMA_VERSION, BundleManifest
 from ..origin_labels import ORIGIN_LABEL_CONTRACT_SHA256, load_origin_label_contract
 
@@ -754,23 +755,34 @@ def _close_capture_handles(*, capture: _BundleCapture) -> None:
         _windows_close_inventory_handle(capture.windows_handles.pop())
 
 
-def verify_prepared_bundle(*, bundle_dir: Path) -> BundleManifest:
+def verify_prepared_bundle(
+    *,
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> BundleManifest:
     """Verify a prepared bundle before sampling or validation.
 
     Args:
         bundle_dir:
             Prepared bundle directory.
+        checksum_policy:
+            Whether recorded file digests must match current bytes. Defaults to
+            strict validation; relaxed callers retain inventory and semantic checks.
 
     Returns:
         The verified bundle manifest.
 
     """
-    manifest, _ = _verify_prepared_bundle_capture(bundle_dir=bundle_dir)
+    manifest, _ = _verify_prepared_bundle_capture(
+        bundle_dir=bundle_dir, checksum_policy=checksum_policy
+    )
     return manifest
 
 
 def _verify_prepared_bundle_capture(
-    *, bundle_dir: Path
+    *,
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[BundleManifest, "_BundleCapture"]:
     """Capture and verify a bundle without reopening its files for consumption.
 
@@ -780,7 +792,9 @@ def _verify_prepared_bundle_capture(
     """
     capture = _capture_inventory(bundle_dir=bundle_dir)
     try:
-        manifest = _validate_capture(capture=capture, bundle_dir=bundle_dir)
+        manifest = _validate_capture(
+            capture=capture, bundle_dir=bundle_dir, checksum_policy=checksum_policy
+        )
     except Exception:
         _close_capture_handles(capture=capture)
         raise
@@ -788,7 +802,12 @@ def _verify_prepared_bundle_capture(
     return manifest, capture
 
 
-def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleManifest:
+def _validate_capture(
+    *,
+    capture: "_BundleCapture",
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> BundleManifest:
     """Validate the bytes and identities in a complete bundle capture.
 
     Returns:
@@ -802,7 +821,9 @@ def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleM
     if manifest_capture is None:
         raise ValueError("Prepared bundle manifest is missing")
     try:
-        manifest = BundleManifest.model_validate_json(manifest_capture.content)
+        manifest = BundleManifest.model_validate_json(
+            manifest_capture.content, context={"checksum_policy": checksum_policy}
+        )
     except (ValueError, TypeError) as error:
         raise ValueError("Invalid prepared bundle manifest") from error
     if manifest.prepared_bundle_schema_version != PREPARED_BUNDLE_SCHEMA_VERSION:
@@ -811,7 +832,7 @@ def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleM
             f"{manifest.prepared_bundle_schema_version}"
         )
         raise ValueError(message)
-    _verify_origin_contract_binding(manifest=manifest)
+    _verify_origin_contract_binding(manifest=manifest, checksum_policy=checksum_policy)
     canonical_files = _canonical_manifest_files(manifest.files, bundle_dir=bundle_dir)
     expected_inventory = {*canonical_files, BUNDLE_MANIFEST}
     actual_inventory = set(capture.files)
@@ -832,9 +853,14 @@ def _validate_capture(*, capture: "_BundleCapture", bundle_dir: Path) -> BundleM
         raise ValueError(f"Prepared bundle manifest is missing files: {missing_files}")
     for relative_path, checksum in canonical_files.items():
         item = capture.files[relative_path]
-        if _sha256_bytes(item.content) != checksum:
+        if (
+            checksum_policy.validates_checksums
+            and _sha256_bytes(item.content) != checksum
+        ):
             raise ValueError(f"Prepared bundle verification failed: {relative_path}")
-    _verify_bundle_tables(capture=capture, manifest=manifest)
+    _verify_bundle_tables(
+        capture=capture, manifest=manifest, checksum_policy=checksum_policy
+    )
     try:
         report = json.loads(capture.files[SOURCE_REPORT].content)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
@@ -934,13 +960,25 @@ def _sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _verify_bundle_tables(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
+def _verify_bundle_tables(
+    *,
+    capture: _BundleCapture,
+    manifest: BundleManifest,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> None:
     """Verify schemas and semantic origin labels in a captured bundle."""
     _verify_schemas(capture=capture)
-    _verify_origin_table(capture=capture, manifest=manifest)
+    _verify_origin_table(
+        capture=capture, manifest=manifest, checksum_policy=checksum_policy
+    )
 
 
-def _verify_origin_table(*, capture: _BundleCapture, manifest: BundleManifest) -> None:
+def _verify_origin_table(
+    *,
+    capture: _BundleCapture,
+    manifest: BundleManifest,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> None:
     """Verify the bound Danish labels and complete origin partition.
 
     Raises:
@@ -955,7 +993,8 @@ def _verify_origin_table(*, capture: _BundleCapture, manifest: BundleManifest) -
             )
         )
         contract = load_origin_label_contract(
-            path=_bound_contract_path(manifest=manifest)
+            path=_bound_contract_path(manifest=manifest),
+            checksum_policy=checksum_policy,
         )
     except (KeyError, OSError, ValueError, pl.exceptions.PolarsError) as error:
         raise ValueError("Prepared FOLK2 origin table cannot be validated") from error
@@ -1026,7 +1065,11 @@ def _verify_schemas(*, capture: _BundleCapture) -> None:
             raise ValueError(message)
 
 
-def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
+def _verify_origin_contract_binding(
+    *,
+    manifest: BundleManifest,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> None:
     """Verify the repository contract bound into a schema-6 bundle.
 
     Raises:
@@ -1045,14 +1088,25 @@ def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
     except OSError as error:
         raise ValueError("Bound origin-label contract is unavailable") from error
     contract_checksum = _sha256_bytes(contract_bytes)
-    if contract_checksum != manifest.origin_labels_contract_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and contract_checksum != manifest.origin_labels_contract_sha256
+    ):
         raise ValueError("Bound origin-label contract checksum changed")
-    if contract_checksum != ORIGIN_LABEL_CONTRACT_SHA256:
+    if (
+        checksum_policy.validates_checksums
+        and contract_checksum != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
         raise ValueError("Bound origin-label contract is not the reviewed contract")
-    if manifest.origin_labels_contract_content.encode("utf-8") != contract_bytes:
+    if (
+        checksum_policy.validates_checksums
+        and manifest.origin_labels_contract_content.encode("utf-8") != contract_bytes
+    ):
         raise ValueError("Bound origin-label contract content changed")
     try:
-        contract = load_origin_label_contract(path=contract_path)
+        contract = load_origin_label_contract(
+            path=contract_path, checksum_policy=checksum_policy
+        )
     except (OSError, ValueError) as error:
         raise ValueError("Bound origin-label contract is invalid") from error
     if contract.version != manifest.origin_labels_contract_version:
@@ -1061,6 +1115,7 @@ def _verify_origin_contract_binding(*, manifest: BundleManifest) -> None:
         manifest=manifest,
         source_metadata_en_sha256=contract.source_metadata_en_sha256,
         source_metadata_da_sha256=contract.source_metadata_da_sha256,
+        checksum_policy=checksum_policy,
     )
 
 
@@ -1069,6 +1124,7 @@ def _verify_origin_snapshot_binding(
     manifest: BundleManifest,
     source_metadata_en_sha256: str,
     source_metadata_da_sha256: str,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Verify the FOLK2 snapshot's Danish metadata checksum.
 
@@ -1082,7 +1138,13 @@ def _verify_origin_snapshot_binding(
     ]
     if len(folk2) != 1:
         raise ValueError("Prepared bundle must contain one FOLK2 source snapshot")
-    if folk2[0].metadata_sha256 != source_metadata_en_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and folk2[0].metadata_sha256 != source_metadata_en_sha256
+    ):
         raise ValueError("FOLK2 English metadata is not bound to the contract")
-    if folk2[0].metadata_da_sha256 != source_metadata_da_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and folk2[0].metadata_da_sha256 != source_metadata_da_sha256
+    ):
         raise ValueError("FOLK2 Danish metadata is not bound to the contract")

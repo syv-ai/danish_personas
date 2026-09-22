@@ -418,7 +418,9 @@ class BundleManifest(StrictModel):
     origin_labels_contract_content: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "BundleManifest":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "BundleManifest":
         """Require origin-label provenance for source-backed schema-6 bundles.
 
         Returns:
@@ -434,6 +436,7 @@ class BundleManifest(StrictModel):
             version=self.origin_labels_contract_version,
             sha256=self.origin_labels_contract_sha256,
             content=self.origin_labels_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 

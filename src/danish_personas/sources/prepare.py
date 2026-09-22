@@ -9,6 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import load_yaml_model, sha256_file, sha256_text, verify_checksums, write_json
 from ..models import (
     DISCO_TWO_DIGIT_CODES,
@@ -83,6 +84,7 @@ def prepare_bundle(
     output_dir: Path,
     contract_path: Path = DEFAULT_LONS20_CONTRACT_PATH,
     origin_labels_contract_path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> Path:
     """Build a validated, immutable source bundle.
 
@@ -99,6 +101,9 @@ def prepare_bundle(
             Separately reviewed canonical LONS20 contract.
         origin_labels_contract_path:
             Separately reviewed Danish FOLK2 label contract.
+        checksum_policy:
+            Whether persisted source and bundle digests must match. Defaults to
+            strict validation; relaxed callers retain provenance and semantic checks.
 
     Returns:
         Prepared bundle directory.
@@ -112,11 +117,14 @@ def prepare_bundle(
     lock = load_yaml_model(path=lock_path, model=SourceLock)
     contract = load_lons20_contract(path=contract_path)
     origin_labels_contract = load_origin_label_contract(
-        path=origin_labels_contract_path
+        path=origin_labels_contract_path, checksum_policy=checksum_policy
     )
     contract_expectations = lons20_expectations(contract=contract)
     origin_labels_contract_sha256 = sha256_file(origin_labels_contract_path)
-    if origin_labels_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+    if (
+        checksum_policy.validates_checksums
+        and origin_labels_contract_sha256 != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
         raise ValueError(
             "Origin-label contract bytes do not match the reviewed contract"
         )
@@ -143,7 +151,11 @@ def prepare_bundle(
     bundle_dir = output_dir / bundle_id
     manifest_path = bundle_dir / "bundle-manifest.json"
     if manifest_path.exists():
-        _verify_existing_bundle(bundle_dir=bundle_dir, manifest_path=manifest_path)
+        _verify_existing_bundle(
+            bundle_dir=bundle_dir,
+            manifest_path=manifest_path,
+            checksum_policy=checksum_policy,
+        )
         LOGGER.info("Reusing prepared bundle %s", bundle_id)
         return bundle_dir
 
@@ -163,6 +175,7 @@ def prepare_bundle(
             role=source.role,
             period=source.period,
             expected_query=source_query_content(source=source),
+            checksum_policy=checksum_policy,
         )
         snapshots.append(snapshot)
         metadata = StatBankMetadata.model_validate_json(
@@ -208,6 +221,7 @@ def prepare_bundle(
         contract=origin_labels_contract,
         metadata_en_sha256=origin_metadata_en_sha256,
         metadata_da_sha256=origin_metadata_da_sha256,
+        checksum_policy=checksum_policy,
     )
     prepared_source_frames = dict(source_frames)
     prepared_source_frames["FOLK2"] = _materialise_origin_zero_codes(
@@ -229,6 +243,7 @@ def prepare_bundle(
             snapshot_dir=classification_dir,
             snapshot=classification_snapshot,
             classification=classification,
+            checksum_policy=checksum_policy,
         )
         classification_snapshots.append(classification_snapshot)
         if classification.role == "geography_hierarchy":
@@ -1492,6 +1507,7 @@ def _validate_origin_metadata(
     contract: OriginLabelContract,
     metadata_en_sha256: str,
     metadata_da_sha256: str,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Validate the four-way FOLK2 IELAND partition and return both labels.
 
@@ -1512,6 +1528,7 @@ def _validate_origin_metadata(
         danish_metadata=danish_metadata,
         english_metadata_sha256=metadata_en_sha256,
         danish_metadata_sha256=metadata_da_sha256,
+        checksum_policy=checksum_policy,
     )
     code_sets = {
         "lock": set(lock_codes),
@@ -1529,9 +1546,13 @@ def _validate_origin_metadata(
     return english_labels, danish_labels
 
 
-def _verify_existing_bundle(bundle_dir: Path, manifest_path: Path) -> None:
+def _verify_existing_bundle(
+    bundle_dir: Path,
+    manifest_path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> None:
     del manifest_path
-    verify_prepared_bundle(bundle_dir=bundle_dir)
+    verify_prepared_bundle(bundle_dir=bundle_dir, checksum_policy=checksum_policy)
 
 
 def _verify_ras209_municipality_sets(
@@ -1641,6 +1662,7 @@ def verify_raw_snapshot(
     role: str,
     period: str,
     expected_query: str,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Verify raw files against both their manifest and locked query.
 
@@ -1657,6 +1679,8 @@ def verify_raw_snapshot(
             Locked reference period.
         expected_query:
             Canonical query derived from the source lock.
+        checksum_policy:
+            Whether file digests must match the snapshot manifest. Defaults to strict.
 
     Raises:
         ValueError:
@@ -1672,13 +1696,21 @@ def verify_raw_snapshot(
         "data.csv": snapshot.data_sha256,
         "response-headers.json": snapshot.response_headers_sha256,
     }
-    verify_checksums(
-        base_dir=snapshot_dir,
-        expected=expected,
-        message="Raw snapshot checksum mismatch",
-    )
+    for relative_path in expected:
+        if not (snapshot_dir / relative_path).is_file():
+            raise ValueError(
+                f"Raw snapshot file is missing: {snapshot_dir / relative_path}"
+            )
+    if checksum_policy.validates_checksums:
+        verify_checksums(
+            base_dir=snapshot_dir,
+            expected=expected,
+            message="Raw snapshot checksum mismatch",
+        )
     query_path = snapshot_dir / "query.json"
-    if snapshot.query_sha256 != sha256_text(expected_query):
+    if checksum_policy.validates_checksums and snapshot.query_sha256 != sha256_text(
+        expected_query
+    ):
         message = f"Raw snapshot query does not match source lock: {query_path}"
         raise ValueError(message)
     if query_path.read_text(encoding="utf-8") != expected_query:

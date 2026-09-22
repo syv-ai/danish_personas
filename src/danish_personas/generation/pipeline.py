@@ -167,7 +167,9 @@ def generate_personas(
     job_title_mapping = load_job_title_mapping(mapping_path)
     mapping_sha = mapping_file_sha256(mapping_path)
     origin_contract_path = config.origin_label_contract
-    origin_contract = load_origin_label_contract(path=origin_contract_path)
+    origin_contract = load_origin_label_contract(
+        path=origin_contract_path, checksum_policy=checksum_policy
+    )
     origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
     _validate_origin_labels(frame=sample, contract=origin_contract)
     prompt = config.prompt.read_text(encoding="utf-8")
@@ -178,6 +180,7 @@ def generate_personas(
         job_title_mapping_sha256=mapping_sha,
         origin_label_contract=origin_contract,
         origin_label_contract_sha256=origin_contract_sha,
+        checksum_policy=checksum_policy,
     )
     run_id = generation_run_id(
         input_sha256=sha256_file(input_path),
@@ -212,7 +215,8 @@ def generate_personas(
     checkpoints: list[PersonaCheckpoint] = []
     persisted_http_requests = sum(
         PersonaCheckpoint.model_validate_json(
-            path.read_text(encoding="utf-8")
+            path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         ).http_requests
         for path in (run_dir / "checkpoints").glob("*.json")
         if not path.name.endswith(".attributes.json")
@@ -710,6 +714,7 @@ def generation_context_sha256(
     job_title_mapping_sha256: str | None = None,
     origin_label_contract: OriginLabelContract | None = None,
     origin_label_contract_sha256: str | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> str:
     """Hash every effective input that controls LLM generation.
 
@@ -726,6 +731,9 @@ def generation_context_sha256(
             Exact configured Danish origin-label contract.
         origin_label_contract_sha256:
             Checksum of the exact configured origin-label contract file.
+        checksum_policy:
+            Whether the origin contract digest must match the reviewed digest.
+            Defaults to strict validation.
 
     Returns:
         SHA-256 digest for the prompts, schemas, validator, and configuration.
@@ -736,13 +744,16 @@ def generation_context_sha256(
     if config.origin_label_contract != Path("config/folk2-ieland-labels-da.yaml"):
         raise ValueError("Generation origin-label contract path must be canonical")
     effective_origin_contract = origin_label_contract or load_origin_label_contract(
-        path=config.origin_label_contract
+        path=config.origin_label_contract, checksum_policy=checksum_policy
     )
     effective_origin_sha256 = (
         origin_label_contract_sha256
         or origin_label_contract_sha256_file(path=config.origin_label_contract)
     )
-    if effective_origin_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+    if (
+        checksum_policy.validates_checksums
+        and effective_origin_sha256 != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
         raise ValueError("Generation origin-label contract is not reviewed")
     return sha256_text(
         canonical_json(
