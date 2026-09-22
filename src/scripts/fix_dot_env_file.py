@@ -9,7 +9,6 @@ from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
 
 LOGGER = logging.getLogger(__name__)
-load_repository_environment()
 DESIRED_ENVIRONMENT_VARIABLES = {
     "GIT_NAME": "Enter your full name, to be shown in Git commits:\n> ",
     "GIT_EMAIL": "Enter your email, as registered on your Github account:\n> ",
@@ -79,4 +78,5 @@ def _parse_environment_lines(lines: list[str]) -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     fix_dot_env_file()

@@ -26,7 +26,6 @@ from danish_personas.script_config import (
 from danish_personas.workflows import prepare_standard_sample
 
 LOGGER = logging.getLogger(__name__)
-load_repository_environment()
 enable_hydra_cli()
 
 
@@ -140,4 +139,5 @@ def _sample_offset(
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()

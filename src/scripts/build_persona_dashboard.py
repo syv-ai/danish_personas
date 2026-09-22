@@ -79,7 +79,6 @@ HORIZONTAL_FIELDS = frozenset(
 )
 
 
-load_repository_environment()
 enable_hydra_cli()
 
 
@@ -1041,4 +1040,5 @@ def _target_column(*, field: str, columns: list[str]) -> str | None:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()
