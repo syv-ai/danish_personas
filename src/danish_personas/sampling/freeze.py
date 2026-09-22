@@ -10,6 +10,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import sha256_file
 from ..models import (
     FROZEN_SAMPLE_SCHEMA_VERSION,
@@ -33,11 +34,12 @@ def freeze_sample(
     mode: t.Literal["population_proportional", "stratified_round_robin"] = (
         "population_proportional"
     ),
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> Path:
     """Select and persist a deterministic development sample.
 
     The default mode allocates the requested rows proportionally to the source
-    run's municipality/education/status joint.  Round-robin selection remains
+    run's municipality/education/status joint. Round-robin selection remains
     available for deliberately stratified development experiments.
 
     Args:
@@ -49,6 +51,8 @@ def freeze_sample(
             Destination Parquet path for the frozen sample.
         mode:
             Selection strategy. Defaults to population-proportional allocation.
+        checksum_policy:
+            Whether persisted run bindings must match. Defaults to strict validation.
 
     Returns:
         Path to the written frozen sample.
@@ -69,7 +73,8 @@ def freeze_sample(
         run_dir=canonical_run_dir, output=output
     )
     manifest = RunManifest.model_validate_json(
-        (canonical_run_dir / "run-manifest.json").read_text(encoding="utf-8")
+        (canonical_run_dir / "run-manifest.json").read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
         raise ValueError("Cannot freeze a legacy demographic run")
@@ -88,24 +93,27 @@ def freeze_sample(
         temporary.replace(output_path)
     finally:
         temporary.unlink(missing_ok=True)
-    sample_manifest = FrozenSampleManifest(
-        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
-        source_run_id=manifest.run_id,
-        rows=sample.height,
-        strata=list(STRATA),
-        method=(
-            "deterministic population-proportional allocation"
-            if mode == "population_proportional"
-            else "deterministic round-robin within sorted strata"
-        ),
-        mode=mode,
-        data_file=output_path.name,
-        sha256=sha256_file(output_path),
-        llm_calls=0,
-        origin_labels_contract_path=manifest.origin_labels_contract_path,
-        origin_labels_contract_version=manifest.origin_labels_contract_version,
-        origin_labels_contract_sha256=manifest.origin_labels_contract_sha256,
-        origin_labels_contract_content=manifest.origin_labels_contract_content,
+    sample_manifest = FrozenSampleManifest.model_validate(
+        {
+            "sample_schema_version": FROZEN_SAMPLE_SCHEMA_VERSION,
+            "source_run_id": manifest.run_id,
+            "rows": sample.height,
+            "strata": list(STRATA),
+            "method": (
+                "deterministic population-proportional allocation"
+                if mode == "population_proportional"
+                else "deterministic round-robin within sorted strata"
+            ),
+            "mode": mode,
+            "data_file": output_path.name,
+            "sha256": sha256_file(output_path),
+            "llm_calls": 0,
+            "origin_labels_contract_path": manifest.origin_labels_contract_path,
+            "origin_labels_contract_version": manifest.origin_labels_contract_version,
+            "origin_labels_contract_sha256": manifest.origin_labels_contract_sha256,
+            "origin_labels_contract_content": manifest.origin_labels_contract_content,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     _write_manifest(
         path=manifest_path,

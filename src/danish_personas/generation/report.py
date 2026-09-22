@@ -40,6 +40,7 @@ from .pipeline import (
     models_match,
     validate_upstream_sample,
 )
+from .policy import ChecksumValidationPolicy
 from .validation import (
     VALIDATOR_VERSION,
     parse_attributes,
@@ -307,7 +308,9 @@ def _build_persona_pilot_report(
 
 
 def _build_persona_run_report(
-    run_dir: Path, repository_root: Path | None = None
+    run_dir: Path,
+    repository_root: Path | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> ValidationReport:
     """Build a persona-run report without writing it to disk.
 
@@ -315,7 +318,8 @@ def _build_persona_run_report(
         Validation report for the run.
     """
     manifest = GenerationManifest.model_validate_json(
-        (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+        (run_dir / "generation-manifest.json").read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     output_path = run_dir / manifest.output_file
     try:
@@ -335,19 +339,28 @@ def _build_persona_run_report(
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         ids = []
     provenance_passed = _persona_provenance_matches(
-        manifest=manifest, repository_root=repository_root
+        manifest=manifest,
+        repository_root=repository_root,
+        checksum_policy=checksum_policy,
     )
     checks: list[MetricResult] = [
         _metric(
             name="output_checksum",
-            passed=_checksum_matches(output_path, manifest.output_sha256),
+            passed=(
+                not checksum_policy.validates_checksums
+                or _checksum_matches(output_path, manifest.output_sha256)
+            ),
         ),
         _metric(name="row_count", passed=output.height == manifest.rows),
+        _metric(name="run_id_path", passed=manifest.run_id == run_dir.name),
         _metric(name="upstream_provenance", passed=provenance_passed),
         _metric(
             name="ordered_persona_ids",
-            passed=sha256_text(canonical_json(ids))
-            == manifest.ordered_persona_ids_sha256,
+            passed=(
+                not checksum_policy.validates_checksums
+                or sha256_text(canonical_json(ids))
+                == manifest.ordered_persona_ids_sha256
+            ),
         ),
         _metric(
             name="upstream_preservation",
@@ -363,7 +376,9 @@ def _build_persona_run_report(
         config_path=config_path, repository_root=repository_root
     )
     origin_binding = _load_origin_binding(
-        config_path=config_path, repository_root=repository_root
+        config_path=config_path,
+        repository_root=repository_root,
+        checksum_policy=checksum_policy,
     )
     validation_errors = _count_content_errors(
         output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
@@ -371,6 +386,7 @@ def _build_persona_run_report(
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
         output=output,
+        checksum_policy=checksum_policy,
         upstream_columns=upstream.columns,
         manifest=manifest,
         config_path=config_path,
@@ -399,24 +415,27 @@ def _build_persona_run_report(
             details="Checkpoints match their input, model, prompts, and validator.",
         )
     )
-    return GenerationValidationReport(
-        kind="personas",
-        passed=all(metric.passed for metric in checks),
-        created_at=datetime.now(tz=UTC).isoformat(),
-        subject_id=manifest.run_id,
-        metrics=checks,
-        job_title_mapping_file=manifest.job_title_mapping_file,
-        job_title_mapping_sha256=manifest.job_title_mapping_sha256,
-        job_title_mapping_version=manifest.job_title_mapping_version,
-        job_title_mapping_content=(
-            manifest.job_title_mapping_content.model_dump(mode="json")
-            if manifest.job_title_mapping_content is not None
-            else None
-        ),
-        origin_label_contract_file=manifest.origin_label_contract_file,
-        origin_label_contract_sha256=manifest.origin_label_contract_sha256,
-        origin_label_contract_version=manifest.origin_label_contract_version,
-        origin_label_contract_content=manifest.origin_label_contract_content,
+    return GenerationValidationReport.model_validate(
+        {
+            "kind": "personas",
+            "passed": all(metric.passed for metric in checks),
+            "created_at": datetime.now(tz=UTC).isoformat(),
+            "subject_id": manifest.run_id,
+            "metrics": checks,
+            "job_title_mapping_file": manifest.job_title_mapping_file,
+            "job_title_mapping_sha256": manifest.job_title_mapping_sha256,
+            "job_title_mapping_version": manifest.job_title_mapping_version,
+            "job_title_mapping_content": (
+                manifest.job_title_mapping_content.model_dump(mode="json")
+                if manifest.job_title_mapping_content is not None
+                else None
+            ),
+            "origin_label_contract_file": manifest.origin_label_contract_file,
+            "origin_label_contract_sha256": manifest.origin_label_contract_sha256,
+            "origin_label_contract_version": manifest.origin_label_contract_version,
+            "origin_label_contract_content": manifest.origin_label_contract_content,
+        },
+        context={"checksum_policy": checksum_policy},
     )
 
 
@@ -430,6 +449,7 @@ def _checksum_matches(path: Path | None, expected: str) -> bool:
 
 def _count_checkpoint_errors(
     *,
+    checksum_policy: ChecksumValidationPolicy,
     run_dir: Path,
     output: pl.DataFrame,
     upstream_columns: list[str],
@@ -462,7 +482,8 @@ def _count_checkpoint_errors(
             checkpoint = PersonaCheckpoint.model_validate_json(
                 (run_dir / "checkpoints" / f"{persona_id}.json").read_text(
                     encoding="utf-8"
-                )
+                ),
+                context={"checksum_policy": checksum_policy},
             )
             checkpoints.append(checkpoint)
             checkpoint_input = {name: row[name] for name in upstream_columns}
@@ -476,10 +497,16 @@ def _count_checkpoint_errors(
             )
             if (
                 checkpoint.persona_id != persona_id
-                or checkpoint.input_sha256
-                != sha256_text(canonical_json(checkpoint_input))
-                or checkpoint.generation_context_sha256
-                != manifest.generation_context_sha256
+                or (
+                    checksum_policy.validates_checksums
+                    and checkpoint.input_sha256
+                    != sha256_text(canonical_json(checkpoint_input))
+                )
+                or (
+                    checksum_policy.validates_checksums
+                    and checkpoint.generation_context_sha256
+                    != manifest.generation_context_sha256
+                )
                 or checkpoint.validator_version != VALIDATOR_VERSION
                 or checkpoint.validator_version != manifest.validator_version
                 or mapping_binding is None
@@ -492,6 +519,7 @@ def _count_checkpoint_errors(
                     expected_mapping=mapping_binding[1],
                     expected_sha256=mapping_binding[2],
                     repository_root=repository_root,
+                    checksum_policy=checksum_policy,
                 )
                 or origin_binding is None
                 or not _origin_binding_matches(
@@ -503,6 +531,7 @@ def _count_checkpoint_errors(
                     expected_contract=origin_binding[1],
                     expected_sha256=origin_binding[2],
                     repository_root=repository_root,
+                    checksum_policy=checksum_policy,
                 )
                 or checkpoint_values != output_values
                 or checkpoint.attempts != len(checkpoint.responses)
@@ -538,6 +567,7 @@ def _count_checkpoint_errors(
         manifest=manifest,
         checkpoints=checkpoints,
         config_path=config_path,
+        checksum_policy=checksum_policy,
     ):
         errors += 1
     return errors
@@ -549,6 +579,7 @@ def _checkpoint_accounting_matches(
     manifest: GenerationManifest,
     checkpoints: list[PersonaCheckpoint],
     config_path: Path | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> bool:
     """Bind checkpoint usage and the request ledger to the generation manifest.
 
@@ -584,7 +615,10 @@ def _checkpoint_accounting_matches(
     return (
         manifest.requests == http_requests
         and ledger.attempts == http_requests
-        and ledger.generation_context_sha256 == manifest.generation_context_sha256
+        and (
+            not checksum_policy.validates_checksums
+            or ledger.generation_context_sha256 == manifest.generation_context_sha256
+        )
         and ledger.maximum_attempts == config.maximum_total_requests
         and (
             ledger.maximum_attempts is None
@@ -613,6 +647,7 @@ def _mapping_binding_matches(
     repository_root: Path | None = None,
     expected_mapping: JobFunctionTitleMapping,
     expected_sha256: str,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> bool:
     """Check every persisted title-mapping binding against the effective input.
 
@@ -622,7 +657,7 @@ def _mapping_binding_matches(
     return (
         path is not None
         and _repository_path(repository_root, path) == expected_path
-        and sha256 == expected_sha256
+        and (not checksum_policy.validates_checksums or sha256 == expected_sha256)
         and version == expected_mapping.version
         and content == expected_mapping
     )
@@ -646,6 +681,7 @@ def _origin_binding_matches(
     expected_contract: OriginLabelContract,
     expected_sha256: str,
     repository_root: Path | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> bool:
     """Check stored origin bindings against the effective configuration.
 
@@ -654,7 +690,7 @@ def _origin_binding_matches(
     """
     return (
         _repository_path(repository_root, path) == expected_path
-        and sha256 == expected_sha256
+        and (not checksum_policy.validates_checksums or sha256 == expected_sha256)
         and version == expected_contract.version
         and content == expected_contract
     )
@@ -792,7 +828,10 @@ def _effective_mapping(
 
 
 def _load_origin_binding(
-    *, config_path: Path | None, repository_root: Path | None
+    *,
+    config_path: Path | None,
+    repository_root: Path | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[Path, OriginLabelContract, str] | None:
     """Load the exact Danish origin-label contract selected by a config.
 
@@ -804,14 +843,19 @@ def _load_origin_binding(
     try:
         config = load_generation_config(config_path)
         return _effective_origin_contract(
-            config=config, repository_root=repository_root
+            config=config,
+            repository_root=repository_root,
+            checksum_policy=checksum_policy,
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return None
 
 
 def _effective_origin_contract(
-    *, config: GenerationConfig, repository_root: Path | None
+    *,
+    config: GenerationConfig,
+    repository_root: Path | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[Path, OriginLabelContract, str]:
     """Load the configured contract without a repository-default fallback.
 
@@ -819,7 +863,7 @@ def _effective_origin_contract(
         Effective path, parsed contract, and file checksum.
     """
     path = _repository_path(repository_root, config.origin_label_contract)
-    contract = load_origin_label_contract(path=path)
+    contract = load_origin_label_contract(path=path, checksum_policy=checksum_policy)
     return path, contract, origin_label_contract_sha256(path=path)
 
 
@@ -839,7 +883,9 @@ def _metric(
 
 
 def _persona_provenance_matches(
-    manifest: GenerationManifest, repository_root: Path | None = None
+    manifest: GenerationManifest,
+    repository_root: Path | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> bool:
     """Recompute the run's identity, range, and generation-context bindings.
 
@@ -852,7 +898,9 @@ def _persona_provenance_matches(
             repository_root, manifest.sample_manifest_file
         )
         validated_upstream = validate_upstream_sample(
-            input_path=input_path, sample_manifest_path=sample_manifest_path
+            input_path=input_path,
+            sample_manifest_path=sample_manifest_path,
+            checksum_policy=checksum_policy,
         )
         if manifest.generation_config_file is None:
             return False
@@ -862,7 +910,9 @@ def _persona_provenance_matches(
             config=config, repository_root=repository_root
         )
         origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
-            config=config, repository_root=repository_root
+            config=config,
+            repository_root=repository_root,
+            checksum_policy=checksum_policy,
         )
         prompt = _repository_path(repository_root, config.prompt).read_text(
             encoding="utf-8"
@@ -883,13 +933,20 @@ def _persona_provenance_matches(
             job_title_mapping_sha256=mapping_sha256,
             origin_label_contract=origin_contract,
             origin_label_contract_sha256=origin_sha256,
+            checksum_policy=checksum_policy,
         )
         input_sha256 = sha256_file(input_path)
         return (
             manifest.llm_generation
             and manifest.validator_version == VALIDATOR_VERSION
-            and input_sha256 == manifest.input_sha256
-            and _checksum_matches(config_path, manifest.generation_config_sha256)
+            and (
+                not checksum_policy.validates_checksums
+                or input_sha256 == manifest.input_sha256
+            )
+            and (
+                not checksum_policy.validates_checksums
+                or _checksum_matches(config_path, manifest.generation_config_sha256)
+            )
             and validated_upstream.run_id == manifest.upstream_run_id
             and config.model == manifest.model
             and config.base_url == manifest.base_url
@@ -898,9 +955,18 @@ def _persona_provenance_matches(
                 config.maximum_total_requests is None
                 or manifest.requests <= config.maximum_total_requests
             )
-            and ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
-            and sha256_text(prompt) == manifest.prompt_sha256
-            and context_sha256 == manifest.generation_context_sha256
+            and (
+                not checksum_policy.validates_checksums
+                or ordered_ids_sha256 == manifest.ordered_persona_ids_sha256
+            )
+            and (
+                not checksum_policy.validates_checksums
+                or sha256_text(prompt) == manifest.prompt_sha256
+            )
+            and (
+                not checksum_policy.validates_checksums
+                or context_sha256 == manifest.generation_context_sha256
+            )
             and _mapping_binding_matches(
                 path=manifest.job_title_mapping_file,
                 sha256=manifest.job_title_mapping_sha256,
@@ -910,6 +976,7 @@ def _persona_provenance_matches(
                 expected_mapping=mapping,
                 expected_sha256=mapping_sha256,
                 repository_root=repository_root,
+                checksum_policy=checksum_policy,
             )
             and _origin_binding_matches(
                 path=manifest.origin_label_contract_file,
@@ -920,12 +987,16 @@ def _persona_provenance_matches(
                 expected_contract=origin_contract,
                 expected_sha256=origin_sha256,
                 repository_root=repository_root,
+                checksum_policy=checksum_policy,
             )
-            and manifest.run_id
-            == generation_run_id(
-                input_sha256=input_sha256,
-                generation_context_sha256=context_sha256,
-                ordered_persona_ids_sha256=ordered_ids_sha256,
+            and (
+                not checksum_policy.validates_checksums
+                or manifest.run_id
+                == generation_run_id(
+                    input_sha256=input_sha256,
+                    generation_context_sha256=context_sha256,
+                    ordered_persona_ids_sha256=ordered_ids_sha256,
+                )
             )
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
@@ -1128,7 +1199,9 @@ def _failed_report(
 
 
 def validate_persona_run(
-    run_dir: Path, repository_root: Path | None = None
+    run_dir: Path,
+    repository_root: Path | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> ValidationReport:
     """Validate output integrity, safety, and upstream preservation.
 
@@ -1137,13 +1210,17 @@ def validate_persona_run(
             Completed persona generation run.
         repository_root (optional):
             Repository root for manifest input and configuration paths.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. Defaults to strict.
 
     Returns:
         Machine-readable validation report, including for malformed artefacts.
     """
     try:
         report = _build_persona_run_report(
-            run_dir=run_dir, repository_root=repository_root
+            run_dir=run_dir,
+            repository_root=repository_root,
+            checksum_policy=checksum_policy,
         )
     except (OSError, UnicodeError, ValueError, pl.exceptions.PolarsError) as error:
         report = _failed_report(kind="personas", subject_id=run_dir.name, error=error)

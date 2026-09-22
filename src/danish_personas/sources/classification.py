@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import sha256_file, sha256_text, verify_checksums, write_json, write_new_bytes
 from ..models import ClassificationDefinition, ClassificationManifest
 from .http import request_with_retries, response_headers_content
@@ -159,6 +160,7 @@ def verify_classification_snapshot(
     snapshot_dir: Path,
     snapshot: ClassificationManifest,
     classification: ClassificationDefinition,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Verify a classification snapshot against its manifest and configuration.
 
@@ -169,6 +171,8 @@ def verify_classification_snapshot(
             Manifest recorded when the snapshot was fetched.
         classification:
             Configured classification the snapshot must match.
+        checksum_policy:
+            Whether snapshot file digests must match. Defaults to strict.
 
     Raises:
         ValueError:
@@ -186,8 +190,15 @@ def verify_classification_snapshot(
         "data.csv": snapshot.data_sha256,
         "response-headers.json": snapshot.response_headers_sha256,
     }
-    verify_checksums(
-        base_dir=snapshot_dir,
-        expected=expected,
-        message="Immutable classification verification failed",
-    )
+    for relative_path in expected:
+        if not (snapshot_dir / relative_path).is_file():
+            raise ValueError(
+                "Classification snapshot file is missing: "
+                f"{snapshot_dir / relative_path}"
+            )
+    if checksum_policy.validates_checksums:
+        verify_checksums(
+            base_dir=snapshot_dir,
+            expected=expected,
+            message="Immutable classification verification failed",
+        )

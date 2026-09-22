@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pipeline import generate_personas
+from danish_personas.generation.policy import ChecksumValidationPolicy
 from danish_personas.generation.report import validate_persona_run
 from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import sha256_file
@@ -60,11 +61,15 @@ def _run(*, config: DictConfig) -> None:
     LOGGER.info("Loading and validating persona inputs")
     input_path = script_config.input
     if input_path is None:
-        input_path, sample_manifest = prepare_standard_sample()
+        input_path, sample_manifest = prepare_standard_sample(
+            checksum_policy=ChecksumValidationPolicy.IGNORE
+        )
     else:
         sample_manifest = input_path.with_suffix(".manifest.json")
     sampled_offset = _sample_offset(
-        input_path=input_path, sample_manifest_path=sample_manifest
+        input_path=input_path,
+        sample_manifest_path=sample_manifest,
+        checksum_policy=ChecksumValidationPolicy.IGNORE,
     )
     invocation_output_dir = script_config.output_dir / secrets.token_hex(16)
     run_dir = generate_personas(
@@ -74,9 +79,12 @@ def _run(*, config: DictConfig) -> None:
         output_dir=invocation_output_dir,
         rows=1,
         offset=sampled_offset,
+        checksum_policy=ChecksumValidationPolicy.IGNORE,
     )
     LOGGER.info("Provider generation finished; validating generated output")
-    report = validate_persona_run(run_dir=run_dir)
+    report = validate_persona_run(
+        run_dir=run_dir, checksum_policy=ChecksumValidationPolicy.IGNORE
+    )
     if not report.passed:
         raise ValueError("Generated persona failed validation")
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
@@ -89,7 +97,12 @@ def _run(*, config: DictConfig) -> None:
     sys.stdout.write(f"{persona}\n")
 
 
-def _sample_offset(*, input_path: Path, sample_manifest_path: Path) -> int:
+def _sample_offset(
+    *,
+    input_path: Path,
+    sample_manifest_path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> int:
     """Sample one row from the current frozen demographic sample.
 
     Args:
@@ -97,6 +110,8 @@ def _sample_offset(*, input_path: Path, sample_manifest_path: Path) -> int:
             Frozen sample Parquet file.
         sample_manifest_path:
             Frozen sample provenance manifest.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. Defaults to strict.
 
     Returns:
         Randomly selected zero-based sample offset.
@@ -106,14 +121,18 @@ def _sample_offset(*, input_path: Path, sample_manifest_path: Path) -> int:
             If the manifest and sample do not agree on the row count or checksum.
     """
     manifest = FrozenSampleManifest.model_validate_json(
-        sample_manifest_path.read_text(encoding="utf-8")
+        sample_manifest_path.read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     if manifest.data_file != Path(input_path.name):
         raise ValueError("Frozen sample filename does not match its manifest")
     row_count = pl.read_parquet(input_path).height
     if row_count != manifest.rows:
         raise ValueError("Frozen sample row count does not match its manifest")
-    if sha256_file(input_path) != manifest.sha256:
+    if (
+        checksum_policy.validates_checksums
+        and sha256_file(input_path) != manifest.sha256
+    ):
         raise ValueError("Frozen sample checksum does not match its manifest")
     return secrets.randbelow(row_count)
 

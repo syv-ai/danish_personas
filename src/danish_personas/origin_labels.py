@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from .checksum import ChecksumValidationPolicy
+
 DEFAULT_ORIGIN_LABEL_CONTRACT_PATH = Path("config/folk2-ieland-labels-da.yaml")
 ORIGIN_LABEL_CONTRACT_PATH = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.as_posix()
 ORIGIN_LABEL_CONTRACT_VERSION = 1
@@ -255,8 +257,24 @@ def bind_origin_label_triples(
     *,
     english_metadata_sha256: str,
     danish_metadata_sha256: str,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Validate and return the exact English/Danish metadata triple maps.
+
+    Args:
+        contract:
+            Reviewed origin-label contract.
+        english_metadata:
+            English source metadata response.
+        danish_metadata:
+            Danish source metadata response.
+        english_metadata_sha256:
+            English metadata digest.
+        danish_metadata_sha256:
+            Danish metadata digest.
+        checksum_policy:
+            Whether metadata digests must match the reviewed contract. Defaults to
+            strict validation; parsed labels remain fully checked.
 
     Returns:
         English and Danish code-to-label mappings.
@@ -264,9 +282,15 @@ def bind_origin_label_triples(
     Raises:
         ValueError: If either metadata response differs from the reviewed contract.
     """
-    if english_metadata_sha256 != contract.source_metadata_en_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and english_metadata_sha256 != contract.source_metadata_en_sha256
+    ):
         raise ValueError("FOLK2 English metadata checksum does not match contract")
-    if danish_metadata_sha256 != contract.source_metadata_da_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and danish_metadata_sha256 != contract.source_metadata_da_sha256
+    ):
         raise ValueError("FOLK2 Danish metadata checksum does not match contract")
     english = bind_origin_labels(
         contract=contract, metadata=english_metadata, expected_labels=contract.labels_en
@@ -394,7 +418,12 @@ def source_metadata_sha256(path: Path) -> str:
 
 
 def validate_origin_contract_reference(
-    *, path: str | Path, version: int, sha256: str, content: str | OriginLabelContract
+    *,
+    path: str | Path,
+    version: int,
+    sha256: str,
+    content: str | OriginLabelContract,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Require an exact canonical contract identity in a provenance binding.
 
@@ -404,17 +433,20 @@ def validate_origin_contract_reference(
     canonical_origin_label_contract_path(path)
     if version != ORIGIN_LABEL_CONTRACT_VERSION:
         raise ValueError("Origin-label contract version is not current")
-    if sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+    if checksum_policy.validates_checksums and sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
         raise ValueError("Origin-label contract checksum is not reviewed")
     if isinstance(content, str):
         observed = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if observed != ORIGIN_LABEL_CONTRACT_SHA256:
+        if (
+            checksum_policy.validates_checksums
+            and observed != ORIGIN_LABEL_CONTRACT_SHA256
+        ):
             raise ValueError("Embedded origin-label contract content changed")
         payload = yaml.load(content, Loader=_UniqueKeyLoader)
         embedded = OriginLabelContract.model_validate(payload)
     else:
         embedded = content
-    if embedded != load_origin_label_contract():
+    if embedded != load_origin_label_contract(checksum_policy=checksum_policy):
         raise ValueError("Embedded origin-label contract is not canonical")
 
 
@@ -423,12 +455,16 @@ bind_origin_triples = bind_origin_label_triples
 
 def load_origin_label_contract(
     path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> OriginLabelContract:
     """Load and validate the one canonical origin-label contract.
 
     Args:
         path:
             Must be exactly the repository-relative canonical contract path.
+        checksum_policy:
+            Whether the file digest must match the reviewed digest. Defaults to
+            strict validation; relaxed callers still require canonical parsed content.
 
     Returns:
         A strictly validated origin-label contract.
@@ -439,7 +475,10 @@ def load_origin_label_contract(
     if not _is_canonical_contract_path(path):
         raise ValueError("Only the canonical origin-label contract is permitted")
     contract_bytes = path.read_bytes()
-    if hashlib.sha256(contract_bytes).hexdigest() != ORIGIN_LABEL_CONTRACT_SHA256:
+    if (
+        checksum_policy.validates_checksums
+        and hashlib.sha256(contract_bytes).hexdigest() != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
         raise ValueError("Canonical origin-label contract bytes are not reviewed")
     payload = yaml.load(contract_bytes.decode("utf-8"), Loader=_UniqueKeyLoader)
     return OriginLabelContract.model_validate(payload)

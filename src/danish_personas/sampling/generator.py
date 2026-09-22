@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import SAMPLED_ATTRIBUTES, Ladder
 from ..models import (
@@ -46,7 +47,12 @@ LadderIndex = list[LadderLevel]
 
 
 def generate_records(
-    bundle_dir: Path, sampling_config_path: Path, output_dir: Path, rows: int, seed: int
+    bundle_dir: Path,
+    sampling_config_path: Path,
+    output_dir: Path,
+    rows: int,
+    seed: int,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> Path:
     """Generate deterministic demographic and OCEAN records.
 
@@ -61,6 +67,8 @@ def generate_records(
             Number of records to generate.
         seed:
             Reproducible random seed.
+        checksum_policy:
+            Whether persisted bundle and run digests must match. Defaults to strict.
 
     Returns:
         Generated run directory.
@@ -71,7 +79,9 @@ def generate_records(
     """
     config = load_yaml_model(path=sampling_config_path, model=SamplingConfig)
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
-    bundle = verify_prepared_bundle(bundle_dir=bundle_dir)
+    bundle = verify_prepared_bundle(
+        bundle_dir=bundle_dir, checksum_policy=checksum_policy
+    )
     run_id = sha256_text(
         f"{SAMPLER_SCHEMA_VERSION}:{bundle.bundle_id}:"
         f"{sha256_file(sampling_config_path)}:{rows}:{seed}"
@@ -80,13 +90,17 @@ def generate_records(
     manifest_path = run_dir / "run-manifest.json"
     if manifest_path.exists():
         manifest = RunManifest.model_validate_json(
-            manifest_path.read_text(encoding="utf-8")
+            manifest_path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         )
         if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
             message = "Generated run uses an unsupported sampler schema version"
             raise ValueError(message)
         data_path = run_dir / manifest.data_file
-        if sha256_file(data_path) != manifest.data_sha256:
+        if not data_path.is_file() or (
+            checksum_policy.validates_checksums
+            and sha256_file(data_path) != manifest.data_sha256
+        ):
             message = f"Generated run checksum mismatch: {data_path}"
             raise ValueError(message)
         LOGGER.info("Reusing deterministic run %s", run_id)
@@ -149,23 +163,26 @@ def generate_records(
         {"job_function_code": pl.String, "job_function": pl.String}
     )
     frame.write_parquet(data_path, compression="zstd")
-    manifest = RunManifest(
-        run_id=run_id,
-        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
-        created_at=_now(),
-        bundle_id=bundle.bundle_id,
-        bundle_manifest_sha256=sha256_file(bundle_manifest_path),
-        sampling_config_sha256=sha256_file(sampling_config_path),
-        origin_labels_contract_path=bundle.origin_labels_contract_path,
-        origin_labels_contract_version=bundle.origin_labels_contract_version,
-        origin_labels_contract_sha256=bundle.origin_labels_contract_sha256,
-        origin_labels_contract_content=bundle.origin_labels_contract_content,
-        rows=rows,
-        seed=seed,
-        data_file=Path(data_path.name),
-        data_sha256=sha256_file(data_path),
-        logical_content_sha256=_logical_checksum(frame=frame),
-        llm_calls=0,
+    manifest = RunManifest.model_validate(
+        {
+            "run_id": run_id,
+            "sampler_schema_version": SAMPLER_SCHEMA_VERSION,
+            "created_at": _now(),
+            "bundle_id": bundle.bundle_id,
+            "bundle_manifest_sha256": sha256_file(bundle_manifest_path),
+            "sampling_config_sha256": sha256_file(sampling_config_path),
+            "origin_labels_contract_path": bundle.origin_labels_contract_path,
+            "origin_labels_contract_version": bundle.origin_labels_contract_version,
+            "origin_labels_contract_sha256": bundle.origin_labels_contract_sha256,
+            "origin_labels_contract_content": bundle.origin_labels_contract_content,
+            "rows": rows,
+            "seed": seed,
+            "data_file": Path(data_path.name),
+            "data_sha256": sha256_file(data_path),
+            "logical_content_sha256": _logical_checksum(frame=frame),
+            "llm_calls": 0,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=manifest_path, payload=manifest)
     LOGGER.info("Generated %s non-LLM records in run %s", f"{rows:,}", run_id)

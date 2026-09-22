@@ -123,8 +123,12 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
 
 - The Hydra configuration names the endpoint and model explicitly. Each invocation
   remains bounded by row and HTTP-request limits.
-- The input checksum and successful Phase-2 validation report match the upstream run.
-  The upstream sampler schema must be version 6 and the frozen-sample schema must be
+- Library and dataset/release validation require the input checksum and successful
+  Phase-2 validation report to match the upstream run. The single-row
+  `generate_persona.py` command uses an explicit checksum-tolerant policy for stored
+  checksum mismatches only; all semantic, schema, provenance-content, and safety gates
+  remain active. The upstream sampler schema must be version 6 and the frozen-sample
+  schema must be
   version 3. Every frozen row and column must validate against the current
   `DemographicRecord`; legacy, origin-less samples require migration and cannot cross
   the Phase-3 boundary.

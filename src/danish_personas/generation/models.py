@@ -3,7 +3,13 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from ..models import (
     GENERATION_SCHEMA_VERSION,
@@ -18,6 +24,21 @@ from ..origin_labels import (
     validate_origin_contract_reference,
 )
 from .job_titles import JobFunctionTitleMapping
+from .policy import ChecksumValidationPolicy
+
+
+def _checksum_policy_from_context(info: ValidationInfo) -> ChecksumValidationPolicy:
+    """Read the optional scoped checksum policy used by model validation.
+
+    Returns:
+        The configured checksum policy, or strict validation by default.
+    """
+    if isinstance(info.context, dict):
+        policy = info.context.get("checksum_policy")
+        if isinstance(policy, ChecksumValidationPolicy):
+            return policy
+    return ChecksumValidationPolicy.STRICT
+
 
 __all__ = ["FrozenSampleManifest"]
 
@@ -200,7 +221,9 @@ class GenerationManifest(StrictModel):
     generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "GenerationManifest":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "GenerationManifest":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -217,6 +240,7 @@ class GenerationManifest(StrictModel):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
@@ -230,7 +254,9 @@ class GenerationValidationReport(ValidationReport):
     origin_label_contract_content: OriginLabelContract
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "GenerationValidationReport":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "GenerationValidationReport":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -241,6 +267,7 @@ class GenerationValidationReport(ValidationReport):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
@@ -290,7 +317,9 @@ class PersonaCheckpoint(StrictModel):
     generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "PersonaCheckpoint":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "PersonaCheckpoint":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -307,6 +336,7 @@ class PersonaCheckpoint(StrictModel):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 

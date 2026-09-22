@@ -50,6 +50,7 @@ from .models import (
     RequestLedger,
 )
 from .personality import allowed_personality_tendencies
+from .policy import ChecksumValidationPolicy
 from .validation import (
     VALIDATOR_VERSION,
     parse_attributes,
@@ -120,6 +121,7 @@ def generate_personas(
     output_dir: Path,
     rows: int,
     offset: int = 0,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> Path:
     """Generate structured attributes and one persona in one model request.
 
@@ -136,6 +138,9 @@ def generate_personas(
             Number of records, capped at five per invocation.
         offset:
             Zero-based position within the ordered frozen sample.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. The default is strict;
+            the CLI may explicitly opt out while retaining semantic validation.
 
     Returns:
         Planned or completed generation run directory.
@@ -148,7 +153,9 @@ def generate_personas(
     config = load_generation_config(config_path)
     _validate_guards(config=config, rows=rows)
     upstream_run = validate_upstream_sample(
-        input_path=input_path, sample_manifest_path=sample_manifest_path
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        checksum_policy=checksum_policy,
     )
     sample = pl.read_parquet(input_path).sort("persona_id")
     if offset < 0 or offset + rows > sample.height:
@@ -161,7 +168,9 @@ def generate_personas(
     job_title_mapping = load_job_title_mapping(mapping_path)
     mapping_sha = mapping_file_sha256(mapping_path)
     origin_contract_path = config.origin_label_contract
-    origin_contract = load_origin_label_contract(path=origin_contract_path)
+    origin_contract = load_origin_label_contract(
+        path=origin_contract_path, checksum_policy=checksum_policy
+    )
     origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
     _validate_origin_labels(frame=sample, contract=origin_contract)
     prompt = config.prompt.read_text(encoding="utf-8")
@@ -172,6 +181,7 @@ def generate_personas(
         job_title_mapping_sha256=mapping_sha,
         origin_label_contract=origin_contract,
         origin_label_contract_sha256=origin_contract_sha,
+        checksum_policy=checksum_policy,
     )
     run_id = generation_run_id(
         input_sha256=sha256_file(input_path),
@@ -185,6 +195,7 @@ def generate_personas(
         run_dir=run_dir,
         generation_context_sha=generation_context_sha,
         maximum_attempts=config.maximum_total_requests,
+        checksum_policy=checksum_policy,
     )
 
     def record_request(attempts: int) -> None:
@@ -205,7 +216,8 @@ def generate_personas(
     checkpoints: list[PersonaCheckpoint] = []
     persisted_http_requests = sum(
         PersonaCheckpoint.model_validate_json(
-            path.read_text(encoding="utf-8")
+            path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         ).http_requests
         for path in (run_dir / "checkpoints").glob("*.json")
         if not path.name.endswith(".attributes.json")
@@ -237,6 +249,7 @@ def generate_personas(
                     prior_http_requests=(
                         0 if checkpoint_exists else unattributed_http_requests
                     ),
+                    checksum_policy=checksum_policy,
                 )
             )
             if not checkpoint_exists:
@@ -246,46 +259,51 @@ def generate_personas(
     LOGGER.info("Provider generation finished; persisting generation artefacts")
     output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
     responses = [response for item in checkpoints for response in item.responses]
-    manifest = GenerationManifest(
-        run_id=run_id,
-        upstream_run_id=upstream_run.run_id,
-        input_file=input_path,
-        sample_manifest_file=sample_manifest_path,
-        input_sha256=sha256_file(input_path),
-        ordered_persona_ids_sha256=ordered_ids_sha,
-        generation_config_file=config_path,
-        generation_config_sha256=sha256_file(config_path),
-        generation_context_sha256=generation_context_sha,
-        validator_version=VALIDATOR_VERSION,
-        job_title_mapping_file=mapping_path,
-        job_title_mapping_sha256=mapping_sha,
-        job_title_mapping_version=job_title_mapping.version,
-        job_title_mapping_content=job_title_mapping,
-        origin_label_contract_file=origin_contract_path,
-        origin_label_contract_sha256=origin_contract_sha,
-        origin_label_contract_version=origin_contract.version,
-        origin_label_contract_content=origin_contract,
-        prompt_sha256=sha256_text(prompt),
-        model=config.model or "",
-        base_url=config.base_url or "",
-        rows=rows,
-        offset=offset,
-        requests=ledger.attempts,
-        retries=max(0, ledger.attempts - rows),
-        prompt_tokens=sum(response.prompt_tokens for response in responses),
-        completion_tokens=sum(response.completion_tokens for response in responses),
-        total_tokens=sum(response.total_tokens for response in responses),
-        estimated_cost_usd=_sum_estimated_cost(responses=responses),
-        inference_providers=sorted(
-            {
-                response.inference_provider
-                for response in responses
-                if response.inference_provider
-            }
-        ),
-        output_file=Path(output_path.name),
-        output_sha256=sha256_file(output_path),
-        llm_generation=True,
+    manifest = GenerationManifest.model_validate(
+        {
+            "run_id": run_id,
+            "upstream_run_id": upstream_run.run_id,
+            "input_file": input_path,
+            "sample_manifest_file": sample_manifest_path,
+            "input_sha256": sha256_file(input_path),
+            "ordered_persona_ids_sha256": ordered_ids_sha,
+            "generation_config_file": config_path,
+            "generation_config_sha256": sha256_file(config_path),
+            "generation_context_sha256": generation_context_sha,
+            "validator_version": VALIDATOR_VERSION,
+            "job_title_mapping_file": mapping_path,
+            "job_title_mapping_sha256": mapping_sha,
+            "job_title_mapping_version": job_title_mapping.version,
+            "job_title_mapping_content": job_title_mapping,
+            "origin_label_contract_file": origin_contract_path,
+            "origin_label_contract_sha256": origin_contract_sha,
+            "origin_label_contract_version": origin_contract.version,
+            "origin_label_contract_content": origin_contract,
+            "prompt_sha256": sha256_text(prompt),
+            "model": config.model or "",
+            "base_url": config.base_url or "",
+            "rows": rows,
+            "offset": offset,
+            "requests": ledger.attempts,
+            "retries": max(0, ledger.attempts - rows),
+            "prompt_tokens": sum(response.prompt_tokens for response in responses),
+            "completion_tokens": sum(
+                response.completion_tokens for response in responses
+            ),
+            "total_tokens": sum(response.total_tokens for response in responses),
+            "estimated_cost_usd": _sum_estimated_cost(responses=responses),
+            "inference_providers": sorted(
+                {
+                    response.inference_provider
+                    for response in responses
+                    if response.inference_provider
+                }
+            ),
+            "output_file": Path(output_path.name),
+            "output_sha256": sha256_file(output_path),
+            "llm_generation": True,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=run_dir / "generation-manifest.json", payload=manifest)
     LOGGER.info("Completed persona run %s with %s requests", run_id, manifest.requests)
@@ -306,6 +324,7 @@ def _generate_one(
     origin_label_contract_sha256: str,
     origin_label_contract_path: Path,
     prior_http_requests: int,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> PersonaCheckpoint:
     """Generate or resume one persona with one combined provider response.
 
@@ -318,11 +337,13 @@ def _generate_one(
     checkpoint_path = run_dir / "checkpoints" / f"{persona_id}.json"
     if checkpoint_path.exists():
         checkpoint = PersonaCheckpoint.model_validate_json(
-            checkpoint_path.read_text(encoding="utf-8")
+            checkpoint_path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         )
         _validate_checkpoint(
             checkpoint=checkpoint,
             input_sha=input_sha,
+            checksum_policy=checksum_policy,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
             demographic=row,
@@ -357,24 +378,29 @@ def _generate_one(
         {field: getattr(generated, field) for field in GeneratedAttributes.model_fields}
     )
     descriptions = PersonaDescriptions(persona=generated.persona)
-    checkpoint = PersonaCheckpoint(
-        persona_id=persona_id,
-        input_sha256=input_sha,
-        generation_context_sha256=generation_context_sha,
-        validator_version=VALIDATOR_VERSION,
-        job_title_mapping_sha256=job_title_mapping_sha256,
-        job_title_mapping_version=job_title_mapping.version,
-        job_title_mapping_file=job_title_mapping_path,
-        job_title_mapping_content=job_title_mapping,
-        origin_label_contract_file=origin_label_contract_path,
-        origin_label_contract_sha256=origin_label_contract_sha256,
-        origin_label_contract_version=origin_label_contract.version,
-        origin_label_contract_content=origin_label_contract,
-        attributes=attributes,
-        descriptions=descriptions,
-        responses=responses,
-        attempts=len(responses),
-        http_requests=(prior_http_requests + client.requests_made - request_start),
+    checkpoint = PersonaCheckpoint.model_validate(
+        {
+            "persona_id": persona_id,
+            "input_sha256": input_sha,
+            "generation_context_sha256": generation_context_sha,
+            "validator_version": VALIDATOR_VERSION,
+            "job_title_mapping_sha256": job_title_mapping_sha256,
+            "job_title_mapping_version": job_title_mapping.version,
+            "job_title_mapping_file": job_title_mapping_path,
+            "job_title_mapping_content": job_title_mapping,
+            "origin_label_contract_file": origin_label_contract_path,
+            "origin_label_contract_sha256": origin_label_contract_sha256,
+            "origin_label_contract_version": origin_label_contract.version,
+            "origin_label_contract_content": origin_label_contract,
+            "attributes": attributes,
+            "descriptions": descriptions,
+            "responses": responses,
+            "attempts": len(responses),
+            "http_requests": (
+                prior_http_requests + client.requests_made - request_start
+            ),
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=checkpoint_path, payload=checkpoint)
     return checkpoint
@@ -505,6 +531,7 @@ def _validate_checkpoint(
     generation_context_sha: str,
     model: str,
     demographic: dict[str, object],
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
     job_title_mapping_path: Path | None = None,
@@ -512,17 +539,23 @@ def _validate_checkpoint(
     origin_label_contract_sha256: str | None = None,
     origin_label_contract_path: Path | None = None,
 ) -> None:
-    if checkpoint.input_sha256 != input_sha:
+    if checksum_policy.validates_checksums and checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
         raise ValueError(message)
-    if checkpoint.generation_context_sha256 != generation_context_sha:
+    if (
+        checksum_policy.validates_checksums
+        and checkpoint.generation_context_sha256 != generation_context_sha
+    ):
         message = f"Stale generation context for {checkpoint.persona_id}"
         raise ValueError(message)
     if checkpoint.validator_version != VALIDATOR_VERSION:
         message = f"Stale validator context for {checkpoint.persona_id}"
         raise ValueError(message)
     if job_title_mapping_sha256 is not None and (
-        checkpoint.job_title_mapping_sha256 != job_title_mapping_sha256
+        (
+            checksum_policy.validates_checksums
+            and checkpoint.job_title_mapping_sha256 != job_title_mapping_sha256
+        )
         or checkpoint.job_title_mapping_version
         != (job_title_mapping.version if job_title_mapping is not None else None)
         or checkpoint.job_title_mapping_content != job_title_mapping
@@ -530,7 +563,10 @@ def _validate_checkpoint(
     ):
         raise ValueError(f"Stale job-title mapping for {checkpoint.persona_id}")
     if origin_label_contract is None or (
-        checkpoint.origin_label_contract_sha256 != origin_label_contract_sha256
+        (
+            checksum_policy.validates_checksums
+            and checkpoint.origin_label_contract_sha256 != origin_label_contract_sha256
+        )
         or checkpoint.origin_label_contract_version != origin_label_contract.version
         or checkpoint.origin_label_contract_content != origin_label_contract
         or checkpoint.origin_label_contract_file != origin_label_contract_path
@@ -592,7 +628,10 @@ def models_match(configured: str, returned: str) -> bool:
 
 
 def _load_request_ledger(
-    run_dir: Path, generation_context_sha: str, maximum_attempts: int | None
+    run_dir: Path,
+    generation_context_sha: str,
+    maximum_attempts: int | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> RequestLedger:
     ledger_path = run_dir / "request-ledger.json"
     if ledger_path.exists():
@@ -600,9 +639,9 @@ def _load_request_ledger(
             ledger_path.read_text(encoding="utf-8")
         )
         if (
-            ledger.generation_context_sha256 != generation_context_sha
-            or ledger.maximum_attempts != maximum_attempts
-        ):
+            checksum_policy.validates_checksums
+            and ledger.generation_context_sha256 != generation_context_sha
+        ) or ledger.maximum_attempts != maximum_attempts:
             message = "Stale request ledger does not match generation context"
             raise ValueError(message)
     else:
@@ -612,7 +651,8 @@ def _load_request_ledger(
             if checkpoint_path.name.endswith(".attributes.json"):
                 continue
             checkpoint = PersonaCheckpoint.model_validate_json(
-                checkpoint_path.read_text(encoding="utf-8")
+                checkpoint_path.read_text(encoding="utf-8"),
+                context={"checksum_policy": checksum_policy},
             )
             checkpoints[checkpoint.persona_id] = checkpoint
         ledger = RequestLedger(
@@ -685,6 +725,7 @@ def generation_context_sha256(
     job_title_mapping_sha256: str | None = None,
     origin_label_contract: OriginLabelContract | None = None,
     origin_label_contract_sha256: str | None = None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> str:
     """Hash every effective input that controls LLM generation.
 
@@ -701,6 +742,9 @@ def generation_context_sha256(
             Exact configured Danish origin-label contract.
         origin_label_contract_sha256:
             Checksum of the exact configured origin-label contract file.
+        checksum_policy:
+            Whether the origin contract digest must match the reviewed digest.
+            Defaults to strict validation.
 
     Returns:
         SHA-256 digest for the prompts, schemas, validator, and configuration.
@@ -711,13 +755,16 @@ def generation_context_sha256(
     if config.origin_label_contract != Path("config/folk2-ieland-labels-da.yaml"):
         raise ValueError("Generation origin-label contract path must be canonical")
     effective_origin_contract = origin_label_contract or load_origin_label_contract(
-        path=config.origin_label_contract
+        path=config.origin_label_contract, checksum_policy=checksum_policy
     )
     effective_origin_sha256 = (
         origin_label_contract_sha256
         or origin_label_contract_sha256_file(path=config.origin_label_contract)
     )
-    if effective_origin_sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+    if (
+        checksum_policy.validates_checksums
+        and effective_origin_sha256 != ORIGIN_LABEL_CONTRACT_SHA256
+    ):
         raise ValueError("Generation origin-label contract is not reviewed")
     return sha256_text(
         canonical_json(
@@ -753,7 +800,9 @@ def generation_context_sha256(
 
 
 def validate_upstream_sample(
-    input_path: Path, sample_manifest_path: Path
+    input_path: Path,
+    sample_manifest_path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> RunManifest:
     """Prove a frozen sample is an unchanged subset of a validated run.
 
@@ -762,16 +811,23 @@ def validate_upstream_sample(
             Frozen sample Parquet file.
         sample_manifest_path:
             Frozen sample manifest.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. Defaults to strict.
 
     Returns:
         Validated upstream demographic run manifest.
 
     Raises:
         ValueError:
-            If any checksum, provenance, schema, order, or membership check fails.
+            If any provenance, schema, order, or membership check fails, or if a
+            checksum differs under the strict policy.
     """
-    sample_manifest = _load_current_sample_manifest(path=sample_manifest_path)
-    if sample_manifest.sha256 != sha256_file(input_path):
+    sample_manifest = _load_current_sample_manifest(
+        path=sample_manifest_path, checksum_policy=checksum_policy
+    )
+    if checksum_policy.validates_checksums and sample_manifest.sha256 != sha256_file(
+        input_path
+    ):
         message = "Frozen sample checksum does not match its manifest"
         raise ValueError(message)
     if sample_manifest.data_file != Path(input_path.name):
@@ -789,7 +845,8 @@ def validate_upstream_sample(
 
     run_dir = input_path.parent
     upstream = RunManifest.model_validate_json(
-        (run_dir / "run-manifest.json").read_text(encoding="utf-8")
+        (run_dir / "run-manifest.json").read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     _validate_current_demographic_sample(sample=sample, upstream=upstream)
 
@@ -797,7 +854,10 @@ def validate_upstream_sample(
         (run_dir / "validation-report.json").read_text(encoding="utf-8")
     )
     upstream_path = run_dir / upstream.data_file
-    if sha256_file(upstream_path) != upstream.data_sha256:
+    if (
+        checksum_policy.validates_checksums
+        and sha256_file(upstream_path) != upstream.data_sha256
+    ):
         message = "Validated Phase-2 data checksum does not match its manifest"
         raise ValueError(message)
     if (
@@ -815,7 +875,10 @@ def validate_upstream_sample(
         message = "Frozen sample belongs to a different upstream run"
         raise ValueError(message)
     _validate_origin_provenance(
-        sample_manifest=sample_manifest, upstream=upstream, report=report
+        sample_manifest=sample_manifest,
+        upstream=upstream,
+        report=report,
+        checksum_policy=checksum_policy,
     )
     upstream_frame = pl.read_parquet(upstream_path)
     if sample.columns != upstream_frame.columns:
@@ -830,12 +893,18 @@ def validate_upstream_sample(
     return upstream
 
 
-def _load_current_sample_manifest(*, path: Path) -> FrozenSampleManifest:
+def _load_current_sample_manifest(
+    *,
+    path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> FrozenSampleManifest:
     """Load a frozen-sample manifest with the current provenance schema.
 
     Args:
         path:
             Frozen-sample manifest path.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. Defaults to strict.
 
     Returns:
         Validated current manifest.
@@ -845,7 +914,7 @@ def _load_current_sample_manifest(*, path: Path) -> FrozenSampleManifest:
             If the provenance schema version is unsupported.
     """
     manifest = FrozenSampleManifest.model_validate_json(
-        path.read_text(encoding="utf-8")
+        path.read_text(encoding="utf-8"), context={"checksum_policy": checksum_policy}
     )
     if manifest.sample_schema_version != FROZEN_SAMPLE_SCHEMA_VERSION:
         message = "Frozen sample uses an unsupported provenance schema version"
@@ -890,12 +959,14 @@ def _validate_origin_provenance(
     sample_manifest: FrozenSampleManifest,
     upstream: RunManifest,
     report: ValidationReport,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Require one unchanged origin contract across Phase-2 and Phase-3.
 
     Raises:
         ValueError:
-            If the sample or validation report has a different binding.
+            If the sample or validation report has different path, version, or
+            embedded content; checksum differences fail only under strict policy.
     """
     run_binding = (
         upstream.origin_labels_contract_path,
@@ -909,7 +980,11 @@ def _validate_origin_provenance(
         sample_manifest.origin_labels_contract_sha256,
         sample_manifest.origin_labels_contract_content,
     )
-    if sample_binding != run_binding:
+    if (
+        sample_binding[:2] != run_binding[:2]
+        or sample_binding[3] != run_binding[3]
+        or (checksum_policy.validates_checksums and sample_binding[2] != run_binding[2])
+    ):
         raise ValueError("Frozen sample origin contract differs from its run")
     report_binding = (
         report.origin_labels_contract_path,
@@ -917,5 +992,9 @@ def _validate_origin_provenance(
         report.origin_labels_contract_sha256,
         report.origin_labels_contract_content,
     )
-    if report_binding != run_binding:
+    if (
+        report_binding[:2] != run_binding[:2]
+        or report_binding[3] != run_binding[3]
+        or (checksum_policy.validates_checksums and report_binding[2] != run_binding[2])
+    ):
         raise ValueError("Phase-2 validation report has stale origin provenance")

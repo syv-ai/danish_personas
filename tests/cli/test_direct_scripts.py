@@ -12,6 +12,7 @@ from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 from pydantic import ValidationError
 
+from danish_personas.checksum import ChecksumValidationPolicy
 from danish_personas.generation.config import load_generation_config
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import FROZEN_SAMPLE_SCHEMA_VERSION, FrozenSampleManifest
@@ -302,7 +303,7 @@ def test_generate_persona_emits_only_validated_text(
     monkeypatch.setattr(
         generate_persona,
         "prepare_standard_sample",
-        lambda: (tmp_path / "sample.parquet", tmp_path / "sample.manifest.json"),
+        lambda **_: (tmp_path / "sample.parquet", tmp_path / "sample.manifest.json"),
     )
     monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 1)
     monkeypatch.setattr(generate_persona, "generate_personas", generate)
@@ -324,6 +325,7 @@ def test_generate_persona_emits_only_validated_text(
     assert captured.out == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
     assert calls["sample_manifest_path"] == tmp_path / "sample.manifest.json"
+    assert calls["checksum_policy"] is ChecksumValidationPolicy.IGNORE
     assert "Loading and validating persona inputs" in captured.err
     assert "Dette er en dansk syntetisk persona." not in captured.err
     config_path = calls["config_path"]
