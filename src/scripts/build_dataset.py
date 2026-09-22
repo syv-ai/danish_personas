@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.report import validate_persona_pilot
@@ -24,6 +25,7 @@ from danish_personas.script_config import (
 from danish_personas.workflows import prepare_standard_sample
 
 LOGGER = logging.getLogger(__name__)
+load_repository_environment()
 enable_hydra_cli()
 
 

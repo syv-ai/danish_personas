@@ -15,6 +15,7 @@ from omegaconf import DictConfig
 from plotly.offline import get_plotlyjs
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import load_yaml_model
 from danish_personas.models import CategoryConfig
@@ -78,6 +79,7 @@ HORIZONTAL_FIELDS = frozenset(
 )
 
 
+load_repository_environment()
 enable_hydra_cli()
 
 

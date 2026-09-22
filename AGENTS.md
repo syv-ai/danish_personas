@@ -118,10 +118,10 @@ uv sync --locked --all-extras --dev
 ```
 
 For a local environment file, use `cp .env.example .env`. The non-LLM tests and pipeline
-need no secrets. Direct LLM commands do not load `.env`; use a short-lived shell export
-or command-scoped assignment for the configured provider token. The Makefile includes
-`.env` and exports all of its variables to subprocesses and hooks, so do not use it as
-credential loading for direct LLM commands. `make install` is a convenience bootstrap
+need no secrets. Every executable script loads all variables from the repository-root
+`.env` before starting its CLI; existing process variables take precedence and values
+are never logged. The Makefile also includes `.env` and exports its variables to
+subprocesses and hooks. `make install` is a convenience bootstrap
 that can install/update `uv`, initialise Git, configure identity, and add a remote; do
 not use it merely to install Python dependencies in an existing clone.
 
