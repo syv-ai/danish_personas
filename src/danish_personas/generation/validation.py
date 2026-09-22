@@ -612,7 +612,7 @@ def _is_allowed_grounding_label(
     to each grounded label rather than treating that token as the whole label.
     """
     start, _ = match.span("name")
-    if start and (text[start - 1].isalnum() or text[start - 1] == "_"):
+    if start and not _is_grounding_boundary(text=text, index=start - 1):
         return False
     tail = _normalize(text=text[start:])
     for label in allowed_labels:
@@ -620,19 +620,31 @@ def _is_allowed_grounding_label(
         if not tail.startswith(normalised_label):
             continue
         remainder = tail[len(normalised_label) :]
-        if not remainder or not (remainder[0].isalnum() or remainder[0] == "_"):
+        if not remainder or _is_grounding_boundary(text=remainder, index=0):
             return True
         if "possessive" not in match.re.groupindex:
             continue
         boundary_end = match.end("possessive")
         captured = _normalize(text=text[start:boundary_end])
         possessive = _normalize(text=match.group("possessive"))
-        if captured == f"{normalised_label}{possessive}" and (
-            boundary_end == len(text)
-            or not (text[boundary_end].isalnum() or text[boundary_end] == "_")
+        if captured == f"{normalised_label}{possessive}" and _is_grounding_boundary(
+            text=text, index=boundary_end
         ):
             return True
     return False
+
+
+def _is_grounding_boundary(*, text: str, index: int) -> bool:
+    """Return whether the character at ``index`` terminates a grounded label."""
+    return index >= len(text) or not _is_grounding_continuation_character(text[index])
+
+
+def _is_grounding_continuation_character(character: str) -> bool:
+    """Return whether a character can extend a grounded label or name."""
+    normalised = unicodedata.normalize("NFKC", character).translate(DASH_TRANSLATION)
+    return (
+        normalised.isalnum() or normalised == "_" or normalised in {"-", "'", "’", "´"}
+    )
 
 
 def _validate_persona(

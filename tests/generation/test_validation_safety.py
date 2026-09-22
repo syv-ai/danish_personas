@@ -204,6 +204,52 @@ def test_required_place_and_origin_labels_are_allowed_in_name_patterns() -> None
     assert parsed.persona == text
 
 
+@pytest.mark.parametrize(
+    "construction",
+    [
+        "Aarhus-Lars er 35 år.",
+        "San Marino-Lars's partner bor i byen.",
+        "San Marino-Lars’s partner bor i byen.",
+        "San Marino-Lars´s partner bor i byen.",
+    ],
+)
+def test_grounded_label_name_extensions_are_rejected_in_attributes_and_persona(
+    construction: str,
+) -> None:
+    context = demographic()
+    context["municipality"] = "Aarhus"
+    context["origin_country_da"] = "San Marino"
+
+    attribute_payload = attributes()
+    attribute_payload["cultural_context"] = (
+        f"En almindelig dansk hverdag. {construction}"
+    )
+    with pytest.raises(ValueError, match="person name"):
+        parse_attributes(json.dumps(attribute_payload), context)
+
+    text = persona(context=context, extra=construction)["persona"]
+    with pytest.raises(ValueError, match="person name"):
+        parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+
+@pytest.mark.parametrize("possessive", ["Aarhus's", "Aarhus’s", "Aarhus´s"])
+def test_exact_grounded_label_possessives_are_allowed(possessive: str) -> None:
+    context = demographic()
+    context["municipality"] = "Aarhus"
+    attribute_payload = attributes()
+    attribute_payload["cultural_context"] = (
+        f"En almindelig dansk hverdag. {possessive} partner bor i byen."
+    )
+    parse_attributes(json.dumps(attribute_payload), context)
+
+    text = persona(context=context, extra=f" {possessive} partner bor i byen.")[
+        "persona"
+    ]
+    parsed = parse_descriptions(json.dumps({"persona": text}), context, attributes())
+
+    assert parsed.persona == text
+
+
 def test_grounded_proper_nouns_and_sentence_starts_are_allowed() -> None:
     context = demographic()
     text = persona(
