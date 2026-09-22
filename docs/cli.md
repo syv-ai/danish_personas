@@ -62,7 +62,10 @@ provider requests.
 Each persona command writes a deterministic, flat effective `GenerationConfig` YAML
 snapshot below its output area's `generation-configs` directory. The snapshot captures
 resolved Hydra overrides for generation and provenance, contains no token value, is
-reused when identical, and is never overwritten when its content differs.
+reused when identical, and is never overwritten when its content differs. Its stable
+format header deliberately versions the snapshot bytes: pilots created before the
+Hydra migration from the old flat `config/config.yaml` format remain separate
+historical artefacts and are not resumable under the current snapshot contract.
 
 ## Persona dashboard
 

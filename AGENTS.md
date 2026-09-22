@@ -12,7 +12,7 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
   Pydantic defines strict contracts; Click provides CLI scripts; HTTPX handles StatBank
   and LLM API calls.
 - `src/danish_personas/` contains importable package code. `src/scripts/` contains
-  executable Click entry points. `tests/` contains unit and fixture-based integration
+  executable command-line scripts. `tests/` contains unit and fixture-based integration
   tests. `config/` contains versioned inputs and prompts. `data/` is local output only.
 - `docs/` contains the plan, source register, privacy register, acceptance criteria, and
   experiment/validation reports. `.github/workflows/ci.yaml` runs pre-commit and pytest

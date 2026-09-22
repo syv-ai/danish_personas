@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from danish_personas.generation.config import (
@@ -20,6 +21,13 @@ def test_effective_snapshot_is_stable_and_immutable(tmp_path: Path) -> None:
 
     assert first == second
     assert load_generation_config(first) == config
+    legacy_bytes = yaml.safe_dump(
+        config.model_dump(mode="json"), allow_unicode=True, sort_keys=False
+    ).encode("utf-8")
+    assert first.read_bytes() != legacy_bytes
+    assert first.read_text(encoding="utf-8").startswith(
+        "# Effective generation configuration format: hydra-v1\n"
+    )
     first.write_text("tampered: true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="provenance does not match"):
         persist_effective_generation_config(config=config, output_dir=tmp_path)

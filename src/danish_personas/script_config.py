@@ -1,13 +1,17 @@
 """Strict configuration contracts for the public Hydra scripts."""
 
+import stat
 import typing as t
 from pathlib import Path
 
+import yaml
 from omegaconf import DictConfig, OmegaConf
-from pydantic import DirectoryPath, Field, FilePath, model_validator
+from pydantic import DirectoryPath, Field, FilePath, field_validator, model_validator
 
 from .generation.models import GenerationConfig
+from .io import sha256_file
 from .models import StrictModel
+from .release.models import ReleasePolicy, ReviewAttestation
 
 
 class BuildDatasetConfig(StrictModel):
@@ -21,10 +25,26 @@ class BuildDatasetConfig(StrictModel):
     input_price_per_million: float = Field(ge=0.0)
     output_price_per_million: float = Field(ge=0.0)
     hf_repo: str | None = None
-    attestation: Path | None = None
-    policy: Path | None = None
-    dataset_card: Path | None = None
-    licence: Path | None = None
+    attestation: FilePath | None = None
+    policy: FilePath | None = None
+    dataset_card: FilePath | None = None
+    licence: FilePath | None = None
+
+    @field_validator("attestation", "policy", "dataset_card", "licence")
+    @classmethod
+    def require_regular_file(_cls, value: FilePath | None) -> FilePath | None:
+        """Reject paths that are not existing, non-symlink regular files.
+
+        Returns:
+            The validated regular file path, or ``None``.
+
+        Raises:
+            ValueError:
+                If the path is not a regular file.
+        """
+        if value is not None and not stat.S_ISREG(value.lstat().st_mode):
+            raise ValueError(f"Release evidence must be a regular file: {value}")
+        return value
 
     @model_validator(mode="after")
     def require_release_inputs(self) -> "BuildDatasetConfig":
@@ -55,6 +75,30 @@ class BuildDatasetConfig(StrictModel):
                 + ", ".join(f"build_dataset.{name}" for name in missing)
             )
         return self
+
+    def validate_release_evidence(self) -> None:
+        """Validate release evidence before any preparation or generation starts.
+
+        Raises:
+            ValueError:
+                If the evidence content is malformed, empty, or inconsistent.
+        """
+        if self.hf_repo is None:
+            return
+        assert self.attestation is not None
+        assert self.policy is not None
+        assert self.dataset_card is not None
+        assert self.licence is not None
+        policy = ReleasePolicy.model_validate(
+            yaml.safe_load(self.policy.read_text(encoding="utf-8"))
+        )
+        ReviewAttestation.model_validate_json(self.attestation.read_bytes())
+        if not self.dataset_card.read_bytes().strip():
+            raise ValueError("Dataset card must be non-empty")
+        if not self.licence.read_bytes().strip():
+            raise ValueError("Licence must be non-empty")
+        if sha256_file(self.licence) != policy.licence_file_sha256:
+            raise ValueError("Supplied licence does not match policy")
 
 
 class GeneratePersonaConfig(StrictModel):

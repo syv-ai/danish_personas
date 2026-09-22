@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 from .models import GenerationConfig
 
 _HYDRA_LOCK = threading.Lock()
+_EFFECTIVE_CONFIG_HEADER = "# Effective generation configuration format: hydra-v1\n"
 
 
 def load_generation_config(path: Path) -> GenerationConfig:
@@ -59,9 +60,10 @@ def persist_effective_generation_config(
             If an existing content-addressed snapshot has different bytes.
     """
     payload = config.model_dump(mode="json")
-    content = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False).encode(
-        "utf-8"
-    )
+    content = (
+        _EFFECTIVE_CONFIG_HEADER
+        + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    ).encode("utf-8")
     digest = hashlib.sha256(content).hexdigest()
     snapshot_dir = output_dir / "generation-configs"
     snapshot_path = snapshot_dir / f"{digest}.yaml"

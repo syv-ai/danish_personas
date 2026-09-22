@@ -53,6 +53,7 @@ def _run(*, config: DictConfig) -> None:
     script_config = load_script_config(
         config, section="build_dataset", model=BuildDatasetConfig
     )
+    script_config.validate_release_evidence()
     llm_config = load_llm_config(config)
     config_path = persist_effective_generation_config(
         config=llm_config, output_dir=script_config.output_dir
