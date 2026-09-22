@@ -170,10 +170,11 @@ Use `generate_persona.input=PATH` to select another current frozen sample; its a
 `.manifest.json` is used automatically. With a null input, the deterministic
 prerequisites are prepared first. Each invocation samples one demographic locally, then
 starts a fresh model request to return both structured attributes and a detailed Danish
-`persona`. Direct invocations
-do not reuse earlier persona checkpoints. Only approved human-readable fields reach the
-provider. Source codes, resolution fields, the English origin label, and origin-contract
-metadata remain withheld.
+`persona`. Direct invocations do not reuse earlier persona checkpoints. Approved
+human-readable fields and an internal deterministic same-sex-partner target reach the
+provider. The target is synthetic, non-public, not observed individual data, and does
+not describe sexual orientation. Source codes, resolution fields, the English origin
+label, and origin-contract metadata remain withheld.
 
 For a larger dataset, enter the provider's current list prices. Use zero only when the
 configured endpoint is genuinely free:

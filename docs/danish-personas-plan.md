@@ -224,16 +224,18 @@ identity claims.
   biography, and cautious OCEAN tendencies.
 
 The provider receives the human-readable municipality, official Danish
-`origin_country_da`, sampled legal `marital_status`, and job-function labels for this
-purpose. It does not receive municipality or job-function codes, the origin code,
-English `origin_country`, contract metadata, or resolution fields. The English label
-remains source/audit provenance only. Neither origin label is ethnicity, citizenship,
-residence, or appearance. Origin cannot drive culture, religion, job, interests,
-personality, or visual traits. A job title is synthetic and must not imply unsupported
-work history. Education detail, workplace settings, relationships, and family details
-are permitted, while names, real organisations, exact addresses,
-appearance, and sensitive traits remain prohibited. The persona is not a visual
-description; downstream image models may still stereotype.
+`origin_country_da`, sampled legal `marital_status`, job-function labels, and an
+internal deterministic same-sex-partner target for this purpose. The target is synthetic,
+non-public, not observed individual data, and does not describe sexual orientation. The
+provider does not receive municipality or job-function codes, the origin code, English
+`origin_country`, contract metadata, or resolution fields. The English label remains
+source/audit provenance only. Neither origin label is ethnicity, citizenship, residence,
+or appearance. Origin cannot drive culture, religion, job, interests, personality, or
+visual traits. A job title is synthetic and must not imply unsupported work history.
+Education detail, workplace settings, relationships, and family details are permitted,
+while names, real organisations, exact addresses, appearance, and sensitive traits
+remain prohibited. The persona is not a visual description; downstream image models may
+still stereotype.
 
 Fields that are irrelevant to a record should contain a natural, age- and status-aware
 statement or be null according to a documented rule. They must not be filled with

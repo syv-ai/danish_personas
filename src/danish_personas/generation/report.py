@@ -227,6 +227,12 @@ def _build_persona_pilot_report(
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         merged_batches = pl.DataFrame()
     config_path = _repository_path(repository_root, manifest.generation_config_file)
+    try:
+        generation_config = (
+            load_generation_config(config_path) if config_path is not None else None
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        generation_config = None
     mapping_binding = _load_mapping_binding(
         config_path=config_path, repository_root=repository_root
     )
@@ -234,7 +240,10 @@ def _build_persona_pilot_report(
         config_path=config_path, repository_root=repository_root
     )
     content_errors = _count_content_errors(
-        output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
+        output=output,
+        mapping_binding=mapping_binding,
+        origin_binding=origin_binding,
+        generation_config=generation_config,
     )
     provenance_passed = _pilot_provenance_matches(
         pilot_dir=pilot_dir, manifest=manifest, repository_root=repository_root
@@ -372,6 +381,9 @@ def _build_persona_run_report(
         if manifest.generation_config_file is not None
         else None
     )
+    generation_config = (
+        load_generation_config(config_path) if config_path is not None else None
+    )
     mapping_binding = _load_mapping_binding(
         config_path=config_path, repository_root=repository_root
     )
@@ -381,7 +393,10 @@ def _build_persona_run_report(
         checksum_policy=checksum_policy,
     )
     validation_errors = _count_content_errors(
-        output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
+        output=output,
+        mapping_binding=mapping_binding,
+        origin_binding=origin_binding,
+        generation_config=generation_config,
     )
     checkpoint_errors = _count_checkpoint_errors(
         run_dir=run_dir,
@@ -393,6 +408,7 @@ def _build_persona_run_report(
         mapping_binding=mapping_binding,
         origin_binding=origin_binding,
         repository_root=repository_root,
+        generation_config=generation_config,
     )
     checks.append(
         MetricResult(
@@ -458,6 +474,7 @@ def _count_checkpoint_errors(
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
     origin_binding: tuple[Path, OriginLabelContract, str] | None,
     repository_root: Path | None,
+    generation_config: GenerationConfig | None = None,
 ) -> int:
     """Count checkpoint, response-sequence, ledger, and accounting errors.
 
@@ -493,7 +510,10 @@ def _count_checkpoint_errors(
             }
             output_values = {name: row[name] for name in checkpoint_values}
             replay_valid, stage_attempts = _responses_match_checkpoint(
-                checkpoint=checkpoint, demographic=row, mapping_binding=mapping_binding
+                checkpoint=checkpoint,
+                demographic=row,
+                mapping_binding=mapping_binding,
+                generation_config=generation_config,
             )
             if (
                 checkpoint.persona_id != persona_id
@@ -701,6 +721,7 @@ def _responses_match_checkpoint(
     checkpoint: PersonaCheckpoint,
     demographic: dict[str, object],
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
+    generation_config: GenerationConfig | None = None,
 ) -> tuple[bool, tuple[int, ...]]:
     """Replay combined responses and bind accepted content to the checkpoint.
 
@@ -715,7 +736,10 @@ def _responses_match_checkpoint(
     for response_index, response in enumerate(checkpoint.responses, start=1):
         try:
             parsed = parse_generated_persona(
-                response.content, demographic, job_title_mapping=mapping_binding[1]
+                response.content,
+                demographic,
+                job_title_mapping=mapping_binding[1],
+                generation_config=generation_config,
             )
         except ValueError:
             continue
@@ -751,6 +775,7 @@ def _count_content_errors(
     output: pl.DataFrame,
     mapping_binding: tuple[Path, JobFunctionTitleMapping, str] | None,
     origin_binding: tuple[Path, OriginLabelContract, str] | None,
+    generation_config: GenerationConfig | None = None,
 ) -> int:
     errors = 0
     persona_texts: list[str] = []
@@ -772,7 +797,10 @@ def _count_content_errors(
             )
             _validate_origin_row(row=row, contract=origin_binding[1])
             parse_attributes(
-                attributes.model_dump_json(), row, job_title_mapping=mapping_binding[1]
+                attributes.model_dump_json(),
+                row,
+                job_title_mapping=mapping_binding[1],
+                generation_config=generation_config,
             )
             parse_descriptions(descriptions.model_dump_json(), row, attributes)
             persona_texts.append(" ".join(descriptions.persona.casefold().split()))

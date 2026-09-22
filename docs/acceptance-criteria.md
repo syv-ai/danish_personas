@@ -151,12 +151,28 @@ rather than inventing them.
   erhvervsuddannelse` are rejected, along with redundant sex nouns and data-model
   jargon.
 - The provider receives human-readable municipality, the official Danish
-  `origin_country_da`, sampled legal `marital_status`, and job-function labels, plus the
-  reviewed allowlist of Danish titles for that label, but never origin code, English
-  label, contract metadata, or resolution fields. A generated title must equal an
-  allowlist entry exactly.
+  `origin_country_da`, sampled legal `marital_status`, job-function labels, the reviewed
+  title allowlist, and the internal deterministic same-sex-partner target. The target is
+  synthetic, non-public, not observed individual data, and does not describe sexual
+  orientation. The provider never receives origin code, English label, contract
+  metadata, or resolution fields. A generated title must equal an allowlist entry
+  exactly.
 - The versioned 42-code title mapping is checksum-bound into generation context,
   checkpoints, shards, pilots, and the offline release package.
+- The internal same-sex-partner target is a stable Bernoulli decision from
+  `persona_id`, the versioned target-policy domain, and the configured probability;
+  it is independent of RNG state, shard order, and Python hash behaviour. For a
+  partnered response, `partner_gender` must match the target and the persona sex;
+  a not-partnered response must keep it null. The target is not a public column and
+  does not describe sexual orientation. Adding this configuration field and the
+  target-policy binding intentionally invalidates earlier generation-v5 contexts
+  and checkpoints; they are historical and cannot be resumed under this contract.
+- The default probability is `0.00701`, the 2026 FAM100N share among legally
+  formalised couples only: (PARS 10,180 + RP 4,376) / (PARS + RP + PARF 2,060,670)
+  = 14,556 / 2,075,226. This formalised-couple proxy is applied to all generated
+  partnered personas. DST cannot identify most unmarried same-sex couples, so it is
+  not an estimate of the all-partnership rate or sexual orientation.
+  Source: <https://www.statistikbanken.dk/FAM100N>.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
@@ -195,9 +211,12 @@ rather than inventing them.
   fictional rather than source-backed. The release manifest remains schema 2, while
   release evidence is schema 3 because its prompt provenance contract changed. The
   package must record that the provider request contains approved human-readable
-  municipality, Danish origin, sampled legal marital status, and job-function labels
-  only, not origin code, English label, contract metadata, or resolution fields, and
-  must disclose synthetic job titles and image-model stereotyping risk.
+  municipality, Danish origin, sampled legal marital status, job-function labels, and
+  the internal deterministic same-sex-partner target. It must identify the target as
+  synthetic, non-public, not observed individual data, and not sexual orientation. The
+  provider does not receive origin code, English label, contract metadata, or resolution
+  fields. The package must also disclose synthetic job titles and image-model
+  stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
   evidence checksums, provenance, row counts, and human-review evidence. Hugging Face
   upload may include only that verified package and must create a dataset pull request;

@@ -22,6 +22,12 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
 
 ## Strukturerede felter
 
+- Inputfeltet `same_sex_partner_target` er et internt, fast boolsk mål. Det er
+  beregnet deterministisk for denne persona og er ikke en oplysning om seksuel
+  orientering. Hvis `current_relationship_status` er `partnered`, skal
+  `partner_gender` matche målet og personaens `sex`: `true` betyder samme køn,
+  mens `false` betyder det andet af de to understøttede køn. Hvis status er
+  `not_partnered`, skal `partner_gender` altid være null.
 - Skriv 3-6 korte, forskellige færdigheder og 3-6 konkrete, forskellige interesser.
 - Hver interesse skal være en dansk fællesnavnefrase med små bogstaver og uden
   afsluttende tegnsætning.
@@ -40,10 +46,9 @@ Bevar alder, `han` eller `hun`, kommune, `origin_country_da`, jobtitel, status o
   have været gift. `divorced` og `widowed` skal omtales som henholdsvis skilt eller
   enke/enkemand, men personaen kan stadig være `partnered` eller `not_partnered`.
 - Partnerkombinationer af samme køn, herunder male/male og female/female, er
-  udtrykkeligt tilladt. Vælg `partner_gender` uden at foretrække kombinationer af
-  forskelligt køn. Ved `partnered` skal personaen omtale sin partner med et ord som
-  partner, kæreste eller ægtefælle. Brug aldrig partnerens navn, og skriv eller
-  udled ikke en orienteringsbetegnelse.
+  udtrykkeligt tilladt, når det interne mål kræver det. Ved `partnered` skal
+  personaen omtale sin partner med et ord som partner, kæreste eller ægtefælle.
+  Brug aldrig partnerens navn, og skriv eller udled ikke en orienteringsbetegnelse.
 - Færdighederne er syntetiske muligheder, ikke dokumenteret erfaring.
 - Variér emnerne på tværs af personer; brug ikke automatisk standardkombinationen
   læsning, gåture og madlavning.

@@ -63,8 +63,14 @@ uv run src/scripts/build_dataset.py \
 Both commands load all variables from the repository-root `.env` before Hydra starts;
 existing process variables take precedence and values are never logged. Shared model
 settings live under `llm` in `config/config.yaml`. Set `llm.api_key_env` to an
-environment-variable name if the provider requires authentication. Never store token
-values in configuration. Commands can consume paid provider requests.
+environment-variable name if the provider requires authentication. The
+`llm.same_sex_partner_probability` setting is bounded to `[0, 1]` and defaults to
+`0.00701`; it is the 2026 FAM100N share among legally formalised couples only:
+(PARS 10,180 + RP 4,376) / (PARS + RP + PARF 2,060,670). This formalised-couple
+proxy is applied to all generated partnered personas. DST cannot identify most
+unmarried same-sex couples, so it is not an estimate of the all-partnership rate or
+sexual orientation. Never store token values in configuration. Commands can consume
+paid provider requests.
 
 Each persona command writes a deterministic, flat effective `GenerationConfig` YAML
 snapshot below its output area's `generation-configs` directory. The snapshot captures
@@ -73,6 +79,9 @@ reused when identical, and is never overwritten when its content differs. Its st
 format header deliberately versions the snapshot bytes: pilots created before the
 Hydra migration from the old flat `config/config.yaml` format remain separate
 historical artefacts and are not resumable under the current snapshot contract.
+Adding the partner-target configuration field and policy binding also intentionally
+invalidates earlier generation-v5 contexts and checkpoints; they are historical and
+cannot be resumed under the current contract.
 
 ## Persona dashboard
 
