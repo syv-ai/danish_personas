@@ -92,6 +92,7 @@ def test_unrelated_kan_vaere_idiom_remains_allowed() -> None:
     [
         " Maja er 35 år.",
         " Hun hedder Maja.",
+        " Hun hedder Maja og bor i Aarhus.",
         " Hun er ved navn Maja.",
         " Jeg er Maja.",
         " Hun er Maja.",
@@ -100,10 +101,12 @@ def test_unrelated_kan_vaere_idiom_remains_allowed() -> None:
         " Personen er Maja. Personaens navn er Maja.",
         " Navnet er Maja.",
         " Hendes datter hedder Emma.",
+        " Hendes datter hedder Emma og går til håndbold.",
         " Partneren hedder Lars.",
         " Partneren kaldes Lars.",
         " Hendes datter ved navn Emma går til håndbold.",
         " Partneren Lars bor i byen.",
+        " Partneren Maja bor ofte i byen.",
         " Hendes datter er Emma.",
         " Maja er hendes kæreste.",
         " Hun bor sammen med sin kæreste Maja.",
@@ -124,8 +127,11 @@ def test_explicit_person_names_are_rejected(extra: str) -> None:
 @pytest.mark.parametrize(
     "construction",
     [
+        "Hun hedder Maja og bor i Aarhus.",
         "Hendes datter hedder Emma.",
+        "Hendes datter hedder Emma og går til håndbold.",
         "Partneren hedder Lars.",
+        "Partneren Maja bor ofte i byen.",
         "Partneren kaldes Lars.",
         "Hendes datter ved navn Emma.",
         "Partner ved navn Lars.",

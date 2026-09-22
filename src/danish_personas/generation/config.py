@@ -6,11 +6,12 @@ from pathlib import Path
 
 import yaml
 from hydra import compose, initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
 from .models import GenerationConfig
 
-_HYDRA_LOCK = threading.Lock()
+_HYDRA_LOCK = threading.RLock()
 _EFFECTIVE_CONFIG_HEADER = "# Effective generation configuration format: hydra-v1\n"
 
 
@@ -30,8 +31,20 @@ def load_generation_config(path: Path) -> GenerationConfig:
     """
     resolved = path.resolve()
     with _HYDRA_LOCK:
-        with initialize_config_dir(version_base=None, config_dir=str(resolved.parent)):
-            config = compose(config_name=resolved.stem)
+        global_hydra = GlobalHydra.instance()
+        previous_hydra = global_hydra.hydra
+        global_hydra.clear()
+        try:
+            with initialize_config_dir(
+                version_base=None, config_dir=str(resolved.parent)
+            ):
+                config = compose(config_name=resolved.stem)
+        finally:
+            # initialize_config_dir restores a copy of the state it found. Put the
+            # original singleton back so callers such as @hydra.main retain their
+            # active composition context, while standalone calls leave Hydra clear.
+            GlobalHydra.set_instance(global_hydra)
+            global_hydra.hydra = previous_hydra
     payload = OmegaConf.to_container(config, resolve=True)
     if not isinstance(payload, dict):
         raise ValueError("Generation configuration must be a YAML mapping")

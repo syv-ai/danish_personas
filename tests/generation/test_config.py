@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from hydra import initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
 from pydantic import ValidationError
 
 from danish_personas.generation.config import (
@@ -84,6 +86,20 @@ def test_hydra_resolves_nested_values_and_rejects_obsolete_llm_fields(
     config_path.write_text(obsolete, encoding="utf-8")
     with pytest.raises(ValidationError):
         load_generation_config(config_path)
+
+
+def test_load_generation_config_preserves_an_active_hydra_context() -> None:
+    """Nested composition restores the caller's Hydra state after every call."""
+    config_path = Path("config/config.yaml").resolve()
+    with initialize_config_dir(version_base=None, config_dir=str(config_path.parent)):
+        active_hydra = GlobalHydra.instance().hydra
+        first = load_generation_config(config_path)
+        assert GlobalHydra.instance().hydra is active_hydra
+        second = load_generation_config(config_path)
+        assert second == first
+        assert GlobalHydra.instance().hydra is active_hydra
+
+    assert not GlobalHydra.instance().is_initialized()
 
 
 def test_root_generation_config_has_provider_defaults() -> None:
