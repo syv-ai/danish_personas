@@ -205,16 +205,17 @@ remain in generated records; landsdel stays inside the prepared bundle. Determin
 runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
 contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
-per-person attribute/final checkpoints, and `validation-report.json`. Current v4 outputs
-retain one detailed grounded `persona` and do not contain the removed specialised fields
-or `visual_persona`. Pilots
+per-person attribute/final checkpoints, and `validation-report.json`. Current v5 outputs
+retain one detailed grounded `persona`; they contain no person or partner names and do
+not contain the removed specialised fields or `visual_persona`. Pilots
 additionally contain merged output, a pilot manifest, shard references, and
 `pilot-validation-report.json`. Release packages use release manifest
-schema 2 and evidence schema 2.
+schema 2 and evidence schema 3.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
-and request accounting. The current versions are prepared bundle 6, sampler 6, frozen
-sample 3, generation 4, validator `persona-safety-v18`, and release manifest/evidence 2.
+and request accounting. The current versions are prepared bundle 7, sampler 7, frozen
+sample 4, generation 5, validator `persona-safety-v19`, release manifest 2, and release
+evidence 3.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the
@@ -253,9 +254,9 @@ current contracts have been regenerated; use placeholders in instructions.
   provider request; the origin code, English `origin_country`, resolution fields, and
   origin-contract metadata do
   not. The Danish label is also the exact origin fact in the grounded persona.
-  Re-running a valid v4 run resumes completed records, but v1-v3 checkpoints, the
+  Re-running a valid v5 run resumes completed records, but v1-v4 checkpoints, the
   previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
-  under v4.
+  under v5.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
@@ -263,7 +264,8 @@ current contracts have been regenerated; use placeholders in instructions.
   sensitive terms, and free of exact duplicate descriptions. The detailed persona must
   be grounded in its supplied facts, use a synthetic job title or current nonemployee
   status, include concrete fictional biographical detail, and treat OCEAN as cautious
-  tendencies. Ordinary first names and ordinary family details are allowed; surnames,
+  tendencies. Person and partner names are prohibited; use `han` or `hun` for the
+  persona and relationship terms for other people. Ordinary family details are allowed;
   real organisations, exact addresses, appearance, and sensitive details are not.
   Automated validation is not a substitute for blinded human review; downstream image
   models may still stereotype.

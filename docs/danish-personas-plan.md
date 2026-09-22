@@ -239,17 +239,13 @@ Fields that are irrelevant to a record should contain a natural, age- and status
 statement or be null according to a documented rule. They must not be filled with
 implausible expertise merely to avoid null values.
 
-### Optional name handling
+### Names excluded
 
-A name is not required for the statistical model. For the pilot, use either no names or
-only a synthetic given name in prose. If names are included later:
-
-- sample from published name frequencies or the approved-name list;
-- avoid rare names and rare name-demographic-geography combinations;
-- do not generate complete addresses or employers alongside names;
-- do not claim that name distributions encode ethnicity;
-- disclose that coincidental similarity to a real person is possible;
-- test generated full names and prose for exact web-search matches on a review sample.
+The active generation contract has no person or partner name fields, and persona prose
+must not invent names. It uses `han` or `hun` for the persona and relationship terms for
+other people. Adding names later requires a separate source and privacy review; public
+Statistics Denmark data do not provide a name × age × sex × country-of-origin joint
+distribution.
 
 ## Danish source plan
 
@@ -270,7 +266,7 @@ retrieval date, reference period, publisher, licence, and attribution requiremen
 | Detailed education under 70    | HFUDD11, HFUDD16                     | Both cover ages 15-69 only                                        |
 | Synthetic job function         | LONS20 `ANTAL`, DISCO-08             | Sex marginal in the incomplete earnings-statistics universe only  |
 | Household extensions           | FAM55N, FAM122N, FAM44N              | Defer to a later release                                          |
-| Names                          | Statistics Denmark name statistics   | First first-name/final surname limits                             |
+| Names                          | Not used                             | Excluded from the active contract                                 |
 | Geography codes                | DST classification `NUTS_V1_2007_DK` | Region, landsdel, and municipality hierarchy                      |
 | Geography boundaries           | DAGI                                 | Needs Datafordeler credentials; not used                          |
 | Housing extensions             | BOL103, BOL104, BBR aggregates       | Do not link addresses to people                                   |
@@ -693,7 +689,7 @@ smoke test are complete. Full development-sample generation and evaluation remai
 
 - Finalize Danish prompts, validators, and safety rules against the already defined
   typed schemas.
-- Generate attributes and the generation-4 persona text field for the frozen,
+- Generate attributes and the generation-5 persona text field for the frozen,
   stratified 1,000-row development sample using candidate models.
 - Measure token use, latency, retries, failures, and actual cost.
 - Conduct blinded human evaluation and select the model and configuration.
@@ -707,7 +703,7 @@ cost criteria without changing the frozen demographic distribution.
 
 - Freeze source, sampler, prompt, model, and validator versions.
 - Sample 10,000 validated demographic records from the frozen sampler.
-- Generate structured attributes and one generation-4 persona text field in a single
+- Generate structured attributes and one generation-5 persona text field in a single
   provider response per record.
 - Run statistical, structural, duplication, bias, privacy, and human evaluation.
 - Publish an internal report including all token, retry, rejection, and drop rates.
@@ -806,7 +802,7 @@ Unless downstream requirements indicate otherwise, begin with these defaults:
    personas aged 70 and over; no unsupported detailed attainment for those ages.
 6. No observed occupation, household, income, ancestry, citizenship, full name, or
    sensitive fields in v1; broad job function is the documented synthetic exception.
-7. One generation-4 persona text field: a short, grounded
+7. One generation-5 persona text field: a short, grounded
    persona; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
    ten-person smoke, and old pilots cannot be resumed under this contract.
 8. Native list columns and explicit provenance fields, even where this differs from the

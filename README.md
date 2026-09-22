@@ -205,7 +205,6 @@ independently verifies it before uploading to a Hugging Face dataset pull reques
 Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
 tokens are never CLI arguments. Re-running after review resumes already validated
 generation shards.
-
 Build a self-contained offline dashboard with explicit Hydra path overrides:
 
 ```bash
