@@ -193,6 +193,8 @@ def _distribution_chart(
     labels = list(generated_counts)
     if target:
         labels.extend(label for label in target if label not in labels)
+    if field == "age":
+        labels.sort(key=int)
     generated = [generated_counts.get(label, 0.0) for label in labels]
     figure = go.Figure()
     figure.add_bar(name="Generated", x=labels, y=generated)

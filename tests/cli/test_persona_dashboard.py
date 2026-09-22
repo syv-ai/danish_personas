@@ -10,12 +10,28 @@ import pytest
 from click.testing import CliRunner
 
 from scripts.build_persona_dashboard import (
+    _distribution_chart,
     _generated_distribution,
     build_dashboard,
     load_dst_targets,
     main,
     persona_embedding,
 )
+
+
+def test_age_chart_is_sorted_numerically() -> None:
+    """Age categories increase numerically rather than by frequency or text."""
+    frame = pl.DataFrame({"age": [100, 19, 19, 18]})
+
+    chart = _distribution_chart(
+        frame=frame,
+        field="age",
+        title="Ages",
+        source="test",
+        target={"100": 0.2, "18": 0.3, "19": 0.5},
+    )
+
+    assert '\"x\":[\"18\",\"19\",\"100\"]' in chart
 
 
 def test_cli_translates_invalid_parquet_to_click_error(tmp_path: Path) -> None:
