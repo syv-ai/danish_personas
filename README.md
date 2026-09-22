@@ -5,28 +5,21 @@ records from public aggregate data. The default workflow is deterministic and do
 call an LLM or use personal microdata. A separate, explicitly guarded workflow can add
 Danish attributes and persona text to a small frozen sample.
 
-The design rationale and deferred work are documented in
-[`docs/danish-personas-plan.md`](docs/danish-personas-plan.md).
-
 ## Status and scope
 
 The source-acquisition, preparation, deterministic sampling, and validation stages are
 implemented. The Hydra config defaults to a local OpenAI-compatible endpoint. Each
 direct generation shard is capped at five rows, while a pilot can span multiple shards.
-Release-scale generation and human approval remain pending; schema-2 package verification
-and evidence are required before
-any release claim.
+Release-scale generation and human approval remain pending; schema-2 package
+verification and evidence are required before any release claim.
 
 Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
 and generation contract 5 with validator `persona-safety-v20`. The default frozen
 sample mode is population-proportional; stratified round-robin remains an explicit
 alternative. No new bundle, deterministic run, frozen sample, persona output, or
 release has been generated for this contract change. Existing IDs and checksums are
-historical evidence only and are not resumable under these contracts:
-
-- [`docs/reports/phase-2-validation.md`](docs/reports/phase-2-validation.md)
-- [`docs/reports/phase-3-smoke.md`](docs/reports/phase-3-smoke.md)
-- [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md)
+historical evidence only and are not resumable under these contracts. Review any
+generated evidence before reusing it.
 
 ## Developer setup guide
 
@@ -113,7 +106,7 @@ When an input is provided, its adjacent `.manifest.json` is used.
 
 Source acquisition, archive packing and restoration, deterministic generation, sample
 freezing, and validation remain importable maintenance services rather than public
-scripts. See [`docs/cli.md`](docs/cli.md) for the four-script interface.
+scripts.
 
 ### Regenerate deterministic prerequisites
 
@@ -159,8 +152,11 @@ persists the resolved, secret-free flat generation configuration below its outpu
 and uses that immutable snapshot for generation provenance.
 
 The single-persona command validates the upstream report, sample checksum, prompts,
-schemas, and request limits before emitting the final Danish text. The standard sample
-is prepared automatically when needed:
+schemas, and request limits before emitting the final Danish text. It deliberately
+tolerates stored checksum mismatches only; schema, content, provenance, safety,
+grounding, and accounting checks remain active. Library validation, `build_dataset.py`,
+and release verification remain checksum-strict. Review generated evidence before reuse.
+The standard sample is prepared automatically when needed:
 
 ```bash
 uv run src/scripts/generate_persona.py
@@ -243,9 +239,9 @@ Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts
 model metadata, request/retry/token accounting, and (when available) cost estimates.
 The current release documentation targets release manifest schema 2 and evidence
 schema 2; release identifiers and checksums are placeholders until regeneration and
-packaging produce them. Accepted LLM response metadata and response hashes are checkpointed;
-rejected completion text is not stored. Generated outputs remain local until privacy and
-human review approve any proposed release.
+packaging produce them. Accepted LLM response metadata and response hashes are
+checkpointed; rejected completion text is not stored. Generated outputs remain local
+until privacy and human review approve any proposed release.
 
 ## Safety and privacy boundary
 
@@ -308,9 +304,5 @@ required.
   non-zero failure behaviour;
 - [`docs/source-register.md`](docs/source-register.md): source tables, periods, and
   harmonisation decisions;
-- [`docs/danish-personas-plan.md`](docs/danish-personas-plan.md): design and deferred
-  delivery phases;
-- [`docs/persona-prompt-format.md`](docs/persona-prompt-format.md): generation contract
-  v4, Danish origin-label contract, one persona text, and provider boundary;
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): project contribution process;
 - [`LICENSE`](LICENSE): project licence.
