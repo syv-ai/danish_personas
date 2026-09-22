@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 
 LOGGER = logging.getLogger(__name__)
 DESIRED_ENVIRONMENT_VARIABLES = {
@@ -63,7 +64,11 @@ def fix_dot_env_file(non_interactive: bool) -> None:
 
 
 def _parse_environment_lines(lines: list[str]) -> dict[str, str]:
-    """Parse non-comment environment assignments without truncating values."""
+    """Parse non-comment environment assignments without truncating values.
+
+    Returns:
+        Parsed environment assignments.
+    """
     return {
         key: value
         for line in lines
@@ -73,4 +78,5 @@ def _parse_environment_lines(lines: list[str]) -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     fix_dot_env_file()

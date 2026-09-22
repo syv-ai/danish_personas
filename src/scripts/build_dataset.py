@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.report import validate_persona_pilot
@@ -127,4 +128,5 @@ def _merged_output_path(*, pilot_dir: Path) -> Path:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()
