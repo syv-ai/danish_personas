@@ -22,6 +22,10 @@ from ..models import (
 LOGGER = logging.getLogger(__name__)
 
 
+ORIGIN_STRATUM = "origin_country_code"
+ORIGIN_MARGINAL_METHOD = (
+    "deterministic largest-remainder quotas for the origin_country_code marginal"
+)
 STRATA = ("municipality_code", "education_level", "labour_market_status")
 FREEZE_MODES = ("population_proportional", "stratified_round_robin")
 
@@ -38,9 +42,10 @@ def freeze_sample(
 ) -> Path:
     """Select and persist a deterministic development sample.
 
-    The default mode allocates the requested rows proportionally to the source
-    run's municipality/education/status joint. Round-robin selection remains
-    available for deliberately stratified development experiments.
+    Both modes first allocate the requested rows to origin-country codes using
+    deterministic largest-remainder quotas. Each origin then uses the selected
+    municipality/education/status strategy: proportional quotas in the default
+    mode, or round-robin selection for deliberately stratified experiments.
 
     Args:
         run_dir:
@@ -98,11 +103,13 @@ def freeze_sample(
             "sample_schema_version": FROZEN_SAMPLE_SCHEMA_VERSION,
             "source_run_id": manifest.run_id,
             "rows": sample.height,
-            "strata": list(STRATA),
+            "strata": [ORIGIN_STRATUM, *STRATA],
             "method": (
-                "deterministic population-proportional allocation"
+                f"{ORIGIN_MARGINAL_METHOD}, then population-proportional "
+                "allocation within each origin"
                 if mode == "population_proportional"
-                else "deterministic round-robin within sorted strata"
+                else f"{ORIGIN_MARGINAL_METHOD}, then round-robin within each "
+                "origin's sorted strata"
             ),
             "mode": mode,
             "data_file": output_path.name,
@@ -157,43 +164,81 @@ def _select_sample(
     rows: int,
     mode: t.Literal["population_proportional", "stratified_round_robin"],
 ) -> pl.DataFrame:
-    """Select rows using the requested deterministic allocation strategy.
+    """Select rows with an origin marginal and the requested inner strategy.
 
     Returns:
         The selected rows sorted by persona identifier.
     """
-    groups = frame.sort([*STRATA, "persona_id"]).partition_by(
-        list(STRATA), maintain_order=True
+    sorted_frame = frame.sort([ORIGIN_STRATUM, *STRATA, "persona_id"])
+    origin_groups = sorted_frame.partition_by([ORIGIN_STRATUM], maintain_order=True)
+    origin_quotas = _largest_remainder_quotas(
+        groups=origin_groups, rows=rows, group_key=ORIGIN_STRATUM
     )
+    selected = [
+        _select_within_origin(group=group, rows=quota, mode=mode)
+        for group, quota in zip(origin_groups, origin_quotas)
+        if quota
+    ]
+    return pl.concat(selected).sort("persona_id")
+
+
+def _select_within_origin(
+    *,
+    group: pl.DataFrame,
+    rows: int,
+    mode: t.Literal["population_proportional", "stratified_round_robin"],
+) -> pl.DataFrame:
+    """Select rows from one origin using the existing freeze strategy.
+
+    Returns:
+        The selected rows in deterministic order within this origin.
+    """
+    strata_groups = group.partition_by(list(STRATA), maintain_order=True)
     if mode == "stratified_round_robin":
         selected: list[pl.DataFrame] = []
         depth = 0
         while len(selected) < rows:
             added = False
-            for group in groups:
-                if depth < group.height:
-                    selected.append(group.slice(depth, 1))
+            for stratum in strata_groups:
+                if depth < stratum.height:
+                    selected.append(stratum.slice(depth, 1))
                     added = True
                     if len(selected) == rows:
                         break
             if not added:
                 break
             depth += 1
-        return pl.concat(selected).sort("persona_id")
+        return pl.concat(selected)
 
-    total = frame.height
-    raw_quotas = [group.height * rows / total for group in groups]
-    quotas = [int(quota) for quota in raw_quotas]
-    remaining = rows - sum(quotas)
-    remainders = sorted(
-        range(len(groups)),
-        key=lambda index: (-(raw_quotas[index] - quotas[index]), index),
-    )
-    for index in remainders[:remaining]:
-        quotas[index] += 1
+    quotas = _largest_remainder_quotas(groups=strata_groups, rows=rows, group_key=None)
     return pl.concat(
-        [group.head(quota) for group, quota in zip(groups, quotas) if quota]
-    ).sort("persona_id")
+        [stratum.head(quota) for stratum, quota in zip(strata_groups, quotas) if quota]
+    )
+
+
+def _largest_remainder_quotas(
+    *, groups: list[pl.DataFrame], rows: int, group_key: str | None
+) -> list[int]:
+    """Allocate rows proportionally, resolving ties by sorted group code.
+
+    Returns:
+        One non-negative quota for each input group.
+    """
+    total = sum(group.height for group in groups)
+    numerators = [group.height * rows for group in groups]
+    quotas = [numerator // total for numerator in numerators]
+    remaining = rows - sum(quotas)
+    if group_key is None:
+        tie_keys = list(range(len(groups)))
+    else:
+        tie_keys = [group.item(0, group_key) for group in groups]
+    remainders = [numerator % total for numerator in numerators]
+    remainder_order = sorted(
+        range(len(groups)), key=lambda index: (-remainders[index], tie_keys[index])
+    )
+    for index in remainder_order[:remaining]:
+        quotas[index] += 1
+    return quotas
 
 
 def _validate_destinations(*, run_dir: Path, output: Path) -> tuple[Path, Path]:

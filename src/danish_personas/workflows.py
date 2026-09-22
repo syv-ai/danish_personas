@@ -7,7 +7,12 @@ from .checksum import ChecksumValidationPolicy
 from .io import load_yaml_model, sha256_file
 from .models import FrozenSampleManifest, RunManifest, SamplingConfig
 from .origin_labels import DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
-from .sampling.freeze import freeze_sample
+from .sampling.freeze import (
+    ORIGIN_MARGINAL_METHOD,
+    ORIGIN_STRATUM,
+    STRATA,
+    freeze_sample,
+)
 from .sampling.generator import generate_records
 from .sources.archive import DEFAULT_ARCHIVE, RAW_DIRECTORY, restore_raw_sources
 from .sources.prepare import prepare_bundle
@@ -210,6 +215,9 @@ def _valid_existing_sample(
         manifest.data_file == Path(sample_path.name)
         and manifest.source_run_id == source_run_id
         and manifest.rows == rows
+        and manifest.mode == "population_proportional"
+        and manifest.strata == [ORIGIN_STRATUM, *STRATA]
+        and manifest.method.startswith(f"{ORIGIN_MARGINAL_METHOD}, then ")
         and (
             not checksum_policy.validates_checksums
             or sha256_file(sample_path) == manifest.sha256

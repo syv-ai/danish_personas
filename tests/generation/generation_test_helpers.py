@@ -307,8 +307,17 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
         source_run_id=run_manifest.run_id,
         rows=2,
-        strata=[],
-        method="test",
+        strata=[
+            "origin_country_code",
+            "municipality_code",
+            "education_level",
+            "labour_market_status",
+        ],
+        method=(
+            "deterministic largest-remainder quotas for the "
+            "origin_country_code marginal, then population-proportional "
+            "allocation within each origin"
+        ),
         data_file=Path(sample_path.name),
         sha256=sha256_file(sample_path),
         llm_calls=0,
