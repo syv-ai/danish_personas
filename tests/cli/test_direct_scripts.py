@@ -23,6 +23,25 @@ from scripts import build_dataset, generate_persona
 from tests.generation.manifest_helpers import origin_contract_fields
 
 
+def test_build_dataset_default_request_limit_is_30() -> None:
+    """The public dataset command has a bounded default request budget."""
+    config = _config(overrides=[])
+
+    assert config.build_dataset.request_limit == 30
+
+
+def _config(*, overrides: list[str]) -> DictConfig:
+    """Compose the public Hydra configuration with test overrides.
+
+    Returns:
+        The composed test configuration.
+    """
+    with initialize_config_dir(
+        version_base=None, config_dir=str(Path("config").resolve())
+    ):
+        return compose(config_name="config", overrides=overrides)
+
+
 def test_build_dataset_prints_merged_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -63,25 +82,6 @@ def test_build_dataset_prints_merged_path(
     config_path = calls["config_path"]
     assert isinstance(config_path, Path)
     assert load_generation_config(config_path).model == "overridden-model"
-
-
-def test_build_dataset_default_request_limit_is_30() -> None:
-    """The public dataset command has a bounded default request budget."""
-    config = _config(overrides=[])
-
-    assert config.build_dataset.request_limit == 30
-
-
-def _config(*, overrides: list[str]) -> DictConfig:
-    """Compose the public Hydra configuration with test overrides.
-
-    Returns:
-        The composed test configuration.
-    """
-    with initialize_config_dir(
-        version_base=None, config_dir=str(Path("config").resolve())
-    ):
-        return compose(config_name="config", overrides=overrides)
 
 
 @pytest.mark.parametrize("malformed_name", ["policy", "attestation"])

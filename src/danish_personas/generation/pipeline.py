@@ -115,6 +115,68 @@ GENERATION_PROMPT_FIELDS = PROMPT_FIELDS
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
+def _complete_schema_only(
+    client: OpenAIClient,
+    prompt: str,
+    payload: dict[str, object],
+    schema_name: str,
+    schema: dict[str, object],
+    parser: c.Callable[[str], GeneratedModel],
+    maximum_attempts: int,
+    responses: list[LLMResponse],
+) -> GeneratedModel:
+    """Complete once and retain only strict schema parsing for the response.
+
+    Returns:
+        The strictly schema-parsed model.
+    """
+    del maximum_attempts
+    response = client.complete(
+        system_prompt=prompt,
+        user_payload=payload,
+        schema_name=schema_name,
+        json_schema=schema,
+    )
+    responses.append(response)
+    return parser(response.content)
+
+
+def _complete_validated(
+    client: OpenAIClient,
+    prompt: str,
+    payload: dict[str, object],
+    schema_name: str,
+    schema: dict[str, object],
+    parser: c.Callable[[str], GeneratedModel],
+    maximum_attempts: int,
+    responses: list[LLMResponse],
+) -> GeneratedModel:
+    current_payload = payload
+    last_error: ValueError | None = None
+    for _ in range(maximum_attempts):
+        response = client.complete(
+            system_prompt=prompt,
+            user_payload=current_payload,
+            schema_name=schema_name,
+            json_schema=schema,
+        )
+        responses.append(response)
+        try:
+            return parser(response.content)
+        except ValueError as error:
+            last_error = error
+            responses[-1] = response.model_copy(update={"content": ""})
+            current_payload = {
+                **payload,
+                "validation_feedback": str(error),
+                "instruction": "Ret JSON-svaret uden at ændre de faste input.",
+            }
+    if last_error is None:
+        message = "Generation exhausted attempts without validation feedback"
+        raise RuntimeError(message)
+    raise last_error
+
+
 def generate_personas(
     input_path: Path,
     sample_manifest_path: Path,
@@ -457,68 +519,6 @@ def _allowed_job_titles(
     if not isinstance(code, str) or code not in mapping.job_functions:
         return []
     return list(mapping.job_functions[code].titles)
-
-
-def _complete_validated(
-    client: OpenAIClient,
-    prompt: str,
-    payload: dict[str, object],
-    schema_name: str,
-    schema: dict[str, object],
-    parser: c.Callable[[str], GeneratedModel],
-    maximum_attempts: int,
-    responses: list[LLMResponse],
-) -> GeneratedModel:
-    current_payload = payload
-    last_error: ValueError | None = None
-    for _ in range(maximum_attempts):
-        response = client.complete(
-            system_prompt=prompt,
-            user_payload=current_payload,
-            schema_name=schema_name,
-            json_schema=schema,
-        )
-        responses.append(response)
-        try:
-            return parser(response.content)
-        except ValueError as error:
-            last_error = error
-            responses[-1] = response.model_copy(update={"content": ""})
-            current_payload = {
-                **payload,
-                "validation_feedback": str(error),
-                "instruction": "Ret JSON-svaret uden at ændre de faste input.",
-            }
-    if last_error is None:
-        message = "Generation exhausted attempts without validation feedback"
-        raise RuntimeError(message)
-    raise last_error
-
-
-def _complete_schema_only(
-    client: OpenAIClient,
-    prompt: str,
-    payload: dict[str, object],
-    schema_name: str,
-    schema: dict[str, object],
-    parser: c.Callable[[str], GeneratedModel],
-    maximum_attempts: int,
-    responses: list[LLMResponse],
-) -> GeneratedModel:
-    """Complete once and retain only strict schema parsing for the response.
-
-    Returns:
-        The strictly schema-parsed model.
-    """
-    del maximum_attempts
-    response = client.complete(
-        system_prompt=prompt,
-        user_payload=payload,
-        schema_name=schema_name,
-        json_schema=schema,
-    )
-    responses.append(response)
-    return parser(response.content)
 
 
 def _generation_demographics(*, row: dict[str, object]) -> dict[str, object]:

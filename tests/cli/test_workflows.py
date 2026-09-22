@@ -9,6 +9,73 @@ from danish_personas import workflows
 from danish_personas.models import SamplingConfig
 
 
+@pytest.mark.parametrize("existing_artifact", ["sample", "manifest"])
+def test_standard_sample_rebuilds_invalid_existing_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    existing_artifact: str,
+) -> None:
+    """An invalid derived sample artefact is rebuilt after upstream gates pass."""
+    sampling = SamplingConfig(
+        version=4,
+        seed=1,
+        smoke_rows=2,
+        statistical_rows=3,
+        country="Danmark",
+        minimum_age=18,
+        maximum_age=125,
+        publication_geography="municipality",
+        smoothing=0.0,
+        ocean={
+            "mean": 50,
+            "standard_deviation": 10,
+            "minimum": 20,
+            "maximum": 80,
+            "label_boundaries": [35, 45, 55, 65],
+            "labels": ["very_low", "low", "average", "high", "very_high"],
+        },
+    )
+    monkeypatch.setattr(workflows, "load_yaml_model", lambda **_: sampling)
+    monkeypatch.setattr(workflows, "restore_raw_sources", lambda **_: 1)
+    monkeypatch.setattr(workflows, "prepare_bundle", lambda **_: Path("bundle"))
+    monkeypatch.setattr(
+        workflows, "validate_sources", lambda **_: SimpleNamespace(passed=True)
+    )
+    runs = iter((Path("smoke"), Path("statistical")))
+    monkeypatch.setattr(workflows, "generate_records", lambda **_: next(runs))
+    monkeypatch.setattr(
+        workflows, "validate_demographics", lambda **_: SimpleNamespace(passed=True)
+    )
+    monkeypatch.setattr(
+        workflows, "_run_id", lambda *_args, **_kwargs: "statistical-run"
+    )
+
+    sample = tmp_path / "sample.parquet"
+    manifest = sample.with_suffix(".manifest.json")
+    if existing_artifact == "sample":
+        sample.write_bytes(b"stale sample")
+    else:
+        manifest.write_text("{}", encoding="utf-8")
+    rebuilt: list[Path] = []
+    monkeypatch.setattr(
+        workflows,
+        "freeze_sample",
+        lambda **kwargs: rebuilt.append(kwargs["output"]) or kwargs["output"],
+    )
+
+    caplog.set_level("WARNING", logger=workflows.LOGGER.name)
+    assert workflows.prepare_standard_sample(
+        archive_path=tmp_path / "archive.tar.zst",
+        raw_parent=tmp_path / "data",
+        sample_path=sample,
+    ) == (sample, manifest)
+
+    assert rebuilt == [sample]
+    assert "stale" in caplog.text
+    assert "rebuilding sample" in caplog.text
+
+
 def test_standard_sample_runs_all_gates_in_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
