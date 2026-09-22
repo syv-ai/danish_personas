@@ -507,7 +507,7 @@ def _check_output(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleaseVerificationError(
-            "Persona output schema must match generation contract v4"
+            "Persona output schema must match generation contract v5"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleaseVerificationError(
@@ -525,7 +525,7 @@ def _check_output(
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise ReleaseVerificationError(
-            "Persona output fails contextual generation-v4 validation"
+            "Persona output fails contextual generation-v5 validation"
         ) from error
     if not report.passed or report.kind != "persona_pilot":
         raise ReleaseVerificationError("Pilot validation report is not passing")

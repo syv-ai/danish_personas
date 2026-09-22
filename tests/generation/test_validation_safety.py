@@ -46,7 +46,7 @@ def test_natural_biography_and_varied_personality_wording_are_allowed() -> None:
     text = persona(
         context=context,
         extra=(
-            "Tidligere arbejdede Maja i en boghandel, og hun drømmer nu om at "
+            "Tidligere arbejdede hun i en boghandel, og hun drømmer nu om at "
             "starte en lille læseklub. Hun er social, men sætter også pris på "
             "stille morgener og kan være spontan, når venner foreslår en tur."
         ),
@@ -62,7 +62,7 @@ def test_relationship_pronouns_and_child_age_are_allowed() -> None:
     text = persona(
         context=context,
         extra=(
-            "Hendes kæreste Jonas er 38 år, og han arbejder på et værksted i "
+            "Hendes kæreste er 38 år, og han arbejder på et værksted i "
             "Roskilde. Deres datter er 8 år, og hun går til håndbold."
         ),
     )["persona"]

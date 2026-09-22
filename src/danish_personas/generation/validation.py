@@ -18,7 +18,7 @@ from .job_titles import (
 from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
 from .personality import all_personality_phrases, all_personality_tendencies
 
-VALIDATOR_VERSION = "persona-safety-v18"
+VALIDATOR_VERSION = "persona-safety-v19"
 __all__ = ["EDUCATION_DANISH"]
 _ATTRIBUTE_FIELDS = frozenset(
     {
@@ -27,9 +27,7 @@ _ATTRIBUTE_FIELDS = frozenset(
         "hobbies_and_interests",
         "career_goals_and_ambitions",
         "job_title",
-        "first_name",
         "current_relationship_status",
-        "partner_first_name",
         "partner_gender",
         "legal_status_detail",
     }
@@ -218,17 +216,6 @@ def parse_attributes(
             or load_job_title_mapping(DEFAULT_JOB_TITLE_MAPPING_PATH),
         ),
     )
-    for field, value in (
-        ("first_name", attributes.first_name),
-        ("partner_first_name", attributes.partner_first_name),
-    ):
-        if value is not None:
-            _validate_field(
-                field=field,
-                validator=lambda value=value: _validate_text(
-                    text=value, require_danish=False
-                ),
-            )
     _validate_field(
         field="relationship",
         validator=lambda: _validate_relationship_attributes(
@@ -522,14 +509,17 @@ def _validate_persona_facts(
 def _validate_relationship_attributes(
     *, attributes: GeneratedAttributes, demographic: dict[str, object]
 ) -> None:
-    """Validate the generated relationship fields against legal status semantics."""
+    """Validate the generated relationship fields against legal status semantics.
+
+    Raises:
+        ValueError:
+            If relationship fields do not match the supplied legal status.
+    """
     marital_status = str(demographic.get("marital_status", "")).casefold()
     detail = attributes.legal_status_detail
     if marital_status == "married_or_separated":
         if detail is None:
-            raise ValueError(
-                "married_or_separated requires legal_status_detail"
-            )
+            raise ValueError("married_or_separated requires legal_status_detail")
         if (
             detail == "married"
             and attributes.current_relationship_status != "partnered"
@@ -537,9 +527,7 @@ def _validate_relationship_attributes(
             raise ValueError("married responses must be partnered")
     elif marital_status in {"never_married", "divorced", "widowed"}:
         if detail is not None:
-            raise ValueError(
-                f"{marital_status} must not include legal_status_detail"
-            )
+            raise ValueError(f"{marital_status} must not include legal_status_detail")
     else:
         raise ValueError(f"Unknown marital_status: {marital_status}")
 
@@ -547,22 +535,14 @@ def _validate_relationship_attributes(
 def _validate_relationship_prose(
     *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
 ) -> None:
-    """Require legal and current relationship fields in the persona prose."""
-    if not _contains_term(text=text, term=attributes.first_name):
-        raise ValueError("Persona does not preserve the generated first name")
+    """Require legal and current relationship fields in the persona prose.
 
-    relationship_terms = (
-        "partner",
-        "kæreste",
-        "ægtefælle",
-        "mand",
-        "kone",
-        "hustru",
-    )
+    Raises:
+        ValueError:
+            If relationship or legal-status wording is missing.
+    """
+    relationship_terms = ("partner", "kæreste", "ægtefælle", "mand", "kone", "hustru")
     if attributes.current_relationship_status == "partnered":
-        partner_name = attributes.partner_first_name
-        if partner_name is None or not _contains_term(text=text, term=partner_name):
-            raise ValueError("Persona does not preserve the partner first name")
         if not any(_contains_term(text=text, term=term) for term in relationship_terms):
             raise ValueError("Persona does not preserve the partnered status")
     elif not any(

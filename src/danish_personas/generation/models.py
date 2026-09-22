@@ -5,7 +5,12 @@ from pathlib import Path
 
 from pydantic import Field, field_serializer, field_validator, model_validator
 
-from ..models import FrozenSampleManifest, StrictModel, ValidationReport
+from ..models import (
+    GENERATION_SCHEMA_VERSION,
+    FrozenSampleManifest,
+    StrictModel,
+    ValidationReport,
+)
 from ..origin_labels import (
     OriginLabelContract,
     OriginLabelContractPath,
@@ -25,9 +30,7 @@ class GeneratedAttributes(StrictModel):
     hobbies_and_interests: list[str] = Field(min_length=3, max_length=6)
     career_goals_and_ambitions: str | None = Field(max_length=500)
     job_title: str | None = Field(max_length=80)
-    first_name: str = Field(min_length=2, max_length=40)
     current_relationship_status: t.Literal["partnered", "not_partnered"]
-    partner_first_name: str | None = Field(min_length=2, max_length=40)
     partner_gender: t.Literal["male", "female"] | None
     legal_status_detail: t.Literal["married", "separated"] | None
 
@@ -54,29 +57,6 @@ class GeneratedAttributes(StrictModel):
             raise ValueError("job_title must be a stripped single-line string")
         if not 2 <= len(stripped) <= 80:
             raise ValueError("job_title must contain 2-80 characters")
-        return stripped
-
-    @field_validator("first_name", "partner_first_name")
-    @classmethod
-    def require_stripped_single_line_name(_cls, value: str | None) -> str | None:
-        """Normalise a name while rejecting multiline or padded output.
-
-        Args:
-            value:
-                Candidate generated first name.
-
-        Returns:
-            The validated first name or null.
-
-        Raises:
-            ValueError:
-                If the name is not a short, stripped, single-line string.
-        """
-        if value is None:
-            return None
-        stripped = value.strip()
-        if stripped != value or "\n" in value or "\r" in value:
-            raise ValueError("first names must be stripped single-line strings")
         return stripped
 
     @field_validator("skills_and_expertise", "hobbies_and_interests")
@@ -106,21 +86,20 @@ class GeneratedAttributes(StrictModel):
 
     @model_validator(mode="after")
     def validate_relationship_fields(self) -> "GeneratedAttributes":
-        """Require partner fields to agree with the current relationship status."""
-        has_partner = self.partner_first_name is not None
+        """Require partner fields to agree with the current relationship status.
+
+        Returns:
+            The validated attributes.
+
+        Raises:
+            ValueError:
+                If partner gender disagrees with the relationship status.
+        """
         has_gender = self.partner_gender is not None
-        if self.current_relationship_status == "partnered" and not (
-            has_partner and has_gender
-        ):
-            raise ValueError(
-                "partnered responses require partner_first_name and partner_gender"
-            )
-        if self.current_relationship_status == "not_partnered" and (
-            has_partner or has_gender
-        ):
-            raise ValueError(
-                "not_partnered responses must not include partner fields"
-            )
+        if self.current_relationship_status == "partnered" and not has_gender:
+            raise ValueError("partnered responses require partner_gender")
+        if self.current_relationship_status == "not_partnered" and has_gender:
+            raise ValueError("not_partnered responses must not include partner_gender")
         return self
 
 
@@ -218,6 +197,7 @@ class GenerationManifest(StrictModel):
     output_file: Path
     output_sha256: str
     llm_generation: bool
+    generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
     def validate_origin_contract_binding(self) -> "GenerationManifest":
@@ -225,7 +205,13 @@ class GenerationManifest(StrictModel):
 
         Returns:
             The validated model.
+
+        Raises:
+            ValueError:
+                If the generation schema version or origin binding is stale.
         """
+        if self.generation_schema_version != GENERATION_SCHEMA_VERSION:
+            raise ValueError("Unsupported generation schema version")
         validate_origin_contract_reference(
             path=self.origin_label_contract_file,
             version=self.origin_label_contract_version,
@@ -301,6 +287,7 @@ class PersonaCheckpoint(StrictModel):
     responses: list[LLMResponse]
     attempts: int = Field(ge=1)
     http_requests: int = Field(default=0, ge=0)
+    generation_schema_version: int = GENERATION_SCHEMA_VERSION
 
     @model_validator(mode="after")
     def validate_origin_contract_binding(self) -> "PersonaCheckpoint":
@@ -308,7 +295,13 @@ class PersonaCheckpoint(StrictModel):
 
         Returns:
             The validated model.
+
+        Raises:
+            ValueError:
+                If the generation schema version or origin binding is stale.
         """
+        if self.generation_schema_version != GENERATION_SCHEMA_VERSION:
+            raise ValueError("Unsupported generation schema version")
         validate_origin_contract_reference(
             path=self.origin_label_contract_file,
             version=self.origin_label_contract_version,

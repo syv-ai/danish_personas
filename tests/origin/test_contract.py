@@ -38,7 +38,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
     """Omitting any current-schema binding field fails closed."""
     bundle = BundleManifest(
         bundle_id="bundle",
-        prepared_bundle_schema_version=6,
+        prepared_bundle_schema_version=7,
         created_at="2026-01-01T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
@@ -52,7 +52,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
         **_binding(),
     )
     frozen = FrozenSampleManifest(
-        sample_schema_version=3,
+        sample_schema_version=4,
         source_run_id="run",
         rows=1,
         strata=[],
@@ -64,7 +64,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
     )
     run = RunManifest(
         run_id="run",
-        sampler_schema_version=6,
+        sampler_schema_version=7,
         created_at="2026-01-01T00:00:00+00:00",
         bundle_id="bundle",
         bundle_manifest_sha256="4" * 64,

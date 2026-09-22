@@ -234,7 +234,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
     _write_yaml(
         path=sampling_path,
         payload={
-            "version": 3,
+            "version": 4,
             "seed": 42,
             "smoke_rows": 100,
             "statistical_rows": 200,

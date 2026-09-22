@@ -115,6 +115,8 @@ def test_job_title_must_be_allowlisted() -> None:
 
 def test_schema_contains_only_persona() -> None:
     assert set(validation_module.PersonaDescriptions.model_fields) == {"persona"}
+    assert "first_name" not in validation_module.GeneratedAttributes.model_fields
+    assert "partner_first_name" not in validation_module.GeneratedAttributes.model_fields
 
 
 @pytest.mark.parametrize(
@@ -136,10 +138,10 @@ def test_valid_v4_persona_preserves_rich_grounded_text() -> None:
         context,
         parsed_attributes,
     )
-    assert result.persona.startswith("Maja er 35 år")
+    assert result.persona.startswith("Hun er 35 år")
 
 
 def test_validator_and_education_exports_are_current() -> None:
-    assert validation_module.VALIDATOR_VERSION == "persona-safety-v17"
+    assert validation_module.VALIDATOR_VERSION == "persona-safety-v19"
     assert set(EDUCATION_DANISH) == set(EDUCATION_POOLING_VALUES)
     assert load_job_title_mapping().version == 1

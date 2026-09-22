@@ -1325,7 +1325,7 @@ def _validate_pilot_for_release(
         PERSONA_OUTPUT_COLUMNS
     ):
         raise ReleasePackagingError(
-            "Persona output schema must match generation contract v4"
+            "Persona output schema must match generation contract v5"
         )
     if not persona_output_dtypes_are_valid(output):
         raise ReleasePackagingError("Persona output contains an invalid logical dtype")
@@ -1337,7 +1337,7 @@ def _validate_pilot_for_release(
         )
     except ValueError as error:
         raise ReleasePackagingError(
-            "Persona output fails contextual generation-v4 validation"
+            "Persona output fails contextual generation-v5 validation"
         ) from error
     validate_release_approval(
         policy=policy,

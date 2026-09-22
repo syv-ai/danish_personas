@@ -26,7 +26,7 @@ The initial release should:
 - include only a broad synthetic job-function allocation calibrated by sex to LONS20's
   incomplete earnings-statistics universe, never a representative observed occupation;
 - sample personality independently of demographic and protected attributes;
-- produce one detailed, grounded Danish `persona` under generation contract 4, with
+- produce one detailed, grounded Danish `persona` under generation contract 5, with
   only the official Danish FOLK2 origin label reaching the provider request and exact
   persona grounding;
 - exclude health, religion, politics, sexuality, criminal history, exact income, and
@@ -49,9 +49,9 @@ Hugging Face.
 The NVIDIA dataset card describes 22 historical content fields: six persona fields and
 16 contextual fields. Its physical Parquet schema also contains a UUID, giving 23
 physical columns. That historical count is not the current Danish contract. Generation
-contract 4 retains one detailed, grounded
+contract 5 retains one detailed, grounded
 `persona`; `visual_persona` is removed. Historical v1/v2 outputs, the previous v2/v13
-ten-person smoke, and old pilots are not resumable under generation contract 4. The
+ten-person smoke, and old pilots are not resumable under generation contract 5. The
 historical NVIDIA comparison must not be read as current Danish validation:
 
 - `persona`
@@ -207,10 +207,8 @@ not be inferred from sex, ancestry, geography, education, or labour-market statu
 - `hobbies_and_interests`
 - `hobbies_and_interests_list`: native `list[string]`
 - `career_goals_and_ambitions`
-- `first_name`
 - `current_relationship_status`
-- `partner_first_name`
-- `partner_gender`
+- `partner_gender` (required when partnered)
 - `legal_status_detail` for the married/separated source category
 
 `cultural_context` should describe plausible everyday context without claiming a
@@ -232,8 +230,8 @@ English `origin_country`, contract metadata, or resolution fields. The English l
 remains source/audit provenance only. Neither origin label is ethnicity, citizenship,
 residence, or appearance. Origin cannot drive culture, religion, job, interests,
 personality, or visual traits. A job title is synthetic and must not imply unsupported
-work history. Ordinary first names, education detail, workplace settings, relationships,
-and family details are permitted, while surnames, real organisations, exact addresses,
+work history. Education detail, workplace settings, relationships, and family details
+are permitted, while names, real organisations, exact addresses,
 appearance, and sensitive traits remain prohibited. The persona is not a visual
 description; downstream image models may still stereotype.
 
@@ -353,9 +351,12 @@ exact persona grounding; code, English label, resolutions, and contract metadata
 Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot drive
 culture, religion, job, interests, personality, or visual traits.
 
-The current contracts are prepared-bundle schema 6, sampler schema 6, frozen-sample
-schema 3, generation contract 4, validator `persona-safety-v18`, and release
-release manifest schema 2 and evidence schema 3. The current offline bundle is
+The future-run contracts are prepared-bundle schema 7, sampler schema 7,
+frozen-sample schema 4, generation contract 5, validator `persona-safety-v19`, and
+release manifest schema 2 and evidence schema 3. Future persona samples use the
+population-proportional freeze mode by default; stratified round-robin remains an
+explicit named mode. RAS209 H90/not_stated remains in the unpooled audit joint but is
+excluded from the eligible pooled sampling universe. The current offline bundle is
 `8a4133e5a0a52050`; its
 passing smoke and statistical runs are `f4dffe214a2faf0b` and `55fb89fb303a67f0`.
 The previous schema-5 bundle `cfc1b56f5586a2d7` and runs `f449f1de01d18c08` /
@@ -369,8 +370,9 @@ synthetic title, while its code and resolution do not. See the [Phase 2 validati
 report][phase-2-report] for exact checksums and metrics. LLM generation uses the root
 Hydra configuration and remains bounded by row and HTTP-request limits.
 
-The frozen text-development input remains a separate, deliberately stratified 1,000-row
-Phase-3 sample taken only after statistical validation; it is not the Phase-2 smoke run.
+The frozen text-development input remains a separate 1,000-row Phase-3 sample taken
+only after statistical validation; its default population-proportional mode preserves
+the validated source-run joint and marginals, and it is not the Phase-2 smoke run.
 The current release contract is disabled by default and binds schema-2 release
 manifest/evidence, exact artefact checksums, provenance, and blinded human review.
 Exactly 10,000 rows requires 300 unique blinded-human-reviewed IDs, and populations of
@@ -780,7 +782,7 @@ A release is complete only when it includes:
 - code revision and environment lock file;
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
-- prepared-bundle 6, sampler 6, frozen-sample 3, generation 4, validator v16, and
+- prepared-bundle 7, sampler 7, frozen-sample 4, generation 5, validator v19, and
   release manifest schema 2 and evidence schema 3 version bindings;
 - official FOLK2 English provenance label and Danish 241-code display-label contract,
   including source metadata SHA-256

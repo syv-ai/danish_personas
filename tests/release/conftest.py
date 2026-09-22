@@ -185,13 +185,17 @@ def release_case(tmp_path: Path) -> ReleaseCase:
             "hobbies_and_interests": [["vandring", "musik", "madlavning"]] * 10_000,
             "career_goals_and_ambitions": ["At udvikle nye færdigheder."] * 10_000,
             "job_title": ["forretningsspecialist"] * 10_000,
+            "current_relationship_status": ["not_partnered"] * 10_000,
+            "partner_gender": [None] * 10_000,
+            "legal_status_detail": [None] * 10_000,
             "persona": [
                 "Han er 35 år og bor i Aarhus. Han kommer fra Danmark, har en "
                 "ungdomsuddannelse og arbejder som forretningsspecialist på en mindre "
                 "arbejdsplads i byen. I hverdagen bruger han planlægning, og i "
                 "fritiden "
                 "dyrker han vandring og musik sammen med lokale fællesskaber. Han har "
-                "ofte tendens til at være nysgerrig, når han møder nye opgaver. At "
+                "ofte tendens til at være nysgerrig, når han møder nye opgaver. Han er "
+                "single og har aldrig været gift. At "
                 "udvikle nye færdigheder."
             ]
             * 10_000,
@@ -208,7 +212,7 @@ def release_case(tmp_path: Path) -> ReleaseCase:
                 "age_resolution": "municipality_age_band",
                 "age_band": "30-39",
                 "sex": "male",
-                "marital_status": "single",
+                "marital_status": "never_married",
                 "marital_resolution": "municipality",
                 "municipality_code": "0751",
                 "municipality": "Aarhus",
