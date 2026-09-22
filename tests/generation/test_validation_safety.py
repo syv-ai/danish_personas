@@ -91,6 +91,7 @@ def test_unrelated_kan_vaere_idiom_remains_allowed() -> None:
     "extra",
     [
         " Maja er 35 år.",
+        " Maja Jensen er 35 år.",
         " Hun hedder Maja.",
         " Hun hedder Maja og bor i Aarhus.",
         " Hun er ved navn Maja.",
@@ -141,6 +142,7 @@ def test_explicit_person_names_are_rejected(extra: str) -> None:
         "Hun er Maja.",
         "Han er Maja.",
         "Personaen er Maja.",
+        "Maja Jensen er 35 år.",
         "Personen er Maja.Navnet er Maja.",
         "Maja er hendes kæreste.",
         "Majas partner bor i byen.",
@@ -179,7 +181,8 @@ def test_single_and_multiword_origin_labels_are_allowed_in_name_patterns(
     text = persona(
         context=context,
         extra=(
-            f" Hun er {rendered_origin}. {rendered_origin} er hendes kæreste. "
+            f" Hun er {rendered_origin}. {rendered_origin} er 35 år. "
+            f"{rendered_origin} er hendes kæreste. "
             f"{rendered_origin}s partner bor i byen."
         ),
     )["persona"]
@@ -208,6 +211,10 @@ def test_required_place_and_origin_labels_are_allowed_in_name_patterns() -> None
     "construction",
     [
         "Aarhus-Lars er 35 år.",
+        "San Marino-Lars er 35 år.",
+        "San Marino'Lars er 35 år.",
+        "San Marino’Lars er 35 år.",
+        "San Marino´Lars er 35 år.",
         "San Marino-Lars's partner bor i byen.",
         "San Marino-Lars’s partner bor i byen.",
         "San Marino-Lars´s partner bor i byen.",

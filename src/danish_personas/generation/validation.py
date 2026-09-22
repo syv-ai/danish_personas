@@ -75,7 +75,8 @@ UNSUPPORTED_PATTERNS = (
 ALLOWED_STATUS_TEN_PHRASE = "medarbejdende ægtefælle"
 _PERSON_NAME_TOKEN = r"[A-ZÆØÅ][A-Za-zÆØÅæøå]+(?:[-'][A-ZÆØÅ][A-Za-zÆØÅæøå]+)*"
 _NAME_WORD = r"[A-Za-zÆØÅæøå]+(?:[-'][A-Za-zÆØÅæøå]+)*"
-_PERSON_NAME_EXPRESSION = rf"{_PERSON_NAME_TOKEN}(?:\s+{_NAME_WORD}){{0,3}}?"
+_AGE_NAME_WORD = r"[A-Za-zÆØÅæøå]+(?:[-'’´][A-Za-zÆØÅæøå]+)*"
+_PERSON_NAME_AGE_EXPRESSION = rf"{_PERSON_NAME_TOKEN}(?:\s+{_AGE_NAME_WORD}){{0,3}}"
 _RELATIONSHIP_ROLE = (
     r"kæreste(?:n)?|partner(?:en)?|mand(?:en)?|kone(?:n)?|hustru(?:en)?|"
     r"ægtefælle(?:n)?|datter(?:en)?|søn(?:nen)?|mor(?:en)?|far(?:en)?|"
@@ -100,7 +101,7 @@ _PERSON_NAME_PATTERNS = (
     re.compile(
         rf"(?m)(?:^|[.!?]\s+)(?P<name>"
         rf"(?!(?i:han|hun|personaen|personen|{_RELATIONSHIP_POSSESSIVE})\b)"
-        rf"{_PERSON_NAME_EXPRESSION})\s+"
+        rf"(?P<bounded_name>{_PERSON_NAME_AGE_EXPRESSION}))\s+"
         rf"(?i:er)\s+\d+\s+(?i:år)\b"
     ),
     re.compile(
@@ -607,9 +608,10 @@ def _is_allowed_grounding_label(
 ) -> bool:
     """Return whether a captured construction contains a complete grounded label.
 
-    Name patterns capture only the first capitalised token so they also catch prose
-    that continues without punctuation. Compare the complete text at that position
-    to each grounded label rather than treating that token as the whole label.
+    Most name patterns capture only the first capitalised token so they also catch
+    prose that continues without punctuation. Compare the complete text at that
+    position to each grounded label rather than treating that token as the whole
+    label.
     """
     start, _ = match.span("name")
     if start and not _is_grounding_boundary(text=text, index=start - 1):
@@ -618,6 +620,11 @@ def _is_allowed_grounding_label(
     for label in allowed_labels:
         normalised_label = _normalize(text=label)
         if not tail.startswith(normalised_label):
+            continue
+        if (
+            "bounded_name" in match.re.groupindex
+            and _normalize(text=match.group("bounded_name")) != normalised_label
+        ):
             continue
         remainder = tail[len(normalised_label) :]
         if not remainder or _is_grounding_boundary(text=remainder, index=0):
