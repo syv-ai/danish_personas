@@ -11,7 +11,14 @@ from pydantic import ValidationError
 
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.io import sha256_file
-from danish_personas.models import BundleManifest, FrozenSampleManifest, RunManifest
+from danish_personas.models import (
+    FROZEN_SAMPLE_SCHEMA_VERSION,
+    PREPARED_BUNDLE_SCHEMA_VERSION,
+    SAMPLER_SCHEMA_VERSION,
+    BundleManifest,
+    FrozenSampleManifest,
+    RunManifest,
+)
 from danish_personas.origin_labels import (
     DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
     ORIGIN_LABEL_CONTRACT_PATH,
@@ -38,7 +45,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
     """Omitting any current-schema binding field fails closed."""
     bundle = BundleManifest(
         bundle_id="bundle",
-        prepared_bundle_schema_version=7,
+        prepared_bundle_schema_version=PREPARED_BUNDLE_SCHEMA_VERSION,
         created_at="2026-01-01T00:00:00+00:00",
         source_lock_sha256="0" * 64,
         categories_sha256="1" * 64,
@@ -47,12 +54,13 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
         files={},
         reference_periods={},
         assumptions=[],
+        minimum_source_count=50,
         lons20_contract_version=1,
         lons20_contract_sha256="2" * 64,
         **_binding(),
     )
     frozen = FrozenSampleManifest(
-        sample_schema_version=4,
+        sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
         source_run_id="run",
         rows=1,
         strata=[],
@@ -64,7 +72,7 @@ def test_current_manifests_require_every_origin_binding_field() -> None:
     )
     run = RunManifest(
         run_id="run",
-        sampler_schema_version=7,
+        sampler_schema_version=SAMPLER_SCHEMA_VERSION,
         created_at="2026-01-01T00:00:00+00:00",
         bundle_id="bundle",
         bundle_manifest_sha256="4" * 64,

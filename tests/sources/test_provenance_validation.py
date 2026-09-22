@@ -168,3 +168,36 @@ def test_recomputed_source_failure_cannot_be_masked_by_bound_report(
 
     with pytest.raises(ValueError, match="differs from recomputed validation"):
         validate_sources(bundle_dir=bundle_dir)
+
+
+def test_source_validation_binds_origin_eligibility_threshold(tmp_path: Path) -> None:
+    """The source report threshold must match the bound bundle threshold."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    source_report = bundle_dir / "source-preparation-report.json"
+    payload: dict[str, object] = {
+        "passed": True,
+        "origin_country_checks": {
+            "eligibility": {
+                "minimum_source_count": 49,
+                "eligible_rows": 1,
+                "excluded_rows": 240,
+                "passed": True,
+            }
+        },
+    }
+    write_json(path=source_report, payload=payload)
+    manifest_path = bundle_dir / "bundle-manifest.json"
+    manifest = BundleManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    files = dict(manifest.files)
+    files[source_report.name] = sha256_file(source_report)
+    write_json(path=manifest_path, payload=manifest.model_copy(update={"files": files}))
+
+    report = validate_sources(bundle_dir=bundle_dir)
+
+    eligibility = next(
+        metric for metric in report.metrics if metric.name == "folk2_eligibility"
+    )
+    assert not report.passed
+    assert not eligibility.passed

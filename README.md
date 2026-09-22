@@ -17,7 +17,7 @@ Release-scale generation and human approval remain pending; schema-2 package ver
 and evidence are required before
 any release claim.
 
-Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
+Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
 and generation contract 5 with validator `persona-safety-v20`. The default frozen
 sample mode is population-proportional; stratified round-robin remains an explicit
 alternative. No new bundle, deterministic run, frozen sample, persona output, or

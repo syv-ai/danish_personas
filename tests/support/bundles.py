@@ -84,6 +84,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
                 107 if code == "5100" else 2 if code == "5103" else 0
                 for code in contract.labels_en
             ],
+            "eligible_for_sampling": [code == "5100" for code in contract.labels_en],
         }
     )
     job_function = pl.DataFrame(
@@ -193,7 +194,20 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         frame.write_parquet(path)
         files[str(path.relative_to(bundle_dir))] = sha256_file(path)
     source_report = bundle_dir / "source-preparation-report.json"
-    write_json(path=source_report, payload={"passed": True})
+    write_json(
+        path=source_report,
+        payload={
+            "passed": True,
+            "origin_country_checks": {
+                "eligibility": {
+                    "minimum_source_count": 50,
+                    "eligible_rows": 1,
+                    "excluded_rows": len(contract.labels_en) - 1,
+                    "passed": True,
+                }
+            },
+        },
+    )
     files[source_report.name] = sha256_file(source_report)
     manifest = BundleManifest(
         bundle_id="fixture-bundle",
@@ -223,6 +237,7 @@ def _write_bundle(root: Path) -> tuple[Path, Path, Path, Path]:
         files=files,
         reference_periods={},
         assumptions=[],
+        minimum_source_count=50,
         lons20_contract_version=1,
         lons20_contract_sha256="2" * 64,
         **origin_contract_fields(),

@@ -855,15 +855,25 @@ def validate_sources(
             "zero_suppression",
             "unhandled_values",
             "expected_partition",
+            "eligibility",
         ):
             check = origin_checks.get(check_name)
             if isinstance(check, dict) and isinstance(check.get("passed"), bool):
+                passed = _source_check_passed(
+                    check_name=check_name,
+                    check=check,
+                    minimum_source_count=manifest.minimum_source_count,
+                )
                 metrics.append(
                     MetricResult(
                         name=f"folk2_{check_name}",
-                        passed=check["passed"],
-                        value="pass" if check["passed"] else "fail",
-                        threshold="pass",
+                        passed=passed,
+                        value="pass" if passed else "fail",
+                        threshold=(
+                            str(manifest.minimum_source_count)
+                            if check_name == "eligibility"
+                            else "pass"
+                        ),
                         details=f"FOLK2 {check_name.replace('_', ' ')} check.",
                     )
                 )
@@ -941,3 +951,15 @@ def _load_existing_source_report(*, content: bytes | None) -> ValidationReport |
 def _report_semantics(report: ValidationReport) -> dict[str, object]:
     """Return report content excluding its non-semantic creation timestamp."""
     return report.model_dump(mode="json", exclude={"created_at"})
+
+
+def _source_check_passed(
+    *, check_name: str, check: dict[str, object], minimum_source_count: int
+) -> bool:
+    """Return whether one FOLK2 source-report check matches the manifest."""
+    passed = check["passed"]
+    if not isinstance(passed, bool):
+        return False
+    if check_name == "eligibility":
+        return passed and check.get("minimum_source_count") == minimum_source_count
+    return passed

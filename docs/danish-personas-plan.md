@@ -347,8 +347,8 @@ exact persona grounding; code, English label, resolutions, and contract metadata
 Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot drive
 culture, religion, job, interests, personality, or visual traits.
 
-The future-run contracts are prepared-bundle schema 7, sampler schema 7,
-frozen-sample schema 4, generation contract 5, validator `persona-safety-v20`, and
+The future-run contracts are prepared-bundle schema 8, sampler schema 8,
+frozen-sample schema 5, generation contract 5, validator `persona-safety-v20`, and
 release manifest schema 2 and evidence schema 3. Future persona samples use the
 population-proportional freeze mode by default; stratified round-robin remains an
 explicit named mode. RAS209 H90/not_stated remains in the unpooled audit joint but is
@@ -778,7 +778,7 @@ A release is complete only when it includes:
 - code revision and environment lock file;
 - random seeds and sampler configuration;
 - prompt, schema, model, model revision, and decoding configuration;
-- prepared-bundle 7, sampler 7, frozen-sample 4, generation 5, validator v20, and
+- prepared-bundle 8, sampler 8, frozen-sample 5, generation 5, validator v20, and
   release manifest schema 2 and evidence schema 3 version bindings;
 - official FOLK2 English provenance label and Danish 241-code display-label contract,
   including source metadata SHA-256

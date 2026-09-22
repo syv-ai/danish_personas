@@ -3,6 +3,7 @@
 import os
 from pathlib import Path, PureWindowsPath
 
+import polars as pl
 import pytest
 
 import danish_personas.sources.bundle as bundle_module
@@ -12,7 +13,7 @@ from danish_personas.sources.bundle import (
     _regular_file_inventory,
     verify_prepared_bundle,
 )
-from tests.support.bundles import _write_bundle
+from tests.support.bundles import _write_bundle, refresh_bundle_manifest
 
 
 def test_prepared_bundle_inventory_accepts_normal_files(tmp_path: Path) -> None:
@@ -73,6 +74,23 @@ def test_prepared_bundle_rechecks_path_after_capture(
 
     monkeypatch.setattr(bundle_module, "_sha256_bytes", replace_during_hash)
     with pytest.raises(ValueError, match="changed|safely"):
+        verify_prepared_bundle(bundle_dir=bundle_dir)
+
+
+def test_prepared_bundle_rejects_incorrect_origin_eligibility(tmp_path: Path) -> None:
+    """The bound threshold, count, and eligibility flag must agree."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    path = bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    frame = pl.read_parquet(path).with_columns(
+        pl.when(pl.col("origin_country_code") == "5100")
+        .then(pl.lit(False))
+        .otherwise(pl.col("eligible_for_sampling"))
+        .alias("eligible_for_sampling")
+    )
+    frame.write_parquet(path)
+    refresh_bundle_manifest(bundle_dir=bundle_dir)
+
+    with pytest.raises(ValueError, match="eligibility"):
         verify_prepared_bundle(bundle_dir=bundle_dir)
 
 

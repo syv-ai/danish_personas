@@ -28,8 +28,11 @@ These gates apply before any LLM integration may be enabled.
   reviewed expected-zero-code set is bound into the source config and lock; only those
   omitted all-zero codes may be materialised, and unexpected missing selected codes fail
   preparation and source validation.
-- FOLK2 retains official categories such as Stateless and Not stated explicitly; it does
-  not create continents, regions, or inferred correlations.
+- FOLK2 retains all 241 official rows, including categories such as Stateless and Not
+  stated explicitly; each row has a non-null Boolean `eligible_for_sampling` equal
+  exactly to `count >= minimum_source_count` (currently 50). Preparation reports the
+  eligible and excluded row metrics, while later sampling and dashboard filtering are
+  separate steps. It does not create continents, regions, or inferred correlations.
 - RAS209 selects all official level-3 municipality areas, including Christiansø when
   exposed, and preserves the municipality x education x status x age-band x sex joint.
 - Prepared person-sampling artefacts retain municipality keys and never aggregate those
@@ -37,7 +40,7 @@ These gates apply before any LLM integration may be enabled.
   validated hierarchy lookup; missing, duplicate, or mismatched mappings fail.
 - Municipality codes map to one of the five regions, and that mapping agrees with the
   official Statistics Denmark geography classification.
-- A shared boundary verifier requires prepared-bundle schema 7, all mandatory Parquet
+- A shared boundary verifier requires prepared-bundle schema 8, all mandatory Parquet
   schemas, successful source preparation, and every manifest checksum before either
   sampling or demographic validation. Legacy, malformed, and tampered bundles fail.
 - The locked RAS209 selection, official hierarchy, and prepared RAS209 joint have
@@ -114,9 +117,9 @@ These gates apply before any LLM integration may be enabled.
   resolution fields do not. The exact Danish label is the origin fact in the grounded
   persona. Job titles are synthetic and must not imply unsupported work history.
 
-`SAMPLER_SCHEMA_VERSION` is 7 and must be incremented whenever deterministic sampling
+`SAMPLER_SCHEMA_VERSION` is 8 and must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. The frozen-sample schema is
-4, with a recorded population-proportional default freeze mode and an explicit
+5, with a recorded population-proportional default freeze mode and an explicit
 stratified round-robin alternative. These versions are part of content-addressed
 identities, so legacy bundles, runs, or samples cannot be silently reused. The previous
 schema-6 canonical IDs are historical and non-resumable; regenerate and record new IDs
@@ -130,8 +133,8 @@ rather than inventing them.
   Phase-2 validation report to match the upstream run. The single-row
   `generate_persona.py` command uses an explicit checksum-tolerant policy for stored
   checksum mismatches only; all semantic, schema, provenance-content, and safety gates
-  remain active. The upstream sampler schema must be version 7 and the frozen-sample
-  schema must be version 4. Every frozen row and column must validate against the current
+  remain active. The upstream sampler schema must be version 8 and the frozen-sample
+  schema must be version 5. Every frozen row and column must validate against the current
   `DemographicRecord`; legacy, origin-less samples require migration and cannot cross
   the Phase-3 boundary.
 - No invocation can request more than five rows. The default population-proportional
