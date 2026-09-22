@@ -91,10 +91,12 @@ These gates apply before any LLM integration may be enabled.
   `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Exact code-label
   pairs, including Danish display labels, are checked. Equal largest remainders are
   resolved by sorted official code regardless of input order. Unequal official weights
-  are retained; zero-weight categories are never emitted; malformed code-label-count
-  distributions fail loudly. Every observed code-label pair is checked, including an
-  alternate label beside valid rows; unexpected pairs and all unexpected fitted
-  categories fail explicitly and remain included in distribution accounting. The mapping
+  are retained; only rows marked `eligible_for_sampling` are sampled (with the target
+  renormalised over those rows); malformed code-label-count-eligibility distributions
+  fail loudly. Every observed code-label pair is checked against the full official
+  mapping, including an alternate label beside valid rows; unexpected pairs,
+  ineligible codes, and all unexpected fitted categories fail explicitly and remain
+  included in distribution accounting. The mapping
   and origin marginal meet the same statistical gates as other mandatory marginals.
 - Eligible RAS202 employee status codes 15, 20, 25, 30, 35, and 40 receive paired
   `job_function_code` and `job_function` values with `lons20_sex_marginal` resolution.

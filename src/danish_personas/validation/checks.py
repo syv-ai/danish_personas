@@ -154,7 +154,9 @@ def _distribution_metrics(
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
         "origin_country": (
-            _origin_target(bundle_dir=bundle_dir, checksum_policy=checksum_policy),
+            _origin_target(
+                bundle_dir=bundle_dir, checksum_policy=checksum_policy
+            ).filter(pl.col("eligible_for_sampling")),
             ["origin_country_code", "origin_country", "origin_country_da"],
         ),
     }
@@ -546,10 +548,17 @@ def _origin_mapping_metrics(
     mismatches = observed_pairs.join(
         expected_pairs, on=columns, how="anti", nulls_equal=True
     ).height
-    zero_weight_pairs = target.filter(pl.col("count") <= 0).select(columns).unique()
-    emitted_zero_weight = observed_pairs.join(
-        zero_weight_pairs, on=columns, how="inner", nulls_equal=True
-    ).height
+    ineligible_codes = (
+        target.filter(~pl.col("eligible_for_sampling"))
+        .select("origin_country_code")
+        .unique()
+    )
+    emitted_ineligible = (
+        frame.select("origin_country_code")
+        .unique()
+        .join(ineligible_codes, on="origin_country_code", how="inner")
+        .height
+    )
     incomplete = frame.select(columns).null_count().row(0)
     incomplete_count = sum(incomplete)
     return [
@@ -568,11 +577,14 @@ def _origin_mapping_metrics(
             details="Generated origin code and labels must use the official mapping.",
         ),
         MetricResult(
-            name="origin_country_positive_weights",
-            passed=emitted_zero_weight == 0,
-            value=emitted_zero_weight,
+            name="origin_country_eligible",
+            passed=emitted_ineligible == 0,
+            value=emitted_ineligible,
             threshold=0,
-            details="Categories with zero official weight must never be emitted.",
+            details=(
+                "Official origin categories ineligible for sampling must never be "
+                "emitted."
+            ),
         ),
     ]
 
