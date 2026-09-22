@@ -219,7 +219,7 @@ def _build_persona_pilot_report(
     ] == expected_ranges
     try:
         merged_batches = (
-            pl.concat(batch_outputs).sort("persona_id")
+            pl.concat(batch_outputs, how="vertical_relaxed").sort("persona_id")
             if batch_outputs
             else pl.DataFrame()
         )
