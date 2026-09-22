@@ -25,6 +25,12 @@ one frozen demographic locally, starts a fresh model request, and writes only th
 Danish persona plus a newline to stdout. It loads Hydra `config/config.yaml` by default
 and runs immediately. Direct invocations do not reuse earlier persona checkpoints.
 Generated evidence is stored below `data/personas` by default. Diagnostics use stderr.
+This command deliberately uses an explicit checksum-tolerant validation policy: stored
+checksum mismatches alone do not block the command, while schema, content, provenance,
+safety, grounding, and accounting checks remain active. Library validation,
+`build_dataset.py`, and release verification remain checksum-strict by default; this
+exception increases the risk that altered artefacts are used and requires review of the
+stored evidence before reuse.
 
 `build_dataset.py` requires `--rows`, `--request-limit`, and the two current token-price
 values. It generates validated shards of five rows, resumes valid checkpoints, merges

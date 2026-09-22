@@ -3,8 +3,9 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
+from .checksum import ChecksumValidationPolicy
 from .origin_labels import validate_origin_contract_reference
 
 # Increment when deterministic sampling semantics or generated record columns change.
@@ -18,6 +19,20 @@ PREPARED_BUNDLE_SCHEMA_VERSION: int = 6
 FROZEN_SAMPLE_SCHEMA_VERSION: int = 3
 SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({3})
 SUPPORTED_VALIDATION_CONFIG_VERSIONS: frozenset[int] = frozenset({5})
+
+
+def _checksum_policy_from_context(info: ValidationInfo) -> ChecksumValidationPolicy:
+    """Read the optional scoped checksum policy used by model validation.
+
+    Returns:
+        The configured checksum policy, or strict validation by default.
+    """
+    if isinstance(info.context, dict):
+        policy = info.context.get("checksum_policy")
+        if isinstance(policy, ChecksumValidationPolicy):
+            return policy
+    return ChecksumValidationPolicy.STRICT
+
 
 ELIGIBLE_JOB_FUNCTION_STATUS_CODES: frozenset[str] = frozenset(
     {"15", "20", "25", "30", "35", "40"}
@@ -153,7 +168,9 @@ class FrozenSampleManifest(StrictModel):
     origin_labels_contract_content: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "FrozenSampleManifest":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "FrozenSampleManifest":
         """Require all origin contract fields when a sample carries a binding.
 
         Returns:
@@ -170,6 +187,7 @@ class FrozenSampleManifest(StrictModel):
             version=self.origin_labels_contract_version,
             sha256=self.origin_labels_contract_sha256,
             content=self.origin_labels_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
@@ -311,7 +329,7 @@ class RunManifest(StrictModel):
     origin_labels_contract_content: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "RunManifest":
+    def validate_origin_contract_binding(self, info: ValidationInfo) -> "RunManifest":
         """Require all origin contract fields when a run carries a binding.
 
         Returns:
@@ -328,6 +346,7 @@ class RunManifest(StrictModel):
             version=self.origin_labels_contract_version,
             sha256=self.origin_labels_contract_sha256,
             content=self.origin_labels_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 

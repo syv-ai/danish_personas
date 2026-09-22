@@ -3,7 +3,13 @@
 import typing as t
 from pathlib import Path
 
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    Field,
+    ValidationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from ..models import FrozenSampleManifest, StrictModel, ValidationReport
 from ..origin_labels import (
@@ -13,6 +19,21 @@ from ..origin_labels import (
     validate_origin_contract_reference,
 )
 from .job_titles import JobFunctionTitleMapping
+from .policy import ChecksumValidationPolicy
+
+
+def _checksum_policy_from_context(info: ValidationInfo) -> ChecksumValidationPolicy:
+    """Read the optional scoped checksum policy used by model validation.
+
+    Returns:
+        The configured checksum policy, or strict validation by default.
+    """
+    if isinstance(info.context, dict):
+        policy = info.context.get("checksum_policy")
+        if isinstance(policy, ChecksumValidationPolicy):
+            return policy
+    return ChecksumValidationPolicy.STRICT
+
 
 __all__ = ["FrozenSampleManifest"]
 
@@ -30,6 +51,29 @@ class GeneratedAttributes(StrictModel):
     partner_first_name: str | None = Field(min_length=2, max_length=40)
     partner_gender: t.Literal["male", "female"] | None
     legal_status_detail: t.Literal["married", "separated"] | None
+
+    @field_validator("first_name", "partner_first_name")
+    @classmethod
+    def require_stripped_single_line_name(_cls, value: str | None) -> str | None:
+        """Normalise a name while rejecting multiline or padded output.
+
+        Args:
+            value:
+                Candidate generated first name.
+
+        Returns:
+            The validated first name or null.
+
+        Raises:
+            ValueError:
+                If the name is not a short, stripped, single-line string.
+        """
+        if value is None:
+            return None
+        stripped = value.strip()
+        if stripped != value or "\n" in value or "\r" in value:
+            raise ValueError("first names must be stripped single-line strings")
+        return stripped
 
     @field_validator("job_title")
     @classmethod
@@ -54,29 +98,6 @@ class GeneratedAttributes(StrictModel):
             raise ValueError("job_title must be a stripped single-line string")
         if not 2 <= len(stripped) <= 80:
             raise ValueError("job_title must contain 2-80 characters")
-        return stripped
-
-    @field_validator("first_name", "partner_first_name")
-    @classmethod
-    def require_stripped_single_line_name(_cls, value: str | None) -> str | None:
-        """Normalise a name while rejecting multiline or padded output.
-
-        Args:
-            value:
-                Candidate generated first name.
-
-        Returns:
-            The validated first name or null.
-
-        Raises:
-            ValueError:
-                If the name is not a short, stripped, single-line string.
-        """
-        if value is None:
-            return None
-        stripped = value.strip()
-        if stripped != value or "\n" in value or "\r" in value:
-            raise ValueError("first names must be stripped single-line strings")
         return stripped
 
     @field_validator("skills_and_expertise", "hobbies_and_interests")
@@ -106,7 +127,15 @@ class GeneratedAttributes(StrictModel):
 
     @model_validator(mode="after")
     def validate_relationship_fields(self) -> "GeneratedAttributes":
-        """Require partner fields to agree with the current relationship status."""
+        """Require partner fields to agree with the current relationship status.
+
+        Returns:
+            The validated attributes.
+
+        Raises:
+            ValueError:
+                If partner fields disagree with the relationship status.
+        """
         has_partner = self.partner_first_name is not None
         has_gender = self.partner_gender is not None
         if self.current_relationship_status == "partnered" and not (
@@ -118,9 +147,7 @@ class GeneratedAttributes(StrictModel):
         if self.current_relationship_status == "not_partnered" and (
             has_partner or has_gender
         ):
-            raise ValueError(
-                "not_partnered responses must not include partner fields"
-            )
+            raise ValueError("not_partnered responses must not include partner fields")
         return self
 
 
@@ -220,7 +247,9 @@ class GenerationManifest(StrictModel):
     llm_generation: bool
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "GenerationManifest":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "GenerationManifest":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -231,6 +260,7 @@ class GenerationManifest(StrictModel):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
@@ -244,7 +274,9 @@ class GenerationValidationReport(ValidationReport):
     origin_label_contract_content: OriginLabelContract
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "GenerationValidationReport":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "GenerationValidationReport":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -255,6 +287,7 @@ class GenerationValidationReport(ValidationReport):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
@@ -303,7 +336,9 @@ class PersonaCheckpoint(StrictModel):
     http_requests: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
-    def validate_origin_contract_binding(self) -> "PersonaCheckpoint":
+    def validate_origin_contract_binding(
+        self, info: ValidationInfo
+    ) -> "PersonaCheckpoint":
         """Require the exact compiled origin contract binding.
 
         Returns:
@@ -314,6 +349,7 @@ class PersonaCheckpoint(StrictModel):
             version=self.origin_label_contract_version,
             sha256=self.origin_label_contract_sha256,
             content=self.origin_label_contract_content,
+            checksum_policy=_checksum_policy_from_context(info),
         )
         return self
 
