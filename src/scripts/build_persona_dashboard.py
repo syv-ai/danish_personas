@@ -1,24 +1,20 @@
 """Build a self-contained interactive dashboard for generated personas."""
 
-import hashlib
 import html
 import json
-import re
 from pathlib import Path
 
 import click
+import httpx
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
 from plotly.offline import get_plotlyjs
-from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import svds
 
 from danish_personas.io import load_yaml_model
 from danish_personas.models import CategoryConfig
 
 DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
-    ("first_name", "First names", "synthetic"),
     ("age", "Ages", "folk_age_sampling.parquet"),
     ("age_band", "Age bands", "folk_age_sampling.parquet"),
     ("sex", "Sex", "folk_age_sampling.parquet"),
@@ -26,7 +22,11 @@ DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
     ("education_level", "Education", "ras209_joint_unpooled.parquet"),
     ("labour_market_status", "Labour-market status", "ras209_joint_unpooled.parquet"),
     ("region", "Regions", "folk_age_sampling.parquet"),
-    ("municipality", "Municipalities", "folk_age_sampling.parquet"),
+    (
+        "municipality",
+        "Municipalities",
+        "ras209_joint_unpooled.parquet (RAS209 municipality marginal)",
+    ),
     (
         "origin_country_da",
         "Origin-country labels",
@@ -34,7 +34,7 @@ DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
     ),
     ("job_function", "Job functions", "job_function_sex_marginal.parquet"),
     ("current_relationship_status", "Current relationship status", "synthetic"),
-    ("partner_gender", "Partner gender", "synthetic"),
+    ("relationship_pair", "Partner relationship pair", "synthetic"),
 )
 OCEAN_FIELDS: tuple[tuple[str, str], ...] = (
     ("openness_score", "Openness"),
@@ -50,9 +50,23 @@ COLOUR_FIELDS: tuple[tuple[str, str], ...] = (
     ("education_level", "Education"),
     ("labour_market_status", "Labour-market status"),
 )
-TOKEN_RE = re.compile(r"[\wæøå]+", re.IGNORECASE)
 CATEGORY_CONFIG_PATH = Path(__file__).parents[2] / "config" / "categories.yaml"
+DEFAULT_EMBEDDING_BASE_URL = "http://127.0.0.1:18080/v1"
+DEFAULT_EMBEDDING_MODEL = "jina-embeddings-v5-text-small-clustering"
+DEFAULT_EMBEDDING_BATCH_SIZE = 32
 EMBEDDING_DECIMALS = 12
+NOT_STATED = "not_stated"
+HORIZONTAL_FIELDS = frozenset(
+    {
+        "municipality",
+        "origin_country_da",
+        "job_function",
+        "education_level",
+        "labour_market_status",
+        "marital_status",
+        "relationship_pair",
+    }
+)
 
 
 @click.command()
@@ -77,7 +91,36 @@ EMBEDDING_DECIMALS = 12
     required=True,
     help="Output self-contained HTML file.",
 )
-def main(input_path: Path, bundle_path: Path, output_path: Path) -> None:
+@click.option(
+    "--embedding-base-url",
+    "--base-url",
+    default=DEFAULT_EMBEDDING_BASE_URL,
+    show_default=True,
+    help="Base URL for the OpenAI-compatible embedding service.",
+)
+@click.option(
+    "--embedding-model",
+    "--model",
+    default=DEFAULT_EMBEDDING_MODEL,
+    show_default=True,
+    help="Embedding model alias.",
+)
+@click.option(
+    "--embedding-batch-size",
+    "--batch-size",
+    type=click.IntRange(min=1),
+    default=DEFAULT_EMBEDDING_BATCH_SIZE,
+    show_default=True,
+    help="Number of persona texts sent in each embedding request.",
+)
+def main(
+    input_path: Path,
+    bundle_path: Path,
+    output_path: Path,
+    embedding_base_url: str,
+    embedding_model: str,
+    embedding_batch_size: int,
+) -> None:
     """Build one offline, interactive HTML persona dashboard.
 
     Raises:
@@ -89,19 +132,36 @@ def main(input_path: Path, bundle_path: Path, output_path: Path) -> None:
         if frame.is_empty():
             raise click.ClickException("The generated personas file is empty")
         document = build_dashboard(
-            frame=frame, bundle_path=bundle_path, input_path=input_path
+            frame=frame,
+            bundle_path=bundle_path,
+            embedding_base_url=embedding_base_url,
+            embedding_model=embedding_model,
+            embedding_batch_size=embedding_batch_size,
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(document, encoding="utf-8")
     except click.ClickException:
         raise
-    except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as error:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        httpx.HTTPError,
+        pl.exceptions.PolarsError,
+    ) as error:
         raise click.ClickException(str(error)) from error
     click.echo(output_path)
 
 
 def build_dashboard(
-    *, frame: pl.DataFrame, bundle_path: Path, input_path: Path | None = None
+    *,
+    frame: pl.DataFrame,
+    bundle_path: Path,
+    input_path: Path | None = None,
+    embedding_base_url: str = DEFAULT_EMBEDDING_BASE_URL,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+    embedding_client: httpx.Client | None = None,
 ) -> str:
     """Render a complete dashboard document from generated records.
 
@@ -111,7 +171,18 @@ def build_dashboard(
         bundle_path:
             Prepared bundle directory used for descriptive DST overlays.
         input_path (optional):
-            Input path used in the provenance section. Defaults to ``None``.
+            Deprecated input path accepted for caller compatibility. Defaults to
+            ``None``.
+        embedding_base_url (optional):
+            Base URL for the local OpenAI-compatible embeddings service. Defaults to
+            ``DEFAULT_EMBEDDING_BASE_URL``.
+        embedding_model (optional):
+            Embedding model alias. Defaults to ``DEFAULT_EMBEDDING_MODEL``.
+        embedding_batch_size (optional):
+            Maximum number of texts per request. Defaults to
+            ``DEFAULT_EMBEDDING_BATCH_SIZE``.
+        embedding_client (optional):
+            HTTP client used by offline callers and tests. Defaults to ``None``.
 
     Returns:
         A single HTML document with all JavaScript and data embedded.
@@ -128,16 +199,16 @@ def build_dashboard(
             target=target_cache.get(field),
         )
         for field, title, source in DISTRIBUTIONS
-        if field in frame.columns
+        if _chart_field_available(frame=frame, field=field)
     )
     sections.append(_ocean_chart(frame=frame))
-    sections.append(_embedding_chart(frame=frame))
     sections.append(
-        _provenance(
+        _embedding_chart(
             frame=frame,
-            bundle_path=bundle_path,
-            input_path=input_path,
-            targets=target_cache,
+            base_url=embedding_base_url,
+            model=embedding_model,
+            batch_size=embedding_batch_size,
+            http_client=embedding_client,
         )
     )
     data_json = json.dumps(
@@ -176,6 +247,17 @@ def build_dashboard(
     )
 
 
+def _chart_field_available(*, frame: pl.DataFrame, field: str) -> bool:
+    """Report whether a regular or derived distribution can be displayed.
+
+    Returns:
+        Whether the chart has the columns needed to produce values.
+    """
+    if field == "relationship_pair":
+        return {"sex", "partner_gender"}.issubset(frame.columns)
+    return field in frame.columns
+
+
 def _distribution_chart(
     *,
     frame: pl.DataFrame,
@@ -191,27 +273,56 @@ def _distribution_chart(
     """
     generated_counts = _generated_distribution(frame=frame, field=field)
     labels = list(generated_counts)
+    if target and field == "education_level":
+        target = {
+            label: value
+            for label, value in target.items()
+            if label.casefold() != NOT_STATED
+        }
+        total_target = sum(target.values())
+        if total_target > 0:
+            target = {label: value / total_target for label, value in target.items()}
     if target:
         labels.extend(label for label in target if label not in labels)
     if field == "age":
         labels.sort(key=int)
     generated = [generated_counts.get(label, 0.0) for label in labels]
+    horizontal = field in HORIZONTAL_FIELDS
     figure = go.Figure()
-    figure.add_bar(name="Generated", x=labels, y=generated)
+    if horizontal:
+        figure.add_bar(name="Generated", y=labels, x=generated, orientation="h")
+    else:
+        figure.add_bar(name="Generated", x=labels, y=generated)
     note = "Synthetic-only; no authoritative target available."
     if target:
         overlay = [target.get(label, 0.0) for label in labels]
-        figure.add_scatter(name="DST target", x=labels, y=overlay, mode="lines+markers")
+        if horizontal:
+            figure.add_scatter(
+                name="DST target", y=labels, x=overlay, mode="lines+markers"
+            )
+        else:
+            figure.add_scatter(
+                name="DST target", x=labels, y=overlay, mode="lines+markers"
+            )
         note = (
             "DST target overlay is descriptive: the frozen sample is stratified and "
             "this is not a statistical acceptance test."
         )
     figure.update_layout(
-        title=title,
-        yaxis_title="Proportion",
-        xaxis_title=title,
-        margin={"l": 50, "r": 20, "t": 55, "b": 100},
-        legend={"orientation": "h"},
+        yaxis_title="Category" if horizontal else "Proportion",
+        xaxis_title="Proportion" if horizontal else title,
+        margin=(
+            {"l": 210, "r": 25, "t": 85, "b": 55}
+            if horizontal
+            else {"l": 55, "r": 25, "t": 85, "b": 105}
+        ),
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+        },
     )
     return _chart_card(
         title=title, figure=figure, source=(f"Semantic source: {source}. " + note)
@@ -243,13 +354,27 @@ def _generated_distribution(*, frame: pl.DataFrame, field: str) -> dict[str, flo
     Returns:
         Generated proportions in descending count order.
     """
+    if field == "relationship_pair":
+        values = _relationship_pairs(frame=frame)
+        if not values:
+            return {}
+        counts: dict[str, float] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0.0) + 1.0
+        total = float(len(values))
+        return {label: count / total for label, count in counts.items()}
     source = _recorded_job_functions(frame=frame) if field == "job_function" else frame
     if source.is_empty():
         return {}
     values = source.get_column(field).fill_null("(not recorded)").cast(pl.String)
+    if field == "education_level":
+        values = values.filter(values.str.to_lowercase() != NOT_STATED)
+    if values.is_empty():
+        return {}
     counts = values.value_counts(sort=True).sort("count", descending=True)
+    total = float(values.len())
     return {
-        str(value): float(count) / source.height
+        str(value): float(count) / total
         for value, count in zip(
             counts.get_column(field).to_list(), counts["count"].to_list(), strict=True
         )
@@ -270,13 +395,66 @@ def _recorded_job_functions(*, frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _embedding_chart(*, frame: pl.DataFrame) -> str:
-    """Create an LSA embedding scatter with demographic colour controls.
+def _relationship_pairs(*, frame: pl.DataFrame) -> list[str]:
+    """Return partnered records as one of the three relationship pair labels."""
+    required = {"sex", "partner_gender"}
+    if not required.issubset(frame.columns):
+        return []
+    partnered = frame
+    if "current_relationship_status" in frame.columns:
+        partnered = frame.filter(
+            pl.col("current_relationship_status").cast(pl.String).str.to_lowercase()
+            == "partnered"
+        )
+    pairs: list[str] = []
+    for row in partnered.select(["sex", "partner_gender"]).iter_rows(named=True):
+        sex = _gender_label(row["sex"])
+        partner = _gender_label(row["partner_gender"])
+        if sex is None or partner is None:
+            continue
+        if sex == partner == "man":
+            pairs.append("man-man")
+        elif sex == partner == "woman":
+            pairs.append("woman-woman")
+        else:
+            pairs.append("man-woman")
+    return pairs
+
+
+def _gender_label(value: object) -> str | None:
+    """Map a generated sex value to the relationship chart's labels.
+
+    Returns:
+        The normalised gender label, or ``None`` for an unknown value.
+    """
+    normalised = str(value).strip().casefold() if value is not None else ""
+    if normalised in {"male", "man", "m", "mand"}:
+        return "man"
+    if normalised in {"female", "woman", "f", "kvinde"}:
+        return "woman"
+    return None
+
+
+def _embedding_chart(
+    *,
+    frame: pl.DataFrame,
+    base_url: str,
+    model: str,
+    batch_size: int,
+    http_client: httpx.Client | None,
+) -> str:
+    """Create an embedding scatter with demographic colour controls.
 
     Returns:
         An HTML section containing the interactive embedding chart.
     """
-    coordinates = persona_embedding(frame=frame)
+    coordinates = persona_embedding(
+        frame=frame,
+        base_url=base_url,
+        model=model,
+        batch_size=batch_size,
+        http_client=http_client,
+    )
     figure = go.Figure()
     colour_options = [
         (field, label) for field, label in COLOUR_FIELDS if field in frame.columns
@@ -316,22 +494,24 @@ def _embedding_chart(*, frame: pl.DataFrame) -> str:
         )
         buttons = []
     figure.update_layout(
-        title="Persona text embedding (TF-IDF + SciPy LSA)",
-        xaxis_title="LSA dimension 1",
-        yaxis_title="LSA dimension 2",
+        xaxis_title="PCA dimension 1",
+        yaxis_title="PCA dimension 2",
         updatemenus=(
             [{"buttons": buttons, "x": 0, "y": 1.15, "xanchor": "left"}]
             if buttons
             else []
         ),
-        margin={"l": 50, "r": 20, "t": 90, "b": 50},
+        showlegend=False,
+        margin={"l": 55, "r": 25, "t": 105, "b": 55},
     )
     return _chart_card(
         title="Persona text embedding",
         figure=figure,
         source=(
-            "Semantic source: full persona prose. Word unigram/bigram TF-IDF and "
-            "SciPy truncated SVD/LSA; colour selector changes demographic grouping."
+            "Semantic source: full persona prose embedded by the configured local "
+            f"OpenAI-compatible model ({model}), then reduced with "
+            "deterministic two-dimensional PCA; colour selector changes demographic "
+            "grouping."
         ),
         wide=True,
     )
@@ -369,7 +549,8 @@ def _hover_row(frame: pl.DataFrame, index: int) -> list[str]:
         Hover fields for a persona point.
     """
     row = frame.row(index, named=True)
-    name = str(row.get("first_name", "(unnamed)"))
+    pronouns = row.get("pronouns") or row.get("pronoun")
+    label = f"Pronouns: {pronouns}" if pronouns else "Unnamed persona"
     demographics = ", ".join(
         f"{label}: {row.get(field, '(not recorded)')}"
         for field, label in (
@@ -388,7 +569,7 @@ def _hover_row(frame: pl.DataFrame, index: int) -> list[str]:
         or row.get("labour_market_status", "")
     )
     return [
-        name,
+        label,
         demographics,
         f"Location: {location}",
         f"Work: {job}",
@@ -437,168 +618,164 @@ def _colour_buttons(
     return buttons
 
 
-def persona_embedding(*, frame: pl.DataFrame) -> list[tuple[float, float]]:
-    """Return deterministic two-dimensional unigram/bigram TF-IDF LSA coordinates."""
+def persona_embedding(
+    *,
+    frame: pl.DataFrame,
+    base_url: str = DEFAULT_EMBEDDING_BASE_URL,
+    model: str = DEFAULT_EMBEDDING_MODEL,
+    batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+    http_client: httpx.Client | None = None,
+) -> list[tuple[float, float]]:
+    """Embed persona prose through a local OpenAI-compatible service and reduce it.
+
+    Args:
+        frame:
+            Generated records containing a ``persona`` column.
+        base_url (optional):
+            Service base URL. Defaults to ``DEFAULT_EMBEDDING_BASE_URL``.
+        model (optional):
+            Embedding model alias. Defaults to ``DEFAULT_EMBEDDING_MODEL``.
+        batch_size (optional):
+            Number of texts per request. Defaults to ``DEFAULT_EMBEDDING_BATCH_SIZE``.
+        http_client (optional):
+            HTTP client, useful for offline tests. Defaults to ``None``.
+
+    Returns:
+        Deterministic two-dimensional PCA coordinates in input row order.
+
+    Raises:
+        ValueError:
+            If the service response is malformed or the batch size is invalid.
+    """
+    if batch_size < 1:
+        raise ValueError("Embedding batch size must be at least one")
     texts = [
         str(value) for value in frame.get_column("persona").fill_null("").to_list()
     ]
-    matrix = _tfidf_matrix(texts=texts)
-    if matrix.shape[1] == 0:
-        return [(0.0, 0.0) for _ in texts]
-    return _lsa_coordinates(matrix=matrix)
+    owns_client = http_client is None
+    client = http_client or httpx.Client(timeout=120.0)
+    try:
+        vectors = OpenAIEmbeddingClient(
+            base_url=base_url, model=model, batch_size=batch_size, http_client=client
+        ).embed(texts=texts)
+    finally:
+        if owns_client:
+            client.close()
+    return _pca_coordinates(vectors=vectors)
 
 
-def _lsa_coordinates(*, matrix: csr_matrix) -> list[tuple[float, float]]:
-    """Project TF-IDF rows through deterministic SciPy truncated SVD.
+class OpenAIEmbeddingClient:
+    """Small client for an OpenAI-compatible ``/v1/embeddings`` endpoint."""
+
+    def __init__(
+        self, *, base_url: str, model: str, batch_size: int, http_client: httpx.Client
+    ) -> None:
+        """Initialise a client with a caller-owned HTTP transport."""
+        self.endpoint = _embedding_endpoint(base_url)
+        self.model = model
+        self.batch_size = batch_size
+        self.http_client = http_client
+
+    def embed(self, *, texts: list[str]) -> list[list[float]]:
+        """Return one vector per supplied text, requesting bounded batches.
+
+        Raises:
+            ValueError:
+                If a response does not contain one valid vector per input text.
+        """
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            response = self.http_client.post(
+                self.endpoint, json={"input": batch, "model": self.model}
+            )
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except (TypeError, ValueError) as error:
+                raise ValueError("Embedding service returned invalid JSON") from error
+            vectors.extend(_vectors_from_response(payload=payload, expected=len(batch)))
+        return vectors
+
+
+def _embedding_endpoint(base_url: str) -> str:
+    """Resolve a service base URL to its OpenAI embeddings route.
 
     Returns:
-        Two-dimensional coordinates for each input row.
+        The complete embeddings endpoint URL.
     """
-    if min(matrix.shape) <= 1:
-        return [(float(matrix[index].sum()), 0.0) for index in range(matrix.shape[0])]
-    maximum_components = min(matrix.shape) - 1
-    components = min(3, maximum_components)
-    while True:
-        left, singular, _ = svds(matrix, k=components, solver="arpack", random_state=0)
-        order = np.argsort(singular)[::-1]
-        singular = singular[order]
-        left = left[:, order]
-        if not _tie_reaches_component_boundary(
-            singular=singular, shape=matrix.shape, maximum=maximum_components
+    clean = base_url.rstrip("/")
+    if clean.endswith("/v1/embeddings"):
+        return clean
+    if clean.endswith("/v1"):
+        return f"{clean}/embeddings"
+    return f"{clean}/v1/embeddings"
+
+
+def _vectors_from_response(*, payload: object, expected: int) -> list[list[float]]:
+    """Validate and order an OpenAI embeddings response.
+
+    Returns:
+        Validated vectors in request order.
+
+    Raises:
+        ValueError:
+            If the payload does not contain matching, equal-length vectors.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("Embedding service response has no data list")
+    data = payload["data"]
+    if len(data) != expected:
+        raise ValueError(
+            f"Embedding service returned {len(data)} vectors; expected {expected}"
+        )
+    indexed = all(
+        isinstance(item, dict) and isinstance(item.get("index"), int) for item in data
+    )
+    ordered = sorted(data, key=lambda item: item["index"]) if indexed else data
+    vectors: list[list[float]] = []
+    for item in ordered:
+        vector = item.get("embedding") if isinstance(item, dict) else None
+        if (
+            not isinstance(vector, list)
+            or not vector
+            or not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in vector
+            )
         ):
-            break
-        components += 1
-    left = _canonicalise_tied_subspaces(
-        left=left, singular=singular, shape=matrix.shape
-    )
-    tolerance = (
-        np.finfo(float).eps * max(matrix.shape) * singular[0] if singular.size else 0.0
-    )
-    singular[singular <= tolerance] = 0.0
-    coordinates = left * singular
+            raise ValueError("Embedding service returned an invalid vector")
+        vectors.append([float(value) for value in vector])
+    dimensions = len(vectors[0]) if vectors else 0
+    if any(len(vector) != dimensions for vector in vectors):
+        raise ValueError("Embedding service returned vectors with different dimensions")
+    return vectors
+
+
+def _pca_coordinates(*, vectors: list[list[float]]) -> list[tuple[float, float]]:
+    """Centre vectors and return deterministic two-dimensional PCA coordinates.
+
+    Returns:
+        Two-dimensional coordinates in input order.
+    """
+    if not vectors:
+        return []
+    matrix = np.asarray(vectors, dtype=float)
+    centred = matrix - matrix.mean(axis=0, keepdims=True)
+    if min(centred.shape) == 0 or not np.any(centred):
+        return [(0.0, 0.0) for _ in vectors]
+    left, singular, _ = np.linalg.svd(centred, full_matrices=False)
+    coordinates = left[:, :2] * singular[:2]
     for component in range(coordinates.shape[1]):
         pivot = int(np.argmax(np.abs(coordinates[:, component])))
         if coordinates[pivot, component] < 0:
             coordinates[:, component] *= -1
     coordinates = np.round(coordinates, decimals=EMBEDDING_DECIMALS)
     coordinates[coordinates == 0.0] = 0.0
-    result = [tuple(float(value) for value in row) for row in coordinates]
-    return [(row[0], row[1] if len(row) > 1 else 0.0) for row in result]
-
-
-def _canonicalise_tied_subspaces(
-    *, left: np.ndarray, singular: np.ndarray, shape: tuple[int, int]
-) -> np.ndarray:
-    """Choose row-index anchored bases for numerically tied singular values.
-
-    A singular-vector basis is otherwise only defined up to an orthogonal rotation
-    when singular values are tied.  Projecting successive standard row anchors into
-    each tied left-singular subspace gives a basis independent of the ARPACK basis.
-
-    Returns:
-        Left singular vectors with tied subspaces in canonical bases.
-    """
-    if singular.size < 2:
-        return left
-
-    scale = max(1.0, float(singular[0]))
-    tie_tolerance = 8.0 * np.finfo(float).eps * max(shape) * scale
-    canonical = left.copy()
-    start = 0
-    while start < singular.size:
-        end = start + 1
-        while (
-            end < singular.size
-            and abs(singular[end] - singular[start]) <= tie_tolerance
-        ):
-            end += 1
-        if end - start > 1:
-            canonical[:, start:end] = _anchor_subspace(
-                basis=left[:, start:end], tolerance=tie_tolerance
-            )
-        start = end
-    return canonical
-
-
-def _anchor_subspace(*, basis: np.ndarray, tolerance: float) -> np.ndarray:
-    """Construct an orthonormal subspace basis from fixed row-index anchors.
-
-    Returns:
-        An orthonormal basis selected by the lowest available row indices.
-
-    Raises:
-        ValueError:
-            If the supplied basis does not span the requested dimension.
-    """
-    dimension = basis.shape[1]
-    vectors: list[np.ndarray] = []
-    for row_index in range(basis.shape[0]):
-        vector = basis @ basis[row_index, :]
-        for previous in vectors:
-            vector -= np.dot(previous, vector) * previous
-        norm = float(np.linalg.norm(vector))
-        if norm <= tolerance:
-            continue
-        vectors.append(vector / norm)
-        if len(vectors) == dimension:
-            break
-    if len(vectors) != dimension:
-        raise ValueError("Unable to construct a basis for a tied singular subspace")
-    return np.column_stack(vectors)
-
-
-def _tie_reaches_component_boundary(
-    *, singular: np.ndarray, shape: tuple[int, int], maximum: int
-) -> bool:
-    """Report whether another component may belong to the final tied subspace.
-
-    Returns:
-        Whether the final computed singular value is tied at the truncation boundary.
-    """
-    if singular.size < 2 or singular.size >= maximum:
-        return False
-    scale = max(1.0, float(singular[0]))
-    tolerance = 8.0 * np.finfo(float).eps * max(shape) * scale
-    return singular[-1] > tolerance and abs(singular[-1] - singular[-2]) <= tolerance
-
-
-def _tfidf_matrix(*, texts: list[str]) -> csr_matrix:
-    """Build a row-normalised sparse word unigram/bigram TF-IDF matrix.
-
-    Returns:
-        Sparse TF-IDF matrix with one row per persona.
-    """
-    vocabulary: dict[str, int] = {}
-    documents: list[list[str]] = []
-    for text in texts:
-        tokens = [token.casefold() for token in TOKEN_RE.findall(text)]
-        terms = tokens + [f"{left} {right}" for left, right in zip(tokens, tokens[1:])]
-        documents.append(terms)
-        for term in terms:
-            if term not in vocabulary:
-                vocabulary[term] = len(vocabulary)
-    rows: list[int] = []
-    cols: list[int] = []
-    values: list[float] = []
-    for row_index, terms in enumerate(documents):
-        counts: dict[int, float] = {}
-        for term in terms:
-            column = vocabulary[term]
-            counts[column] = counts.get(column, 0.0) + 1.0
-        for column, value in counts.items():
-            rows.append(row_index)
-            cols.append(column)
-            values.append(value)
-    matrix = csr_matrix(
-        (values, (rows, cols)), shape=(len(texts), len(vocabulary)), dtype=float
-    )
-    document_frequency = np.asarray((matrix > 0).sum(axis=0)).ravel()
-    matrix = matrix.multiply(
-        np.log((1.0 + len(texts)) / (1.0 + document_frequency)) + 1.0
-    ).tocsr()
-    norms = np.sqrt(matrix.multiply(matrix).sum(axis=1)).A1
-    norms[norms == 0] = 1.0
-    return matrix.multiply((1.0 / norms)[:, None]).tocsr()
+    return [
+        (float(row[0]), float(row[1]) if coordinates.shape[1] > 1 else 0.0)
+        for row in coordinates
+    ]
 
 
 def _json_safe_row(row: dict[str, object]) -> dict[str, object]:
@@ -609,6 +786,8 @@ def _json_safe_row(row: dict[str, object]) -> dict[str, object]:
     """
     result: dict[str, object] = {}
     for key, value in row.items():
+        if key in {"first_name", "partner_first_name"}:
+            continue
         if value is None or isinstance(value, (str, int, float, bool)):
             result[key] = value
         else:
@@ -634,9 +813,7 @@ def _ocean_chart(*, frame: pl.DataFrame) -> str:
             showlegend=False,
         )
     figure.update_layout(
-        title="OCEAN scores",
-        yaxis_title="Score (20-80)",
-        margin={"l": 50, "r": 20, "t": 55, "b": 50},
+        yaxis_title="Score (20-80)", margin={"l": 55, "r": 25, "t": 55, "b": 50}
     )
     return _chart_card(
         title="OCEAN scores",
@@ -669,62 +846,6 @@ def _overview_cards(*, frame: pl.DataFrame) -> str:
         '<div class="card"><div class="muted">Mean age</div>'
         f'<div class="metric">{mean_age_text}</div></div></section>'
     )
-
-
-def _provenance(
-    *,
-    frame: pl.DataFrame,
-    bundle_path: Path,
-    input_path: Path | None,
-    targets: dict[str, dict[str, float]],
-) -> str:
-    """Render checksums, source labels, and the stratification caveat.
-
-    Returns:
-        An HTML provenance section.
-    """
-    input_checksum = (
-        _file_checksum(input_path) if input_path is not None else _frame_checksum(frame)
-    )
-    bundle_manifest = bundle_path / "bundle-manifest.json"
-    manifest_checksum = (
-        _file_checksum(bundle_manifest) if bundle_manifest.exists() else "missing"
-    )
-    target_names = ", ".join(sorted(targets)) or "none found"
-    return (
-        '<section class="card wide"><h2>Provenance and semantics</h2><p>'
-        f"Input Parquet SHA-256: <code>{input_checksum}</code><br>"
-        f"Bundle manifest SHA-256: <code>{manifest_checksum}</code><br>"
-        f"Target overlays loaded: {html.escape(target_names)}<br>"
-        "Semantic-source labels identify whether a chart is synthetic or from a "
-        'normalised Statistics Denmark prepared file.</p><p class="muted">'
-        "The frozen sample is stratified; DST overlays are descriptive comparisons, "
-        "not a statistical acceptance test.</p></section>"
-    )
-
-
-def _file_checksum(path: Path) -> str:
-    """Return a file's SHA-256 checksum."""
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _frame_checksum(frame: pl.DataFrame) -> str:
-    """Hash a stable JSON representation of the supplied records.
-
-    Returns:
-        SHA-256 checksum of the canonical record representation.
-    """
-    payload = json.dumps(
-        [_json_safe_row(row) for row in frame.to_dicts()],
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _require_columns(frame: pl.DataFrame, columns: set[str]) -> None:
@@ -764,7 +885,7 @@ def load_dst_targets(
     normalized = bundle_path / "normalized"
     targets: dict[str, dict[str, float]] = {}
     specifications = (
-        ("folk_age_sampling", ("age", "age_band", "sex", "region", "municipality")),
+        ("folk_age_sampling", ("age", "age_band", "sex", "region")),
         ("folk_marital_sampling", ("marital_status",)),
         ("folk2_origin_country_marginal", ("origin_country_da",)),
     )
@@ -788,6 +909,10 @@ def load_dst_targets(
         targets["labour_market_status"] = _normalise_counts(
             source=ras209, value_column="labour_market_status"
         )
+        if "municipality" in ras209.columns:
+            targets["municipality"] = _normalise_counts(
+                source=ras209, value_column="municipality"
+            )
 
     job_source = _read_optional_target(
         normalized=normalized, stem="job_function_sex_marginal"
@@ -844,7 +969,11 @@ def _normalise_counts(*, source: pl.DataFrame, value_column: str) -> dict[str, f
         Normalised counts keyed by the displayed target value.
     """
     grouped = source.group_by(value_column).agg(pl.col("count").sum())
-    total = float(grouped.get_column("count").sum())
+    if value_column == "education_level":
+        grouped = grouped.filter(
+            pl.col(value_column).cast(pl.String).str.to_lowercase() != NOT_STATED
+        )
+    total = float(grouped.get_column("count").sum()) if grouped.height else 0.0
     if total <= 0:
         return {}
     return {

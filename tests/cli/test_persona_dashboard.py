@@ -1,22 +1,48 @@
 """Offline contracts for the standalone persona dashboard."""
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
+import httpx
 import polars as pl
 import pytest
 from click.testing import CliRunner
 
+import scripts.build_persona_dashboard as dashboard
 from scripts.build_persona_dashboard import (
     _distribution_chart,
     _generated_distribution,
+    _relationship_pairs,
     build_dashboard,
     load_dst_targets,
     main,
     persona_embedding,
 )
+
+
+@pytest.fixture
+def embedding_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[httpx.Client, list[dict[str, object]]]:
+    """Return an offline OpenAI-compatible transport and captured requests."""
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [float(index), 1.0, 2.0]}
+                    for index, _ in enumerate(payload["input"])
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(dashboard.httpx, "Client", lambda **_: client)
+    return client, requests
 
 
 def test_age_chart_is_sorted_numerically() -> None:
@@ -31,7 +57,7 @@ def test_age_chart_is_sorted_numerically() -> None:
         target={"100": 0.2, "18": 0.3, "19": 0.5},
     )
 
-    assert '\"x\":[\"18\",\"19\",\"100\"]' in chart
+    assert '"x":["18","19","100"]' in chart
 
 
 def test_cli_translates_invalid_parquet_to_click_error(tmp_path: Path) -> None:
@@ -59,7 +85,9 @@ def test_cli_translates_invalid_parquet_to_click_error(tmp_path: Path) -> None:
     assert "Traceback" not in result.output
 
 
-def test_dashboard_handles_frame_without_colour_fields(tmp_path: Path) -> None:
+def test_dashboard_handles_frame_without_colour_fields(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
     """Minimal valid records use one ungrouped embedding trace."""
     frame = pl.DataFrame(
         {
@@ -68,13 +96,17 @@ def test_dashboard_handles_frame_without_colour_fields(tmp_path: Path) -> None:
         }
     )
 
-    document = build_dashboard(frame=frame, bundle_path=tmp_path)
+    document = build_dashboard(
+        frame=frame, bundle_path=tmp_path, embedding_client=embedding_client[0]
+    )
 
     assert "All personas" in document
     assert "Persona text embedding" in document
 
 
-def test_dashboard_is_one_inline_plotly_html(tmp_path: Path) -> None:
+def test_dashboard_is_one_inline_plotly_html(
+    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+) -> None:
     """The CLI writes one file with no external Plotly script."""
     input_path = tmp_path / "generated-personas.parquet"
     bundle_path = tmp_path / "bundle" / "normalized"
@@ -94,6 +126,8 @@ def test_dashboard_is_one_inline_plotly_html(tmp_path: Path) -> None:
             str(bundle_path.parent),
             "--output",
             str(output_path),
+            "--embedding-base-url",
+            "http://test",
         ],
     )
 
@@ -103,8 +137,11 @@ def test_dashboard_is_one_inline_plotly_html(tmp_path: Path) -> None:
     assert document.count("<html") == 1
     assert "Plotly.newPlot" in document
     assert "cdn.plot.ly" not in document
-    assert "Anna beskriver en rolig hverdag" in document
-    assert "Clara møder venner" in document
+    assert "Unnamed persona" in document
+    assert "first_name" not in document
+    assert "Provenance and semantics" not in document
+    assert "TF-IDF" not in document
+    assert embedding_client[1]
 
 
 def _personas() -> pl.DataFrame:
@@ -196,7 +233,57 @@ def test_education_target_uses_generated_pooling_contract(tmp_path: Path) -> Non
     assert sum(target.values()) == pytest.approx(1.0)
 
 
-def test_identical_prose_embedding_is_exactly_repeatable(tmp_path: Path) -> None:
+def test_embedding_http_errors_are_not_silenced() -> None:
+    """Provider failures stop dashboard construction rather than fabricating points."""
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(503, json={"error": "unavailable"})
+        )
+    )
+    frame = pl.DataFrame({"persona": ["tekst"]})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        persona_embedding(frame=frame, http_client=client)
+
+
+def test_embedding_requests_are_batched_and_configured(
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
+) -> None:
+    """The local client sends bounded batches with the selected model alias."""
+    frame = pl.DataFrame({"persona": [f"tekst {index}" for index in range(5)]})
+
+    persona_embedding(
+        frame=frame,
+        base_url="http://embedding.test/v1",
+        model="test-model",
+        batch_size=2,
+        http_client=embedding_client[0],
+    )
+
+    inputs = [request["input"] for request in embedding_client[1]]
+    assert all(isinstance(value, list) for value in inputs)
+    assert [len(value) for value in inputs if isinstance(value, list)] == [2, 2, 1]
+    assert all(request["model"] == "test-model" for request in embedding_client[1])
+
+
+def test_horizontal_layout_has_card_title_only() -> None:
+    """Long labels use horizontal bars without a duplicated Plotly title."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"municipality": ["A very long municipality"]}),
+        field="municipality",
+        title="Municipalities",
+        source="RAS209 municipality marginal",
+        target=None,
+    )
+
+    assert '"orientation":"h"' in chart
+    assert '"title":{"text":"Municipalities"}' not in chart
+    assert chart.count("<h2>Municipalities</h2>") == 1
+
+
+def test_identical_prose_embedding_is_exactly_repeatable(
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
+) -> None:
     """Rank-deficient identical prose is stable across calls and processes."""
     frame = pl.DataFrame(
         {
@@ -204,24 +291,12 @@ def test_identical_prose_embedding_is_exactly_repeatable(tmp_path: Path) -> None
             "persona_id": ["p-1", "p-2", "p-3", "p-4"],
         }
     )
-    input_path = tmp_path / "identical.parquet"
-    frame.write_parquet(input_path)
-
-    first = persona_embedding(frame=frame)
-    second = persona_embedding(frame=frame)
-    code = (
-        "import json; import polars as pl; "
-        "from scripts.build_persona_dashboard import persona_embedding; "
-        f"frame = pl.read_parquet({str(input_path)!r}); "
-        "print(json.dumps(persona_embedding(frame=frame)))"
-    )
-    process = subprocess.run(
-        [sys.executable, "-c", code], check=True, capture_output=True, text=True
-    )
+    first = persona_embedding(frame=frame, http_client=embedding_client[0])
+    second = persona_embedding(frame=frame, http_client=embedding_client[0])
 
     assert first == second
-    assert first == [tuple(row) for row in json.loads(process.stdout)]
     assert {coordinate[1] for coordinate in first} == {0.0}
+    assert len(embedding_client[1]) == 2
 
 
 def test_job_function_series_use_equivalent_eligible_denominators(
@@ -275,7 +350,51 @@ def test_job_function_target_is_omitted_without_conditioning_fields(
     assert "job_function" not in targets
 
 
-def test_rank_deficient_embedding_is_exactly_repeatable() -> None:
+def test_municipality_target_comes_from_ras209_marginal(tmp_path: Path) -> None:
+    """Municipality overlays use RAS209 rather than the age-sampling table."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame({"municipality": ["Folk", "Folk"], "count": [100, 100]}).write_parquet(
+        normalized / "folk_age_sampling.parquet"
+    )
+    pl.DataFrame(
+        {
+            "municipality": ["Ras", "Ras", "Other"],
+            "education_level": ["primary", "primary", "primary"],
+            "labour_market_status": ["employed", "employed", "employed"],
+            "count": [1, 2, 1],
+        }
+    ).write_parquet(normalized / "ras209_joint_unpooled.parquet")
+
+    assert load_dst_targets(bundle_path=tmp_path)["municipality"] == {
+        "Ras": 0.75,
+        "Other": 0.25,
+    }
+
+
+def test_not_stated_is_removed_before_distribution_normalisation(
+    tmp_path: Path,
+) -> None:
+    """Education charts omit undisclosed values from both generated and target pools."""
+    frame = pl.DataFrame({"education_level": ["primary", "not_stated", "primary"]})
+    assert _generated_distribution(frame=frame, field="education_level") == {
+        "primary": 1.0
+    }
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame(
+        {
+            "education_level": ["primary", "not_stated"],
+            "labour_market_status": ["employed", "employed"],
+            "count": [2, 8],
+        }
+    ).write_parquet(normalized / "ras209_joint_unpooled.parquet")
+    assert load_dst_targets(bundle_path=tmp_path)["education_level"] == {"primary": 1.0}
+
+
+def test_rank_deficient_embedding_is_exactly_repeatable(
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
+) -> None:
     """Duplicate-document rank deficiency does not change repeated coordinates."""
     frame = pl.DataFrame(
         {
@@ -284,11 +403,40 @@ def test_rank_deficient_embedding_is_exactly_repeatable() -> None:
         }
     )
 
-    assert persona_embedding(frame=frame) == persona_embedding(frame=frame)
+    assert persona_embedding(
+        frame=frame, http_client=embedding_client[0]
+    ) == persona_embedding(frame=frame, http_client=embedding_client[0])
 
 
-def test_tied_singular_embedding_is_exactly_repeatable_across_processes(
-    tmp_path: Path,
+def test_relationship_pair_chart_uses_partnered_gender_pairs() -> None:
+    """The derived chart has only the three labelled partnered combinations."""
+    frame = pl.DataFrame(
+        {
+            "sex": ["male", "male", "female", "female"],
+            "partner_gender": ["female", "male", "female", "male"],
+            "current_relationship_status": [
+                "partnered",
+                "partnered",
+                "partnered",
+                "not_partnered",
+            ],
+        }
+    )
+
+    assert _relationship_pairs(frame=frame) == ["man-woman", "man-man", "woman-woman"]
+    chart = _distribution_chart(
+        frame=frame,
+        field="relationship_pair",
+        title="Partner relationship pair",
+        source="synthetic",
+        target=None,
+    )
+    assert all(label in chart for label in ("man-woman", "man-man", "woman-woman"))
+    assert "Partner gender" not in chart
+
+
+def test_tied_singular_embedding_is_exactly_repeatable(
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
 ) -> None:
     """Tied singular subspaces have identical coordinates in fresh processes."""
     frame = pl.DataFrame(
@@ -306,19 +454,8 @@ def test_tied_singular_embedding_is_exactly_repeatable_across_processes(
             "persona_id": [f"p-{index}" for index in range(8)],
         }
     )
-    input_path = tmp_path / "tied-singular-values.parquet"
-    frame.write_parquet(input_path)
-    code = (
-        "import json; import polars as pl; "
-        "from scripts.build_persona_dashboard import persona_embedding; "
-        f"frame = pl.read_parquet({str(input_path)!r}); "
-        "print(json.dumps(persona_embedding(frame=frame), separators=(',', ':')))"
-    )
-
     outputs = [
-        subprocess.run(
-            [sys.executable, "-c", code], check=True, capture_output=True, text=True
-        ).stdout
+        persona_embedding(frame=frame, http_client=embedding_client[0])
         for _ in range(4)
     ]
 
