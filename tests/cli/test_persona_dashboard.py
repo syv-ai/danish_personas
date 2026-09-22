@@ -269,3 +269,41 @@ def test_rank_deficient_embedding_is_exactly_repeatable() -> None:
     )
 
     assert persona_embedding(frame=frame) == persona_embedding(frame=frame)
+
+
+def test_tied_singular_embedding_is_exactly_repeatable_across_processes(
+    tmp_path: Path,
+) -> None:
+    """Tied singular subspaces have identical coordinates in fresh processes."""
+    frame = pl.DataFrame(
+        {
+            "persona": [
+                "alpha beta",
+                "alpha beta",
+                "gamma delta",
+                "gamma delta",
+                "epsilon zeta",
+                "epsilon zeta",
+                "theta iota",
+                "theta iota",
+            ],
+            "persona_id": [f"p-{index}" for index in range(8)],
+        }
+    )
+    input_path = tmp_path / "tied-singular-values.parquet"
+    frame.write_parquet(input_path)
+    code = (
+        "import json; import polars as pl; "
+        "from scripts.build_persona_dashboard import persona_embedding; "
+        f"frame = pl.read_parquet({str(input_path)!r}); "
+        "print(json.dumps(persona_embedding(frame=frame), separators=(',', ':')))"
+    )
+
+    outputs = [
+        subprocess.run(
+            [sys.executable, "-c", code], check=True, capture_output=True, text=True
+        ).stdout
+        for _ in range(4)
+    ]
+
+    assert outputs[0] == outputs[1]
