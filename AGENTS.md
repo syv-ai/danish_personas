@@ -49,7 +49,7 @@ files and prompts are interpreted relative to that working directory.
 
 | Script                       | Responsibility                                      |
 | ---------------------------- | --------------------------------------------------- |
-| `generate_persona.py`        | Guarded single-request LLM run for one persona.     |
+| `generate_persona.py`        | Schema-only LLM run; unsafe for release evidence.   |
 | `build_dataset.py`           | Builds and optionally publishes persona datasets.   |
 | `build_persona_dashboard.py` | Builds a self-contained offline dashboard.          |
 | `fix_dot_env_file.py`        | Creates `.env`; may configure local Git identity.   |
@@ -167,8 +167,9 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 4. Validate the smoke run, then generate and validate the statistical run.
 5. Freeze the stratified text-development sample.
 6. Configure `config/config.yaml` for the intended provider and model.
-7. Validate each persona run; `generate_persona.py` emits one row, while each
-   `build_dataset.py` shard is capped at five rows before merge and pilot validation.
+7. Generate the direct schema-only persona only for exploratory output; do not use it
+   as release evidence. Validate each guarded persona run; each `build_dataset.py` shard
+   is capped at five rows before merge and pilot validation.
 
 The normal deterministic stages are orchestrated by
 `danish_personas.workflows.prepare_standard_sample()`. The public persona scripts call
@@ -238,7 +239,9 @@ current contracts have been regenerated; use placeholders in instructions.
 ## Non-obvious gotchas and safety
 
 - `generate_persona.py` and `build_dataset.py` load Hydra `config/config.yaml` and
-  execute immediately. They require provider reachability and may spend money. Dataset
+  execute immediately. The direct command retains strict schema and upstream checks but
+  skips generated-content semantic and final-run validation, so it is unsafe for release
+  evidence. They require provider reachability and may spend money. Dataset
   generation has its own global request limit and requires current input and output
   prices; use zero only for a genuinely free endpoint. `build_dataset.concurrency` can
   issue requests in parallel.

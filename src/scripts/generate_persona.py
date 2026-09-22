@@ -1,4 +1,4 @@
-"""Generate and emit one validated Danish persona."""
+"""Generate and emit one schema-valid, unguarded Danish persona."""
 
 import logging
 import secrets
@@ -13,8 +13,10 @@ from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
 from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pipeline import generate_personas
-from danish_personas.generation.policy import ChecksumValidationPolicy
-from danish_personas.generation.report import validate_persona_run
+from danish_personas.generation.policy import (
+    ChecksumValidationPolicy,
+    ContentValidationPolicy,
+)
 from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import sha256_file
 from danish_personas.models import FrozenSampleManifest
@@ -31,11 +33,11 @@ enable_hydra_cli()
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(config: DictConfig) -> None:
-    """Generate exactly one persona and write only its text to stdout.
+    """Generate exactly one schema-valid persona and write only its text to stdout.
 
     Raises:
         SystemExit:
-            If configuration, generation, or validation fails.
+            If configuration or schema-only generation fails.
     """
     configure_cli_logging()
     try:
@@ -50,7 +52,7 @@ def _run(*, config: DictConfig) -> None:
 
     Raises:
         ValueError:
-            If generation or validation produces an invalid persona.
+            If generation produces a response that fails schema parsing.
     """
     script_config = load_script_config(
         config, section="generate_persona", model=GeneratePersonaConfig
@@ -81,20 +83,16 @@ def _run(*, config: DictConfig) -> None:
         rows=1,
         offset=sampled_offset,
         checksum_policy=ChecksumValidationPolicy.IGNORE,
+        content_validation_policy=ContentValidationPolicy.SCHEMA_ONLY,
     )
-    LOGGER.info("Provider generation finished; validating generated output")
-    report = validate_persona_run(
-        run_dir=run_dir, checksum_policy=ChecksumValidationPolicy.IGNORE
-    )
-    if not report.passed:
-        raise ValueError("Generated persona failed validation")
+    LOGGER.info("Provider generation finished; reading schema-valid output")
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
     if output.height != 1 or "persona" not in output.columns:
-        raise ValueError("Validated persona run did not contain exactly one persona")
+        raise ValueError("Schema-only persona run did not contain exactly one persona")
     persona = output.item(row=0, column="persona")
     if not isinstance(persona, str):
-        raise ValueError("Validated persona text was not a string")
-    LOGGER.info("Persona validation passed; emitting validated text")
+        raise ValueError("Schema-only persona text was not a string")
+    LOGGER.info("Schema parsing passed; emitting persona text")
     sys.stdout.write(f"{persona}\n")
 
 

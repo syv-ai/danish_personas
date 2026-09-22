@@ -27,17 +27,22 @@ validation remain importable maintenance services. They are not public scripts.
 
 ## Persona commands
 
-`generate_persona.py` validates the upstream frozen sample and generated run, samples
-one frozen demographic locally, starts a fresh model request, and writes only the final
-Danish persona plus a newline to stdout. It loads Hydra `config/config.yaml` by default
-and runs immediately. Direct invocations do not reuse earlier persona checkpoints.
-Generated evidence is stored below `data/personas` by default. Diagnostics use stderr.
-This command deliberately uses an explicit checksum-tolerant validation policy: stored
-checksum mismatches alone do not block the command, while schema, content, provenance,
-safety, grounding, and accounting checks remain active. Library validation,
-`build_dataset.py`, and release verification remain checksum-strict by default; this
-exception increases the risk that altered artefacts are used and requires review of the
-stored evidence before reuse. An alternative invocation is:
+`generate_persona.py` validates upstream provenance, samples one frozen demographic
+locally, starts a fresh model request, and writes only a schema-valid Danish persona
+plus a newline to stdout. It loads Hydra `config/config.yaml` by default and runs
+immediately. Direct invocations do not reuse earlier persona checkpoints. Generated
+evidence is stored below `data/personas` by default. Diagnostics use stderr.
+
+This command deliberately uses an explicit checksum-tolerant and schema-only content
+policy. Stored checksum mismatches alone do not block it, and generated JSON must still
+parse as strict `GeneratedPersona`, but Danish, grounding, safety/name/sensitive-term,
+relationship/title, duplicate, checkpoint-content, and final-run semantic validation are
+skipped. The policy is recorded in the manifest and checkpoints and changes the
+provenance context/run ID, so schema-only and guarded artefacts cannot collide or resume
+each other. One completion is attempted per row; only transport-level retries can add
+provider requests. The output is unsafe for release evidence. Library validation,
+`build_dataset.py`, pilots, and release verification remain guarded and checksum-strict
+by default. An alternative invocation is:
 
 ```bash
 uv run src/scripts/generate_persona.py \

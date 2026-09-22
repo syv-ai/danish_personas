@@ -17,6 +17,7 @@ from .job_titles import (
 )
 from .models import GeneratedAttributes, GeneratedPersona, PersonaDescriptions
 from .personality import all_personality_phrases, all_personality_tendencies
+from .policy import ContentValidationPolicy
 
 VALIDATOR_VERSION = "persona-safety-v20"
 __all__ = ["EDUCATION_DANISH"]
@@ -172,6 +173,9 @@ def parse_generated_persona(
     demographic: DemographicRecord | c.Mapping[str, object],
     *,
     job_title_mapping: JobFunctionTitleMapping | None = None,
+    content_validation_policy: ContentValidationPolicy = (
+        ContentValidationPolicy.GUARDED
+    ),
 ) -> GeneratedPersona:
     """Parse and validate one combined attributes-and-persona response.
 
@@ -183,11 +187,15 @@ def parse_generated_persona(
             If the JSON, grounding, specificity, or safety rules are invalid.
     """
     try:
-        generated = GeneratedPersona.model_validate_json(content)
+        generated = GeneratedPersona.model_validate_json(
+            content, context={"content_validation_policy": content_validation_policy}
+        )
     except ValidationError as error:
         raise ValueError(
             _format_schema_error(error=error, fields=_GENERATED_PERSONA_FIELDS)
         ) from error
+    if content_validation_policy is ContentValidationPolicy.SCHEMA_ONLY:
+        return generated
     attributes = parse_attributes(
         GeneratedAttributes.model_validate(
             {
