@@ -4,8 +4,9 @@
 to build the Danish persona demographic distributions. It holds seven Statistics Denmark
 StatBank table snapshots and the official Statistics Denmark classification snapshot
 that supplies the region, landsdel, and municipality hierarchy. The archive contains
-only public aggregate data and no personal microdata. The three public persona scripts restore its 45 files automatically when the standard
-input workflow needs them. The same operation remains available as the importable
+only public aggregate data and no personal microdata. The three public persona scripts
+restore its 45 files automatically when the standard input workflow needs them. The
+same operation remains available as the importable
 `danish_personas.sources.archive.restore_raw_sources` maintenance service. It creates
 `data/raw-hardened-20260919/`. The merged 20260918 source chain is retained unchanged.
 Derived source bundles, records, and LLM outputs remain ignored by Git and can be rebuilt
@@ -33,7 +34,7 @@ interests, personality, or visual traits. RAS209 remains locked to all 99 offici
 level-3 areas, including Christiansø.
 
 Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
-and generation contract 5 with validator `persona-safety-v19`. The default frozen
+and generation contract 5 with validator `persona-safety-v20`. The default frozen
 sample mode is population-proportional; stratified round-robin remains an explicit
 alternative. No new bundle, deterministic run, frozen sample, persona output, or
 release has been generated for this contract change. Existing IDs and checksums are

@@ -335,7 +335,7 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         "maximum_validation_attempts": 2,
         "maximum_total_requests": 5,
         "retry_backoff_seconds": 0.0,
-        "maximum_rows_per_shard": 2,
+        "maximum_rows_per_shard": 5,
         "max_tokens": None,
         "enable_thinking": None,
         "reasoning_effort": None,

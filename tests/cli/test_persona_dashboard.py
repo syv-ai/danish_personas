@@ -16,6 +16,7 @@ from scripts.build_persona_dashboard import (
     _distribution_chart,
     _generated_distribution,
     _relationship_pairs,
+    _vectors_from_response,
     build_dashboard,
     load_dst_targets,
     persona_embedding,
@@ -213,6 +214,27 @@ def _personas() -> pl.DataFrame:
     )
 
 
+def test_domestic_origin_is_removed_and_remaining_values_are_renormalised() -> None:
+    """The origin chart compares only non-Danish origin labels."""
+    frame = pl.DataFrame(
+        {"origin_country_da": ["Danmark", "Danmark", "Polen", "Tyskland"]}
+    )
+    assert _generated_distribution(frame=frame, field="origin_country_da") == {
+        "Polen": 0.5,
+        "Tyskland": 0.5,
+    }
+    chart = _distribution_chart(
+        frame=frame,
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"Danmark": 0.8, "Polen": 0.15, "Tyskland": 0.05},
+    )
+    assert "Danmark" not in chart
+    assert "Polen" in chart
+    assert "Tyskland" in chart
+
+
 def test_dst_targets_are_normalised_and_aggregated(tmp_path: Path) -> None:
     """Prepared target counts become proportions by semantic value."""
     normalized = tmp_path / "normalized"
@@ -263,6 +285,20 @@ def test_education_target_uses_generated_pooling_contract(tmp_path: Path) -> Non
 
     assert set(target) == set(generated)
     assert sum(target.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("indices", [[0, 0], [-1, 1], [0, 2], [True, 1], [0, None]])
+def test_embedding_rejects_invalid_batch_indices(indices: list[object]) -> None:
+    """Embedding vectors are ordered only after an exact index-set check."""
+    payload = {
+        "data": [
+            {"index": index, "embedding": [float(position), 1.0]}
+            for position, index in enumerate(indices)
+        ]
+    }
+
+    with pytest.raises(ValueError, match="indices"):
+        _vectors_from_response(payload=payload, expected=2)
 
 
 def test_embedding_http_errors_are_not_silenced() -> None:
@@ -382,6 +418,19 @@ def test_job_function_target_is_omitted_without_conditioning_fields(
     assert "job_function" not in targets
 
 
+def test_long_horizontal_charts_expand_to_prevent_label_overlap() -> None:
+    """Each horizontal category receives enough vertical plot space."""
+    labels = [f"Municipality {index}" for index in range(30)]
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"municipality": labels}),
+        field="municipality",
+        title="Municipalities",
+        source="RAS209",
+        target=None,
+    )
+    assert 'style="height:790px"' in chart
+
+
 def test_municipality_target_comes_from_ras209_marginal(tmp_path: Path) -> None:
     """Municipality overlays use RAS209 rather than the age-sampling table."""
     normalized = tmp_path / "normalized"
@@ -422,6 +471,31 @@ def test_not_stated_is_removed_before_distribution_normalisation(
         }
     ).write_parquet(normalized / "ras209_joint_unpooled.parquet")
     assert load_dst_targets(bundle_path=tmp_path)["education_level"] == {"primary": 1.0}
+
+
+def test_ras209_h90_is_removed_from_all_dashboard_targets(tmp_path: Path) -> None:
+    """H90 is excluded before education, labour, and municipality overlays are mixed."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    source = pl.DataFrame(
+        {
+            "municipality": ["A", "A", "B"],
+            "education_level": ["primary", "not_stated", "primary"],
+            "education_source_code": ["H10", "H90", "H10"],
+            "labour_market_status": ["employed", "unemployed", "employed"],
+            "count": [10, 90, 10],
+        }
+    )
+    path = normalized / "ras209_joint_unpooled.parquet"
+    source.write_parquet(path)
+    original = path.read_bytes()
+
+    targets = load_dst_targets(bundle_path=tmp_path)
+
+    assert targets["education_level"] == {"primary": 1.0}
+    assert targets["labour_market_status"] == {"employed": 1.0}
+    assert targets["municipality"] == {"A": 0.5, "B": 0.5}
+    assert path.read_bytes() == original
 
 
 def test_rank_deficient_embedding_is_exactly_repeatable(

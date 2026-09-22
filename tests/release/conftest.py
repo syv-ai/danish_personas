@@ -39,7 +39,7 @@ REVIEWED_AT = datetime(2026, 9, 17, tzinfo=timezone.utc)
 
 @pytest.fixture
 def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
-    """Return a v4 row with a non-employee status and null job title."""
+    """Return a v5 row with a non-employee status and null job title."""
     return (
         pl.read_parquet(release_case.output)
         .head(1)
@@ -54,10 +54,11 @@ def nonemployee_output(release_case: ReleaseCase) -> pl.DataFrame:
             pl.lit(None, dtype=pl.String).alias("job_title"),
             pl.lit(
                 "Han er 35 år og bor i Aarhus. Han kommer fra Danmark, har en "
-                "ungdomsuddannelse og er ledig. I hverdagen bruger han planlægning, "
-                "og i fritiden dyrker han vandring og musik sammen med lokale "
-                "fællesskaber. Han har ofte tendens til at være nysgerrig, når han "
-                "møder nye muligheder. At udvikle nye færdigheder."
+                "ungdomsuddannelse og er ledig. Han har aldrig været gift og er "
+                "single. I hverdagen bruger han planlægning, og i fritiden dyrker "
+                "han vandring og musik med lokale fællesskaber. Han har ofte "
+                "tendens til at være nysgerrig, når han møder nye muligheder. "
+                "At udvikle nye færdigheder."
             ).alias("persona"),
         )
     )

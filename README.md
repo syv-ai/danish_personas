@@ -18,7 +18,7 @@ and evidence are required before
 any release claim.
 
 Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
-and generation contract 5 with validator `persona-safety-v19`. The default frozen
+and generation contract 5 with validator `persona-safety-v20`. The default frozen
 sample mode is population-proportional; stratified round-robin remains an explicit
 alternative. No new bundle, deterministic run, frozen sample, persona output, or
 release has been generated for this contract change. Existing IDs and checksums are
@@ -205,7 +205,6 @@ independently verifies it before uploading to a Hugging Face dataset pull reques
 Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
 tokens are never CLI arguments. Re-running after review resumes already validated
 generation shards.
-
 Build a self-contained offline dashboard with explicit Hydra path overrides:
 
 ```bash
