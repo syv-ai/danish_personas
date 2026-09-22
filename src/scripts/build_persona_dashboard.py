@@ -65,6 +65,8 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 32
 EMBEDDING_DECIMALS = 12
 NOT_STATED = "not_stated"
 DOMESTIC_ORIGIN = "danmark"
+DOMESTIC_ORIGIN_LABELS = frozenset({"danmark", "denmark"})
+ORIGIN_ELIGIBILITY_COLUMN = "eligible_for_sampling"
 HORIZONTAL_FIELDS = frozenset(
     {
         "municipality",
@@ -244,11 +246,13 @@ def _distribution_chart(
     generated_counts = _generated_distribution(frame=frame, field=field)
     labels = list(generated_counts)
     if target and field in {"education_level", "origin_country_da"}:
-        excluded = NOT_STATED if field == "education_level" else DOMESTIC_ORIGIN
+        excluded = (
+            {NOT_STATED} if field == "education_level" else DOMESTIC_ORIGIN_LABELS
+        )
         target = {
             label: value
             for label, value in target.items()
-            if label.casefold() != excluded
+            if label.casefold() not in excluded
         }
         total_target = sum(target.values())
         if total_target > 0:
@@ -276,8 +280,10 @@ def _distribution_chart(
                 name="DST target", x=labels, y=overlay, mode="lines+markers"
             )
         note = (
-            "DST target overlay is descriptive: sample design and finite size can "
-            "produce differences, so this is not a statistical acceptance test."
+            "Overlay is the threshold-eligible DST universe. Small persona "
+            "outputs/shards cannot generally reproduce the full marginal; "
+            "merged/frozen outputs are the meaningful comparison, not a statistical "
+            "acceptance test."
         )
     chart_height = min(6_000, max(390, 130 + 22 * len(labels))) if horizontal else 390
     figure.update_layout(
@@ -874,10 +880,13 @@ def load_dst_targets(
     """
     normalized = bundle_path / "normalized"
     targets: dict[str, dict[str, float]] = {}
+    origin_target = _origin_dashboard_target(normalized=normalized)
+    if origin_target is not None:
+        targets["origin_country_da"] = origin_target
+
     specifications = (
         ("folk_age_sampling", ("age", "age_band", "sex", "region")),
         ("folk_marital_sampling", ("marital_status",)),
-        ("folk2_origin_country_marginal", ("origin_country_da",)),
     )
     for stem, fields in specifications:
         source = _read_optional_target(normalized=normalized, stem=stem)
@@ -975,6 +984,74 @@ def _eligible_ras209_dashboard_rows(*, source: pl.DataFrame) -> pl.DataFrame:
             pl.col("education_level").cast(pl.String).str.to_lowercase() != NOT_STATED
         )
     return eligible
+
+
+def _origin_dashboard_target(*, normalized: Path) -> dict[str, float] | None:
+    """Load the eligible, non-Danish origin target for display.
+
+    Returns:
+        Normalised target proportions, or ``None`` when the target is absent or
+        has no recognised origin value column.
+    """
+    source = _read_origin_target(normalized=normalized)
+    if source is None:
+        return None
+    source = source.filter(pl.col(ORIGIN_ELIGIBILITY_COLUMN))
+    value_column = _target_column(field="origin_country_da", columns=source.columns)
+    if value_column is None:
+        return None
+    return _normalise_counts(
+        source=_without_domestic_origin(source=source, value_column=value_column),
+        value_column=value_column,
+    )
+
+
+def _read_origin_target(*, normalized: Path) -> pl.DataFrame | None:
+    """Read and validate the origin-country dashboard target.
+
+    Returns:
+        The target frame, or ``None`` when the target is absent.
+
+    Raises:
+        ValueError:
+            If an existing target does not carry a non-null Boolean eligibility
+            column or a count column.
+    """
+    path = normalized / "folk2_origin_country_marginal.parquet"
+    if not path.exists():
+        return None
+    source = pl.read_parquet(path)
+    eligibility = source.schema.get(ORIGIN_ELIGIBILITY_COLUMN)
+    if (
+        eligibility != pl.Boolean
+        or source.get_column(ORIGIN_ELIGIBILITY_COLUMN).null_count()
+    ):
+        raise ValueError(
+            "Origin-country target "
+            f"{path} must contain a non-null Boolean "
+            f"{ORIGIN_ELIGIBILITY_COLUMN!r} column; legacy or malformed targets "
+            "are unsupported"
+        )
+    if "count" not in source.columns:
+        raise ValueError(f"Origin-country target {path} is missing its 'count' column")
+    return source
+
+
+def _without_domestic_origin(
+    *, source: pl.DataFrame, value_column: str
+) -> pl.DataFrame:
+    """Remove Danish origin from a target before normalising its denominator.
+
+    Returns:
+        A target frame without Danish origin rows.
+    """
+    return source.filter(
+        pl.col(value_column).is_not_null()
+        & ~pl.col(value_column)
+        .cast(pl.String)
+        .str.to_lowercase()
+        .is_in(DOMESTIC_ORIGIN_LABELS)
+    )
 
 
 def _normalise_counts(*, source: pl.DataFrame, value_column: str) -> dict[str, float]:
