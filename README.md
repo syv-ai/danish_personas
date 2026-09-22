@@ -174,26 +174,21 @@ provider. The target is synthetic, non-public, not observed individual data, and
 not describe sexual orientation. Source codes, resolution fields, the English origin
 label, and origin-contract metadata remain withheld.
 
-For a larger dataset, enter the provider's current list prices. Use zero only when the
-configured endpoint is genuinely free:
+For a larger dataset, configure the row count, concurrency, and request limit as
+needed:
 
 ```bash
-read -r -p "Current input price (USD per million tokens): " \
-  INPUT_PRICE_PER_MILLION
-read -r -p "Current output price (USD per million tokens): " \
-  OUTPUT_PRICE_PER_MILLION
-
 uv run src/scripts/build_dataset.py \
   build_dataset.rows=10 \
   build_dataset.concurrency=1 \
-  build_dataset.request_limit=30 \
-  build_dataset.input_price_per_million="$INPUT_PRICE_PER_MILLION" \
-  build_dataset.output_price_per_million="$OUTPUT_PRICE_PER_MILLION"
+  build_dataset.request_limit=30
 ```
 
-The builder limits each shard to five rows, validates and merges all shards, records
-request/token/cost accounting, shows `tqdm` progress on stderr, and writes only the
-completed Parquet path to stdout.
+Pricing is not a public Hydra setting. The builder uses zero list-price values for
+internal accounting while retaining provider-reported costs when available. It limits
+each shard to five rows, validates and merges all shards, records request/token/cost
+accounting, shows `tqdm` progress on stderr, and writes only the completed Parquet path
+to stdout.
 
 Setting `build_dataset.hf_repo=OWNER/DATASET` additionally requires the
 `build_dataset.attestation`, `build_dataset.policy`, `build_dataset.dataset_card`, and

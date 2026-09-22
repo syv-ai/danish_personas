@@ -39,8 +39,8 @@ def run_pilot(
     concurrency: int,
     delay_between_batches: float,
     maximum_total_requests: int | None,
-    input_price_per_million: float,
-    output_price_per_million: float,
+    input_price_per_million: float = 0.0,
+    output_price_per_million: float = 0.0,
     progress_callback: c.Callable[[int], None] | None = None,
 ) -> Path:
     """Generate and merge a validated, resumable persona pilot.

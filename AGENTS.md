@@ -242,9 +242,9 @@ current contracts have been regenerated; use placeholders in instructions.
   execute immediately. The direct command retains strict schema and upstream checks but
   skips generated-content semantic and final-run validation, so it is unsafe for release
   evidence. They require provider reachability and may spend money. Dataset
-  generation has its own global request limit and requires current input and output
-  prices; use zero only for a genuinely free endpoint. `build_dataset.concurrency` can
-  issue requests in parallel.
+  generation has its own global request limit. Public dataset builds use zero list-price
+  values for internal accounting, while direct library callers may provide current
+  input and output prices. `build_dataset.concurrency` can issue requests in parallel.
 - `build_dataset.py build_dataset.hf_repo=...` may upload only a freshly packaged and
   independently
   verified release after the configured policy and blinded-review gates pass. It creates

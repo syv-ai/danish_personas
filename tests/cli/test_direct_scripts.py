@@ -49,8 +49,6 @@ def test_build_dataset_prints_merged_path(
             f"build_dataset.output_dir={tmp_path / 'output'}",
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
-            "build_dataset.input_price_per_million=0",
-            "build_dataset.output_price_per_million=0",
             "llm.model=overridden-model",
         ]
     )
@@ -60,9 +58,18 @@ def test_build_dataset_prints_merged_path(
     captured = capsys.readouterr()
     assert captured.out == f"{output_path}\n"
     assert "Starting persona dataset build" in captured.err
+    assert calls["input_price_per_million"] == 0.0
+    assert calls["output_price_per_million"] == 0.0
     config_path = calls["config_path"]
     assert isinstance(config_path, Path)
     assert load_generation_config(config_path).model == "overridden-model"
+
+
+def test_build_dataset_default_request_limit_is_30() -> None:
+    """The public dataset command has a bounded default request budget."""
+    config = _config(overrides=[])
+
+    assert config.build_dataset.request_limit == 30
 
 
 def _config(*, overrides: list[str]) -> DictConfig:
@@ -106,8 +113,6 @@ def test_build_dataset_release_evidence_fails_before_all_work(
         overrides=[
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
-            "build_dataset.input_price_per_million=0",
-            "build_dataset.output_price_per_million=0",
             "build_dataset.hf_repo=org/dataset",
             *[f"build_dataset.{name}={path}" for name, path in evidence.items()],
             f"build_dataset.output_dir={tmp_path / 'output'}",
@@ -187,8 +192,6 @@ def test_build_dataset_release_evidence_rejects_bad_checksum(
         overrides=[
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
-            "build_dataset.input_price_per_million=0",
-            "build_dataset.output_price_per_million=0",
             "build_dataset.hf_repo=org/dataset",
             *[f"build_dataset.{name}={path}" for name, path in evidence.items()],
         ]
@@ -220,8 +223,6 @@ def test_build_dataset_release_evidence_rejects_empty_content(
         overrides=[
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
-            "build_dataset.input_price_per_million=0",
-            "build_dataset.output_price_per_million=0",
             "build_dataset.hf_repo=org/dataset",
             *[f"build_dataset.{name}={path}" for name, path in evidence.items()],
         ]
@@ -274,8 +275,6 @@ def test_build_dataset_requires_release_inputs_before_running(
         overrides=[
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
-            "build_dataset.input_price_per_million=0",
-            "build_dataset.output_price_per_million=0",
             "build_dataset.hf_repo=org/dataset",
         ]
     )

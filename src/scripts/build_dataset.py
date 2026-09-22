@@ -79,8 +79,8 @@ def _run(*, config: DictConfig) -> None:
             concurrency=script_config.concurrency,
             delay_between_batches=0.0,
             maximum_total_requests=script_config.request_limit,
-            input_price_per_million=script_config.input_price_per_million,
-            output_price_per_million=script_config.output_price_per_million,
+            input_price_per_million=0.0,
+            output_price_per_million=0.0,
             progress_callback=progress.update,
         )
         LOGGER.info("Generation complete; validating persona dataset")

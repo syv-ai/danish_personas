@@ -36,9 +36,7 @@ build_dataset:
   output_dir: data/persona-datasets
   rows: null
   concurrency: 4
-  request_limit: null
-  input_price_per_million: null
-  output_price_per_million: null
+  request_limit: 30
   hf_repo: null
   attestation: null
   policy: null
