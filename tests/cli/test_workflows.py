@@ -120,7 +120,7 @@ def test_standard_sample_rebuilds_invalid_existing_artifact(
     monkeypatch.setattr(
         workflows, "validate_demographics", lambda **_: SimpleNamespace(passed=True)
     )
-    monkeypatch.setattr(workflows, "_run_id", lambda **_: "statistical-run")
+    monkeypatch.setattr(workflows, "_run_id", lambda *_args, **_kwargs: "statistical-run")
 
     sample = tmp_path / "sample.parquet"
     manifest = sample.with_suffix(".manifest.json")
