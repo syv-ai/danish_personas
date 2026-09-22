@@ -1,12 +1,15 @@
 """Offline contracts for the standalone persona dashboard."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
 import polars as pl
 import pytest
-from click.testing import CliRunner
+from hydra import compose, initialize_config_dir
+from omegaconf import DictConfig
 
 import scripts.build_persona_dashboard as dashboard
 from scripts.build_persona_dashboard import (
@@ -15,9 +18,10 @@ from scripts.build_persona_dashboard import (
     _relationship_pairs,
     build_dashboard,
     load_dst_targets,
-    main,
     persona_embedding,
 )
+
+ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture
@@ -60,29 +64,59 @@ def test_age_chart_is_sorted_numerically() -> None:
     assert '"x":["18","19","100"]' in chart
 
 
-def test_cli_translates_invalid_parquet_to_click_error(tmp_path: Path) -> None:
-    """Malformed input produces a normal Click failure rather than a traceback."""
+def test_cli_translates_invalid_parquet_to_hydra_error(tmp_path: Path) -> None:
+    """Malformed input produces a normal Hydra failure rather than a traceback."""
     input_path = tmp_path / "invalid.parquet"
     bundle_path = tmp_path / "bundle"
     input_path.write_text("not parquet", encoding="utf-8")
     bundle_path.mkdir()
 
-    result = CliRunner().invoke(
-        main,
-        [
-            "--input",
-            str(input_path),
-            "--bundle",
-            str(bundle_path),
-            "--output",
-            str(tmp_path / "dashboard.html"),
-        ],
+    result = _run_dashboard(
+        input_path=input_path,
+        bundle_path=bundle_path,
+        output_path=tmp_path / "dashboard.html",
+        cwd=tmp_path,
     )
 
-    assert result.exit_code != 0
-    assert result.exception is not None
-    assert "Error:" in result.output
-    assert "Traceback" not in result.output
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "ERROR parquet: File out of specification" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / ".hydra").exists()
+
+
+def _run_dashboard(
+    *, input_path: Path, bundle_path: Path, output_path: Path, cwd: Path
+) -> subprocess.CompletedProcess[str]:
+    """Run the public dashboard script with Hydra overrides.
+
+    Returns:
+        The completed offline subprocess.
+    """
+    script = ROOT / "src/scripts/build_persona_dashboard.py"
+    return subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            f"persona_dashboard.input={input_path}",
+            f"persona_dashboard.bundle={bundle_path}",
+            f"persona_dashboard.output={output_path}",
+        ],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _dashboard_config(*, overrides: list[str]) -> DictConfig:
+    """Compose dashboard settings from the canonical Hydra entry point.
+
+    Returns:
+        Composed configuration with the supplied overrides.
+    """
+    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "config")):
+        return compose(config_name="config", overrides=overrides)
 
 
 def test_dashboard_handles_frame_without_colour_fields(
@@ -105,7 +139,9 @@ def test_dashboard_handles_frame_without_colour_fields(
 
 
 def test_dashboard_is_one_inline_plotly_html(
-    tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
+    tmp_path: Path,
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The CLI writes one file with no external Plotly script."""
     input_path = tmp_path / "generated-personas.parquet"
@@ -116,22 +152,18 @@ def test_dashboard_is_one_inline_plotly_html(
     pl.DataFrame({"age": [30, 40], "count": [1, 3]}).write_parquet(
         bundle_path / "folk_age_sampling.parquet"
     )
-
-    result = CliRunner().invoke(
-        main,
-        [
-            "--input",
-            str(input_path),
-            "--bundle",
-            str(bundle_path.parent),
-            "--output",
-            str(output_path),
-            "--embedding-base-url",
-            "http://test",
-        ],
+    config = _dashboard_config(
+        overrides=[
+            f"persona_dashboard.input={input_path}",
+            f"persona_dashboard.bundle={bundle_path.parent}",
+            f"persona_dashboard.output={output_path}",
+            "persona_dashboard.embedding_base_url=http://test",
+        ]
     )
 
-    assert result.exit_code == 0, result.output
+    dashboard._run(config=config)
+
+    assert capsys.readouterr().out == f"{output_path}\n"
     document = output_path.read_text(encoding="utf-8")
     assert document.startswith("<!doctype html>")
     assert document.count("<html") == 1

@@ -1,20 +1,58 @@
-# base_url: http://127.0.0.1:18080/v1
-# model: gpt-5.6-sol
-# api_key_env: null
-base_url: https://api.melious.ai/v1
-model: deepseek-v4-flash-0731
-api_key_env: MELIOUS_API_KEY
+defaults:
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
 
-timeout_seconds: 300.0
-maximum_http_attempts: 3
-maximum_validation_attempts: 2
-maximum_total_requests: 15
-retry_backoff_seconds: 1.0
-maximum_rows_per_shard: 5
-max_tokens: null
-enable_thinking: null
-reasoning_effort: null
-response_format: json_schema
-prompt: config/persona-da.md
-job_title_mapping: config/job-function-titles.yaml
-origin_label_contract: config/folk2-ieland-labels-da.yaml
+llm:
+  # base_url: http://127.0.0.1:18080/v1
+  # model: gpt-5.6-sol
+  # api_key_env: null
+  base_url: https://api.melious.ai/v1
+  model: deepseek-v4-flash-0731
+  api_key_env: MELIOUS_API_KEY
+  timeout_seconds: 300.0
+  maximum_http_attempts: 3
+  maximum_validation_attempts: 2
+  maximum_total_requests: 15
+  retry_backoff_seconds: 1.0
+  maximum_rows_per_shard: 5
+  max_tokens: null
+  enable_thinking: null
+  reasoning_effort: null
+  response_format: json_schema
+  prompt: config/persona-da.md
+  job_title_mapping: config/job-function-titles.yaml
+  origin_label_contract: config/folk2-ieland-labels-da.yaml
+
+generate_persona:
+  input: null
+  output_dir: data/personas
+
+build_dataset:
+  input: null
+  output_dir: data/persona-datasets
+  rows: null
+  concurrency: 4
+  request_limit: null
+  input_price_per_million: null
+  output_price_per_million: null
+  hf_repo: null
+  attestation: null
+  policy: null
+  dataset_card: null
+  licence: null
+
+persona_dashboard:
+  input: null
+  bundle: null
+  output: null
+  embedding_base_url: http://127.0.0.1:18080/v1
+  embedding_model: jina-embeddings-v5-text-small-clustering
+  embedding_batch_size: 32
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

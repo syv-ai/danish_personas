@@ -5,8 +5,11 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
-from click.testing import CliRunner
+from hydra import compose, initialize_config_dir
+from omegaconf import DictConfig
+from pydantic import ValidationError
 
+from danish_personas.generation.config import load_generation_config
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import FROZEN_SAMPLE_SCHEMA_VERSION, FrozenSampleManifest
 from danish_personas.release import upload as upload_service
@@ -15,37 +18,57 @@ from tests.generation.manifest_helpers import origin_contract_fields
 
 
 def test_build_dataset_prints_merged_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The dataset command keeps progress separate from its clean path output."""
     pilot_dir = tmp_path / "pilot"
     pilot_dir.mkdir()
     output_path = pilot_dir / "generated-personas.parquet"
     output_path.write_bytes(b"parquet")
-    monkeypatch.setattr(build_dataset, "run_pilot", lambda **_: pilot_dir)
+    calls: dict[str, object] = {}
+
+    def run(**kwargs: object) -> Path:
+        calls.update(kwargs)
+        return pilot_dir
+
+    monkeypatch.setattr(build_dataset, "run_pilot", run)
     monkeypatch.setattr(
         build_dataset,
         "validate_persona_pilot",
         lambda **_: SimpleNamespace(passed=True),
     )
-    arguments = [
-        "--input",
-        str(tmp_path / "sample.parquet"),
-        "--rows",
-        "1",
-        "--request-limit",
-        "2",
-        "--input-price-per-million",
-        "0",
-        "--output-price-per-million",
-        "0",
-    ]
+    config = _config(
+        overrides=[
+            f"build_dataset.input={tmp_path / 'sample.parquet'}",
+            f"build_dataset.output_dir={tmp_path / 'output'}",
+            "build_dataset.rows=1",
+            "build_dataset.request_limit=2",
+            "build_dataset.input_price_per_million=0",
+            "build_dataset.output_price_per_million=0",
+            "llm.model=overridden-model",
+        ]
+    )
 
-    result = CliRunner().invoke(build_dataset.main, arguments)
+    build_dataset.main.__wrapped__(config)
 
-    assert result.exit_code == 0, result.output
-    assert result.stdout == f"{output_path}\n"
-    assert "Starting persona dataset build" in result.stderr
+    captured = capsys.readouterr()
+    assert captured.out == f"{output_path}\n"
+    assert "Starting persona dataset build" in captured.err
+    config_path = calls["config_path"]
+    assert isinstance(config_path, Path)
+    assert load_generation_config(config_path).model == "overridden-model"
+
+
+def _config(*, overrides: list[str]) -> DictConfig:
+    """Compose the public Hydra configuration with test overrides.
+
+    Returns:
+        The composed test configuration.
+    """
+    with initialize_config_dir(
+        version_base=None, config_dir=str(Path("config").resolve())
+    ):
+        return compose(config_name="config", overrides=overrides)
 
 
 def test_build_dataset_requires_release_inputs_before_running(
@@ -60,29 +83,24 @@ def test_build_dataset_requires_release_inputs_before_running(
         raise AssertionError("generation must not start")
 
     monkeypatch.setattr(build_dataset, "run_pilot", fail_run)
-    result = CliRunner().invoke(
-        build_dataset.main,
-        [
-            "--rows",
-            "1",
-            "--request-limit",
-            "2",
-            "--input-price-per-million",
-            "0",
-            "--output-price-per-million",
-            "0",
-            "--hf-repo",
-            "org/dataset",
-        ],
+    config = _config(
+        overrides=[
+            "build_dataset.rows=1",
+            "build_dataset.request_limit=2",
+            "build_dataset.input_price_per_million=0",
+            "build_dataset.output_price_per_million=0",
+            "build_dataset.hf_repo=org/dataset",
+        ]
     )
 
-    assert result.exit_code != 0
-    assert "--attestation" in result.output
+    with pytest.raises(ValidationError, match="build_dataset.attestation"):
+        build_dataset._run(config=config)
+
     assert not called
 
 
 def test_generate_persona_emits_only_validated_text(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The single-persona command keeps diagnostics off stdout."""
     run_dir = tmp_path / "run"
@@ -108,15 +126,24 @@ def test_generate_persona_emits_only_validated_text(
         "validate_persona_run",
         lambda **_: SimpleNamespace(passed=True),
     )
+    config = _config(
+        overrides=[
+            f"generate_persona.output_dir={tmp_path / 'output'}",
+            "llm.model=overridden-model",
+        ]
+    )
 
-    result = CliRunner().invoke(generate_persona.main)
+    generate_persona.main.__wrapped__(config)
 
-    assert result.exit_code == 0, result.output
-    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
+    captured = capsys.readouterr()
+    assert captured.out == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
     assert calls["sample_manifest_path"] == tmp_path / "sample.manifest.json"
-    assert "Loading and validating persona inputs" in result.stderr
-    assert "Dette er en dansk syntetisk persona." not in result.stderr
+    assert "Loading and validating persona inputs" in captured.err
+    assert "Dette er en dansk syntetisk persona." not in captured.err
+    config_path = calls["config_path"]
+    assert isinstance(config_path, Path)
+    assert load_generation_config(config_path).model == "overridden-model"
 
 
 def test_sample_offset_selects_a_valid_frozen_row(

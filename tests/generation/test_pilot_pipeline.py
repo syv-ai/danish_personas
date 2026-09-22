@@ -5,13 +5,11 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from click.testing import CliRunner
 from generation_test_helpers import MockGenerationClient, write_generation_inputs
 
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.generation.report import validate_persona_pilot
 from danish_personas.io import sha256_file, write_json
-from scripts.build_dataset import main as pilot_main
 
 
 def test_pilot_identity_changes_when_prompt_context_changes(
@@ -23,29 +21,9 @@ def test_pilot_identity_changes_when_prompt_context_changes(
         "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
     )
     MockGenerationClient.requests = 0
-    arguments = [
-        "--input",
-        str(paths["sample"]),
-        "--config",
-        str(paths["config"]),
-        "--output-dir",
-        str(tmp_path / "pilot"),
-        "--rows",
-        "1",
-        "--concurrency",
-        "1",
-        "--request-limit",
-        "5",
-        "--input-price-per-million",
-        "0.3",
-        "--output-price-per-million",
-        "1.2",
-    ]
-    first = CliRunner().invoke(pilot_main, arguments)
-    assert first.exit_code == 0, first.output
+    _run_test_pilot(paths=paths, output_dir=tmp_path / "pilot", rows=1)
     paths["prompt"].write_text("En ændret dansk prompt", encoding="utf-8")
-    second = CliRunner().invoke(pilot_main, arguments)
-    assert second.exit_code == 0, second.output
+    _run_test_pilot(paths=paths, output_dir=tmp_path / "pilot", rows=1)
 
     pilot_dirs = list((tmp_path / "pilot").iterdir())
     assert len(pilot_dirs) == 2
@@ -55,6 +33,27 @@ def test_pilot_identity_changes_when_prompt_context_changes(
     ]
     assert manifests[0]["pilot_id"] != manifests[1]["pilot_id"]
     assert len({manifest["generation_context_sha256"] for manifest in manifests}) == 2
+
+
+def _run_test_pilot(*, paths: dict[str, Path], output_dir: Path, rows: int) -> Path:
+    """Run a bounded pilot from focused flat generation fixtures.
+
+    Returns:
+        Completed pilot directory.
+    """
+    return run_pilot(
+        input_path=paths["sample"],
+        sample_manifest_path=paths["sample_manifest"],
+        config_path=paths["config"],
+        output_dir=output_dir,
+        rows=rows,
+        batch_size=2,
+        concurrency=1,
+        delay_between_batches=0.0,
+        maximum_total_requests=10,
+        input_price_per_million=0.3,
+        output_price_per_million=1.2,
+    )
 
 
 def test_pilot_identity_supports_a_batch_larger_than_rows(
@@ -93,28 +92,7 @@ def test_pilot_merges_validated_shards(
         "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
     )
     MockGenerationClient.requests = 0
-    result = CliRunner().invoke(
-        pilot_main,
-        [
-            "--input",
-            str(paths["sample"]),
-            "--config",
-            str(paths["config"]),
-            "--output-dir",
-            str(tmp_path / "pilot"),
-            "--rows",
-            "2",
-            "--concurrency",
-            "1",
-            "--request-limit",
-            "10",
-            "--input-price-per-million",
-            "0.3",
-            "--output-price-per-million",
-            "1.2",
-        ],
-    )
-    assert result.exit_code == 0, result.output
+    _run_test_pilot(paths=paths, output_dir=tmp_path / "pilot", rows=2)
     output_path = next((tmp_path / "pilot").glob("*/generated-personas.parquet"))
     output = pl.read_parquet(output_path)
     assert output.get_column("persona_id").to_list() == ["persona-1", "persona-2"]
@@ -130,28 +108,7 @@ def test_pilot_revalidates_shards_without_rewriting_reports(
         "danish_personas.generation.pipeline.OpenAIClient", MockGenerationClient
     )
     MockGenerationClient.requests = 0
-    result = CliRunner().invoke(
-        pilot_main,
-        [
-            "--input",
-            str(paths["sample"]),
-            "--config",
-            str(paths["config"]),
-            "--output-dir",
-            str(tmp_path / "pilot"),
-            "--rows",
-            "1",
-            "--concurrency",
-            "1",
-            "--request-limit",
-            "10",
-            "--input-price-per-million",
-            "0.3",
-            "--output-price-per-million",
-            "1.2",
-        ],
-    )
-    assert result.exit_code == 0, result.output
+    _run_test_pilot(paths=paths, output_dir=tmp_path / "pilot", rows=1)
     pilot_dir = next((tmp_path / "pilot").iterdir())
     pilot_manifest_path = pilot_dir / "pilot-manifest.json"
     pilot_manifest = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))

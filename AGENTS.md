@@ -40,20 +40,22 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sources/prepare.py`        | Aggregate normalisation and calibration.            |
 | `danish_personas/validation/__init__.py`    | Validation package marker.                          |
 | `danish_personas/validation/checks.py`      | Source, structure, distribution, OCEAN.             |
-| `danish_personas/workflows.py`              | Standard deterministic input orchestration.          |
+| `danish_personas/workflows.py`              | Standard deterministic input orchestration.         |
 
 ## Scripts
 
-Run the three public scripts from the repository root with `uv run`. Paths in config
+Run the four public scripts from the repository root with `uv run`. Paths in config
 files and prompts are interpreted relative to that working directory.
 
-| Script                 | Responsibility and invocation                              |
-| ---------------------- | ---------------------------------------------------------- |
-| `generate_persona.py` | Guarded single-request LLM run for one persona.            |
-| `build_dataset.py`    | Builds and optionally publishes validated persona datasets. |
-| `fix_dot_env_file.py` | Creates `.env`; non-interactive leaves Git identity blank. |
+| Script                       | Responsibility                                      |
+| ---------------------------- | --------------------------------------------------- |
+| `generate_persona.py`        | Guarded single-request LLM run for one persona.     |
+| `build_dataset.py`           | Builds and optionally publishes persona datasets.   |
+| `build_persona_dashboard.py` | Builds a self-contained offline dashboard.          |
+| `fix_dot_env_file.py`        | Creates `.env`; may configure local Git identity.   |
 
-When either persona script omits `--input`, it calls
+The first three scripts use Hydra `config/config.yaml`; `fix_dot_env_file.py` retains
+Click. When either persona script has a null `input` setting, it calls
 `danish_personas.workflows.prepare_standard_sample` to restore, prepare, validate, and
 reuse the deterministic prerequisites. Source refresh, archive, and deterministic
 maintenance operations remain importable services, not public scripts. Each persona
@@ -86,7 +88,7 @@ client when testing LLM paths.
 | `config/categories.yaml`             | Canonical demographic and labour-status mappings.         |
 | `config/sampling.yaml`               | Seed, rows, adult age range, region, OCEAN settings.      |
 | `config/validation.yaml`             | Distribution, expected-count, back-off, OCEAN thresholds. |
-| `config/config.yaml`                 | Hydra LLM endpoint, model, prompt, guards, and budgets.   |
+| `config/config.yaml`                 | Shared LLM and per-script Hydra configuration.            |
 | `config/persona-da.md`               | Combined Danish attribute and persona instructions.       |
 | `config/folk2-ieland-labels-da.yaml` | Archived official FOLK2 Danish 241-code label contract.   |
 
@@ -94,8 +96,9 @@ client when testing LLM paths.
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that
 lock schema. Statistics Denmark publishes classifications as attachments on dst.dk
 rather than through the StatBank data API, so they use `classification.py` instead of a
-StatBank selector. `danish_personas.sources.acquisition.resolve_sources` warns and rewrites a lock that
-predates the current schema, while `fetch_sources` fetches classifications as well as
+StatBank selector. `danish_personas.sources.acquisition.resolve_sources` warns and
+rewrites a lock that predates the current schema, while `fetch_sources` fetches
+classifications as well as
 tables.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
@@ -169,7 +172,8 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 
 The normal deterministic stages are orchestrated by
 `danish_personas.workflows.prepare_standard_sample()`. The public persona scripts call
-this service automatically when `--input` is omitted. It restores the archive when the
+this service automatically when their Hydra `input` setting is null. It restores the
+archive when the
 raw snapshot tree is absent, prepares and validates sources, validates smoke and
 statistical demographic runs, and freezes the standard sample. Source refresh and
 archive repacking remain deliberate importable maintenance operations; refreshed
@@ -235,9 +239,10 @@ current contracts have been regenerated; use placeholders in instructions.
 - `generate_persona.py` and `build_dataset.py` load Hydra `config/config.yaml` and
   execute immediately. They require provider reachability and may spend money. Dataset
   generation has its own global request limit and requires current input and output
-  prices; use zero only for a genuinely free endpoint. `--concurrency` can issue
-  requests in parallel.
-- `build_dataset.py --hf-repo` may upload only a freshly packaged and independently
+  prices; use zero only for a genuinely free endpoint. `build_dataset.concurrency` can
+  issue requests in parallel.
+- `build_dataset.py build_dataset.hf_repo=...` may upload only a freshly packaged and
+  independently
   verified release after the configured policy and blinded-review gates pass. It creates
   a Hugging Face dataset pull request and obtains credentials from standard Hugging Face
   authentication, never from a CLI token option.

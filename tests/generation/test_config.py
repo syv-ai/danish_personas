@@ -1,39 +1,89 @@
-"""Tests for the single Hydra generation configuration."""
+"""Tests for the shared Hydra generation configuration."""
 
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from danish_personas.generation.config import load_generation_config
+from danish_personas.generation.config import (
+    load_generation_config,
+    persist_effective_generation_config,
+)
 
 
-def test_hydra_resolves_values_and_rejects_obsolete_fields(
+def test_effective_snapshot_is_stable_and_immutable(tmp_path: Path) -> None:
+    """Resolved LLM provenance is reused but never silently overwritten."""
+    config = load_generation_config(Path("config/config.yaml"))
+
+    first = persist_effective_generation_config(config=config, output_dir=tmp_path)
+    second = persist_effective_generation_config(config=config, output_dir=tmp_path)
+
+    assert first == second
+    assert load_generation_config(first) == config
+    first.write_text("tampered: true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="provenance does not match"):
+        persist_effective_generation_config(config=config, output_dir=tmp_path)
+
+
+def test_flat_generation_config_remains_supported(tmp_path: Path) -> None:
+    """Service callers can continue to load focused flat YAML fixtures."""
+    content = """\
+base_url: http://localhost/v1
+model: fixture-model
+api_key_env: null
+timeout_seconds: 30
+maximum_http_attempts: 1
+maximum_validation_attempts: 1
+maximum_total_requests: 2
+retry_backoff_seconds: 0
+maximum_rows_per_shard: 5
+max_tokens: null
+enable_thinking: null
+reasoning_effort: null
+response_format: json_schema
+prompt: prompt.md
+job_title_mapping: null
+origin_label_contract: config/folk2-ieland-labels-da.yaml
+"""
+    config_path = tmp_path / "flat.yaml"
+    config_path.write_text(content, encoding="utf-8")
+
+    assert load_generation_config(config_path).model == "fixture-model"
+
+
+def test_hydra_resolves_nested_values_and_rejects_obsolete_llm_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Hydra interpolation works while removed guard fields remain invalid."""
+    """Hydra interpolation works while removed LLM guard fields remain invalid."""
     monkeypatch.setenv("TEST_GENERATION_MODEL", "resolved-model")
     content = (
         Path("config/config.yaml")
         .read_text(encoding="utf-8")
-        .replace("model: gpt-5.6-sol", "model: ${oc.env:TEST_GENERATION_MODEL}")
+        .replace(
+            "  model: deepseek-v4-flash-0731",
+            "  model: ${oc.env:TEST_GENERATION_MODEL}",
+        )
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(content, encoding="utf-8")
 
     assert load_generation_config(config_path).model == "resolved-model"
 
-    config_path.write_text(f"{content}version: 4\n", encoding="utf-8")
+    obsolete = content.replace(
+        "  model: ${oc.env:TEST_GENERATION_MODEL}\n",
+        "  model: ${oc.env:TEST_GENERATION_MODEL}\n  version: 4\n",
+    )
+    config_path.write_text(obsolete, encoding="utf-8")
     with pytest.raises(ValidationError):
         load_generation_config(config_path)
 
 
-def test_root_generation_config_has_local_defaults() -> None:
-    """The canonical config names the default local endpoint and model."""
+def test_root_generation_config_has_provider_defaults() -> None:
+    """The canonical config retains the configured provider endpoint and model."""
     config = load_generation_config(Path("config/config.yaml"))
 
-    assert config.base_url == "http://127.0.0.1:18080/v1"
-    assert config.model == "gpt-5.6-sol"
+    assert config.base_url == "https://api.melious.ai/v1"
+    assert config.model == "deepseek-v4-flash-0731"
 
 
 def test_root_prompts_render_origin_as_natural_prose() -> None:

@@ -2,17 +2,25 @@
 
 import html
 import json
+import logging
+import sys
 from pathlib import Path
 
-import click
 import httpx
+import hydra
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
+from omegaconf import DictConfig
 from plotly.offline import get_plotlyjs
 
+from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import load_yaml_model
 from danish_personas.models import CategoryConfig
+from danish_personas.script_config import PersonaDashboardConfig, load_script_config
+
+LOGGER = logging.getLogger(__name__)
 
 DISTRIBUTIONS: tuple[tuple[str, str, str], ...] = (
     ("age", "Ages", "folk_age_sampling.parquet"),
@@ -69,88 +77,49 @@ HORIZONTAL_FIELDS = frozenset(
 )
 
 
-@click.command()
-@click.option(
-    "--input",
-    "input_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-    help="Generated personas Parquet file.",
-)
-@click.option(
-    "--bundle",
-    "bundle_path",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    required=True,
-    help="Prepared bundle directory containing normalised target files.",
-)
-@click.option(
-    "--output",
-    "output_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    required=True,
-    help="Output self-contained HTML file.",
-)
-@click.option(
-    "--embedding-base-url",
-    "--base-url",
-    default=DEFAULT_EMBEDDING_BASE_URL,
-    show_default=True,
-    help="Base URL for the OpenAI-compatible embedding service.",
-)
-@click.option(
-    "--embedding-model",
-    "--model",
-    default=DEFAULT_EMBEDDING_MODEL,
-    show_default=True,
-    help="Embedding model alias.",
-)
-@click.option(
-    "--embedding-batch-size",
-    "--batch-size",
-    type=click.IntRange(min=1),
-    default=DEFAULT_EMBEDDING_BATCH_SIZE,
-    show_default=True,
-    help="Number of persona texts sent in each embedding request.",
-)
-def main(
-    input_path: Path,
-    bundle_path: Path,
-    output_path: Path,
-    embedding_base_url: str,
-    embedding_model: str,
-    embedding_batch_size: int,
-) -> None:
+enable_hydra_cli()
+
+
+@hydra.main(version_base=None, config_path="../../config", config_name="config")
+def main(config: DictConfig) -> None:
     """Build one offline, interactive HTML persona dashboard.
 
     Raises:
-        click.ClickException:
-            If the input is empty or the dashboard cannot be rendered.
+        SystemExit:
+            If configuration, input validation, or rendering fails.
     """
+    configure_cli_logging()
     try:
-        frame = pl.read_parquet(input_path)
-        if frame.is_empty():
-            raise click.ClickException("The generated personas file is empty")
-        document = build_dashboard(
-            frame=frame,
-            bundle_path=bundle_path,
-            embedding_base_url=embedding_base_url,
-            embedding_model=embedding_model,
-            embedding_batch_size=embedding_batch_size,
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(document, encoding="utf-8")
-    except click.ClickException:
-        raise
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        httpx.HTTPError,
-        pl.exceptions.PolarsError,
-    ) as error:
-        raise click.ClickException(str(error)) from error
-    click.echo(output_path)
+        _run(config=config)
+    except Exception as error:
+        LOGGER.error("%s", error)
+        raise SystemExit(1) from error
+
+
+def _run(*, config: DictConfig) -> None:
+    """Build a dashboard from a composed Hydra configuration.
+
+    Raises:
+        ValueError:
+            If the selected input is empty or cannot be rendered.
+    """
+    script_config = load_script_config(
+        config, section="persona_dashboard", model=PersonaDashboardConfig
+    )
+    frame = pl.read_parquet(script_config.input)
+    if frame.is_empty():
+        raise ValueError("The generated personas file is empty")
+    document = build_dashboard(
+        frame=frame,
+        bundle_path=script_config.bundle,
+        input_path=script_config.input,
+        embedding_base_url=script_config.embedding_base_url,
+        embedding_model=script_config.embedding_model,
+        embedding_batch_size=script_config.embedding_batch_size,
+    )
+    script_config.output.parent.mkdir(parents=True, exist_ok=True)
+    script_config.output.write_text(document, encoding="utf-8")
+    sys.stdout.write(f"{script_config.output}\n")
 
 
 def build_dashboard(

@@ -17,6 +17,7 @@ dependencies = [
     "hydra-core>=1.3.7",
     "lingua-language-detector>=2.2.0",
     "numpy>=2.3.0",
+    "plotly>=7.1.0",
     "polars>=1.33.0",
     "pydantic>=2.11.0",
     "pyyaml>=6.0.2",
@@ -45,7 +46,6 @@ dev = [
   "pip>=25.3.0",
   "vulture>=2.16",
   "slopo>=0.4.0",
-  "plotly>=7.1.0",
 ]
 
 [tool.ruff]

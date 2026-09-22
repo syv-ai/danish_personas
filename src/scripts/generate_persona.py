@@ -2,88 +2,91 @@
 
 import logging
 import secrets
+import sys
 from pathlib import Path
 
-import click
+import hydra
 import polars as pl
+from omegaconf import DictConfig
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pipeline import generate_personas
 from danish_personas.generation.report import validate_persona_run
+from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import sha256_file
 from danish_personas.models import FrozenSampleManifest
+from danish_personas.script_config import (
+    GeneratePersonaConfig,
+    load_llm_config,
+    load_script_config,
+)
 from danish_personas.workflows import prepare_standard_sample
 
 LOGGER = logging.getLogger(__name__)
+enable_hydra_cli()
 
 
-@click.command()
-@click.option(
-    "--input",
-    "input_path",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Frozen sample Parquet path. Prepare the standard sample when omitted.",
-)
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(path_type=Path),
-    default=Path("config/config.yaml"),
-    show_default=True,
-)
-@click.option(
-    "--output-dir",
-    type=click.Path(path_type=Path),
-    default=Path("data/personas"),
-    show_default=True,
-)
-def main(
-    input_path: Path | None, config_path: Path, output_dir: Path
-) -> None:
+@hydra.main(version_base=None, config_path="../../config", config_name="config")
+def main(config: DictConfig) -> None:
     """Generate exactly one persona and write only its text to stdout.
 
     Raises:
-        ValueError:
-            If the completed run does not contain one persona.
-        click.ClickException:
-            If generation, upstream, guard, or validation checks fail.
+        SystemExit:
+            If configuration, generation, or validation fails.
     """
     configure_cli_logging()
-    LOGGER.info("Loading and validating persona inputs")
     try:
-        if input_path is None:
-            input_path, sample_manifest = prepare_standard_sample()
-        else:
-            sample_manifest = input_path.with_suffix(".manifest.json")
-        sampled_offset = _sample_offset(
-            input_path=input_path, sample_manifest_path=sample_manifest
-        )
-        invocation_output_dir = output_dir / secrets.token_hex(16)
-        run_dir = generate_personas(
-            input_path=input_path,
-            sample_manifest_path=sample_manifest,
-            config_path=config_path,
-            output_dir=invocation_output_dir,
-            rows=1,
-            offset=sampled_offset,
-        )
-        LOGGER.info("Provider generation finished; validating generated output")
-        report = validate_persona_run(run_dir=run_dir)
-        if not report.passed:
-            raise ValueError("Generated persona failed validation")
-        output = pl.read_parquet(run_dir / "generated-personas.parquet")
-        if output.height != 1 or "persona" not in output.columns:
-            raise ValueError(
-                "Validated persona run did not contain exactly one persona"
-            )
-        persona = output.item(row=0, column="persona")
-        if not isinstance(persona, str):
-            raise ValueError("Validated persona text was not a string")
-        LOGGER.info("Persona validation passed; emitting validated text")
+        _run(config=config)
     except Exception as error:
-        raise click.ClickException(str(error)) from error
-    click.echo(persona)
+        LOGGER.error("%s", error)
+        raise SystemExit(1) from error
+
+
+def _run(*, config: DictConfig) -> None:
+    """Execute single-persona generation from a composed Hydra configuration.
+
+    Raises:
+        ValueError:
+            If generation or validation produces an invalid persona.
+    """
+    script_config = load_script_config(
+        config, section="generate_persona", model=GeneratePersonaConfig
+    )
+    llm_config = load_llm_config(config)
+    config_path = persist_effective_generation_config(
+        config=llm_config, output_dir=script_config.output_dir
+    )
+    LOGGER.info("Loading and validating persona inputs")
+    input_path = script_config.input
+    if input_path is None:
+        input_path, sample_manifest = prepare_standard_sample()
+    else:
+        sample_manifest = input_path.with_suffix(".manifest.json")
+    sampled_offset = _sample_offset(
+        input_path=input_path, sample_manifest_path=sample_manifest
+    )
+    invocation_output_dir = script_config.output_dir / secrets.token_hex(16)
+    run_dir = generate_personas(
+        input_path=input_path,
+        sample_manifest_path=sample_manifest,
+        config_path=config_path,
+        output_dir=invocation_output_dir,
+        rows=1,
+        offset=sampled_offset,
+    )
+    LOGGER.info("Provider generation finished; validating generated output")
+    report = validate_persona_run(run_dir=run_dir)
+    if not report.passed:
+        raise ValueError("Generated persona failed validation")
+    output = pl.read_parquet(run_dir / "generated-personas.parquet")
+    if output.height != 1 or "persona" not in output.columns:
+        raise ValueError("Validated persona run did not contain exactly one persona")
+    persona = output.item(row=0, column="persona")
+    if not isinstance(persona, str):
+        raise ValueError("Validated persona text was not a string")
+    LOGGER.info("Persona validation passed; emitting validated text")
+    sys.stdout.write(f"{persona}\n")
 
 
 def _sample_offset(*, input_path: Path, sample_manifest_path: Path) -> int:

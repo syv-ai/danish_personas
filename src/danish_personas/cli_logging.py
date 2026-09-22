@@ -20,5 +20,8 @@ def configure_cli_logging() -> None:
         stream=sys.stderr,
         force=True,
     )
+    for logger in logging.Logger.manager.loggerDict.values():
+        if isinstance(logger, logging.Logger):
+            logger.disabled = False
     for logger_name in _SUPPRESSED_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)

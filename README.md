@@ -88,29 +88,32 @@ tokens, or generated data artefacts.
 
 ### Script interface
 
-Run the three public scripts directly from the repository root with `uv run`:
+Run the four public scripts directly from the repository root with `uv run`:
 
 ```bash
 uv run src/scripts/fix_dot_env_file.py --help
 uv run src/scripts/generate_persona.py --help
 uv run src/scripts/build_dataset.py --help
+uv run src/scripts/build_persona_dashboard.py --help
 ```
 
-`generate_persona.py` emits one validated Danish persona to stdout. `build_dataset.py`
-generates a requested number of personas, saves the merged Parquet dataset below
-`data/`, and displays row progress on stderr. Both use the Hydra
-`config/config.yaml` by default. The dataset builder can optionally package, verify, and
-upload an approved release to a Hugging Face dataset pull request.
+The three Hydra-based scripts use `config/config.yaml`. Override values
+with expressions such as `llm.model=MODEL`, `build_dataset.rows=10`, and
+`persona_dashboard.input=PATH`. `generate_persona.py` emits one validated Danish
+persona to stdout. `build_dataset.py` saves the merged Parquet dataset below `data/`
+and displays row progress on stderr. The dataset builder can optionally package,
+verify, and upload an approved release to a Hugging Face dataset pull request. The
+dashboard builder writes a self-contained offline HTML file.
 
-When `--input` is omitted, either persona script automatically restores the committed
-archive when necessary, prepares and validates the deterministic source bundle, runs
-and validates the smoke and statistical demographic stages, and freezes the standard
-1,000-row sample. Existing content-addressed artefacts are reused. When `--input` is
-provided, its adjacent `.manifest.json` is used.
+When `generate_persona.input` or `build_dataset.input` is null, the script automatically
+restores the committed archive when necessary, prepares and validates the deterministic
+source bundle, runs and validates the smoke and statistical demographic stages, and
+freezes the standard 1,000-row sample. Existing content-addressed artefacts are reused.
+When an input is provided, its adjacent `.manifest.json` is used.
 
 Source acquisition, archive packing and restoration, deterministic generation, sample
 freezing, and validation remain importable maintenance services rather than public
-scripts. See [`docs/cli.md`](docs/cli.md) for the three-script interface.
+scripts. See [`docs/cli.md`](docs/cli.md) for the four-script interface.
 
 ### Regenerate deterministic prerequisites
 
@@ -142,15 +145,18 @@ All model settings live in Hydra
 [`config/config.yaml`](config/config.yaml). Its defaults are:
 
 ```yaml
-base_url: http://127.0.0.1:18080/v1
-model: gpt-5.6-sol
-api_key_env: null
+llm:
+  base_url: http://127.0.0.1:18080/v1
+  model: gpt-5.6-sol
+  api_key_env: null
 ```
 
-Edit `base_url` and `model` there when changing providers or models. If authentication
-is required, set `api_key_env` to the environment-variable name containing the bearer
-token; never put the token itself in `config/config.yaml`. Generation commands execute
-immediately and can consume paid requests.
+Edit the `llm` section or use a Hydra override when changing providers or models. If
+authentication is required, set `llm.api_key_env` to the environment-variable name
+containing the bearer token; never put the token itself in `config/config.yaml`.
+Generation commands execute immediately and can consume paid requests. Each command
+persists the resolved, secret-free flat generation configuration below its output area
+and uses that immutable snapshot for generation provenance.
 
 The single-persona command validates the upstream report, sample checksum, prompts,
 schemas, and request limits before emitting the final Danish text. The standard sample
@@ -160,10 +166,11 @@ is prepared automatically when needed:
 uv run src/scripts/generate_persona.py
 ```
 
-Use `--input` to select another current frozen sample; its adjacent `.manifest.json`
-is used automatically. Without `--input`, the deterministic prerequisites are prepared
-first. Each invocation samples one demographic locally, then starts a fresh model request
-to return both structured attributes and a detailed Danish `persona`. Direct invocations
+Use `generate_persona.input=PATH` to select another current frozen sample; its adjacent
+`.manifest.json` is used automatically. With a null input, the deterministic
+prerequisites are prepared first. Each invocation samples one demographic locally, then
+starts a fresh model request to return both structured attributes and a detailed Danish
+`persona`. Direct invocations
 do not reuse earlier persona checkpoints. Only approved human-readable fields reach the
 provider. Source codes, resolution fields, the English origin label, and origin-contract
 metadata remain withheld.
@@ -178,23 +185,35 @@ read -r -p "Current output price (USD per million tokens): " \
   OUTPUT_PRICE_PER_MILLION
 
 uv run src/scripts/build_dataset.py \
-  --rows 10 \
-  --concurrency 1 \
-  --request-limit 30 \
-  --input-price-per-million "$INPUT_PRICE_PER_MILLION" \
-  --output-price-per-million "$OUTPUT_PRICE_PER_MILLION"
+  build_dataset.rows=10 \
+  build_dataset.concurrency=1 \
+  build_dataset.request_limit=30 \
+  build_dataset.input_price_per_million="$INPUT_PRICE_PER_MILLION" \
+  build_dataset.output_price_per_million="$OUTPUT_PRICE_PER_MILLION"
 ```
 
 The builder limits each shard to five rows, validates and merges all shards, records
 request/token/cost accounting, shows `tqdm` progress on stderr, and writes only the
 completed Parquet path to stdout.
 
-Passing `--hf-repo OWNER/DATASET` additionally requires `--attestation`, `--policy`,
-`--dataset-card`, and `--licence`. The script packages the release below
+Setting `build_dataset.hf_repo=OWNER/DATASET` additionally requires the
+`build_dataset.attestation`, `build_dataset.policy`, `build_dataset.dataset_card`, and
+`build_dataset.licence` paths. The script checks them before generation and packages the
+release below
 `<output-dir>/releases`, uses the current working directory as repository root, and
 independently verifies it before uploading to a Hugging Face dataset pull request.
 Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
-tokens are never CLI arguments. Re-running after review resumes already validated generation shards.
+tokens are never CLI arguments. Re-running after review resumes already validated
+generation shards.
+
+Build a self-contained offline dashboard with explicit Hydra path overrides:
+
+```bash
+uv run src/scripts/build_persona_dashboard.py \
+  persona_dashboard.input=data/personas/generated-personas.parquet \
+  persona_dashboard.bundle=data/processed/BUNDLE_ID \
+  persona_dashboard.output=data/personas/dashboard.html
+```
 
 ## Outputs and data handling
 
