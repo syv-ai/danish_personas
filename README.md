@@ -272,9 +272,8 @@ synthetic and must not imply unsupported work history or family claims. Downstre
 models may still stereotype, so text validation is not a guarantee of safe image
 generation. These are finite automated checks, not a guarantee of anonymity or safe use.
 Treat municipality-level combinations, accepted text, checkpoints, tokens, and provider
-telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for vulnerability reporting
-and [`docs/privacy-risk-register.md`](docs/privacy-risk-register.md) before sharing
-outputs.
+telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for vulnerability
+reporting.
 
 ## Validation and development checks
 
@@ -302,8 +301,6 @@ required.
 
 ## Further documentation
 
-- [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md): mandatory gates and
-  non-zero failure behaviour;
 - [`docs/source-register.md`](docs/source-register.md): source tables, periods, and
   harmonisation decisions;
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): project contribution process;
