@@ -11,6 +11,7 @@ from danish_personas.io import sha256_file
 from danish_personas.sampling.freeze import (
     SampleSizeError,
     _select_sample,
+    _select_within_origin,
     freeze_sample,
 )
 
@@ -51,7 +52,7 @@ def _source_frame(*groups: tuple[str, int]) -> pl.DataFrame:
 @pytest.mark.parametrize(
     ("mode", "expected_municipalities"),
     [
-        ("population_proportional", {"101": 4}),
+        ("population_proportional", {"101": 3, "265": 1}),
         ("stratified_round_robin", {"101": 2, "265": 2}),
     ],
 )
@@ -91,6 +92,103 @@ def test_freeze_applies_mode_within_each_origin(
     ) == [
         {"municipality_code": code, "count": count}
         for code, count in sorted(expected_municipalities.items())
+    ]
+
+
+@pytest.mark.parametrize("mode", ["population_proportional", "stratified_round_robin"])
+def test_freeze_preserves_global_strata_after_origin_swaps(
+    mode: t.Literal["population_proportional", "stratified_round_robin"],
+) -> None:
+    """Origin swaps retain the unconstrained global STRATA allocation."""
+    frame = pl.DataFrame(
+        [
+            {
+                "persona_id": f"{origin}-{municipality}-{education}-{index}",
+                "origin_country_code": origin,
+                "municipality_code": municipality,
+                "education_level": education,
+                "labour_market_status": status,
+            }
+            for origin, municipality, education, status, count in (
+                ("5100", "101", "higher_education", "employed", 5),
+                ("5100", "265", "basic", "unemployed", 2),
+                ("5456", "101", "higher_education", "employed", 1),
+                ("5456", "265", "basic", "unemployed", 4),
+            )
+            for index in range(count)
+        ]
+    )
+    baseline = _select_within_origin(
+        group=frame.sort(
+            [
+                "municipality_code",
+                "education_level",
+                "labour_market_status",
+                "persona_id",
+            ]
+        ),
+        rows=6,
+        mode=mode,
+    )
+    sample = _select_sample(frame=frame, rows=6, mode=mode)
+
+    assert sample.height == 6
+    assert sample.get_column("persona_id").n_unique() == 6
+    assert _strata_counts(sample) == _strata_counts(baseline)
+    assert sample.get_column("origin_country_code").value_counts().sort(
+        "origin_country_code"
+    ).to_dicts() == [
+        {"origin_country_code": "5100", "count": 4},
+        {"origin_country_code": "5456", "count": 2},
+    ]
+
+
+def _strata_counts(frame: pl.DataFrame) -> list[dict[str, object]]:
+    """Return deterministic counts for the global STRATA dimensions."""
+    return (
+        frame.group_by(["municipality_code", "education_level", "labour_market_status"])
+        .len()
+        .sort(["municipality_code", "education_level", "labour_market_status"])
+        .to_dicts()
+    )
+
+
+def test_freeze_fallback_preserves_origin_quota_when_strata_are_infeasible() -> None:
+    """An infeasible exact swap uses the documented maximum-overlap fallback."""
+    frame = pl.DataFrame(
+        [
+            {
+                "persona_id": f"{origin}-{municipality}-{index}",
+                "origin_country_code": origin,
+                "municipality_code": municipality,
+                "education_level": "higher_education",
+                "labour_market_status": "employed",
+            }
+            for origin, municipality, count in (
+                ("5100", "101", 3),
+                ("5100", "265", 3),
+                ("5456", "999", 1),
+            )
+            for index in range(count)
+        ]
+    )
+
+    sample = _select_sample(frame=frame, rows=4, mode="population_proportional")
+
+    assert sample.height == 4
+    assert sample.get_column("persona_id").n_unique() == 4
+    assert sample.get_column("origin_country_code").value_counts().sort(
+        "origin_country_code"
+    ).to_dicts() == [
+        {"origin_country_code": "5100", "count": 3},
+        {"origin_country_code": "5456", "count": 1},
+    ]
+    assert sample.get_column("municipality_code").value_counts().sort(
+        "municipality_code"
+    ).to_dicts() == [
+        {"municipality_code": "101", "count": 2},
+        {"municipality_code": "265", "count": 1},
+        {"municipality_code": "999", "count": 1},
     ]
 
 
