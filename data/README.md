@@ -34,7 +34,7 @@ interests, personality, or visual traits. RAS209 remains locked to all 99 offici
 level-3 areas, including Christiansø.
 
 Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
-and generation contract 5 with validator `persona-safety-v19`. The default frozen
+and generation contract 5 with validator `persona-safety-v20`. The default frozen
 sample mode is population-proportional; stratified round-robin remains an explicit
 alternative. No new bundle, deterministic run, frozen sample, persona output, or
 release has been generated for this contract change. Existing IDs and checksums are

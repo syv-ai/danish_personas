@@ -187,7 +187,7 @@ rather than inventing them.
 - Policy, attestation, and approval-result contracts are frozen and use immutable tuple
   collections. Security-relevant values are strict and are never silently coerced or
   stripped.
-- A release must identify generation contract 5 and validator `persona-safety-v19`,
+- A release must identify generation contract 5 and validator `persona-safety-v20`,
   and retain only the detailed grounded `persona`. Detailed education is explicitly
   fictional rather than source-backed. The release manifest remains schema 2, while
   release evidence is schema 3 because its prompt provenance contract changed. The

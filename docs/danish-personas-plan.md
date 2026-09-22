@@ -348,7 +348,7 @@ Neither label is ethnicity, citizenship, residence, or appearance. Origin cannot
 culture, religion, job, interests, personality, or visual traits.
 
 The future-run contracts are prepared-bundle schema 7, sampler schema 7,
-frozen-sample schema 4, generation contract 5, validator `persona-safety-v19`, and
+frozen-sample schema 4, generation contract 5, validator `persona-safety-v20`, and
 release manifest schema 2 and evidence schema 3. Future persona samples use the
 population-proportional freeze mode by default; stratified round-robin remains an
 explicit named mode. RAS209 H90/not_stated remains in the unpooled audit joint but is
