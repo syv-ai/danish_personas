@@ -121,6 +121,39 @@ def test_generate_persona_emits_only_validated_text(
     assert "Dette er en dansk syntetisk persona." not in result.stderr
 
 
+def test_generate_persona_explicit_input_uses_relaxed_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit input follows the same checksum-tolerant CLI boundary."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    pl.DataFrame({"persona": ["Dette er en dansk syntetisk persona."]}).write_parquet(
+        run_dir / "generated-personas.parquet"
+    )
+    input_path = tmp_path / "sample.parquet"
+    manifest_path = tmp_path / "sample.manifest.json"
+    calls: dict[str, object] = {}
+
+    def generate(**kwargs: object) -> Path:
+        calls.update(kwargs)
+        return run_dir
+
+    monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 0)
+    monkeypatch.setattr(generate_persona, "generate_personas", generate)
+    monkeypatch.setattr(
+        generate_persona,
+        "validate_persona_run",
+        lambda **_: SimpleNamespace(passed=True),
+    )
+
+    result = CliRunner().invoke(generate_persona.main, ["--input", str(input_path)])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Dette er en dansk syntetisk persona.\n"
+    assert calls["sample_manifest_path"] == manifest_path
+    assert calls["checksum_policy"] is ChecksumValidationPolicy.IGNORE
+
+
 def test_sample_offset_selects_a_valid_frozen_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

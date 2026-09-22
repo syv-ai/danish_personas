@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import canonical_json, load_yaml_model, sha256_file, sha256_text, write_json
 from ..ladders import SAMPLED_ATTRIBUTES, Ladder
 from ..models import (
@@ -46,7 +47,12 @@ LadderIndex = list[LadderLevel]
 
 
 def generate_records(
-    bundle_dir: Path, sampling_config_path: Path, output_dir: Path, rows: int, seed: int
+    bundle_dir: Path,
+    sampling_config_path: Path,
+    output_dir: Path,
+    rows: int,
+    seed: int,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> Path:
     """Generate deterministic demographic and OCEAN records.
 
@@ -61,6 +67,8 @@ def generate_records(
             Number of records to generate.
         seed:
             Reproducible random seed.
+        checksum_policy:
+            Whether persisted bundle and run digests must match. Defaults to strict.
 
     Returns:
         Generated run directory.
@@ -71,7 +79,9 @@ def generate_records(
     """
     config = load_yaml_model(path=sampling_config_path, model=SamplingConfig)
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
-    bundle = verify_prepared_bundle(bundle_dir=bundle_dir)
+    bundle = verify_prepared_bundle(
+        bundle_dir=bundle_dir, checksum_policy=checksum_policy
+    )
     run_id = sha256_text(
         f"{SAMPLER_SCHEMA_VERSION}:{bundle.bundle_id}:"
         f"{sha256_file(sampling_config_path)}:{rows}:{seed}"
@@ -80,13 +90,17 @@ def generate_records(
     manifest_path = run_dir / "run-manifest.json"
     if manifest_path.exists():
         manifest = RunManifest.model_validate_json(
-            manifest_path.read_text(encoding="utf-8")
+            manifest_path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         )
         if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
             message = "Generated run uses an unsupported sampler schema version"
             raise ValueError(message)
         data_path = run_dir / manifest.data_file
-        if sha256_file(data_path) != manifest.data_sha256:
+        if not data_path.is_file() or (
+            checksum_policy.validates_checksums
+            and sha256_file(data_path) != manifest.data_sha256
+        ):
             message = f"Generated run checksum mismatch: {data_path}"
             raise ValueError(message)
         LOGGER.info("Reusing deterministic run %s", run_id)

@@ -94,9 +94,11 @@ def prepare_standard_sample(
         raw_dir=raw_dir,
         output_dir=processed_dir,
         origin_labels_contract_path=origin_labels_contract_path,
+        checksum_policy=checksum_policy,
     )
     _require_pass(
-        validate_sources(bundle_dir=bundle_dir).passed, "Source validation failed"
+        validate_sources(bundle_dir=bundle_dir, checksum_policy=checksum_policy).passed,
+        "Source validation failed",
     )
 
     sampling = load_yaml_model(path=sampling_config_path, model=SamplingConfig)
@@ -106,6 +108,7 @@ def prepare_standard_sample(
         output_dir=smoke_run_dir,
         rows=sampling.smoke_rows,
         seed=sampling.seed,
+        checksum_policy=checksum_policy,
     )
     _require_pass(
         validate_demographics(
@@ -113,6 +116,7 @@ def prepare_standard_sample(
             bundle_dir=bundle_dir,
             validation_config_path=validation_config_path,
             categories_path=categories_path,
+            checksum_policy=checksum_policy,
         ).passed,
         "Smoke demographic validation failed",
     )
@@ -123,6 +127,7 @@ def prepare_standard_sample(
         output_dir=statistical_run_dir,
         rows=sampling.statistical_rows,
         seed=sampling.seed,
+        checksum_policy=checksum_policy,
     )
     _require_pass(
         validate_demographics(
@@ -130,6 +135,7 @@ def prepare_standard_sample(
             bundle_dir=bundle_dir,
             validation_config_path=validation_config_path,
             categories_path=categories_path,
+            checksum_policy=checksum_policy,
         ).passed,
         "Statistical demographic validation failed",
     )
@@ -140,14 +146,19 @@ def prepare_standard_sample(
         if not _valid_existing_sample(
             sample_path=output,
             manifest_path=manifest_path,
-            source_run_id=_run_id(statistical_dir),
+            source_run_id=_run_id(statistical_dir, checksum_policy=checksum_policy),
             rows=sample_rows,
             checksum_policy=checksum_policy,
         ):
             raise ValueError("Existing frozen sample failed checksum validation")
         LOGGER.info("Reusing frozen sample %s", output)
     else:
-        freeze_sample(run_dir=statistical_dir, rows=sample_rows, output=output)
+        freeze_sample(
+            run_dir=statistical_dir,
+            rows=sample_rows,
+            output=output,
+            checksum_policy=checksum_policy,
+        )
     return output, manifest_path
 
 
@@ -156,14 +167,24 @@ def _require_pass(passed: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def _run_id(run_dir: Path) -> str:
+def _run_id(
+    run_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> str:
     """Read the content-addressed identifier from a run manifest.
+
+    Args:
+        run_dir:
+            Deterministic run directory.
+        checksum_policy:
+            Whether persisted digest bindings must match. Defaults to strict.
 
     Returns:
         The deterministic run identifier.
     """
     manifest = RunManifest.model_validate_json(
-        (run_dir / "run-manifest.json").read_text(encoding="utf-8")
+        (run_dir / "run-manifest.json").read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     return manifest.run_id
 

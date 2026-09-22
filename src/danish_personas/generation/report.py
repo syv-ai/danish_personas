@@ -376,7 +376,9 @@ def _build_persona_run_report(
         config_path=config_path, repository_root=repository_root
     )
     origin_binding = _load_origin_binding(
-        config_path=config_path, repository_root=repository_root
+        config_path=config_path,
+        repository_root=repository_root,
+        checksum_policy=checksum_policy,
     )
     validation_errors = _count_content_errors(
         output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
@@ -826,7 +828,10 @@ def _effective_mapping(
 
 
 def _load_origin_binding(
-    *, config_path: Path | None, repository_root: Path | None
+    *,
+    config_path: Path | None,
+    repository_root: Path | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[Path, OriginLabelContract, str] | None:
     """Load the exact Danish origin-label contract selected by a config.
 
@@ -838,14 +843,19 @@ def _load_origin_binding(
     try:
         config = load_generation_config(config_path)
         return _effective_origin_contract(
-            config=config, repository_root=repository_root
+            config=config,
+            repository_root=repository_root,
+            checksum_policy=checksum_policy,
         )
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         return None
 
 
 def _effective_origin_contract(
-    *, config: GenerationConfig, repository_root: Path | None
+    *,
+    config: GenerationConfig,
+    repository_root: Path | None,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[Path, OriginLabelContract, str]:
     """Load the configured contract without a repository-default fallback.
 
@@ -853,7 +863,7 @@ def _effective_origin_contract(
         Effective path, parsed contract, and file checksum.
     """
     path = _repository_path(repository_root, config.origin_label_contract)
-    contract = load_origin_label_contract(path=path)
+    contract = load_origin_label_contract(path=path, checksum_policy=checksum_policy)
     return path, contract, origin_label_contract_sha256(path=path)
 
 
@@ -900,7 +910,9 @@ def _persona_provenance_matches(
             config=config, repository_root=repository_root
         )
         origin_path, origin_contract, origin_sha256 = _effective_origin_contract(
-            config=config, repository_root=repository_root
+            config=config,
+            repository_root=repository_root,
+            checksum_policy=checksum_policy,
         )
         prompt = _repository_path(repository_root, config.prompt).read_text(
             encoding="utf-8"
@@ -921,6 +933,7 @@ def _persona_provenance_matches(
             job_title_mapping_sha256=mapping_sha256,
             origin_label_contract=origin_contract,
             origin_label_contract_sha256=origin_sha256,
+            checksum_policy=checksum_policy,
         )
         input_sha256 = sha256_file(input_path)
         return (

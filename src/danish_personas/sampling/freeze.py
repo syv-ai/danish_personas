@@ -9,6 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import sha256_file
 from ..models import (
     FROZEN_SAMPLE_SCHEMA_VERSION,
@@ -20,7 +21,13 @@ from ..models import (
 LOGGER = logging.getLogger(__name__)
 
 
-def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
+def freeze_sample(
+    *,
+    run_dir: Path,
+    rows: int,
+    output: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> Path:
     """Select and persist a deterministic stratified development sample.
 
     Args:
@@ -30,6 +37,8 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
             Number of records to select.
         output:
             Destination Parquet path for the frozen sample.
+        checksum_policy:
+            Whether persisted run bindings must match. Defaults to strict validation.
 
     Returns:
         Path to the written frozen sample.
@@ -48,7 +57,8 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
         run_dir=canonical_run_dir, output=output
     )
     manifest = RunManifest.model_validate_json(
-        (canonical_run_dir / "run-manifest.json").read_text(encoding="utf-8")
+        (canonical_run_dir / "run-manifest.json").read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     if manifest.sampler_schema_version != SAMPLER_SCHEMA_VERSION:
         raise ValueError("Cannot freeze a legacy demographic run")

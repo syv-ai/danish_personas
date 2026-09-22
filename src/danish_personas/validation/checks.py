@@ -10,6 +10,7 @@ import numpy as np
 import polars as pl
 from pydantic import ValidationError
 
+from ..checksum import ChecksumValidationPolicy
 from ..io import canonical_json, load_yaml_model, sha256_file, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
@@ -41,7 +42,11 @@ TRAITS = (
 
 
 def validate_demographics(
-    run_dir: Path, bundle_dir: Path, validation_config_path: Path, categories_path: Path
+    run_dir: Path,
+    bundle_dir: Path,
+    validation_config_path: Path,
+    categories_path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> ValidationReport:
     """Validate generated demographic and OCEAN records.
 
@@ -54,21 +59,30 @@ def validate_demographics(
             Validation thresholds.
         categories_path:
             Canonical mappings.
+        checksum_policy:
+            Whether persisted digests must match. Defaults to strict validation.
 
     Returns:
         Validation report.
     """
-    bundle = verify_prepared_bundle(bundle_dir=bundle_dir)
+    bundle = verify_prepared_bundle(
+        bundle_dir=bundle_dir, checksum_policy=checksum_policy
+    )
     config = load_yaml_model(path=validation_config_path, model=ValidationConfig)
     categories = load_yaml_model(path=categories_path, model=CategoryConfig)
     manifest_path = run_dir / "run-manifest.json"
     manifest = RunManifest.model_validate_json(
-        manifest_path.read_text(encoding="utf-8")
+        manifest_path.read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     data_path = run_dir / manifest.data_file
     frame = pl.read_parquet(data_path)
     metrics = _provenance_metrics(
-        frame=frame, manifest=manifest, data_path=data_path, bundle_dir=bundle_dir
+        frame=frame,
+        manifest=manifest,
+        data_path=data_path,
+        bundle_dir=bundle_dir,
+        checksum_policy=checksum_policy,
     )
     metrics.extend(
         _structural_metrics(
@@ -79,12 +93,21 @@ def validate_demographics(
         )
     )
     metrics.extend(
-        _distribution_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
+        _distribution_metrics(
+            frame=frame,
+            bundle_dir=bundle_dir,
+            config=config,
+            checksum_policy=checksum_policy,
+        )
     )
     metrics.extend(_heldout_metrics(frame=frame, bundle_dir=bundle_dir, config=config))
     metrics.extend(_ocean_metrics(frame=frame, config=config))
     metrics.extend(_geography_parent_metrics(frame=frame, bundle_dir=bundle_dir))
-    metrics.extend(_origin_mapping_metrics(frame=frame, bundle_dir=bundle_dir))
+    metrics.extend(
+        _origin_mapping_metrics(
+            frame=frame, bundle_dir=bundle_dir, checksum_policy=checksum_policy
+        )
+    )
     metrics.extend(
         _job_function_metrics(frame=frame, bundle_dir=bundle_dir, config=config)
     )
@@ -113,7 +136,10 @@ def validate_demographics(
 
 
 def _distribution_metrics(
-    frame: pl.DataFrame, bundle_dir: Path, config: ValidationConfig
+    frame: pl.DataFrame,
+    bundle_dir: Path,
+    config: ValidationConfig,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> list[MetricResult]:
     source_dir = bundle_dir / "normalized"
     folk = pl.read_parquet(source_dir / "folk1a_base_unpooled.parquet").with_columns(
@@ -128,7 +154,7 @@ def _distribution_metrics(
         "education_level": (ras209, ["education_level"]),
         "labour_market_status": (ras209, ["labour_market_status"]),
         "origin_country": (
-            _origin_target(bundle_dir=bundle_dir),
+            _origin_target(bundle_dir=bundle_dir, checksum_policy=checksum_policy),
             ["origin_country_code", "origin_country", "origin_country_da"],
         ),
     }
@@ -269,14 +295,18 @@ def _compare_distribution(
     ]
 
 
-def _origin_target(*, bundle_dir: Path) -> pl.DataFrame:
+def _origin_target(
+    *,
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> pl.DataFrame:
     """Return the prepared origin marginal with its complete label triple."""
     target = pl.read_parquet(
         bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
     )
     if "origin_country_da" in target.columns:
         return target
-    contract = load_origin_label_contract()
+    contract = load_origin_label_contract(checksum_policy=checksum_policy)
     return target.with_columns(
         pl.col("origin_country_code")
         .replace(dict(contract.ordered_labels), default=None)
@@ -481,7 +511,9 @@ def _ocean_metrics(frame: pl.DataFrame, config: ValidationConfig) -> list[Metric
 
 
 def _origin_mapping_metrics(
-    frame: pl.DataFrame, bundle_dir: Path
+    frame: pl.DataFrame,
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> list[MetricResult]:
     """Check every generated origin pair against the official FOLK2 mapping.
 
@@ -490,11 +522,14 @@ def _origin_mapping_metrics(
             Generated records containing origin codes and labels.
         bundle_dir:
             Prepared source bundle with the official origin marginal.
+        checksum_policy:
+            Whether the canonical origin contract digest must match. Defaults to
+            strict validation.
 
     Returns:
         Mapping and positive-weight validation metrics.
     """
-    target = _origin_target(bundle_dir=bundle_dir)
+    target = _origin_target(bundle_dir=bundle_dir, checksum_policy=checksum_policy)
     columns = ["origin_country_code", "origin_country", "origin_country_da"]
     if not set(columns) <= set(frame.columns):
         return [
@@ -543,30 +578,43 @@ def _origin_mapping_metrics(
 
 
 def _provenance_metrics(
-    frame: pl.DataFrame, manifest: RunManifest, data_path: Path, bundle_dir: Path
+    frame: pl.DataFrame,
+    manifest: RunManifest,
+    data_path: Path,
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> list[MetricResult]:
     bundle_manifest_path = bundle_dir / "bundle-manifest.json"
     bundle = BundleManifest.model_validate_json(
-        bundle_manifest_path.read_text(encoding="utf-8")
+        bundle_manifest_path.read_text(encoding="utf-8"),
+        context={"checksum_policy": checksum_policy},
     )
     checks = {
-        "parquet_checksum": sha256_file(data_path) == manifest.data_sha256,
+        "parquet_checksum": (
+            not checksum_policy.validates_checksums
+            or sha256_file(data_path) == manifest.data_sha256
+        ),
         "logical_content_checksum": (
-            _logical_checksum(frame=frame) == manifest.logical_content_sha256
+            not checksum_policy.validates_checksums
+            or _logical_checksum(frame=frame) == manifest.logical_content_sha256
         ),
         "bundle_identity": bundle.bundle_id == manifest.bundle_id,
         "sampler_schema_version": (
             manifest.sampler_schema_version == SAMPLER_SCHEMA_VERSION
         ),
         "bundle_manifest_checksum": (
-            sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
+            not checksum_policy.validates_checksums
+            or sha256_file(bundle_manifest_path) == manifest.bundle_manifest_sha256
         ),
         "origin_contract_binding": (
             manifest.origin_labels_contract_path == bundle.origin_labels_contract_path
             and manifest.origin_labels_contract_version
             == bundle.origin_labels_contract_version
-            and manifest.origin_labels_contract_sha256
-            == bundle.origin_labels_contract_sha256
+            and (
+                not checksum_policy.validates_checksums
+                or manifest.origin_labels_contract_sha256
+                == bundle.origin_labels_contract_sha256
+            )
             and manifest.origin_labels_contract_content
             == bundle.origin_labels_contract_content
         ),
@@ -763,12 +811,17 @@ def _atomic_report_write(*, path: Path, content: bytes) -> None:
     temporary.replace(path)
 
 
-def validate_sources(bundle_dir: Path) -> ValidationReport:
+def validate_sources(
+    bundle_dir: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> ValidationReport:
     """Validate a prepared source bundle and write reports.
 
     Args:
         bundle_dir:
             Prepared source bundle.
+        checksum_policy:
+            Whether persisted bundle digests must match. Defaults to strict validation.
 
     Returns:
         Validation report.
@@ -777,7 +830,9 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
         ValueError:
             If the prepared bundle or an existing bound report is invalid.
     """
-    manifest, capture = _verify_prepared_bundle_capture(bundle_dir=bundle_dir)
+    manifest, capture = _verify_prepared_bundle_capture(
+        bundle_dir=bundle_dir, checksum_policy=checksum_policy
+    )
     source_payload = json.loads(capture.files[SOURCE_REPORT].content.decode("utf-8"))
     metrics = [
         MetricResult(
@@ -857,7 +912,7 @@ def validate_sources(bundle_dir: Path) -> ValidationReport:
     )
     # Re-capture the rewritten report and manifest so callers never rely on
     # bytes or checksums read before the atomic replacements.
-    verify_prepared_bundle(bundle_dir=bundle_dir)
+    verify_prepared_bundle(bundle_dir=bundle_dir, checksum_policy=checksum_policy)
     return report
 
 
