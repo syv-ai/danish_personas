@@ -151,10 +151,12 @@ rather than inventing them.
   erhvervsuddannelse` are rejected, along with redundant sex nouns and data-model
   jargon.
 - The provider receives human-readable municipality, the official Danish
-  `origin_country_da`, sampled legal `marital_status`, and job-function labels, plus the
-  reviewed allowlist of Danish titles for that label, but never origin code, English
-  label, contract metadata, or resolution fields. A generated title must equal an
-  allowlist entry exactly.
+  `origin_country_da`, sampled legal `marital_status`, job-function labels, the reviewed
+  title allowlist, and the internal deterministic same-sex-partner target. The target is
+  synthetic, non-public, not observed individual data, and does not describe sexual
+  orientation. The provider never receives origin code, English label, contract
+  metadata, or resolution fields. A generated title must equal an allowlist entry
+  exactly.
 - The versioned 42-code title mapping is checksum-bound into generation context,
   checkpoints, shards, pilots, and the offline release package.
 - The internal same-sex-partner target is a stable Bernoulli decision from
@@ -209,9 +211,12 @@ rather than inventing them.
   fictional rather than source-backed. The release manifest remains schema 2, while
   release evidence is schema 3 because its prompt provenance contract changed. The
   package must record that the provider request contains approved human-readable
-  municipality, Danish origin, sampled legal marital status, and job-function labels
-  only, not origin code, English label, contract metadata, or resolution fields, and
-  must disclose synthetic job titles and image-model stereotyping risk.
+  municipality, Danish origin, sampled legal marital status, job-function labels, and
+  the internal deterministic same-sex-partner target. It must identify the target as
+  synthetic, non-public, not observed individual data, and not sexual orientation. The
+  provider does not receive origin code, English label, contract metadata, or resolution
+  fields. The package must also disclose synthetic job titles and image-model
+  stereotyping risk.
 - Release packaging and verification must bind the schema-2 release manifest and
   evidence checksums, provenance, row counts, and human-review evidence. Hugging Face
   upload may include only that verified package and must create a dataset pull request;

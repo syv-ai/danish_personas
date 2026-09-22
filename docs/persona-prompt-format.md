@@ -12,13 +12,16 @@ now has one combined prompt checksum.
 
 ## Provider input boundary
 
-The single request receives only approved human-readable fields: municipality, the
-official Danish `origin_country_da`, sampled legal `marital_status`, and reviewed
-job-function labels and title allowlist entries. It never receives the origin code,
-English origin label, contract metadata, or resolution fields. The English label
-remains source/audit provenance but is withheld from the provider payload. The Danish
-label is not ethnicity, citizenship, residence, or appearance, and origin cannot drive
-culture, religion, job, interests, personality, family details, or visual traits.
+The single request receives approved human-readable fields: municipality, the official
+Danish `origin_country_da`, sampled legal `marital_status`, and reviewed job-function
+labels and title allowlist entries. It also receives an internal deterministic
+same-sex-partner target for assigning `partner_gender`. That target is synthetic,
+non-public, not observed individual data, and does not describe sexual orientation. The
+request never receives the origin code, English origin label, contract metadata, or
+resolution fields. The English label remains source/audit provenance but is withheld
+from the provider payload. The Danish label is not ethnicity, citizenship, residence,
+or appearance, and origin cannot drive culture, religion, job, interests, personality,
+family details, or visual traits.
 
 The payload also supplies sampled legal `marital_status` and compatible personality
 wording. Marital status is separate from the generated current relationship: the
