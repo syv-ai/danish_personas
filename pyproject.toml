@@ -45,6 +45,7 @@ dev = [
   "pip>=25.3.0",
   "vulture>=2.16",
   "slopo>=0.4.0",
+  "plotly>=7.1.0",
 ]
 
 [tool.ruff]
