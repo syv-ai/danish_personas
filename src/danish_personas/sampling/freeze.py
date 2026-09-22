@@ -182,6 +182,31 @@ def _select_sample(
     return pl.concat(selected).sort("persona_id")
 
 
+def _largest_remainder_quotas(
+    *, groups: list[pl.DataFrame], rows: int, group_key: str | None
+) -> list[int]:
+    """Allocate rows proportionally, resolving ties by sorted group code.
+
+    Returns:
+        One non-negative quota for each input group.
+    """
+    total = sum(group.height for group in groups)
+    numerators = [group.height * rows for group in groups]
+    quotas = [numerator // total for numerator in numerators]
+    remaining = rows - sum(quotas)
+    if group_key is None:
+        tie_keys = list(range(len(groups)))
+    else:
+        tie_keys = [group.item(0, group_key) for group in groups]
+    remainders = [numerator % total for numerator in numerators]
+    remainder_order = sorted(
+        range(len(groups)), key=lambda index: (-remainders[index], tie_keys[index])
+    )
+    for index in remainder_order[:remaining]:
+        quotas[index] += 1
+    return quotas
+
+
 def _select_within_origin(
     *,
     group: pl.DataFrame,
@@ -214,31 +239,6 @@ def _select_within_origin(
     return pl.concat(
         [stratum.head(quota) for stratum, quota in zip(strata_groups, quotas) if quota]
     )
-
-
-def _largest_remainder_quotas(
-    *, groups: list[pl.DataFrame], rows: int, group_key: str | None
-) -> list[int]:
-    """Allocate rows proportionally, resolving ties by sorted group code.
-
-    Returns:
-        One non-negative quota for each input group.
-    """
-    total = sum(group.height for group in groups)
-    numerators = [group.height * rows for group in groups]
-    quotas = [numerator // total for numerator in numerators]
-    remaining = rows - sum(quotas)
-    if group_key is None:
-        tie_keys = list(range(len(groups)))
-    else:
-        tie_keys = [group.item(0, group_key) for group in groups]
-    remainders = [numerator % total for numerator in numerators]
-    remainder_order = sorted(
-        range(len(groups)), key=lambda index: (-remainders[index], tie_keys[index])
-    )
-    for index in remainder_order[:remaining]:
-        quotas[index] += 1
-    return quotas
 
 
 def _validate_destinations(*, run_dir: Path, output: Path) -> tuple[Path, Path]:

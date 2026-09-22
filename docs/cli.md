@@ -87,7 +87,11 @@ uv run src/scripts/build_persona_dashboard.py \
 ```
 
 The selected input and bundle must exist. The command validates the selected dashboard
-configuration, keeps Plotly inline, and writes only the output HTML path to stdout.
+configuration, keeps Plotly inline, and writes only the output HTML path to stdout. The
+origin chart uses only bundle rows marked eligible under the minimum source count and
+omits Denmark before renormalising the displayed target. Its overlay is descriptive:
+small persona outputs and five-row shards cannot generally reproduce a many-category
+DST marginal, so compare merged or frozen outputs when assessing distribution fit.
 
 ## Hugging Face upload
 

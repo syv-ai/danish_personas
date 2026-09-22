@@ -15,6 +15,102 @@ from danish_personas.sampling.freeze import (
 )
 
 
+def test_freeze_allocates_exact_origin_largest_remainder_quotas() -> None:
+    """Origin quotas sum exactly to the request for finite weights."""
+    sample = _select_sample(
+        frame=_source_frame(("5100", 5), ("5456", 3), ("5999", 2)),
+        rows=7,
+        mode="population_proportional",
+    )
+
+    assert sample.get_column("origin_country_code").value_counts().sort(
+        "origin_country_code"
+    ).to_dicts() == [
+        {"origin_country_code": "5100", "count": 4},
+        {"origin_country_code": "5456", "count": 2},
+        {"origin_country_code": "5999", "count": 1},
+    ]
+    assert sample.height == 7
+
+
+def _source_frame(*groups: tuple[str, int]) -> pl.DataFrame:
+    rows = [
+        {
+            "persona_id": f"{origin}-{index}",
+            "origin_country_code": origin,
+            "municipality_code": "101",
+            "education_level": "higher_education",
+            "labour_market_status": "employed",
+        }
+        for origin, count in groups
+        for index in range(count)
+    ]
+    return pl.DataFrame(rows)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_municipalities"),
+    [
+        ("population_proportional", {"101": 4}),
+        ("stratified_round_robin", {"101": 2, "265": 2}),
+    ],
+)
+def test_freeze_applies_mode_within_each_origin(
+    mode: t.Literal["population_proportional", "stratified_round_robin"],
+    expected_municipalities: dict[str, int],
+) -> None:
+    """Both modes preserve origin quotas before applying inner strata semantics."""
+    frame = pl.DataFrame(
+        [
+            {
+                "persona_id": f"{origin}-{municipality}-{index}",
+                "origin_country_code": origin,
+                "municipality_code": municipality,
+                "education_level": "higher_education",
+                "labour_market_status": "employed",
+            }
+            for origin in ("5100", "5456")
+            for municipality, count in (("101", 3), ("265", 1))
+            for index in range(count)
+        ]
+    )
+
+    sample = _select_sample(frame=frame, rows=4, mode=mode)
+
+    assert sample.height == 4
+    assert sorted(
+        sample.get_column("origin_country_code").value_counts().to_dicts(),
+        key=lambda item: item["origin_country_code"],
+    ) == [
+        {"origin_country_code": "5100", "count": 2},
+        {"origin_country_code": "5456", "count": 2},
+    ]
+    assert sorted(
+        sample.get_column("municipality_code").value_counts().to_dicts(),
+        key=lambda item: item["municipality_code"],
+    ) == [
+        {"municipality_code": code, "count": count}
+        for code, count in sorted(expected_municipalities.items())
+    ]
+
+
+def test_freeze_origin_ties_use_sorted_codes_not_input_order() -> None:
+    """Equal origin remainders select the lowest sorted codes first."""
+    frame = _source_frame(("5999", 2), ("5100", 2), ("5456", 2))
+    reversed_frame = frame.reverse()
+
+    first = _select_sample(frame=frame, rows=2, mode="population_proportional")
+    second = _select_sample(
+        frame=reversed_frame, rows=2, mode="population_proportional"
+    )
+
+    assert first.get_column("origin_country_code").to_list() == ["5100", "5456"]
+    assert (
+        first.get_column("persona_id").to_list()
+        == second.get_column("persona_id").to_list()
+    )
+
+
 def test_freeze_service_default_is_population_proportional(tmp_path: Path) -> None:
     """The default freeze preserves joint proportions with deterministic quotas."""
     paths = write_generation_inputs(root=tmp_path)
@@ -178,102 +274,6 @@ def test_freeze_service_supports_explicit_round_robin_mode(tmp_path: Path) -> No
 
     manifest = output.with_suffix(".manifest.json").read_text(encoding="utf-8")
     assert '"mode": "stratified_round_robin"' in manifest
-
-
-def _source_frame(*groups: tuple[str, int]) -> pl.DataFrame:
-    rows = [
-        {
-            "persona_id": f"{origin}-{index}",
-            "origin_country_code": origin,
-            "municipality_code": "101",
-            "education_level": "higher_education",
-            "labour_market_status": "employed",
-        }
-        for origin, count in groups
-        for index in range(count)
-    ]
-    return pl.DataFrame(rows)
-
-
-def test_freeze_allocates_exact_origin_largest_remainder_quotas() -> None:
-    """Origin quotas sum exactly to the request for finite weights."""
-    sample = _select_sample(
-        frame=_source_frame(("5100", 5), ("5456", 3), ("5999", 2)),
-        rows=7,
-        mode="population_proportional",
-    )
-
-    assert sample.get_column("origin_country_code").value_counts().sort(
-        "origin_country_code"
-    ).to_dicts() == [
-        {"origin_country_code": "5100", "count": 4},
-        {"origin_country_code": "5456", "count": 2},
-        {"origin_country_code": "5999", "count": 1},
-    ]
-    assert sample.height == 7
-
-
-def test_freeze_origin_ties_use_sorted_codes_not_input_order() -> None:
-    """Equal origin remainders select the lowest sorted codes first."""
-    frame = _source_frame(("5999", 2), ("5100", 2), ("5456", 2))
-    reversed_frame = frame.reverse()
-
-    first = _select_sample(frame=frame, rows=2, mode="population_proportional")
-    second = _select_sample(
-        frame=reversed_frame, rows=2, mode="population_proportional"
-    )
-
-    assert first.get_column("origin_country_code").to_list() == ["5100", "5456"]
-    assert (
-        first.get_column("persona_id").to_list()
-        == second.get_column("persona_id").to_list()
-    )
-
-
-@pytest.mark.parametrize(
-    ("mode", "expected_municipalities"),
-    [
-        ("population_proportional", {"101": 4}),
-        ("stratified_round_robin", {"101": 2, "265": 2}),
-    ],
-)
-def test_freeze_applies_mode_within_each_origin(
-    mode: t.Literal["population_proportional", "stratified_round_robin"],
-    expected_municipalities: dict[str, int],
-) -> None:
-    """Both modes preserve origin quotas before applying inner strata semantics."""
-    frame = pl.DataFrame(
-        [
-            {
-                "persona_id": f"{origin}-{municipality}-{index}",
-                "origin_country_code": origin,
-                "municipality_code": municipality,
-                "education_level": "higher_education",
-                "labour_market_status": "employed",
-            }
-            for origin in ("5100", "5456")
-            for municipality, count in (("101", 3), ("265", 1))
-            for index in range(count)
-        ]
-    )
-
-    sample = _select_sample(frame=frame, rows=4, mode=mode)
-
-    assert sample.height == 4
-    assert sorted(
-        sample.get_column("origin_country_code").value_counts().to_dicts(),
-        key=lambda item: item["origin_country_code"],
-    ) == [
-        {"origin_country_code": "5100", "count": 2},
-        {"origin_country_code": "5456", "count": 2},
-    ]
-    assert sorted(
-        sample.get_column("municipality_code").value_counts().to_dicts(),
-        key=lambda item: item["municipality_code"],
-    ) == [
-        {"municipality_code": code, "count": count}
-        for code, count in sorted(expected_municipalities.items())
-    ]
 
 
 def test_freeze_small_sample_may_drop_origins_but_keeps_exact_size() -> None:

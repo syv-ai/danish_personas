@@ -26,6 +26,22 @@ def test_equal_remainders_use_official_code_order_independently_of_input() -> No
     assert sorted(first.get_column("origin_country_code")) == ["5100", "5101"]
 
 
+def test_origin_sampling_excludes_count_below_eligibility_threshold() -> None:
+    """A positive count of 49 is excluded while a count of 50 is included."""
+    frame = pl.DataFrame(
+        {
+            "origin_country_code": ["5100", "5101"],
+            "origin_country": ["Denmark", "Country A"],
+            "count": [49, 50],
+            "eligible_for_sampling": [False, True],
+        }
+    )
+
+    sampled = _origin_quota_sample(frame=frame, rows=10, rng=np.random.default_rng(42))
+
+    assert sampled.get_column("origin_country_code").unique().to_list() == ["5101"]
+
+
 def test_origin_sampling_is_deterministic_and_preserves_unequal_weights() -> None:
     """Repeated seeded quota sampling has exact largest-remainder counts."""
     first = _origin_quota_sample(
@@ -85,19 +101,3 @@ def test_origin_sampling_rejects_malformed_distributions() -> None:
     for frame in cases:
         with pytest.raises(ValueError):
             _origin_quota_sample(frame=frame, rows=10, rng=np.random.default_rng(42))
-
-
-def test_origin_sampling_excludes_count_below_eligibility_threshold() -> None:
-    """A positive count of 49 is excluded while a count of 50 is included."""
-    frame = pl.DataFrame(
-        {
-            "origin_country_code": ["5100", "5101"],
-            "origin_country": ["Denmark", "Country A"],
-            "count": [49, 50],
-            "eligible_for_sampling": [False, True],
-        }
-    )
-
-    sampled = _origin_quota_sample(frame=frame, rows=10, rng=np.random.default_rng(42))
-
-    assert sampled.get_column("origin_country_code").unique().to_list() == ["5101"]

@@ -2,17 +2,17 @@
 
 This report records the previous schema-5 regeneration only. Its bundle and run IDs are
 historical evidence and are non-resumable under the current contracts. The current
-architecture requires prepared-bundle schema 6, sampler schema 6, frozen-sample schema
-3, generation contract 4, validator `persona-safety-v16`, and release manifest/evidence
-schema 2. The active generation output is one grounded `persona` field, not the
-historical specialised texts. Regenerate before recording current canonical IDs; use
-placeholders until then.
+architecture requires prepared-bundle schema 8, sampler schema 8, frozen-sample schema
+5, generation contract 5, validator `persona-safety-v20`, release manifest schema 2,
+and release evidence schema 3. The active generation output is one grounded `persona`
+field, not the historical specialised texts. Regenerate before recording current
+canonical IDs; use placeholders until then.
 
 The historical deterministic sampler schema is version 5 and the prepared-bundle schema
 is version 5. Both municipality-native runs were regenerated offline from the 20260919
 archive with seed `20260914`, with no LLM calls and no threshold changes. The results
-below remain historical; current deterministic runs use sampler schema 6 and prepared-
-bundle schema 6.
+below remain historical; current deterministic runs require sampler schema 8 and
+prepared-bundle schema 8.
 
 ## Regeneration commands
 
@@ -58,7 +58,7 @@ the current service produces current content-addressed artefacts.
   zero LLM calls. They are not current canonical runs.
 - The frozen text-development input remains a separate 1,000-row local artefact. Its
   historical sample provenance schema 2 is not resumable; current frozen samples use
-  schema 3 and must be regenerated.
+  schema 5 and must be regenerated.
 
 The compressed raw snapshots are committed with attribution. Restored and generated
 artefacts remain ignored by Git and are reproducible from the source archive, lock,

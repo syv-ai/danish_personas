@@ -426,7 +426,7 @@ class BundleManifest(StrictModel):
     def validate_origin_contract_binding(
         self, info: ValidationInfo
     ) -> "BundleManifest":
-        """Require origin-label provenance for source-backed schema-6 bundles.
+        """Require origin-label provenance for source-backed schema-8 bundles.
 
         Returns:
             The validated bundle manifest.

@@ -64,7 +64,7 @@ These gates apply before any LLM integration may be enabled.
   on a coarser cell. Age and marital back-off can relax age or sex only while retaining
   the same municipality; no region or national fallback exists. RAS202's national
   detailed-status refinement remains a separate ladder. The sampler schema is version
-  7, the frozen-sample schema is version 4, and the validation configuration remains
+  8, the frozen-sample schema is version 5, and the validation configuration remains
   version 5.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
@@ -96,8 +96,9 @@ These gates apply before any LLM integration may be enabled.
   fail loudly. Every observed code-label pair is checked against the full official
   mapping, including an alternate label beside valid rows; unexpected pairs,
   ineligible codes, and all unexpected fitted categories fail explicitly and remain
-  included in distribution accounting. The mapping
-  and origin marginal meet the same statistical gates as other mandatory marginals.
+  included in distribution accounting. The eligibility threshold is the bundle-bound
+  `minimum_source_count`; the mapping and eligible origin marginal meet the same
+  statistical gates as other mandatory marginals.
 - Eligible RAS202 employee status codes 15, 20, 25, 30, 35, and 40 receive paired
   `job_function_code` and `job_function` values with `lons20_sex_marginal` resolution.
   Every other detailed status receives paired nulls and `not_applicable`. Within each
@@ -121,11 +122,12 @@ These gates apply before any LLM integration may be enabled.
 
 `SAMPLER_SCHEMA_VERSION` is 8 and must be incremented whenever deterministic sampling
 semantics or generated record columns change incompatibly. The frozen-sample schema is
-5, with a recorded population-proportional default freeze mode and an explicit
-stratified round-robin alternative. These versions are part of content-addressed
-identities, so legacy bundles, runs, or samples cannot be silently reused. The previous
-schema-6 canonical IDs are historical and non-resumable; regenerate and record new IDs
-rather than inventing them.
+5. Both freeze modes first preserve the observed eligible origin marginal with
+largest-remainder quotas, then apply population-proportional or stratified round-robin
+selection within each origin. These versions are part of content-addressed identities,
+so legacy bundles, runs, or samples cannot be silently reused. Previous canonical IDs
+are historical and non-resumable; regenerate and record new IDs rather than inventing
+them.
 
 ## Persona runs
 

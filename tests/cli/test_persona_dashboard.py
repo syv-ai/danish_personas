@@ -110,16 +110,6 @@ def _run_dashboard(
     )
 
 
-def _dashboard_config(*, overrides: list[str]) -> DictConfig:
-    """Compose dashboard settings from the canonical Hydra entry point.
-
-    Returns:
-        Composed configuration with the supplied overrides.
-    """
-    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "config")):
-        return compose(config_name="config", overrides=overrides)
-
-
 def test_dashboard_handles_frame_without_colour_fields(
     tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
 ) -> None:
@@ -175,6 +165,16 @@ def test_dashboard_is_one_inline_plotly_html(
     assert "Provenance and semantics" not in document
     assert "TF-IDF" not in document
     assert embedding_client[1]
+
+
+def _dashboard_config(*, overrides: list[str]) -> DictConfig:
+    """Compose dashboard settings from the canonical Hydra entry point.
+
+    Returns:
+        Composed configuration with the supplied overrides.
+    """
+    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "config")):
+        return compose(config_name="config", overrides=overrides)
 
 
 def _personas() -> pl.DataFrame:
@@ -235,91 +235,6 @@ def test_domestic_origin_is_removed_and_remaining_values_are_renormalised() -> N
     assert "Tyskland" in chart
 
 
-def test_origin_target_excludes_zero_and_subthreshold_audit_rows(
-    tmp_path: Path,
-) -> None:
-    """Origin overlays omit audit rows that are ineligible for sampling."""
-    normalized = tmp_path / "normalized"
-    normalized.mkdir()
-    pl.DataFrame(
-        {
-            "origin_country_da": ["Nul", "Lille", "Stor"],
-            "count": [0, 49, 100],
-            "eligible_for_sampling": [False, False, True],
-        }
-    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
-
-    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {"Stor": 1.0}
-
-
-def test_origin_target_includes_count_at_threshold(tmp_path: Path) -> None:
-    """The minimum eligible origin count remains in the overlay universe."""
-    normalized = tmp_path / "normalized"
-    normalized.mkdir()
-    pl.DataFrame(
-        {
-            "origin_country_da": ["Tærskel", "Stor"],
-            "count": [50, 100],
-            "eligible_for_sampling": [True, True],
-        }
-    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
-
-    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {
-        "Tærskel": 1 / 3,
-        "Stor": 2 / 3,
-    }
-
-
-def test_origin_target_renormalises_after_eligibility_and_denmark_filter(
-    tmp_path: Path,
-) -> None:
-    """Origin targets normalise over eligible non-Danish rows only."""
-    normalized = tmp_path / "normalized"
-    normalized.mkdir()
-    pl.DataFrame(
-        {
-            "origin_country_da": ["Danmark", "Polen", "Tyskland", "Audit"],
-            "count": [1_000, 50, 50, 10_000],
-            "eligible_for_sampling": [True, True, True, False],
-        }
-    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
-
-    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {
-        "Polen": 0.5,
-        "Tyskland": 0.5,
-    }
-
-
-def test_origin_target_rejects_legacy_file_without_eligibility(tmp_path: Path) -> None:
-    """Legacy origin targets fail instead of silently showing an audit marginal."""
-    normalized = tmp_path / "normalized"
-    normalized.mkdir()
-    pl.DataFrame({"origin_country_da": ["Polen"], "count": [100]}).write_parquet(
-        normalized / "folk2_origin_country_marginal.parquet"
-    )
-
-    with pytest.raises(ValueError, match="Boolean.*eligible_for_sampling"):
-        load_dst_targets(bundle_path=tmp_path)
-
-
-def test_origin_chart_note_warns_about_small_outputs() -> None:
-    """Origin overlays explain the appropriate comparison population."""
-    chart = _distribution_chart(
-        frame=pl.DataFrame({"origin_country_da": ["Polen"]}),
-        field="origin_country_da",
-        title="Origin-country labels",
-        source="FOLK2",
-        target={"Polen": 1.0},
-    )
-
-    assert "threshold-eligible DST universe" in chart
-    assert (
-        "small persona outputs/shards cannot generally reproduce the full marginal"
-        in chart.lower()
-    )
-    assert "merged/frozen outputs are the meaningful comparison" in chart
-
-
 def test_dst_targets_are_normalised_and_aggregated(tmp_path: Path) -> None:
     """Prepared target counts become proportions by semantic value."""
     normalized = tmp_path / "normalized"
@@ -372,6 +287,19 @@ def test_education_target_uses_generated_pooling_contract(tmp_path: Path) -> Non
     assert sum(target.values()) == pytest.approx(1.0)
 
 
+def test_embedding_http_errors_are_not_silenced() -> None:
+    """Provider failures stop dashboard construction rather than fabricating points."""
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(503, json={"error": "unavailable"})
+        )
+    )
+    frame = pl.DataFrame({"persona": ["tekst"]})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        persona_embedding(frame=frame, http_client=client)
+
+
 @pytest.mark.parametrize("indices", [[0, 0], [-1, 1], [0, 2], [True, 1], [0, None]])
 def test_embedding_rejects_invalid_batch_indices(indices: list[object]) -> None:
     """Embedding vectors are ordered only after an exact index-set check."""
@@ -384,19 +312,6 @@ def test_embedding_rejects_invalid_batch_indices(indices: list[object]) -> None:
 
     with pytest.raises(ValueError, match="indices"):
         _vectors_from_response(payload=payload, expected=2)
-
-
-def test_embedding_http_errors_are_not_silenced() -> None:
-    """Provider failures stop dashboard construction rather than fabricating points."""
-    client = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda _: httpx.Response(503, json={"error": "unavailable"})
-        )
-    )
-    frame = pl.DataFrame({"persona": ["tekst"]})
-
-    with pytest.raises(httpx.HTTPStatusError):
-        persona_embedding(frame=frame, http_client=client)
 
 
 def test_embedding_requests_are_batched_and_configured(
@@ -558,6 +473,107 @@ def test_not_stated_is_removed_before_distribution_normalisation(
     assert load_dst_targets(bundle_path=tmp_path)["education_level"] == {"primary": 1.0}
 
 
+def test_origin_chart_note_warns_about_small_outputs() -> None:
+    """Origin overlays explain the appropriate comparison population."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"origin_country_da": ["Polen"]}),
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"Polen": 1.0},
+    )
+
+    assert "threshold-eligible DST universe" in chart
+    assert (
+        "small persona outputs/shards cannot generally reproduce the full marginal"
+        in chart.lower()
+    )
+    assert "merged/frozen outputs are the meaningful comparison" in chart
+
+
+def test_origin_target_excludes_zero_and_subthreshold_audit_rows(
+    tmp_path: Path,
+) -> None:
+    """Origin overlays omit audit rows that are ineligible for sampling."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame(
+        {
+            "origin_country_da": ["Nul", "Lille", "Stor"],
+            "count": [0, 49, 100],
+            "eligible_for_sampling": [False, False, True],
+        }
+    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
+
+    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {"Stor": 1.0}
+
+
+def test_origin_target_includes_count_at_threshold(tmp_path: Path) -> None:
+    """The minimum eligible origin count remains in the overlay universe."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame(
+        {
+            "origin_country_da": ["Tærskel", "Stor"],
+            "count": [50, 100],
+            "eligible_for_sampling": [True, True],
+        }
+    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
+
+    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {
+        "Tærskel": 1 / 3,
+        "Stor": 2 / 3,
+    }
+
+
+def test_origin_target_rejects_legacy_file_without_eligibility(tmp_path: Path) -> None:
+    """Legacy origin targets fail instead of silently showing an audit marginal."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame({"origin_country_da": ["Polen"], "count": [100]}).write_parquet(
+        normalized / "folk2_origin_country_marginal.parquet"
+    )
+
+    with pytest.raises(ValueError, match="Boolean.*eligible_for_sampling"):
+        load_dst_targets(bundle_path=tmp_path)
+
+
+def test_origin_target_renormalises_after_eligibility_and_denmark_filter(
+    tmp_path: Path,
+) -> None:
+    """Origin targets normalise over eligible non-Danish rows only."""
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    pl.DataFrame(
+        {
+            "origin_country_da": ["Danmark", "Polen", "Tyskland", "Audit"],
+            "count": [1_000, 50, 50, 10_000],
+            "eligible_for_sampling": [True, True, True, False],
+        }
+    ).write_parquet(normalized / "folk2_origin_country_marginal.parquet")
+
+    assert load_dst_targets(bundle_path=tmp_path)["origin_country_da"] == {
+        "Polen": 0.5,
+        "Tyskland": 0.5,
+    }
+
+
+def test_rank_deficient_embedding_is_exactly_repeatable(
+    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
+) -> None:
+    """Duplicate-document rank deficiency does not change repeated coordinates."""
+    frame = pl.DataFrame(
+        {
+            "persona": ["rolig cykeltur", "rolig cykeltur", "travl arbejdsdag"] * 2,
+            "persona_id": [f"p-{index}" for index in range(6)],
+        }
+    )
+
+    assert persona_embedding(
+        frame=frame, http_client=embedding_client[0]
+    ) == persona_embedding(frame=frame, http_client=embedding_client[0])
+
+
 def test_ras209_h90_is_removed_from_all_dashboard_targets(tmp_path: Path) -> None:
     """H90 is excluded before education, labour, and municipality overlays are mixed."""
     normalized = tmp_path / "normalized"
@@ -581,22 +597,6 @@ def test_ras209_h90_is_removed_from_all_dashboard_targets(tmp_path: Path) -> Non
     assert targets["labour_market_status"] == {"employed": 1.0}
     assert targets["municipality"] == {"A": 0.5, "B": 0.5}
     assert path.read_bytes() == original
-
-
-def test_rank_deficient_embedding_is_exactly_repeatable(
-    embedding_client: tuple[httpx.Client, list[dict[str, object]]],
-) -> None:
-    """Duplicate-document rank deficiency does not change repeated coordinates."""
-    frame = pl.DataFrame(
-        {
-            "persona": ["rolig cykeltur", "rolig cykeltur", "travl arbejdsdag"] * 2,
-            "persona_id": [f"p-{index}" for index in range(6)],
-        }
-    )
-
-    assert persona_embedding(
-        frame=frame, http_client=embedding_client[0]
-    ) == persona_embedding(frame=frame, http_client=embedding_client[0])
 
 
 def test_relationship_pair_chart_uses_partnered_gender_pairs() -> None:

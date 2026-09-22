@@ -22,9 +22,12 @@ synthetic sex-conditional allocation for eligible employees, not observed occupa
 all-worker representation. The fields are withheld from LLM payloads.
 
 FOLK2 remains an independent national marginal of official IELAND country-of-origin
-categories for adults. The English `origin_country` is retained as official source and
-audit provenance. Mandatory `origin_country_da` is the Danish display label from the
-archived official FOLK2 `metadata-da` 241-code contract at
+categories for adults. Its prepared audit table retains all 241 official rows and marks
+only counts at or above the bundle-bound minimum source count of 50 as eligible for
+sampling. Eligible weights are renormalised without changing their relative
+proportions. The English `origin_country` is retained as official source and audit
+provenance. Mandatory `origin_country_da` is the Danish display label from the archived
+official FOLK2 `metadata-da` 241-code contract at
 `config/folk2-ieland-labels-da.yaml`, whose source metadata SHA-256 is
 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Only the Danish
 label reaches the provider request and exact persona grounding; code, English label,
@@ -33,11 +36,12 @@ citizenship, residence, or appearance. Origin cannot drive culture, religion, jo
 interests, personality, or visual traits. RAS209 remains locked to all 99 official
 level-3 areas, including Christiansø.
 
-Future runs use prepared-bundle schema 7, sampler schema 7, frozen-sample schema 4,
-and generation contract 5 with validator `persona-safety-v20`. The default frozen
-sample mode is population-proportional; stratified round-robin remains an explicit
-alternative. No new bundle, deterministic run, frozen sample, persona output, or
-release has been generated for this contract change. Existing IDs and checksums are
+Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
+and generation contract 5 with validator `persona-safety-v20`. Both frozen-sample modes
+first preserve the eligible origin marginal; population-proportional is the default
+within-origin mode and stratified round-robin remains an explicit alternative. No new
+bundle, deterministic run, frozen sample, persona output, or release has been generated
+for this contract change. Existing IDs and checksums are
 historical and non-resumable under these contracts.
 
 Archive SHA-256 (reproducible from the restored snapshot tree):

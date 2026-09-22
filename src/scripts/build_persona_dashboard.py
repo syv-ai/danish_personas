@@ -964,6 +964,27 @@ def _conditioned_job_function_target(
     return target
 
 
+def _normalise_counts(*, source: pl.DataFrame, value_column: str) -> dict[str, float]:
+    """Aggregate duplicate target rows and convert counts to proportions.
+
+    Returns:
+        Normalised counts keyed by the displayed target value.
+    """
+    grouped = source.group_by(value_column).agg(pl.col("count").sum())
+    if value_column == "education_level":
+        grouped = grouped.filter(
+            pl.col(value_column).cast(pl.String).str.to_lowercase() != NOT_STATED
+        )
+    total = float(grouped.get_column("count").sum()) if grouped.height else 0.0
+    if total <= 0:
+        return {}
+    return {
+        str(row[value_column]): float(row["count"]) / total
+        for row in grouped.to_dicts()
+        if row[value_column] is not None
+    }
+
+
 def _eligible_ras209_dashboard_rows(*, source: pl.DataFrame) -> pl.DataFrame:
     """Exclude RAS209 undisclosed education rows from all dashboard targets.
 
@@ -1037,6 +1058,19 @@ def _read_origin_target(*, normalized: Path) -> pl.DataFrame | None:
     return source
 
 
+def _target_column(*, field: str, columns: list[str]) -> str | None:
+    """Find a semantic target column, allowing official naming variants.
+
+    Returns:
+        The matching source column, or ``None`` when no match exists.
+    """
+    candidates = {
+        "origin_country_da": ("origin_country_da", "origin_country"),
+        "job_function": ("job_function", "job_function_code"),
+    }.get(field, (field,))
+    return next((candidate for candidate in candidates if candidate in columns), None)
+
+
 def _without_domestic_origin(
     *, source: pl.DataFrame, value_column: str
 ) -> pl.DataFrame:
@@ -1052,27 +1086,6 @@ def _without_domestic_origin(
         .str.to_lowercase()
         .is_in(DOMESTIC_ORIGIN_LABELS)
     )
-
-
-def _normalise_counts(*, source: pl.DataFrame, value_column: str) -> dict[str, float]:
-    """Aggregate duplicate target rows and convert counts to proportions.
-
-    Returns:
-        Normalised counts keyed by the displayed target value.
-    """
-    grouped = source.group_by(value_column).agg(pl.col("count").sum())
-    if value_column == "education_level":
-        grouped = grouped.filter(
-            pl.col(value_column).cast(pl.String).str.to_lowercase() != NOT_STATED
-        )
-    total = float(grouped.get_column("count").sum()) if grouped.height else 0.0
-    if total <= 0:
-        return {}
-    return {
-        str(row[value_column]): float(row["count"]) / total
-        for row in grouped.to_dicts()
-        if row[value_column] is not None
-    }
 
 
 def _pooled_education_target(
@@ -1100,19 +1113,6 @@ def _read_optional_target(*, normalized: Path, stem: str) -> pl.DataFrame | None
         return None
     source = pl.read_parquet(path)
     return source if "count" in source.columns else None
-
-
-def _target_column(*, field: str, columns: list[str]) -> str | None:
-    """Find a semantic target column, allowing official naming variants.
-
-    Returns:
-        The matching source column, or ``None`` when no match exists.
-    """
-    candidates = {
-        "origin_country_da": ("origin_country_da", "origin_country"),
-        "job_function": ("job_function", "job_function_code"),
-    }.get(field, (field,))
-    return next((candidate for candidate in candidates if candidate in columns), None)
 
 
 if __name__ == "__main__":

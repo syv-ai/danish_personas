@@ -83,17 +83,20 @@ attachment CSV, the response headers, and a machine-readable checksum manifest.
   not interpreted as ethnicity or citizenship.
 - FOLK2 preserves unequal official weights and the complete selected official
   code-to-label mapping, including Stateless and Not stated. Preparation requires unique
-  codes and labels and rejects mapping changes. The raw BULK partition remains available
-  to provenance checks before approved zero omissions are materialised. This marginal is
-  not ethnicity or citizenship, and no country groups, correlations, or joint
-  associations are inferred. Its Danish display labels are checked against the archived
-  metadata-da 241-code contract with source metadata SHA-256
+  codes and labels, rejects mapping changes, and marks categories with a count at or
+  above the bundle-bound `minimum_source_count` of 50 as eligible for sampling. The full
+  241-row marginal remains an audit artefact, including materialised zeros and positive
+  sub-threshold rows. This marginal is not ethnicity or citizenship, and no country
+  groups, correlations, or joint associations are inferred. Its Danish display labels
+  are checked against the archived metadata-da 241-code contract with source metadata
+  SHA-256
   `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`.
 - FOLK2 is sampled independently as a national marginal into the Phase 2
   `origin_country_code`, English `origin_country`, and mandatory Danish
-  `origin_country_da` fields. Official unequal weights and labels, including Stateless
-  and Not stated, are retained; zero-weight categories are excluded. The English label
-  remains official source/audit provenance. Only the Danish label reaches the provider
+  `origin_country_da` fields. Sampling and validation use only threshold-eligible rows
+  and renormalise their official unequal weights; zero and positive sub-threshold rows
+  remain in the audit mapping but cannot be emitted. The English label remains official
+  source/audit provenance. Only the Danish label reaches the provider
   request and exact persona grounding; code, English label, resolutions, and contract
   metadata are withheld. Neither label is ethnicity, citizenship, residence, or
   appearance. Origin cannot drive culture, religion, job, interests, personality, or
