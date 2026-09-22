@@ -140,6 +140,8 @@ def test_dashboard_handles_frame_without_colour_fields(
     assert "Persona text embedding" in document
     assert "UMAP dimension 1" in document
     assert "deterministic two-dimensional UMAP" in document
+    assert 'marker":{"opacity":0.6}' in document
+    assert '<div class="plot" style="height:700px">' in document
     assert "PCA" not in document
 
 
