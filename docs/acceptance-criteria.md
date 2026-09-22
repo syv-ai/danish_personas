@@ -60,8 +60,9 @@ These gates apply before any LLM integration may be enabled.
   detailed status, and each of those ladders independently keeps at most 1% of records
   on a coarser cell. Age and marital back-off can relax age or sex only while retaining
   the same municipality; no region or national fallback exists. RAS202's national
-  detailed-status refinement remains a separate ladder. The sampler schema is version 7, the frozen-sample schema is version 4, and the
-  validation configuration remains version 5.
+  detailed-status refinement remains a separate ladder. The sampler schema is version
+  7, the frozen-sample schema is version 4, and the validation configuration remains
+  version 5.
 - A combination no ladder can serve is a hard failure, not a reported rate: generation
   aborts rather than emitting a record from an unsupported cell.
 - The RAS209 `67+` education proxy is labelled for every person aged 70+ and nobody
@@ -114,24 +115,26 @@ These gates apply before any LLM integration may be enabled.
   persona. Job titles are synthetic and must not imply unsupported work history.
 
 `SAMPLER_SCHEMA_VERSION` is 7 and must be incremented whenever deterministic sampling
-semantics or generated record columns change incompatibly. The frozen-sample schema is 4, with a recorded population-proportional default
-freeze mode and an explicit stratified round-robin alternative. These versions are part of content-addressed identities, so legacy bundles, runs,
-or samples cannot be silently reused. The previous schema-5 canonical IDs are historical
-and non-resumable; regenerate and record new IDs rather than inventing them.
+semantics or generated record columns change incompatibly. The frozen-sample schema is
+4, with a recorded population-proportional default freeze mode and an explicit
+stratified round-robin alternative. These versions are part of content-addressed
+identities, so legacy bundles, runs, or samples cannot be silently reused. The previous
+schema-6 canonical IDs are historical and non-resumable; regenerate and record new IDs
+rather than inventing them.
 
 ## Persona runs
 
 - The Hydra configuration names the endpoint and model explicitly. Each invocation
   remains bounded by row and HTTP-request limits.
 - The input checksum and successful Phase-2 validation report match the upstream run.
-  The upstream sampler schema must be version 6 and the frozen-sample schema must be
-  version 3. Every frozen row and column must validate against the current
+  The upstream sampler schema must be version 7 and the frozen-sample schema must be
+  version 4. Every frozen row and column must validate against the current
   `DemographicRecord`; legacy, origin-less samples require migration and cannot cross
   the Phase-3 boundary.
-- No invocation can request more than five rows. The default population-proportional 1,000-row text-development input is separate
-  from the 2,000-row Phase-2 smoke run; stratified round-robin remains an explicit
-  alternative mode.
-- One provider response contains both generated attributes and the generation-4
+- No invocation can request more than five rows. The default population-proportional
+  1,000-row text-development input is separate from the 2,000-row Phase-2 smoke run;
+  stratified round-robin remains an explicit alternative mode.
+- One provider response contains both generated attributes and the generation-5
   `persona` field. A valid first response costs one request per row; only validation or
   transport retries add requests.
 - The persona is natural Danish prose of 300-900 characters and at least four
@@ -155,15 +158,15 @@ and non-resumable; regenerate and record new IDs rather than inventing them.
   values and order.
 - Generated text is Danish, contains no detected contact details or identifying-number
   patterns, and does not contain inflectional sensitive terms or physical-appearance
-  claims. The persona is written with `han` or `hun`; partners and family members are referred
-  to by relationship terms rather than names. Surnames, real employer or institution
-  names, and exact addresses are prohibited.
+  claims. The persona is written with `han` or `hun`; partners and family members are
+  referred to by relationship terms rather than names. Surnames, real employer or
+  institution names, and exact addresses are prohibited.
   Downstream image models may stereotype, so this contract does not make
   image generation safe.
 - Exact duplicate persona descriptions are rejected across each run and pilot.
-- Current generation-4 per-record checkpoints support resume without repeating
-  completed model calls. Historical v1-v3 outputs and old pilots are not resumable
-  under generation 4.
+- Current generation-5 per-record checkpoints support resume without repeating
+  completed model calls. Historical v1-v4 outputs and old pilots are not resumable
+  under generation 5.
 - The manifest records model, selected inference provider, endpoint, prompt and input
   hashes, HTTP attempts, retries, token use, provider-estimated cost when available, and
   output checksum.

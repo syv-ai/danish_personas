@@ -181,6 +181,27 @@ def _personas() -> pl.DataFrame:
     )
 
 
+def test_domestic_origin_is_removed_and_remaining_values_are_renormalised() -> None:
+    """The origin chart compares only non-Danish origin labels."""
+    frame = pl.DataFrame(
+        {"origin_country_da": ["Danmark", "Danmark", "Polen", "Tyskland"]}
+    )
+    assert _generated_distribution(frame=frame, field="origin_country_da") == {
+        "Polen": 0.5,
+        "Tyskland": 0.5,
+    }
+    chart = _distribution_chart(
+        frame=frame,
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"Danmark": 0.8, "Polen": 0.15, "Tyskland": 0.05},
+    )
+    assert "Danmark" not in chart
+    assert "Polen" in chart
+    assert "Tyskland" in chart
+
+
 def test_dst_targets_are_normalised_and_aggregated(tmp_path: Path) -> None:
     """Prepared target counts become proportions by semantic value."""
     normalized = tmp_path / "normalized"
@@ -348,6 +369,19 @@ def test_job_function_target_is_omitted_without_conditioning_fields(
     )
 
     assert "job_function" not in targets
+
+
+def test_long_horizontal_charts_expand_to_prevent_label_overlap() -> None:
+    """Each horizontal category receives enough vertical plot space."""
+    labels = [f"Municipality {index}" for index in range(30)]
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"municipality": labels}),
+        field="municipality",
+        title="Municipalities",
+        source="RAS209",
+        target=None,
+    )
+    assert 'style="height:790px"' in chart
 
 
 def test_municipality_target_comes_from_ras209_marginal(tmp_path: Path) -> None:

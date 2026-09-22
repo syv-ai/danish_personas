@@ -194,7 +194,8 @@ Passing `--hf-repo OWNER/DATASET` additionally requires `--attestation`, `--poli
 `<output-dir>/releases`, uses the current working directory as repository root, and
 independently verifies it before uploading to a Hugging Face dataset pull request.
 Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
-tokens are never CLI arguments. Re-running after review resumes already validated generation shards.
+tokens are never CLI arguments. Re-running after review resumes already validated
+generation shards.
 
 ## Outputs and data handling
 

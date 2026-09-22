@@ -116,7 +116,9 @@ def test_job_title_must_be_allowlisted() -> None:
 def test_schema_contains_only_persona() -> None:
     assert set(validation_module.PersonaDescriptions.model_fields) == {"persona"}
     assert "first_name" not in validation_module.GeneratedAttributes.model_fields
-    assert "partner_first_name" not in validation_module.GeneratedAttributes.model_fields
+    assert (
+        "partner_first_name" not in validation_module.GeneratedAttributes.model_fields
+    )
 
 
 @pytest.mark.parametrize(

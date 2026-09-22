@@ -405,6 +405,32 @@ def _validate_job_title(
         raise ValueError("job_title must be a single plain Danish line")
 
 
+def _validate_relationship_attributes(
+    *, attributes: GeneratedAttributes, demographic: dict[str, object]
+) -> None:
+    """Validate the generated relationship fields against legal status semantics.
+
+    Raises:
+        ValueError:
+            If relationship fields do not match the supplied legal status.
+    """
+    marital_status = str(demographic.get("marital_status", "")).casefold()
+    detail = attributes.legal_status_detail
+    if marital_status == "married_or_separated":
+        if detail is None:
+            raise ValueError("married_or_separated requires legal_status_detail")
+        if (
+            detail == "married"
+            and attributes.current_relationship_status != "partnered"
+        ):
+            raise ValueError("married responses must be partnered")
+    elif marital_status in {"never_married", "divorced", "widowed"}:
+        if detail is not None:
+            raise ValueError(f"{marital_status} must not include legal_status_detail")
+    else:
+        raise ValueError(f"Unknown marital_status: {marital_status}")
+
+
 def parse_descriptions(
     content: str,
     demographic: DemographicRecord | c.Mapping[str, object],
@@ -504,69 +530,6 @@ def _validate_persona_facts(
     _validate_relationship_prose(
         text=normalized, demographic=demographic, attributes=attributes
     )
-
-
-def _validate_relationship_attributes(
-    *, attributes: GeneratedAttributes, demographic: dict[str, object]
-) -> None:
-    """Validate the generated relationship fields against legal status semantics.
-
-    Raises:
-        ValueError:
-            If relationship fields do not match the supplied legal status.
-    """
-    marital_status = str(demographic.get("marital_status", "")).casefold()
-    detail = attributes.legal_status_detail
-    if marital_status == "married_or_separated":
-        if detail is None:
-            raise ValueError("married_or_separated requires legal_status_detail")
-        if (
-            detail == "married"
-            and attributes.current_relationship_status != "partnered"
-        ):
-            raise ValueError("married responses must be partnered")
-    elif marital_status in {"never_married", "divorced", "widowed"}:
-        if detail is not None:
-            raise ValueError(f"{marital_status} must not include legal_status_detail")
-    else:
-        raise ValueError(f"Unknown marital_status: {marital_status}")
-
-
-def _validate_relationship_prose(
-    *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
-) -> None:
-    """Require legal and current relationship fields in the persona prose.
-
-    Raises:
-        ValueError:
-            If relationship or legal-status wording is missing.
-    """
-    relationship_terms = ("partner", "kæreste", "ægtefælle", "mand", "kone", "hustru")
-    if attributes.current_relationship_status == "partnered":
-        if not any(_contains_term(text=text, term=term) for term in relationship_terms):
-            raise ValueError("Persona does not preserve the partnered status")
-    elif not any(
-        _contains_term(text=text, term=term)
-        for term in ("single", "alene", "uden partner", "ikke i et forhold")
-    ):
-        raise ValueError("Persona does not preserve the not_partnered status")
-
-    marital_status = str(demographic.get("marital_status", "")).casefold()
-    detail = attributes.legal_status_detail
-    legal_terms = {
-        "married": ("gift",),
-        "separated": ("separeret",),
-        "never_married": ("aldrig været gift", "har aldrig været gift"),
-        "divorced": ("skilt",),
-        "widowed": ("enke", "enkemand"),
-    }
-    expected_terms = (
-        legal_terms[detail]
-        if marital_status == "married_or_separated" and detail is not None
-        else legal_terms.get(marital_status, ())
-    )
-    if not any(_contains_term(text=text, term=term) for term in expected_terms):
-        raise ValueError("Persona does not preserve the supplied legal marital status")
 
 
 def _validate_age(*, text: str, demographic: dict[str, object]) -> None:
@@ -696,3 +659,40 @@ def _validate_grounding_label(*, text: str, field: str, value: str) -> None:
         raise ValueError(f"Persona does not preserve the supplied {field}")
     if any(_is_negated(text=text, span=span) for span in spans):
         raise ValueError(f"Persona negates the supplied {field}")
+
+
+def _validate_relationship_prose(
+    *, text: str, demographic: dict[str, object], attributes: GeneratedAttributes
+) -> None:
+    """Require legal and current relationship fields in the persona prose.
+
+    Raises:
+        ValueError:
+            If relationship or legal-status wording is missing.
+    """
+    relationship_terms = ("partner", "kæreste", "ægtefælle", "mand", "kone", "hustru")
+    if attributes.current_relationship_status == "partnered":
+        if not any(_contains_term(text=text, term=term) for term in relationship_terms):
+            raise ValueError("Persona does not preserve the partnered status")
+    elif not any(
+        _contains_term(text=text, term=term)
+        for term in ("single", "alene", "uden partner", "ikke i et forhold")
+    ):
+        raise ValueError("Persona does not preserve the not_partnered status")
+
+    marital_status = str(demographic.get("marital_status", "")).casefold()
+    detail = attributes.legal_status_detail
+    legal_terms = {
+        "married": ("gift",),
+        "separated": ("separeret",),
+        "never_married": ("aldrig været gift", "har aldrig været gift"),
+        "divorced": ("skilt",),
+        "widowed": ("enke", "enkemand"),
+    }
+    expected_terms = (
+        legal_terms[detail]
+        if marital_status == "married_or_separated" and detail is not None
+        else legal_terms.get(marital_status, ())
+    )
+    if not any(_contains_term(text=text, term=term) for term in expected_terms):
+        raise ValueError("Persona does not preserve the supplied legal marital status")

@@ -4,8 +4,9 @@
 to build the Danish persona demographic distributions. It holds seven Statistics Denmark
 StatBank table snapshots and the official Statistics Denmark classification snapshot
 that supplies the region, landsdel, and municipality hierarchy. The archive contains
-only public aggregate data and no personal microdata. The three public persona scripts restore its 45 files automatically when the standard
-input workflow needs them. The same operation remains available as the importable
+only public aggregate data and no personal microdata. The three public persona scripts
+restore its 45 files automatically when the standard input workflow needs them. The
+same operation remains available as the importable
 `danish_personas.sources.archive.restore_raw_sources` maintenance service. It creates
 `data/raw-hardened-20260919/`. The merged 20260918 source chain is retained unchanged.
 Derived source bundles, records, and LLM outputs remain ignored by Git and can be rebuilt

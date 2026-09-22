@@ -56,6 +56,7 @@ DEFAULT_EMBEDDING_MODEL = "jina-embeddings-v5-text-small-clustering"
 DEFAULT_EMBEDDING_BATCH_SIZE = 32
 EMBEDDING_DECIMALS = 12
 NOT_STATED = "not_stated"
+DOMESTIC_ORIGIN = "danmark"
 HORIZONTAL_FIELDS = frozenset(
     {
         "municipality",
@@ -273,11 +274,12 @@ def _distribution_chart(
     """
     generated_counts = _generated_distribution(frame=frame, field=field)
     labels = list(generated_counts)
-    if target and field == "education_level":
+    if target and field in {"education_level", "origin_country_da"}:
+        excluded = NOT_STATED if field == "education_level" else DOMESTIC_ORIGIN
         target = {
             label: value
             for label, value in target.items()
-            if label.casefold() != NOT_STATED
+            if label.casefold() != excluded
         }
         total_target = sum(target.values())
         if total_target > 0:
@@ -305,10 +307,12 @@ def _distribution_chart(
                 name="DST target", x=labels, y=overlay, mode="lines+markers"
             )
         note = (
-            "DST target overlay is descriptive: the frozen sample is stratified and "
-            "this is not a statistical acceptance test."
+            "DST target overlay is descriptive: sample design and finite size can "
+            "produce differences, so this is not a statistical acceptance test."
         )
+    chart_height = min(6_000, max(390, 130 + 22 * len(labels))) if horizontal else 390
     figure.update_layout(
+        height=chart_height,
         yaxis_title="Category" if horizontal else "Proportion",
         xaxis_title="Proportion" if horizontal else title,
         margin=(
@@ -325,12 +329,15 @@ def _distribution_chart(
         },
     )
     return _chart_card(
-        title=title, figure=figure, source=(f"Semantic source: {source}. " + note)
+        title=title,
+        figure=figure,
+        source=(f"Semantic source: {source}. " + note),
+        height=chart_height,
     )
 
 
 def _chart_card(
-    *, title: str, figure: go.Figure, source: str, wide: bool = False
+    *, title: str, figure: go.Figure, source: str, wide: bool = False, height: int = 390
 ) -> str:
     """Serialise a Plotly figure into a self-contained page section.
 
@@ -343,7 +350,8 @@ def _chart_card(
     class_name = "chart wide" if wide else "chart"
     return (
         f'<section class="{class_name}"><h2>{html.escape(title)}</h2>'
-        f'<div class="plot">{figure_html}</div><p class="source">'
+        f'<div class="plot" style="height:{height}px">{figure_html}</div>'
+        '<p class="source">'
         f"{html.escape(source)}</p></section>"
     )
 
@@ -369,6 +377,8 @@ def _generated_distribution(*, frame: pl.DataFrame, field: str) -> dict[str, flo
     values = source.get_column(field).fill_null("(not recorded)").cast(pl.String)
     if field == "education_level":
         values = values.filter(values.str.to_lowercase() != NOT_STATED)
+    elif field == "origin_country_da":
+        values = values.filter(values.str.to_lowercase() != DOMESTIC_ORIGIN)
     if values.is_empty():
         return {}
     counts = values.value_counts(sort=True).sort("count", descending=True)

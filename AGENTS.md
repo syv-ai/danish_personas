@@ -40,18 +40,18 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/sources/prepare.py`        | Aggregate normalisation and calibration.            |
 | `danish_personas/validation/__init__.py`    | Validation package marker.                          |
 | `danish_personas/validation/checks.py`      | Source, structure, distribution, OCEAN.             |
-| `danish_personas/workflows.py`              | Standard deterministic input orchestration.          |
+| `danish_personas/workflows.py`              | Standard deterministic input orchestration.         |
 
 ## Scripts
 
 Run the three public scripts from the repository root with `uv run`. Paths in config
 files and prompts are interpreted relative to that working directory.
 
-| Script                 | Responsibility and invocation                              |
-| ---------------------- | ---------------------------------------------------------- |
-| `generate_persona.py` | Guarded single-request LLM run for one persona.            |
-| `build_dataset.py`    | Builds and optionally publishes validated persona datasets. |
-| `fix_dot_env_file.py` | Creates `.env`; non-interactive leaves Git identity blank. |
+| Script                    | Responsibility and invocation                               |
+| ------------------------- | ----------------------------------------------------------- |
+| `generate_persona.py`     | Guarded single-request LLM run for one persona.             |
+| `build_dataset.py`        | Builds and optionally publishes validated persona datasets. |
+| `fix_dot_env_file.py`     | Creates `.env`; non-interactive leaves Git identity blank.  |
 
 When either persona script omits `--input`, it calls
 `danish_personas.workflows.prepare_standard_sample` to restore, prepare, validate, and
@@ -94,8 +94,9 @@ client when testing LLM paths.
 `classifications:` list beside `sources:`, and their `version` is `2` to signal that
 lock schema. Statistics Denmark publishes classifications as attachments on dst.dk
 rather than through the StatBank data API, so they use `classification.py` instead of a
-StatBank selector. `danish_personas.sources.acquisition.resolve_sources` warns and rewrites a lock that
-predates the current schema, while `fetch_sources` fetches classifications as well as
+StatBank selector. `danish_personas.sources.acquisition.resolve_sources` warns and
+rewrites a lock that predates the current schema, while `fetch_sources` fetches
+classifications as well as
 tables.
 
 Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
@@ -201,16 +202,17 @@ remain in generated records; landsdel stays inside the prepared bundle. Determin
 runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
 contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
-per-person attribute/final checkpoints, and `validation-report.json`. Current v4 outputs
-retain one detailed grounded `persona` and do not contain the removed specialised fields
-or `visual_persona`. Pilots
+per-person attribute/final checkpoints, and `validation-report.json`. Current v5 outputs
+retain one detailed grounded `persona`; they contain no person or partner names and do
+not contain the removed specialised fields or `visual_persona`. Pilots
 additionally contain merged output, a pilot manifest, shard references, and
 `pilot-validation-report.json`. Release packages use release manifest
-schema 2 and evidence schema 2.
+schema 2 and evidence schema 3.
 
 Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
-and request accounting. The current versions are prepared bundle 6, sampler 6, frozen
-sample 3, generation 4, validator `persona-safety-v18`, and release manifest/evidence 2.
+and request accounting. The current versions are prepared bundle 7, sampler 7, frozen
+sample 4, generation 5, validator `persona-safety-v19`, release manifest 2, and release
+evidence 3.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the
@@ -248,9 +250,9 @@ current contracts have been regenerated; use placeholders in instructions.
   provider request; the origin code, English `origin_country`, resolution fields, and
   origin-contract metadata do
   not. The Danish label is also the exact origin fact in the grounded persona.
-  Re-running a valid v4 run resumes completed records, but v1-v3 checkpoints, the
+  Re-running a valid v5 run resumes completed records, but v1-v4 checkpoints, the
   previous v2/v13 ten-person smoke, and old pilots are historical and not resumable
-  under v4.
+  under v5.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
@@ -258,7 +260,8 @@ current contracts have been regenerated; use placeholders in instructions.
   sensitive terms, and free of exact duplicate descriptions. The detailed persona must
   be grounded in its supplied facts, use a synthetic job title or current nonemployee
   status, include concrete fictional biographical detail, and treat OCEAN as cautious
-  tendencies. Ordinary first names and ordinary family details are allowed; surnames,
+  tendencies. Person and partner names are prohibited; use `han` or `hun` for the
+  persona and relationship terms for other people. Ordinary family details are allowed;
   real organisations, exact addresses, appearance, and sensitive details are not.
   Automated validation is not a substitute for blinded human review; downstream image
   models may still stereotype.
