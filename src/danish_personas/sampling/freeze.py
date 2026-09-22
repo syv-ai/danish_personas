@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+import typing as t
 from pathlib import Path
 
 import polars as pl
@@ -20,8 +21,24 @@ from ..models import (
 LOGGER = logging.getLogger(__name__)
 
 
-def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
-    """Select and persist a deterministic stratified development sample.
+STRATA = ("municipality_code", "education_level", "labour_market_status")
+FREEZE_MODES = ("population_proportional", "stratified_round_robin")
+
+
+def freeze_sample(
+    *,
+    run_dir: Path,
+    rows: int,
+    output: Path,
+    mode: t.Literal["population_proportional", "stratified_round_robin"] = (
+        "population_proportional"
+    ),
+) -> Path:
+    """Select and persist a deterministic development sample.
+
+    The default mode allocates the requested rows proportionally to the source
+    run's municipality/education/status joint.  Round-robin selection remains
+    available for deliberately stratified development experiments.
 
     Args:
         run_dir:
@@ -30,6 +47,8 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
             Number of records to select.
         output:
             Destination Parquet path for the frozen sample.
+        mode:
+            Selection strategy. Defaults to population-proportional allocation.
 
     Returns:
         Path to the written frozen sample.
@@ -38,11 +57,13 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
         SampleSizeError:
             If the requested sample is larger than the source run.
         ValueError:
-            If rows is less than one or either output path is not a direct,
-            non-linked child of the validated run directory.
+            If rows is less than one, mode is unknown, or either output path is
+            not a direct, non-linked child of the validated run directory.
     """
     if rows < 1:
         raise ValueError("Requested sample must contain at least one row")
+    if mode not in FREEZE_MODES:
+        raise ValueError(f"Unknown freeze mode: {mode}")
     canonical_run_dir = _canonical_run_directory(run_dir=run_dir)
     output_path, manifest_path = _validate_destinations(
         run_dir=canonical_run_dir, output=output
@@ -55,24 +76,7 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
     frame = pl.read_parquet(canonical_run_dir / manifest.data_file)
     if rows > frame.height:
         raise SampleSizeError("Requested sample exceeds the run row count")
-    groups = frame.sort("persona_id").partition_by(
-        ["municipality_code", "education_level", "labour_market_status"],
-        maintain_order=True,
-    )
-    selected: list[pl.DataFrame] = []
-    depth = 0
-    while len(selected) < rows:
-        added = False
-        for group in groups:
-            if depth < group.height:
-                selected.append(group.slice(depth, 1))
-                added = True
-                if len(selected) == rows:
-                    break
-        if not added:
-            break
-        depth += 1
-    sample = pl.concat(selected).sort("persona_id")
+    sample = _select_sample(frame=frame, rows=rows, mode=mode)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{output_path.name}.", suffix=".tmp", dir=canonical_run_dir
     )
@@ -88,8 +92,13 @@ def freeze_sample(*, run_dir: Path, rows: int, output: Path) -> Path:
         sample_schema_version=FROZEN_SAMPLE_SCHEMA_VERSION,
         source_run_id=manifest.run_id,
         rows=sample.height,
-        strata=["municipality_code", "education_level", "labour_market_status"],
-        method="deterministic round-robin within sorted strata",
+        strata=list(STRATA),
+        method=(
+            "deterministic population-proportional allocation"
+            if mode == "population_proportional"
+            else "deterministic round-robin within sorted strata"
+        ),
+        mode=mode,
         data_file=output_path.name,
         sha256=sha256_file(output_path),
         llm_calls=0,
@@ -132,6 +141,51 @@ def _canonical_run_directory(*, run_dir: Path) -> Path:
     if not canonical.is_dir():
         raise ValueError("Validated source run directory must be a directory")
     return canonical
+
+
+def _select_sample(
+    *,
+    frame: pl.DataFrame,
+    rows: int,
+    mode: t.Literal["population_proportional", "stratified_round_robin"],
+) -> pl.DataFrame:
+    """Select rows using the requested deterministic allocation strategy.
+
+    Returns:
+        The selected rows sorted by persona identifier.
+    """
+    groups = frame.sort([*STRATA, "persona_id"]).partition_by(
+        list(STRATA), maintain_order=True
+    )
+    if mode == "stratified_round_robin":
+        selected: list[pl.DataFrame] = []
+        depth = 0
+        while len(selected) < rows:
+            added = False
+            for group in groups:
+                if depth < group.height:
+                    selected.append(group.slice(depth, 1))
+                    added = True
+                    if len(selected) == rows:
+                        break
+            if not added:
+                break
+            depth += 1
+        return pl.concat(selected).sort("persona_id")
+
+    total = frame.height
+    raw_quotas = [group.height * rows / total for group in groups]
+    quotas = [int(quota) for quota in raw_quotas]
+    remaining = rows - sum(quotas)
+    remainders = sorted(
+        range(len(groups)),
+        key=lambda index: (-(raw_quotas[index] - quotas[index]), index),
+    )
+    for index in remainders[:remaining]:
+        quotas[index] += 1
+    return pl.concat(
+        [group.head(quota) for group, quota in zip(groups, quotas) if quota]
+    ).sort("persona_id")
 
 
 def _validate_destinations(*, run_dir: Path, output: Path) -> tuple[Path, Path]:

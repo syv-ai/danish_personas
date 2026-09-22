@@ -21,9 +21,7 @@ PERSONA_OUTPUT_COLUMNS = (
     "hobbies_and_interests",
     "career_goals_and_ambitions",
     "job_title",
-    "first_name",
     "current_relationship_status",
-    "partner_first_name",
     "partner_gender",
     "legal_status_detail",
     "persona",
@@ -65,7 +63,6 @@ def persona_output_dtypes_are_valid(output: pl.DataFrame) -> bool:
             in {
                 "career_goals_and_ambitions",
                 "job_title",
-                "partner_first_name",
                 "partner_gender",
                 "legal_status_detail",
             }
@@ -121,11 +118,11 @@ def validate_persona_output_rows(
     job_title_mapping: JobFunctionTitleMapping | None = None,
     origin_label_contract: OriginLabelContract | None = None,
 ) -> None:
-    """Replay generation-v4 contextual validation for every public output row.
+    """Replay generation-v5 contextual validation for every public output row.
 
     Args:
         output:
-            The exact v4 persona output frame.
+            The exact v5 persona output frame.
         job_title_mapping (optional):
             Reviewed title mapping bound to the release inputs. Defaults to the
             production mapping when omitted.
@@ -141,7 +138,7 @@ def validate_persona_output_rows(
     if set(output.columns) != set(PERSONA_OUTPUT_COLUMNS) or len(output.columns) != len(
         PERSONA_OUTPUT_COLUMNS
     ):
-        raise ValueError("Persona output schema must match generation contract v4")
+        raise ValueError("Persona output schema must match generation contract v5")
     canonical_contract = load_origin_label_contract()
     contract = origin_label_contract or canonical_contract
     if contract != canonical_contract:
@@ -185,5 +182,5 @@ def validate_persona_output_rows(
             validated_rows.add(cache_key)
         except (TypeError, ValueError) as error:
             raise ValueError(
-                f"Persona row {index} fails generation-v4 contextual validation"
+                f"Persona row {index} fails generation-v5 contextual validation"
             ) from error

@@ -18,13 +18,22 @@ def test_nullable_attribute_fields_require_explicit_null() -> None:
         "hobbies_and_interests": ["læsning", "musik", "brætspil"],
         "career_goals_and_ambitions": None,
         "job_title": None,
+        "current_relationship_status": "not_partnered",
+        "partner_gender": None,
+        "legal_status_detail": None,
     }
 
     attributes = GeneratedAttributes.model_validate(payload)
 
     assert attributes.career_goals_and_ambitions is None
     assert attributes.job_title is None
-    for field in ("career_goals_and_ambitions", "job_title"):
+    for field in (
+        "career_goals_and_ambitions",
+        "job_title",
+        "current_relationship_status",
+        "partner_gender",
+        "legal_status_detail",
+    ):
         omitted = payload.copy()
         omitted.pop(field)
         with pytest.raises(ValidationError):

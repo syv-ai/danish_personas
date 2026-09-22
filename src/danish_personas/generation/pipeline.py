@@ -14,6 +14,7 @@ from ..io import canonical_json, sha256_file, sha256_text, write_json
 from ..ladders import MOST_SPECIFIC_RESOLUTION
 from ..models import (
     FROZEN_SAMPLE_SCHEMA_VERSION,
+    GENERATION_SCHEMA_VERSION,
     SAMPLER_SCHEMA_VERSION,
     DemographicRecord,
     RunManifest,
@@ -188,10 +189,7 @@ def generate_personas(
 
     def record_request(attempts: int) -> None:
         nonlocal ledger
-        if (
-            ledger.maximum_attempts is not None
-            and attempts > ledger.maximum_attempts
-        ):
+        if ledger.maximum_attempts is not None and attempts > ledger.maximum_attempts:
             message = "Generation HTTP request budget is exhausted"
             raise RequestBudgetExceeded(message)
         ledger = ledger.model_copy(update={"attempts": attempts})
@@ -741,6 +739,7 @@ def generation_context_sha256(
                 "origin_label_contract_sha256": effective_origin_sha256,
                 "prompt_sha256": sha256_text(prompt),
                 "generated_persona_schema": GeneratedPersona.model_json_schema(),
+                "generation_schema_version": GENERATION_SCHEMA_VERSION,
                 "validator_version": VALIDATOR_VERSION,
                 "prompt_fields": PROMPT_FIELDS,
                 "generation_payload_fields": sorted(GENERATION_PROMPT_FIELDS),

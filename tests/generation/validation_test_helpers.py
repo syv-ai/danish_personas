@@ -17,6 +17,9 @@ def attributes(*, job_title: str | None = JOB_TITLE) -> dict[str, object]:
         "hobbies_and_interests": ["at læse", "musik", "brætspil"],
         "career_goals_and_ambitions": None,
         "job_title": job_title,
+        "current_relationship_status": "partnered",
+        "partner_gender": "male",
+        "legal_status_detail": "married",
     }
 
 
@@ -48,14 +51,15 @@ def persona(
         f"arbejder som {JOB_TITLE}" if context["job_title"] else "er pensionist"
     )
     text = (
-        f"Maja er {context['age']} år, og {pronoun} bor i "
+        f"{pronoun.capitalize()} er {context['age']} år, og {pronoun} bor i "
         f"{context['municipality']} og kommer fra {context['origin_country_da']}. "
         f"{pronoun.capitalize()} {education} med en praktisk retning i Aarhus og "
-        f"{employment} i en mindre virksomhed i centrum. I fritiden holder "
-        f"{pronoun} af at læse og musik, mens planlægning giver plads til begge "
+        f"{employment} i en mindre virksomhed i centrum. "
+        f"{pronoun.capitalize()} er gift og holder {pronoun} af at læse og musik, "
+        f"mens planlægning giver plads til begge "
         f"dele og til faste aftaler med venner. {pronoun.capitalize()} har ofte "
-        f"tendens til at være nysgerrig og bor sammen med kæresten Alex og deres "
-        f"barn Noa. {extra}"
+        f"tendens til at være nysgerrig og bor sammen med sin kæreste og deres "
+        f"barn. {extra}"
     )
     return {"persona": text}
 
@@ -82,6 +86,7 @@ def demographic(
         "origin_country": "Denmark",
         "origin_country_da": "Danmark",
         "education_level": education_level,
+        "marital_status": "married_or_separated",
         "labour_market_status": status,
         "job_function": "24 Business and administration professionals"
         if eligible

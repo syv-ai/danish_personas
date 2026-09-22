@@ -10,6 +10,44 @@ from danish_personas.io import sha256_file
 from danish_personas.sampling.freeze import SampleSizeError, freeze_sample
 
 
+def test_freeze_service_default_is_population_proportional(tmp_path: Path) -> None:
+    """The default freeze preserves joint proportions with deterministic quotas."""
+    paths = write_generation_inputs(root=tmp_path)
+    run_dir = paths["sample"].parent
+    source = pl.read_parquet(run_dir / "structured-records.parquet")
+    rows = pl.concat(
+        [
+            pl.DataFrame(
+                [source.row(0, named=True) | {"persona_id": f"persona-a-{index}"}]
+            )
+            for index in range(8)
+        ]
+        + [
+            pl.DataFrame(
+                [source.row(1, named=True) | {"persona_id": f"persona-b-{index}"}]
+            )
+            for index in range(2)
+        ],
+        how="vertical",
+    )
+    rows.write_parquet(run_dir / "structured-records.parquet")
+    output = run_dir / "proportional.parquet"
+
+    freeze_sample(run_dir=run_dir, rows=5, output=output)
+
+    sample = pl.read_parquet(output)
+    assert sample.height == 5
+    assert sorted(
+        sample.get_column("municipality_code").value_counts().to_dicts(),
+        key=lambda item: item["municipality_code"],
+    ) == [
+        {"municipality_code": "101", "count": 4},
+        {"municipality_code": "265", "count": 1},
+    ]
+    manifest = output.with_suffix(".manifest.json").read_text(encoding="utf-8")
+    assert '"mode": "population_proportional"' in manifest
+
+
 def test_freeze_service_is_deterministic_and_bounds_size(tmp_path: Path) -> None:
     """The public freezer preserves round-robin output and rejects oversized input."""
     paths = write_generation_inputs(root=tmp_path)
@@ -117,3 +155,19 @@ def test_freeze_service_rejects_traversal_alias(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="traversal"):
         freeze_sample(run_dir=run_dir, rows=1, output=output)
+
+
+def test_freeze_service_supports_explicit_round_robin_mode(tmp_path: Path) -> None:
+    """Round-robin remains available as a named non-default mode."""
+    paths = write_generation_inputs(root=tmp_path)
+    output = paths["sample"].parent / "round-robin.parquet"
+
+    freeze_sample(
+        run_dir=paths["sample"].parent,
+        rows=2,
+        output=output,
+        mode="stratified_round_robin",
+    )
+
+    manifest = output.with_suffix(".manifest.json").read_text(encoding="utf-8")
+    assert '"mode": "stratified_round_robin"' in manifest

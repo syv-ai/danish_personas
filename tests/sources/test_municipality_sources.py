@@ -114,6 +114,41 @@ def test_ras209_municipality_sets_must_be_exact() -> None:
         )
 
 
+def test_ras209_pooling_excludes_h90_but_unpooled_rows_remain_auditable() -> None:
+    """H90 is excluded only from the eligible pooled sampling universe."""
+    frame = pl.DataFrame(
+        {
+            "municipality_code": ["101", "101"],
+            "municipality": ["København", "København"],
+            "region_code": ["084", "084"],
+            "region": ["Region Hovedstaden", "Region Hovedstaden"],
+            "age_band": ["20-24", "20-24"],
+            "sex": ["male", "male"],
+            "education_source_code": ["H10", "H90"],
+            "education_level": ["primary", "not_stated"],
+            "labour_market_status": ["employed", "employed"],
+            "count": [100, 25],
+            "suppressed": [False, False],
+        }
+    )
+
+    pooled = _pool_ras209(
+        frame=frame,
+        education_pooling={
+            "primary": "primary",
+            "secondary_or_vocational": "secondary_or_vocational",
+            "higher_education": "higher_education",
+            "not_stated": "not_stated",
+        },
+        release_rows=100_000,
+        minimum_source_count=50,
+        minimum_expected_release_count=5,
+    )
+
+    assert pooled.get_column("count").sum() == 100
+    assert pooled.get_column("education_source_code").to_list() == ["H10"]
+
+
 def test_ras209_pooling_keeps_municipalities_in_the_joint() -> None:
     """Pooling must not collapse two municipalities sharing a region."""
     frame = pl.DataFrame(
