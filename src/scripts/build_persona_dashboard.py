@@ -159,13 +159,14 @@ def build_dashboard(
         ".warning{border:3px solid #b42318;background:#fff1f0}.metric{font-size:2rem;"
         "font-weight:700}.muted{color:#586674;font-size:.9rem}.source{font-size:.8rem;"
         "color:#586674}.plot{height:390px}.privacy{font-weight:700;color:#8b1e1e}"
-        '</style></head><body><main class="wrap"><h1>Generated persona dashboard</h1>'
+        f"</style><script>{plotly_js}</script></head>"
+        '<body><main class="wrap"><h1>Generated persona dashboard</h1>'
         + "".join(sections)
         + (
             f'<script type="application/json" id="persona-data">'
             f"{safe_data_json}</script>"
         )
-        + f"<script>{plotly_js}</script></main></body></html>"
+        + "</main></body></html>"
     )
 
 
