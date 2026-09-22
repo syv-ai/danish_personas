@@ -60,11 +60,11 @@ uv run src/scripts/build_dataset.py \
   build_dataset.output_price_per_million=2.00
 ```
 
-Neither command loads `.env`. Shared model settings live under `llm` in
-`config/config.yaml`. Set `llm.api_key_env` to an environment-variable name if the
-provider requires authentication, and provide that variable only for the command
-invocation. Never store token values in configuration. Commands can consume paid
-provider requests.
+Both commands load all variables from the repository-root `.env` before Hydra starts;
+existing process variables take precedence and values are never logged. Shared model
+settings live under `llm` in `config/config.yaml`. Set `llm.api_key_env` to an
+environment-variable name if the provider requires authentication. Never store token
+values in configuration. Commands can consume paid provider requests.
 
 Each persona command writes a deterministic, flat effective `GenerationConfig` YAML
 snapshot below its output area's `generation-configs` directory. The snapshot captures

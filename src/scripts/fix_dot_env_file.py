@@ -6,8 +6,10 @@ from pathlib import Path
 import click
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 
 LOGGER = logging.getLogger(__name__)
+load_repository_environment()
 DESIRED_ENVIRONMENT_VARIABLES = {
     "GIT_NAME": "Enter your full name, to be shown in Git commits:\n> ",
     "GIT_EMAIL": "Enter your email, as registered on your Github account:\n> ",
@@ -63,7 +65,11 @@ def fix_dot_env_file(non_interactive: bool) -> None:
 
 
 def _parse_environment_lines(lines: list[str]) -> dict[str, str]:
-    """Parse non-comment environment assignments without truncating values."""
+    """Parse non-comment environment assignments without truncating values.
+
+    Returns:
+        Parsed environment assignments.
+    """
     return {
         key: value
         for line in lines

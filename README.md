@@ -80,11 +80,11 @@ cp .env.example .env
 
 Set `GIT_NAME` and `GIT_EMAIL` only if using the Makefile's Git setup. `OPENAI_API_KEY`
 and `HF_TOKEN` are examples of optional bearer-token variables; a generation config
-selects the variable through `api_key_env`. Direct LLM commands do not load `.env`; use
-a short-lived shell export or command-scoped assignment for the configured token. The
-Makefile includes `.env` and exports all of its variables to subprocesses and hooks, so
-do not use it as credential loading for direct LLM commands. Never commit `.env`,
-tokens, or generated data artefacts.
+selects the variable through `api_key_env`. Every executable script loads all variables
+from the repository-root `.env` before starting its CLI, while existing process
+variables take precedence. Values are never logged. The Makefile also includes `.env`
+and exports its variables to subprocesses and hooks. Never commit `.env`, tokens, or
+generated data artefacts.
 
 ### Script interface
 
