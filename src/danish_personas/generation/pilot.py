@@ -192,7 +192,8 @@ def _merge_pilot(
         [
             pl.read_parquet(run_dir / manifest.output_file)
             for run_dir, manifest in zip(run_dirs, manifests, strict=True)
-        ]
+        ],
+        how="vertical_relaxed",
     ).sort("persona_id")
     expected_ids = expected.get_column("persona_id").to_list()
     if (
