@@ -50,8 +50,9 @@ def prepare_standard_sample(
     """Prepare and validate the standard frozen sample for persona generation.
 
     Existing raw snapshots, prepared bundles, deterministic runs, and valid samples are
-    reused by their underlying content-addressed services. A missing raw snapshot tree
-    is restored from the committed archive before source preparation.
+    reused by their underlying content-addressed services. A stale frozen sample is
+    rebuilt from the validated statistical run. A missing raw snapshot tree is restored
+    from the committed archive before source preparation.
 
     Args:
         archive_path:
@@ -84,9 +85,6 @@ def prepare_standard_sample(
     Returns:
         The frozen sample path and its adjacent manifest path.
 
-    Raises:
-        ValueError:
-            If any validation gate fails or an existing sample is inconsistent.
     """
     raw_dir = raw_parent / RAW_DIRECTORY
     if not raw_dir.exists():
@@ -148,15 +146,26 @@ def prepare_standard_sample(
     output = sample_path or statistical_dir / DEFAULT_SAMPLE_FILENAME
     manifest_path = output.with_suffix(".manifest.json")
     if output.exists() or manifest_path.exists():
-        if not _valid_existing_sample(
+        if _valid_existing_sample(
             sample_path=output,
             manifest_path=manifest_path,
             source_run_id=_run_id(statistical_dir, checksum_policy=checksum_policy),
             rows=sample_rows,
             checksum_policy=checksum_policy,
         ):
-            raise ValueError("Existing frozen sample failed checksum validation")
-        LOGGER.info("Reusing frozen sample %s", output)
+            LOGGER.info("Reusing frozen sample %s", output)
+        else:
+            LOGGER.warning(
+                "Existing frozen sample or manifest is stale; rebuilding sample %s "
+                "from the validated statistical run",
+                output,
+            )
+            freeze_sample(
+                run_dir=statistical_dir,
+                rows=sample_rows,
+                output=output,
+                checksum_policy=checksum_policy,
+            )
     else:
         freeze_sample(
             run_dir=statistical_dir,
