@@ -867,12 +867,7 @@ def _validate_capture(
     _verify_bundle_tables(
         capture=capture, manifest=manifest, checksum_policy=checksum_policy
     )
-    try:
-        report = json.loads(capture.files[SOURCE_REPORT].content)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
-        raise ValueError("Prepared bundle source report is malformed") from error
-    if not isinstance(report, dict) or report.get("passed") is not True:
-        raise ValueError("Prepared bundle source preparation did not pass")
+    _verify_source_preparation_report(capture=capture, manifest=manifest)
     _revalidate_captures(capture=capture)
     return manifest
 
@@ -1081,12 +1076,59 @@ def _verify_schemas(*, capture: _BundleCapture) -> None:
             raise ValueError(message)
 
 
+def _verify_source_preparation_report(
+    *, capture: _BundleCapture, manifest: BundleManifest
+) -> None:
+    """Verify the bound source report and its schema-8 origin eligibility gate.
+
+    Raises:
+        ValueError:
+            If the source report is malformed, failed, or lacks the required gate.
+    """
+    try:
+        report = json.loads(capture.files[SOURCE_REPORT].content)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        raise ValueError("Prepared bundle source report is malformed") from error
+    if not isinstance(report, dict) or report.get("passed") is not True:
+        raise ValueError("Prepared bundle source preparation did not pass")
+    if manifest.prepared_bundle_schema_version == PREPARED_BUNDLE_SCHEMA_VERSION:
+        _verify_origin_eligibility_report(
+            report=report, minimum_source_count=manifest.minimum_source_count
+        )
+
+
+def _verify_origin_eligibility_report(
+    *, report: dict[str, object], minimum_source_count: int
+) -> None:
+    """Require the source report to bind FOLK2 eligibility to the manifest.
+
+    Raises:
+        ValueError:
+            If the report omits the eligibility block or its binding fails.
+    """
+    origin_checks = report.get("origin_country_checks")
+    eligibility = (
+        origin_checks.get("eligibility") if isinstance(origin_checks, dict) else None
+    )
+    if not isinstance(eligibility, dict):
+        raise ValueError(
+            "Prepared bundle source report is missing the FOLK2 eligibility block"
+        )
+    if eligibility.get("minimum_source_count") != minimum_source_count:
+        raise ValueError(
+            "Prepared bundle source report FOLK2 eligibility does not bind "
+            "minimum_source_count"
+        )
+    if eligibility.get("passed") is not True:
+        raise ValueError("Prepared bundle FOLK2 eligibility check did not pass")
+
+
 def _verify_origin_contract_binding(
     *,
     manifest: BundleManifest,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
-    """Verify the repository contract bound into a schema-6 bundle.
+    """Verify the repository contract bound into a schema-8 bundle.
 
     Raises:
         ValueError: If contract identity, bytes, or source binding changed.

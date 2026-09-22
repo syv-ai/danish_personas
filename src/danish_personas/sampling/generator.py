@@ -455,7 +455,7 @@ def _ensure_origin_danish_labels(
     """
     del bundle
     if "origin_country_da" not in frame.columns:
-        raise ValueError("Schema-6 origin marginal is missing Danish labels")
+        raise ValueError("Schema-8 origin marginal is missing Danish labels")
     return frame
 
 
