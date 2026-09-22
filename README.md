@@ -92,8 +92,10 @@ uv run src/scripts/build_persona_dashboard.py --help
 
 The three Hydra-based scripts use `config/config.yaml`. Override values
 with expressions such as `llm.model=MODEL`, `build_dataset.rows=10`, and
-`persona_dashboard.input=PATH`. `generate_persona.py` emits one validated Danish
-persona to stdout. `build_dataset.py` saves the merged Parquet dataset below `data/`
+`persona_dashboard.input=PATH`. `generate_persona.py` emits one schema-valid Danish
+persona to stdout; this direct command deliberately skips semantic content gates and is
+unsafe for release evidence. `build_dataset.py` saves the merged Parquet dataset below
+`data/`
 and displays row progress on stderr. The dataset builder can optionally package,
 verify, and upload an approved release to a Hugging Face dataset pull request. The
 dashboard builder writes a self-contained offline HTML file.
@@ -151,12 +153,12 @@ Generation commands execute immediately and can consume paid requests. Each comm
 persists the resolved, secret-free flat generation configuration below its output area
 and uses that immutable snapshot for generation provenance.
 
-The single-persona command validates the upstream report, sample checksum, prompts,
-schemas, and request limits before emitting the final Danish text. It deliberately
-tolerates stored checksum mismatches only; schema, content, provenance, safety,
-grounding, and accounting checks remain active. Library validation, `build_dataset.py`,
-and release verification remain checksum-strict. Review generated evidence before reuse.
-The standard sample is prepared automatically when needed:
+The single-persona command validates upstream provenance, prompts, the strict response
+schema, and request limits before emitting the final Danish text. It deliberately skips
+Danish, grounding, safety, relationship/title, duplicate, and final-run content gates,
+so its output is unsafe for release evidence. Library validation, `build_dataset.py`,
+and release verification remain guarded and checksum-strict. The standard sample is
+prepared automatically when needed:
 
 ```bash
 uv run src/scripts/generate_persona.py

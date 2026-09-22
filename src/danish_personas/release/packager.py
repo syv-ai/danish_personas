@@ -37,6 +37,7 @@ from ..generation.models import (
     PilotManifest,
 )
 from ..generation.pipeline import generation_context_sha256
+from ..generation.policy import ContentValidationPolicy
 from ..generation.report import validate_persona_pilot
 from ..io import canonical_json, sha256_file, write_json
 from ..models import RunManifest, StrictModel, ValidationReport
@@ -1401,6 +1402,10 @@ def _assert_manifest_bindings(
 ) -> None:
     if manifest.llm_generation is not True:
         raise ReleasePackagingError("Release requires LLM-generated output")
+    if manifest.content_validation_policy is not ContentValidationPolicy.GUARDED:
+        raise ReleasePackagingError(
+            "Release requires guarded generated-content validation"
+        )
     if not _mapping_binding_matches(
         config=config,
         mapping_path=mapping_path,

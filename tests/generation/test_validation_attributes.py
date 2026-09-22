@@ -13,10 +13,12 @@ from validation_test_helpers import JOB_TITLE, attributes, demographic, persona
 import danish_personas.generation.validation as validation_module
 from danish_personas.generation.job_titles import load_job_title_mapping
 from danish_personas.generation.personality import all_personality_tendencies
+from danish_personas.generation.policy import ContentValidationPolicy
 from danish_personas.generation.validation import (
     EDUCATION_DANISH,
     parse_attributes,
     parse_descriptions,
+    parse_generated_persona,
 )
 
 ROOT = Path(__file__).parents[2]
@@ -119,6 +121,22 @@ def test_schema_contains_only_persona() -> None:
     assert (
         "partner_first_name" not in validation_module.GeneratedAttributes.model_fields
     )
+
+
+def test_schema_only_parsing_skips_content_semantics() -> None:
+    payload = attributes(job_title="  fictional title")
+    payload["current_relationship_status"] = "not_partnered"
+    payload["partner_gender"] = "female"
+    payload["persona"] = persona()["persona"]
+
+    parsed = parse_generated_persona(
+        json.dumps(payload),
+        demographic(),
+        content_validation_policy=ContentValidationPolicy.SCHEMA_ONLY,
+    )
+
+    assert parsed.job_title == "  fictional title"
+    assert parsed.partner_gender == "female"
 
 
 @pytest.mark.parametrize(

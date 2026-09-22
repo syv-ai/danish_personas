@@ -269,6 +269,7 @@ def _merge_pilot(
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=first.generation_context_sha256,
         validator_version=first.validator_version,
+        content_validation_policy=first.content_validation_policy,
         job_title_mapping_file=first.job_title_mapping_file,
         job_title_mapping_sha256=first.job_title_mapping_sha256,
         job_title_mapping_version=first.job_title_mapping_version,
