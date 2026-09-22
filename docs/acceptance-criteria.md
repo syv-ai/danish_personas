@@ -162,12 +162,14 @@ rather than inventing them.
   it is independent of RNG state, shard order, and Python hash behaviour. For a
   partnered response, `partner_gender` must match the target and the persona sex;
   a not-partnered response must keep it null. The target is not a public column and
-  does not describe sexual orientation.
-- The default probability is `0.00701`, a lower-bound/formalised-couple proxy from
-  Statistics Denmark StatBank FAM100N at 1 January 2026 (selectors PARS 10,180
-  plus RP 4,376, divided by those plus PARF 2,060,670 = 14,556 / 2,075,226).
-  FAM100N does not identify most unmarried same-sex cohabitants, so this is not a
-  prevalence or orientation estimate.
+  does not describe sexual orientation. Adding this configuration field and the
+  target-policy binding intentionally invalidates earlier generation-v5 contexts
+  and checkpoints; they are historical and cannot be resumed under this contract.
+- The default probability is `0.00701`, the 2026 FAM100N share among legally
+  formalised couples only: (PARS 10,180 + RP 4,376) / (PARS + RP + PARF 2,060,670)
+  = 14,556 / 2,075,226. This formalised-couple proxy is applied to all generated
+  partnered personas. DST cannot identify most unmarried same-sex couples, so it is
+  not an estimate of the all-partnership rate or sexual orientation.
   Source: <https://www.statistikbanken.dk/FAM100N>.
 - Upstream demographic and OCEAN columns remain byte-for-byte equivalent in logical
   values and order.

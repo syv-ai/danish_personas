@@ -227,6 +227,12 @@ def _build_persona_pilot_report(
     except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
         merged_batches = pl.DataFrame()
     config_path = _repository_path(repository_root, manifest.generation_config_file)
+    try:
+        generation_config = (
+            load_generation_config(config_path) if config_path is not None else None
+        )
+    except OSError, UnicodeError, ValueError, pl.exceptions.PolarsError:
+        generation_config = None
     mapping_binding = _load_mapping_binding(
         config_path=config_path, repository_root=repository_root
     )
@@ -234,7 +240,10 @@ def _build_persona_pilot_report(
         config_path=config_path, repository_root=repository_root
     )
     content_errors = _count_content_errors(
-        output=output, mapping_binding=mapping_binding, origin_binding=origin_binding
+        output=output,
+        mapping_binding=mapping_binding,
+        origin_binding=origin_binding,
+        generation_config=generation_config,
     )
     provenance_passed = _pilot_provenance_matches(
         pilot_dir=pilot_dir, manifest=manifest, repository_root=repository_root

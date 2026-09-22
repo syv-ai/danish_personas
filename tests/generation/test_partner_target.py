@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from validation_test_helpers import attributes, demographic
 
+import danish_personas.generation.partner_target as partner_target
 from danish_personas.generation.config import load_generation_config
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.partner_target import (
@@ -27,6 +28,13 @@ def test_config_default_and_bounds() -> None:
             GenerationConfig.model_validate(
                 {**config.model_dump(), "same_sex_partner_probability": probability}
             )
+
+
+def test_partner_draw_golden_vectors() -> None:
+    """Policy-version changes cannot silently alter established draws."""
+    assert same_sex_partner_draw("p-1") == 9_331_940_782_940_116_072
+    assert same_sex_partner_draw("persona-1") == 16_907_542_642_995_462_103
+    assert same_sex_partner_draw("golden-persona") == 9_522_114_356_481_481_835
 
 
 def test_partner_gender_mapping() -> None:
@@ -54,6 +62,37 @@ def test_target_is_stable_at_threshold_edges() -> None:
     assert not same_sex_partner_target(persona_id="p-1", probability=0.0)
     assert same_sex_partner_target(persona_id="p-1", probability=1.0)
     assert same_sex_partner_draw("p-1") == same_sex_partner_draw("p-1")
+
+
+def test_target_uses_exact_digest_threshold_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Digest values immediately around a threshold retain integer semantics."""
+
+    class Digest:
+        def __init__(self, value: int) -> None:
+            self._value = value
+
+        def digest(self) -> bytes:
+            return self._value.to_bytes(8, "big")
+
+    threshold = 2**63
+    monkeypatch.setattr(
+        partner_target.hashlib, "sha256", lambda _material: Digest(threshold - 1)
+    )
+    assert same_sex_partner_target(persona_id="boundary", probability=0.5)
+
+    monkeypatch.setattr(
+        partner_target.hashlib, "sha256", lambda _material: Digest(threshold)
+    )
+    assert not same_sex_partner_target(persona_id="boundary", probability=0.5)
+
+    monkeypatch.setattr(partner_target.hashlib, "sha256", lambda _material: Digest(0))
+    assert not same_sex_partner_target(persona_id="boundary", probability=0.0)
+    monkeypatch.setattr(
+        partner_target.hashlib, "sha256", lambda _material: Digest(2**64 - 1)
+    )
+    assert same_sex_partner_target(persona_id="boundary", probability=1.0)
 
 
 def test_validation_rejects_wrong_target_and_accepts_matching_target() -> None:
