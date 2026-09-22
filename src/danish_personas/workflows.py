@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+from .checksum import ChecksumValidationPolicy
 from .io import load_yaml_model, sha256_file
 from .models import FrozenSampleManifest, RunManifest, SamplingConfig
 from .origin_labels import DEFAULT_ORIGIN_LABEL_CONTRACT_PATH
@@ -39,6 +40,7 @@ def prepare_standard_sample(
     sample_rows: int = DEFAULT_SAMPLE_ROWS,
     sample_path: Path | None = None,
     origin_labels_contract_path: Path = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> tuple[Path, Path]:
     """Prepare and validate the standard frozen sample for persona generation.
 
@@ -71,6 +73,8 @@ def prepare_standard_sample(
             Sample destination. Defaults to the statistical run directory.
         origin_labels_contract_path:
             Reviewed Danish origin-label contract.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. Defaults to strict.
 
     Returns:
         The frozen sample path and its adjacent manifest path.
@@ -138,6 +142,7 @@ def prepare_standard_sample(
             manifest_path=manifest_path,
             source_run_id=_run_id(statistical_dir),
             rows=sample_rows,
+            checksum_policy=checksum_policy,
         ):
             raise ValueError("Existing frozen sample failed checksum validation")
         LOGGER.info("Reusing frozen sample %s", output)
@@ -152,7 +157,11 @@ def _require_pass(passed: bool, message: str) -> None:
 
 
 def _run_id(run_dir: Path) -> str:
-    """Read the content-addressed identifier from a run manifest."""
+    """Read the content-addressed identifier from a run manifest.
+
+    Returns:
+        The deterministic run identifier.
+    """
     manifest = RunManifest.model_validate_json(
         (run_dir / "run-manifest.json").read_text(encoding="utf-8")
     )
@@ -160,19 +169,28 @@ def _run_id(run_dir: Path) -> str:
 
 
 def _valid_existing_sample(
-    *, sample_path: Path, manifest_path: Path, source_run_id: str, rows: int
+    *,
+    sample_path: Path,
+    manifest_path: Path,
+    source_run_id: str,
+    rows: int,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> bool:
     if not sample_path.is_file() or not manifest_path.is_file():
         return False
     try:
         manifest = FrozenSampleManifest.model_validate_json(
-            manifest_path.read_text(encoding="utf-8")
+            manifest_path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
         )
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return (
-        manifest.data_file == sample_path.name
+        manifest.data_file == Path(sample_path.name)
         and manifest.source_run_id == source_run_id
         and manifest.rows == rows
-        and sha256_file(sample_path) == manifest.sha256
+        and (
+            not checksum_policy.validates_checksums
+            or sha256_file(sample_path) == manifest.sha256
+        )
     )

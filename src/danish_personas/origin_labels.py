@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from .checksum import ChecksumValidationPolicy
+
 DEFAULT_ORIGIN_LABEL_CONTRACT_PATH = Path("config/folk2-ieland-labels-da.yaml")
 ORIGIN_LABEL_CONTRACT_PATH = DEFAULT_ORIGIN_LABEL_CONTRACT_PATH.as_posix()
 ORIGIN_LABEL_CONTRACT_VERSION = 1
@@ -394,7 +396,12 @@ def source_metadata_sha256(path: Path) -> str:
 
 
 def validate_origin_contract_reference(
-    *, path: str | Path, version: int, sha256: str, content: str | OriginLabelContract
+    *,
+    path: str | Path,
+    version: int,
+    sha256: str,
+    content: str | OriginLabelContract,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
     """Require an exact canonical contract identity in a provenance binding.
 
@@ -404,11 +411,14 @@ def validate_origin_contract_reference(
     canonical_origin_label_contract_path(path)
     if version != ORIGIN_LABEL_CONTRACT_VERSION:
         raise ValueError("Origin-label contract version is not current")
-    if sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
+    if checksum_policy.validates_checksums and sha256 != ORIGIN_LABEL_CONTRACT_SHA256:
         raise ValueError("Origin-label contract checksum is not reviewed")
     if isinstance(content, str):
         observed = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if observed != ORIGIN_LABEL_CONTRACT_SHA256:
+        if (
+            checksum_policy.validates_checksums
+            and observed != ORIGIN_LABEL_CONTRACT_SHA256
+        ):
             raise ValueError("Embedded origin-label contract content changed")
         payload = yaml.load(content, Loader=_UniqueKeyLoader)
         embedded = OriginLabelContract.model_validate(payload)

@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
+from danish_personas.checksum import ChecksumValidationPolicy
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import FROZEN_SAMPLE_SCHEMA_VERSION, FrozenSampleManifest
 from danish_personas.release import upload as upload_service
@@ -99,7 +100,7 @@ def test_generate_persona_emits_only_validated_text(
     monkeypatch.setattr(
         generate_persona,
         "prepare_standard_sample",
-        lambda: (tmp_path / "sample.parquet", tmp_path / "sample.manifest.json"),
+        lambda **_: (tmp_path / "sample.parquet", tmp_path / "sample.manifest.json"),
     )
     monkeypatch.setattr(generate_persona, "_sample_offset", lambda **_: 1)
     monkeypatch.setattr(generate_persona, "generate_personas", generate)
@@ -115,6 +116,7 @@ def test_generate_persona_emits_only_validated_text(
     assert result.stdout == "Dette er en dansk syntetisk persona.\n"
     assert calls["offset"] == 1
     assert calls["sample_manifest_path"] == tmp_path / "sample.manifest.json"
+    assert calls["checksum_policy"] is ChecksumValidationPolicy.IGNORE
     assert "Loading and validating persona inputs" in result.stderr
     assert "Dette er en dansk syntetisk persona." not in result.stderr
 
