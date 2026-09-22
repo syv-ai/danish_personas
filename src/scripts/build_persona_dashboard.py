@@ -739,10 +739,21 @@ def _vectors_from_response(*, payload: object, expected: int) -> list[list[float
         raise ValueError(
             f"Embedding service returned {len(data)} vectors; expected {expected}"
         )
-    indexed = all(
-        isinstance(item, dict) and isinstance(item.get("index"), int) for item in data
-    )
-    ordered = sorted(data, key=lambda item: item["index"]) if indexed else data
+    indices = [
+        item.get("index")
+        if isinstance(item, dict)
+        and isinstance(item.get("index"), int)
+        and not isinstance(item.get("index"), bool)
+        else None
+        for item in data
+    ]
+    expected_indices = set(range(expected))
+    if any(index is None for index in indices) or set(indices) != expected_indices:
+        raise ValueError(
+            "Embedding service returned invalid indices; expected each integer index "
+            "from 0 to batch size minus 1"
+        )
+    ordered = sorted(data, key=lambda item: item["index"])
     vectors: list[list[float]] = []
     for item in ordered:
         vector = item.get("embedding") if isinstance(item, dict) else None
@@ -912,6 +923,9 @@ def load_dst_targets(
 
     ras209 = _read_optional_target(normalized=normalized, stem="ras209_joint_unpooled")
     if ras209 is not None:
+        # The unpooled joint is retained as an audit artefact, but undisclosed
+        # education rows are outside every dashboard target's eligible universe.
+        ras209 = _eligible_ras209_dashboard_rows(source=ras209)
         categories = load_yaml_model(CATEGORY_CONFIG_PATH, CategoryConfig)
         targets["education_level"] = _pooled_education_target(
             source=ras209, pooling=categories.education_pooling
@@ -970,6 +984,28 @@ def _conditioned_job_function_target(
         for label, proportion in conditional.items():
             target[label] = target.get(label, 0.0) + weight * proportion
     return target
+
+
+def _eligible_ras209_dashboard_rows(*, source: pl.DataFrame) -> pl.DataFrame:
+    """Exclude RAS209 undisclosed education rows from all dashboard targets.
+
+    The source file itself is never rewritten: this returns a filtered view used only
+    for descriptive overlays. Both the official H90 code and its normalised semantic
+    label are checked because prepared bundles expose one or both representations.
+
+    Returns:
+        A filtered frame for dashboard target derivation.
+    """
+    eligible = source
+    if "education_source_code" in eligible.columns:
+        eligible = eligible.filter(
+            pl.col("education_source_code").cast(pl.String).str.to_uppercase() != "H90"
+        )
+    if "education_level" in eligible.columns:
+        eligible = eligible.filter(
+            pl.col("education_level").cast(pl.String).str.to_lowercase() != NOT_STATED
+        )
+    return eligible
 
 
 def _normalise_counts(*, source: pl.DataFrame, value_column: str) -> dict[str, float]:
