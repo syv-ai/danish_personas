@@ -42,10 +42,12 @@ def freeze_sample(
 ) -> Path:
     """Select and persist a deterministic development sample.
 
-    Both modes first allocate the requested rows to origin-country codes using
-    deterministic largest-remainder quotas. Each origin then uses the selected
-    municipality/education/status strategy: proportional quotas in the default
-    mode, or round-robin selection for deliberately stratified experiments.
+    Both modes first create the globally balanced selection using the requested
+    municipality/education/status strategy. Deterministic largest-remainder
+    origin quotas are then imposed with same-stratum swaps, retaining the global
+    stratum counts exactly whenever the margins permit it. If those margins are
+    infeasible, the deterministic fallback keeps the largest possible overlap
+    with the global selection while still enforcing the origin quotas.
 
     Args:
         run_dir:
@@ -105,11 +107,9 @@ def freeze_sample(
             "rows": sample.height,
             "strata": [ORIGIN_STRATUM, *STRATA],
             "method": (
-                f"{ORIGIN_MARGINAL_METHOD}, then population-proportional "
-                "allocation within each origin"
-                if mode == "population_proportional"
-                else f"{ORIGIN_MARGINAL_METHOD}, then round-robin within each "
-                "origin's sorted strata"
+                f"global {mode} STRATA selection, then {ORIGIN_MARGINAL_METHOD}; "
+                "deterministic same-STRATA swaps preserve global STRATA counts "
+                "when feasible, otherwise deterministic maximum-overlap fallback"
             ),
             "mode": mode,
             "data_file": output_path.name,
@@ -166,20 +166,478 @@ def _select_sample(
 ) -> pl.DataFrame:
     """Select rows with an origin marginal and the requested inner strategy.
 
+    The unconstrained selection is made before applying the origin marginal. A
+    A deterministic flow fallback finds a selection with the same STRATA margins,
+    when one exists. This is equivalent to deterministic swaps within a STRATA
+    cell and avoids making the origin marginal distort the global allocation.
+
     Returns:
         The selected rows sorted by persona identifier.
+
+    Raises:
+        ValueError:
+            If persona identifiers are not unique.
     """
-    sorted_frame = frame.sort([ORIGIN_STRATUM, *STRATA, "persona_id"])
-    origin_groups = sorted_frame.partition_by([ORIGIN_STRATUM], maintain_order=True)
+    if frame.get_column("persona_id").n_unique() != frame.height:
+        raise ValueError("Cannot freeze rows with duplicate persona_id values")
+
+    sorted_frame = frame.sort([*STRATA, "persona_id"])
+    baseline = _select_within_origin(group=sorted_frame, rows=rows, mode=mode)
+    baseline_ids = set(baseline.get_column("persona_id").to_list())
+    origin_frame = frame.sort([ORIGIN_STRATUM, *STRATA, "persona_id"])
+    origin_groups = origin_frame.partition_by([ORIGIN_STRATUM], maintain_order=True)
     origin_quotas = _largest_remainder_quotas(
         groups=origin_groups, rows=rows, group_key=ORIGIN_STRATUM
     )
-    selected = [
-        _select_within_origin(group=group, rows=quota, mode=mode)
+    origin_targets = {
+        group.item(0, ORIGIN_STRATUM): quota
         for group, quota in zip(origin_groups, origin_quotas)
-        if quota
+    }
+    cell_rows, cell_capacity, cell_baseline = _build_cells(
+        frame=sorted_frame, baseline_ids=baseline_ids
+    )
+    cell_counts = _select_cell_counts(
+        cell_capacity=cell_capacity,
+        cell_baseline=cell_baseline,
+        cell_rows=rows,
+        origin_targets=origin_targets,
+    )
+    baseline_positions = {
+        index
+        for index, persona_id in enumerate(sorted_frame.get_column("persona_id"))
+        if persona_id in baseline_ids
+    }
+    selected_indices = [
+        index
+        for cell in _ordered_cells(cell_rows=cell_rows)
+        for index in _choose_cell_rows(
+            positions=cell_rows[cell],
+            count=cell_counts[cell],
+            baseline_positions=baseline_positions,
+        )
     ]
-    return pl.concat(selected).sort("persona_id")
+    if len(selected_indices) != rows or len(set(selected_indices)) != rows:
+        raise ValueError("Freeze selection did not produce the requested unique rows")
+    return sorted_frame.gather(selected_indices).sort("persona_id")
+
+
+def _build_cells(
+    *, frame: pl.DataFrame, baseline_ids: set[object]
+) -> tuple[
+    dict[tuple[tuple[object, ...], str], list[int]],
+    dict[tuple[tuple[object, ...], str], int],
+    dict[tuple[tuple[object, ...], str], int],
+]:
+    """Index rows by STRATA and origin in deterministic frame order.
+
+    Returns:
+        Row positions, cell capacities, and baseline counts by cell.
+    """
+    cell_rows: dict[tuple[tuple[object, ...], str], list[int]] = {}
+    cell_baseline: dict[tuple[tuple[object, ...], str], int] = {}
+    values = frame.select([*STRATA, ORIGIN_STRATUM, "persona_id"]).iter_rows()
+    for index, row in enumerate(values):
+        stratum = tuple(row[: len(STRATA)])
+        origin = row[-2]
+        cell = (stratum, origin)
+        cell_rows.setdefault(cell, []).append(index)
+        if row[-1] in baseline_ids:
+            cell_baseline[cell] = cell_baseline.get(cell, 0) + 1
+    return (
+        cell_rows,
+        {cell: len(indices) for cell, indices in cell_rows.items()},
+        cell_baseline,
+    )
+
+
+def _ordered_cells(
+    *, cell_rows: dict[tuple[tuple[object, ...], str], list[int]]
+) -> list[tuple[tuple[object, ...], str]]:
+    """Return cells in sorted STRATA and origin order."""
+    return sorted(cell_rows, key=lambda cell: (cell[0], cell[1]))
+
+
+def _choose_cell_rows(
+    *, positions: list[int], count: int, baseline_positions: set[int]
+) -> list[int]:
+    """Choose retained rows before replacement rows within one cell.
+
+    Returns:
+        Selected row positions for the cell.
+    """
+    retained = [position for position in positions if position in baseline_positions]
+    replacements = [
+        position for position in positions if position not in baseline_positions
+    ]
+    return (retained + replacements)[:count]
+
+
+def _select_cell_counts(
+    *,
+    cell_capacity: dict[tuple[tuple[object, ...], str], int],
+    cell_baseline: dict[tuple[tuple[object, ...], str], int],
+    cell_rows: int,
+    origin_targets: dict[str, int],
+) -> dict[tuple[tuple[object, ...], str], int]:
+    """Find an origin-quota selection, preserving STRATA where possible.
+
+    Returns:
+        Selected row counts by STRATA and origin cell.
+
+    Raises:
+        ValueError:
+            If even the origin quotas cannot be satisfied.
+    """
+    strata = {cell[0] for cell in cell_capacity}
+    stratum_targets = {
+        stratum: sum(
+            count
+            for (cell_stratum, _), count in cell_baseline.items()
+            if cell_stratum == stratum
+        )
+        for stratum in strata
+    }
+    exact = _greedy_strata_swaps(
+        cell_capacity=cell_capacity,
+        cell_baseline=cell_baseline,
+        origin_targets=origin_targets,
+    )
+    if exact is None:
+        exact = _run_cell_flow(
+            cell_capacity=cell_capacity,
+            cell_baseline=cell_baseline,
+            cell_rows=cell_rows,
+            origin_targets=origin_targets,
+            stratum_targets=stratum_targets,
+            preserve_strata=True,
+        )
+    if exact is not None:
+        return exact
+    fallback = _run_cell_flow(
+        cell_capacity=cell_capacity,
+        cell_baseline=cell_baseline,
+        cell_rows=cell_rows,
+        origin_targets=origin_targets,
+        stratum_targets=stratum_targets,
+        preserve_strata=False,
+    )
+    if fallback is None:
+        raise ValueError("Origin quotas cannot be satisfied by the source rows")
+    return fallback
+
+
+def _greedy_strata_swaps(
+    *,
+    cell_capacity: dict[tuple[tuple[object, ...], str], int],
+    cell_baseline: dict[tuple[tuple[object, ...], str], int],
+    origin_targets: dict[str, int],
+) -> dict[tuple[tuple[object, ...], str], int] | None:
+    """Apply cheap deterministic same-STRATA swaps before general flow.
+
+    Returns:
+        Cell counts with exact origin margins, or ``None`` when the greedy pass
+        cannot find all required swaps.
+    """
+    selected = dict(cell_baseline)
+    baseline_origins = {
+        origin: sum(
+            count
+            for (stratum, cell_origin), count in cell_baseline.items()
+            if cell_origin == origin
+        )
+        for origin in origin_targets
+    }
+    surplus = {
+        origin: baseline_origins[origin] - origin_targets[origin]
+        for origin in origin_targets
+        if baseline_origins[origin] > origin_targets[origin]
+    }
+    deficits = {
+        origin: origin_targets[origin] - baseline_origins[origin]
+        for origin in origin_targets
+        if baseline_origins[origin] < origin_targets[origin]
+    }
+    strata = sorted({cell[0] for cell in cell_capacity})
+    for stratum in strata:
+        for surplus_origin in sorted(surplus):
+            available = min(
+                surplus[surplus_origin], cell_baseline.get((stratum, surplus_origin), 0)
+            )
+            for deficit_origin in sorted(deficits):
+                capacity = cell_capacity.get((stratum, deficit_origin), 0)
+                free = capacity - cell_baseline.get((stratum, deficit_origin), 0)
+                moved = min(available, deficits[deficit_origin], free)
+                if moved:
+                    selected[(stratum, surplus_origin)] -= moved
+                    selected[(stratum, deficit_origin)] = (
+                        selected.get((stratum, deficit_origin), 0) + moved
+                    )
+                    surplus[surplus_origin] -= moved
+                    deficits[deficit_origin] -= moved
+                    available -= moved
+                if not available:
+                    break
+    if any(surplus.values()) or any(deficits.values()):
+        return None
+    return {cell: selected.get(cell, 0) for cell in cell_capacity}
+
+
+class _FlowEdge:
+    """Mutable residual edge for the deterministic min-cost flow solver."""
+
+    def __init__(self, *, target: int, reverse: int, capacity: int, cost: int) -> None:
+        self.target = target
+        self.reverse = reverse
+        self.capacity = capacity
+        self.cost = cost
+        self.initial_capacity = capacity
+
+
+def _run_cell_flow(
+    *,
+    cell_capacity: dict[tuple[tuple[object, ...], str], int],
+    cell_baseline: dict[tuple[tuple[object, ...], str], int],
+    cell_rows: int,
+    origin_targets: dict[str, int],
+    stratum_targets: dict[tuple[object, ...], int],
+    preserve_strata: bool,
+) -> dict[tuple[tuple[object, ...], str], int] | None:
+    """Solve the quota assignment and return selected rows per cell.
+
+    Returns:
+        Selected row counts by cell, or ``None`` when the margins are infeasible.
+    """
+    cells = _ordered_cells(cell_rows={cell: [] for cell in cell_capacity})
+    strata = sorted({cell[0] for cell in cells})
+    origins = sorted(origin_targets)
+    source, sink, node_count, stratum_nodes, origin_nodes = _flow_layout(
+        strata=strata, origins=origins, preserve_strata=preserve_strata
+    )
+    graph: list[list[_FlowEdge]] = [[] for _ in range(node_count)]
+    _add_flow_boundaries(
+        graph=graph,
+        source=source,
+        sink=sink,
+        strata=strata,
+        origins=origins,
+        stratum_nodes=stratum_nodes,
+        origin_nodes=origin_nodes,
+        origin_targets=origin_targets,
+        stratum_targets=stratum_targets,
+        cell_capacity=cell_capacity,
+        preserve_strata=preserve_strata,
+    )
+    references: dict[tuple[tuple[object, ...], str], list[tuple[int, int]]] = {}
+    for cell in cells:
+        capacity = cell_capacity[cell]
+        baseline = min(cell_baseline.get(cell, 0), capacity)
+        start, end = _cell_endpoints(
+            cell=cell,
+            stratum_nodes=stratum_nodes,
+            origin_nodes=origin_nodes,
+            preserve_strata=preserve_strata,
+        )
+        references[cell] = [
+            _add_flow_edge(graph, start, end, baseline, -1),
+            _add_flow_edge(graph, start, end, capacity - baseline, 0),
+        ]
+
+    if preserve_strata:
+        flow = _max_flow(graph=graph, source=source, sink=sink, required=cell_rows)
+    else:
+        for _, extra_reference in references.values():
+            extra_edge = graph[extra_reference[0]][extra_reference[1]]
+            extra_edge.capacity = 0
+        flow = _max_flow(graph=graph, source=source, sink=sink, required=cell_rows)
+        baseline_flow = flow
+        for _, extra_reference in references.values():
+            extra_edge = graph[extra_reference[0]][extra_reference[1]]
+            extra_edge.capacity = extra_edge.initial_capacity
+        flow += _max_flow(
+            graph=graph, source=source, sink=sink, required=cell_rows - baseline_flow
+        )
+    if flow < cell_rows:
+        return None
+    return {
+        cell: sum(
+            graph[node][edge_index].initial_capacity - graph[node][edge_index].capacity
+            for node, edge_index in edge_refs
+        )
+        for cell, edge_refs in references.items()
+    }
+
+
+def _flow_layout(
+    *, strata: list[tuple[object, ...]], origins: list[str], preserve_strata: bool
+) -> tuple[int, int, int, dict[tuple[object, ...], int], dict[str, int]]:
+    """Allocate deterministic node identifiers for a flow network.
+
+    Returns:
+        Source, sink, node count, and node maps for the network.
+    """
+    if preserve_strata:
+        stratum_nodes = {stratum: index + 1 for index, stratum in enumerate(strata)}
+        origin_start = len(strata) + 1
+        origin_nodes = {
+            origin: origin_start + index for index, origin in enumerate(origins)
+        }
+        sink = origin_start + len(origins)
+    else:
+        origin_nodes = {origin: index + 1 for index, origin in enumerate(origins)}
+        stratum_start = len(origins) + 1
+        stratum_nodes = {
+            stratum: stratum_start + index for index, stratum in enumerate(strata)
+        }
+        sink = stratum_start + len(strata)
+    return 0, sink, sink + 1, stratum_nodes, origin_nodes
+
+
+def _add_flow_boundaries(
+    *,
+    graph: list[list[_FlowEdge]],
+    source: int,
+    sink: int,
+    strata: list[tuple[object, ...]],
+    origins: list[str],
+    stratum_nodes: dict[tuple[object, ...], int],
+    origin_nodes: dict[str, int],
+    origin_targets: dict[str, int],
+    stratum_targets: dict[tuple[object, ...], int],
+    cell_capacity: dict[tuple[tuple[object, ...], str], int],
+    preserve_strata: bool,
+) -> None:
+    """Add source and sink margins to a cell flow network."""
+    if preserve_strata:
+        for stratum in strata:
+            _add_flow_edge(
+                graph, source, stratum_nodes[stratum], stratum_targets[stratum], 0
+            )
+        for origin in origins:
+            _add_flow_edge(graph, origin_nodes[origin], sink, origin_targets[origin], 0)
+        return
+    for origin in origins:
+        _add_flow_edge(graph, source, origin_nodes[origin], origin_targets[origin], 0)
+    for stratum in strata:
+        capacity = sum(cell_capacity.get((stratum, origin), 0) for origin in origins)
+        _add_flow_edge(graph, stratum_nodes[stratum], sink, capacity, 0)
+
+
+def _cell_endpoints(
+    *,
+    cell: tuple[tuple[object, ...], str],
+    stratum_nodes: dict[tuple[object, ...], int],
+    origin_nodes: dict[str, int],
+    preserve_strata: bool,
+) -> tuple[int, int]:
+    """Return the network endpoints for one cell.
+
+    Returns:
+        Source-side and sink-side node identifiers for the cell edge.
+    """
+    if preserve_strata:
+        return stratum_nodes[cell[0]], origin_nodes[cell[1]]
+    return origin_nodes[cell[1]], stratum_nodes[cell[0]]
+
+
+def _add_flow_edge(
+    graph: list[list[_FlowEdge]], source: int, target: int, capacity: int, cost: int
+) -> tuple[int, int]:
+    """Add a forward and residual edge and return the forward reference.
+
+    Returns:
+        The graph list index identifying the forward edge.
+    """
+    source_index = len(graph[source])
+    target_index = len(graph[target])
+    graph[source].append(
+        _FlowEdge(target=target, reverse=target_index, capacity=capacity, cost=cost)
+    )
+    graph[target].append(
+        _FlowEdge(target=source, reverse=source_index, capacity=0, cost=-cost)
+    )
+    return source, source_index
+
+
+def _max_flow(
+    *, graph: list[list[_FlowEdge]], source: int, sink: int, required: int
+) -> int:
+    """Send flow along deterministic level-graph paths.
+
+    Returns:
+        Number of flow units sent.
+    """
+    flow = 0
+    while flow < required:
+        levels = _flow_levels(graph=graph, source=source)
+        if levels[sink] < 0:
+            break
+        cursors = [0] * len(graph)
+        while flow < required:
+            amount = _send_blocking_flow(
+                graph=graph,
+                node=source,
+                sink=sink,
+                amount=required - flow,
+                levels=levels,
+                cursors=cursors,
+            )
+            if not amount:
+                break
+            flow += amount
+    return flow
+
+
+def _flow_levels(*, graph: list[list[_FlowEdge]], source: int) -> list[int]:
+    """Build a residual BFS level graph.
+
+    Returns:
+        Level for every graph node; ``-1`` marks an unreachable node.
+    """
+    levels = [-1] * len(graph)
+    levels[source] = 0
+    queue = [source]
+    for node in queue:
+        for edge in graph[node]:
+            if edge.capacity > 0 and levels[edge.target] < 0:
+                levels[edge.target] = levels[node] + 1
+                queue.append(edge.target)
+    return levels
+
+
+def _send_blocking_flow(
+    *,
+    graph: list[list[_FlowEdge]],
+    node: int,
+    sink: int,
+    amount: int,
+    levels: list[int],
+    cursors: list[int],
+) -> int:
+    """Send one DFS path through the current level graph.
+
+    Returns:
+        Number of flow units sent.
+    """
+    if node == sink:
+        return amount
+    while cursors[node] < len(graph[node]):
+        edge_index = cursors[node]
+        edge = graph[node][edge_index]
+        if edge.capacity > 0 and levels[edge.target] == levels[node] + 1:
+            sent = _send_blocking_flow(
+                graph=graph,
+                node=edge.target,
+                sink=sink,
+                amount=min(amount, edge.capacity),
+                levels=levels,
+                cursors=cursors,
+            )
+            if sent:
+                edge.capacity -= sent
+                graph[edge.target][edge.reverse].capacity += sent
+                return sent
+        cursors[node] += 1
+    return 0
 
 
 def _largest_remainder_quotas(

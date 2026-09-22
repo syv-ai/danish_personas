@@ -120,17 +120,20 @@ These gates apply before any LLM integration may be enabled.
   resolution fields do not. The exact Danish label is the origin fact in the grounded
   persona. Job titles are synthetic and must not imply unsupported work history.
 
-`SAMPLER_SCHEMA_VERSION` is 8 and must be incremented whenever deterministic sampling
-semantics or generated record columns change incompatibly. The frozen-sample schema is
-5. Both freeze modes first preserve the observed eligible origin marginal with
-largest-remainder quotas, then apply population-proportional or stratified round-robin
-selection within each origin. These versions are part of content-addressed identities,
-so legacy bundles, runs, or samples cannot be silently reused. Previous canonical IDs
-are historical and non-resumable; regenerate and record new IDs rather than inventing
-them.
+`SAMPLER_SCHEMA_VERSION` is 8 and must be incremented whenever deterministic
+sampling semantics or generated record columns change incompatibly. The frozen-sample
+schema is 5. Both freeze modes first create the global population-proportional or
+stratified round-robin STRATA selection, then impose the observed eligible origin
+marginal with sorted-code largest-remainder quotas. Deterministic same-STRATA swaps
+preserve the original global STRATA counts whenever the margins are feasible. If they
+are not, the documented deterministic maximum-overlap fallback enforces the origin
+quotas while minimising the number of changed rows from the global selection. These
+versions are part of content-addressed identities, so legacy bundles, runs, or samples
+cannot be silently reused. Previous canonical IDs are historical and non-resumable;
+regenerate and record new IDs rather than inventing
+ them.
 
 ## Persona runs
-
 - The Hydra configuration names the endpoint and model explicitly. Each invocation
   remains bounded by row and HTTP-request limits.
 - Library and dataset/release validation require the input checksum and successful
