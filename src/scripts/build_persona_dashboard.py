@@ -118,7 +118,7 @@ def build_dashboard(
     """
     _require_columns(frame, {"persona", "persona_id"})
     target_cache = load_dst_targets(bundle_path=bundle_path, frame=frame)
-    sections = [_privacy_notice(), _overview_cards(frame=frame)]
+    sections = [_overview_cards(frame=frame)]
     sections.extend(
         _distribution_chart(
             frame=frame,
@@ -161,11 +161,10 @@ def build_dashboard(
         "body{font-family:system-ui,sans-serif;margin:0;background:#f5f7fa;color:#17202a}"
         ".wrap{max-width:1400px;margin:auto;padding:24px}.grid{display:grid;"
         "grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px}"
-        ".card,.chart,.warning{background:white;border-radius:10px;padding:18px;"
+        ".card,.chart{background:white;border-radius:10px;padding:18px;"
         "box-shadow:0 1px 4px #0002}.chart{min-height:390px}.wide{grid-column:1/-1}"
-        ".warning{border:3px solid #b42318;background:#fff1f0}.metric{font-size:2rem;"
-        "font-weight:700}.muted{color:#586674;font-size:.9rem}.source{font-size:.8rem;"
-        "color:#586674}.plot{height:390px}.privacy{font-weight:700;color:#8b1e1e}"
+        ".metric{font-size:2rem;font-weight:700}.muted{color:#586674;font-size:.9rem}"
+        ".source{font-size:.8rem;color:#586674}.plot{height:390px}"
         f"</style><script>{plotly_js}</script></head>"
         '<body><main class="wrap"><h1>Generated persona dashboard</h1>'
         + "".join(sections)
@@ -667,16 +666,6 @@ def _overview_cards(*, frame: pl.DataFrame) -> str:
         f'<div class="metric">{municipality_count}</div></div>'
         '<div class="card"><div class="muted">Mean age</div>'
         f'<div class="metric">{mean_age_text}</div></div></section>'
-    )
-
-
-def _privacy_notice() -> str:
-    """Return the prominent standalone-file privacy warning."""
-    return (
-        '<section class="warning"><h2 class="privacy">Privacy warning</h2>'
-        "<p>This standalone HTML contains full private persona prose and municipality "
-        "combinations. Treat it as restricted data: do not publish, email, or upload "
-        "it to an unapproved service.</p></section>"
     )
 
 
