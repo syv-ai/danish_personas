@@ -258,46 +258,51 @@ def generate_personas(
     LOGGER.info("Provider generation finished; persisting generation artefacts")
     output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
     responses = [response for item in checkpoints for response in item.responses]
-    manifest = GenerationManifest(
-        run_id=run_id,
-        upstream_run_id=upstream_run.run_id,
-        input_file=input_path,
-        sample_manifest_file=sample_manifest_path,
-        input_sha256=sha256_file(input_path),
-        ordered_persona_ids_sha256=ordered_ids_sha,
-        generation_config_file=config_path,
-        generation_config_sha256=sha256_file(config_path),
-        generation_context_sha256=generation_context_sha,
-        validator_version=VALIDATOR_VERSION,
-        job_title_mapping_file=mapping_path,
-        job_title_mapping_sha256=mapping_sha,
-        job_title_mapping_version=job_title_mapping.version,
-        job_title_mapping_content=job_title_mapping,
-        origin_label_contract_file=origin_contract_path,
-        origin_label_contract_sha256=origin_contract_sha,
-        origin_label_contract_version=origin_contract.version,
-        origin_label_contract_content=origin_contract,
-        prompt_sha256=sha256_text(prompt),
-        model=config.model or "",
-        base_url=config.base_url or "",
-        rows=rows,
-        offset=offset,
-        requests=ledger.attempts,
-        retries=max(0, ledger.attempts - rows),
-        prompt_tokens=sum(response.prompt_tokens for response in responses),
-        completion_tokens=sum(response.completion_tokens for response in responses),
-        total_tokens=sum(response.total_tokens for response in responses),
-        estimated_cost_usd=_sum_estimated_cost(responses=responses),
-        inference_providers=sorted(
-            {
-                response.inference_provider
-                for response in responses
-                if response.inference_provider
-            }
-        ),
-        output_file=Path(output_path.name),
-        output_sha256=sha256_file(output_path),
-        llm_generation=True,
+    manifest = GenerationManifest.model_validate(
+        {
+            "run_id": run_id,
+            "upstream_run_id": upstream_run.run_id,
+            "input_file": input_path,
+            "sample_manifest_file": sample_manifest_path,
+            "input_sha256": sha256_file(input_path),
+            "ordered_persona_ids_sha256": ordered_ids_sha,
+            "generation_config_file": config_path,
+            "generation_config_sha256": sha256_file(config_path),
+            "generation_context_sha256": generation_context_sha,
+            "validator_version": VALIDATOR_VERSION,
+            "job_title_mapping_file": mapping_path,
+            "job_title_mapping_sha256": mapping_sha,
+            "job_title_mapping_version": job_title_mapping.version,
+            "job_title_mapping_content": job_title_mapping,
+            "origin_label_contract_file": origin_contract_path,
+            "origin_label_contract_sha256": origin_contract_sha,
+            "origin_label_contract_version": origin_contract.version,
+            "origin_label_contract_content": origin_contract,
+            "prompt_sha256": sha256_text(prompt),
+            "model": config.model or "",
+            "base_url": config.base_url or "",
+            "rows": rows,
+            "offset": offset,
+            "requests": ledger.attempts,
+            "retries": max(0, ledger.attempts - rows),
+            "prompt_tokens": sum(response.prompt_tokens for response in responses),
+            "completion_tokens": sum(
+                response.completion_tokens for response in responses
+            ),
+            "total_tokens": sum(response.total_tokens for response in responses),
+            "estimated_cost_usd": _sum_estimated_cost(responses=responses),
+            "inference_providers": sorted(
+                {
+                    response.inference_provider
+                    for response in responses
+                    if response.inference_provider
+                }
+            ),
+            "output_file": Path(output_path.name),
+            "output_sha256": sha256_file(output_path),
+            "llm_generation": True,
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=run_dir / "generation-manifest.json", payload=manifest)
     LOGGER.info("Completed persona run %s with %s requests", run_id, manifest.requests)
@@ -372,24 +377,29 @@ def _generate_one(
         {field: getattr(generated, field) for field in GeneratedAttributes.model_fields}
     )
     descriptions = PersonaDescriptions(persona=generated.persona)
-    checkpoint = PersonaCheckpoint(
-        persona_id=persona_id,
-        input_sha256=input_sha,
-        generation_context_sha256=generation_context_sha,
-        validator_version=VALIDATOR_VERSION,
-        job_title_mapping_sha256=job_title_mapping_sha256,
-        job_title_mapping_version=job_title_mapping.version,
-        job_title_mapping_file=job_title_mapping_path,
-        job_title_mapping_content=job_title_mapping,
-        origin_label_contract_file=origin_label_contract_path,
-        origin_label_contract_sha256=origin_label_contract_sha256,
-        origin_label_contract_version=origin_label_contract.version,
-        origin_label_contract_content=origin_label_contract,
-        attributes=attributes,
-        descriptions=descriptions,
-        responses=responses,
-        attempts=len(responses),
-        http_requests=(prior_http_requests + client.requests_made - request_start),
+    checkpoint = PersonaCheckpoint.model_validate(
+        {
+            "persona_id": persona_id,
+            "input_sha256": input_sha,
+            "generation_context_sha256": generation_context_sha,
+            "validator_version": VALIDATOR_VERSION,
+            "job_title_mapping_sha256": job_title_mapping_sha256,
+            "job_title_mapping_version": job_title_mapping.version,
+            "job_title_mapping_file": job_title_mapping_path,
+            "job_title_mapping_content": job_title_mapping,
+            "origin_label_contract_file": origin_label_contract_path,
+            "origin_label_contract_sha256": origin_label_contract_sha256,
+            "origin_label_contract_version": origin_label_contract.version,
+            "origin_label_contract_content": origin_label_contract,
+            "attributes": attributes,
+            "descriptions": descriptions,
+            "responses": responses,
+            "attempts": len(responses),
+            "http_requests": (
+                prior_http_requests + client.requests_made - request_start
+            ),
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=checkpoint_path, payload=checkpoint)
     return checkpoint

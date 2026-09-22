@@ -326,50 +326,55 @@ def prepare_bundle(
     )
     files[str(markdown_path.relative_to(bundle_dir))] = sha256_file(markdown_path)
 
-    manifest = BundleManifest(
-        bundle_id=bundle_id,
-        prepared_bundle_schema_version=PREPARED_BUNDLE_SCHEMA_VERSION,
-        created_at=_now(),
-        source_lock_sha256=sha256_file(lock_path),
-        categories_sha256=sha256_file(categories_path),
-        source_snapshots=snapshots,
-        classification_snapshots=classification_snapshots,
-        files=files,
-        reference_periods={source.role: source.period for source in lock.sources},
-        lons20_contract_version=contract.version,
-        lons20_contract_sha256=contract_sha256,
-        origin_labels_contract_path=origin_labels_contract_relative_path,
-        origin_labels_contract_version=origin_labels_contract.version,
-        origin_labels_contract_sha256=origin_labels_contract_sha256,
-        origin_labels_contract_content=origin_labels_contract_content,
-        assumptions=[
-            "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
-            "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
-            "RAS209 jointly supplies broad education and labour-market status.",
-            "RAS202 refines detailed status only within the RAS209 broad status.",
-            "The RAS209 67+ education band is a proxy for ages 70 and over.",
-            "BEFOLK3 and RAS210 are held-out diagnostics, not fitted microdata.",
-            "The municipality-region hierarchy comes from the official DST "
-            "classification, not from StatBank metadata ordering.",
-            "FOLK2 is an independent national adult marginal by official IELAND "
-            "code and label; it is neither ethnicity nor citizenship.",
-            "FOLK2 origin categories are retained verbatim, including Stateless "
-            "and Not stated; no continents, regions, or correlations are inferred.",
-            "FOLK2 is sampled independently into Phase 2 origin fields; only the "
-            "official Danish label reaches the LLM request.",
-            "LONS20 supplies only a 2024 sex-conditional marginal over exactly "
-            "the 42 two-digit DISCO-08 job-function groups.",
-            "LONS20 covers all public employees and private organisations with "
-            "at least 10 full-time-equivalent employees; smaller private "
-            "organisations and other earnings-statistics exclusions are absent.",
-            "Job function is a synthetic allocation for eligible RAS202 employee "
-            "statuses, not an observed occupation or an all-worker distribution.",
-            "Job function is not conditioned on municipality, origin, age, "
-            "education, OCEAN, or any unsupported joint; only its human-readable "
-            "label reaches the LLM request.",
-            "OCEAN traits are a documented design distribution, not official "
-            "statistics.",
-        ],
+    manifest = BundleManifest.model_validate(
+        {
+            "bundle_id": bundle_id,
+            "prepared_bundle_schema_version": PREPARED_BUNDLE_SCHEMA_VERSION,
+            "created_at": _now(),
+            "source_lock_sha256": sha256_file(lock_path),
+            "categories_sha256": sha256_file(categories_path),
+            "source_snapshots": snapshots,
+            "classification_snapshots": classification_snapshots,
+            "files": files,
+            "reference_periods": {
+                source.role: source.period for source in lock.sources
+            },
+            "lons20_contract_version": contract.version,
+            "lons20_contract_sha256": contract_sha256,
+            "origin_labels_contract_path": origin_labels_contract_relative_path,
+            "origin_labels_contract_version": origin_labels_contract.version,
+            "origin_labels_contract_sha256": origin_labels_contract_sha256,
+            "origin_labels_contract_content": origin_labels_contract_content,
+            "assumptions": [
+                "FOLK1A 2025Q1 is the demographic base nearest RAS November 2024.",
+                "FOLK1A ages 16-19 estimate the adult share of RAS209's 16-19 band.",
+                "RAS209 jointly supplies broad education and labour-market status.",
+                "RAS202 refines detailed status only within the RAS209 broad status.",
+                "The RAS209 67+ education band is a proxy for ages 70 and over.",
+                "BEFOLK3 and RAS210 are held-out diagnostics, not fitted microdata.",
+                "The municipality-region hierarchy comes from the official DST "
+                "classification, not from StatBank metadata ordering.",
+                "FOLK2 is an independent national adult marginal by official IELAND "
+                "code and label; it is neither ethnicity nor citizenship.",
+                "FOLK2 origin categories are retained verbatim, including Stateless "
+                "and Not stated; no continents, regions, or correlations are inferred.",
+                "FOLK2 is sampled independently into Phase 2 origin fields; only the "
+                "official Danish label reaches the LLM request.",
+                "LONS20 supplies only a 2024 sex-conditional marginal over exactly "
+                "the 42 two-digit DISCO-08 job-function groups.",
+                "LONS20 covers all public employees and private organisations with "
+                "at least 10 full-time-equivalent employees; smaller private "
+                "organisations and other earnings-statistics exclusions are absent.",
+                "Job function is a synthetic allocation for eligible RAS202 employee "
+                "statuses, not an observed occupation or an all-worker distribution.",
+                "Job function is not conditioned on municipality, origin, age, "
+                "education, OCEAN, or any unsupported joint; only its human-readable "
+                "label reaches the LLM request.",
+                "OCEAN traits are a documented design distribution, not official "
+                "statistics.",
+            ],
+        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=manifest_path, payload=manifest)
     LOGGER.info("Prepared source bundle %s", bundle_id)

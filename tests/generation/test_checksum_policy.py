@@ -1,17 +1,113 @@
 """Scoped checksum-policy regression tests."""
 
+import json
 from pathlib import Path
 
 import polars as pl
 import pytest
-from generation_test_helpers import write_generation_inputs
+from click.testing import CliRunner
+from generation_test_helpers import MockGenerationClient, write_generation_inputs
 
 from danish_personas.checksum import ChecksumValidationPolicy
+from danish_personas.generation.models import LLMResponse
 from danish_personas.generation.pipeline import validate_upstream_sample
 from danish_personas.io import write_json
 from danish_personas.models import FrozenSampleManifest, RunManifest, ValidationReport
 from danish_personas.workflows import _valid_existing_sample
 from scripts import generate_persona
+
+
+class CurrentGenerationClient(MockGenerationClient):
+    """Provider double with the current v4 relationship fields."""
+
+    def complete(self, schema_name: str, **kwargs: object) -> LLMResponse:
+        """Return a current-schema response without making a network request."""
+        response = super().complete(schema_name=schema_name, **kwargs)
+        payload = json.loads(response.content)
+        payload.update(
+            {
+                "first_name": "Maja",
+                "current_relationship_status": "partnered",
+                "partner_first_name": "Alex",
+                "partner_gender": "male",
+                "legal_status_detail": "married",
+            }
+        )
+        payload["persona"] += " Hun er gift og har en partner, Alex."
+        return response.model_copy(
+            update={"content": json.dumps(payload, ensure_ascii=False)}
+        )
+
+
+@pytest.mark.parametrize("input_option", ["explicit", "omitted"])
+def test_generate_persona_allows_neutral_origin_contract_byte_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, input_option: str
+) -> None:
+    """The relaxed CLI paths accept semantic-preserving contract byte drift."""
+    paths = write_generation_inputs(root=tmp_path)
+    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
+    contract_path.write_text(
+        "# A comment must not change the reviewed contract semantics.\n"
+        + contract_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", CurrentGenerationClient
+    )
+    monkeypatch.setattr(generate_persona.secrets, "randbelow", lambda bound: 0)
+    CurrentGenerationClient.requests = 0
+    if input_option == "omitted":
+        monkeypatch.setattr(
+            generate_persona,
+            "prepare_standard_sample",
+            lambda **_: (paths["sample"], paths["sample_manifest"]),
+        )
+        arguments: list[str] = []
+    else:
+        arguments = ["--input", str(paths["sample"])]
+
+    result = CliRunner().invoke(
+        generate_persona.main,
+        arguments + ["--config", str(paths["config"]), "--output-dir", "outputs"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.endswith(".\n")
+    assert CurrentGenerationClient.requests == 1
+
+
+def test_generate_persona_rejects_semantic_origin_contract_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relaxed checksum handling does not relax origin-label semantics."""
+    paths = write_generation_inputs(root=tmp_path)
+    contract_path = tmp_path / "config/folk2-ieland-labels-da.yaml"
+    contract = contract_path.read_text(encoding="utf-8").replace(
+        "Danmark", "Ikke Danmark", 1
+    )
+    contract_path.write_text(contract, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "danish_personas.generation.pipeline.OpenAIClient", CurrentGenerationClient
+    )
+    CurrentGenerationClient.requests = 0
+
+    result = CliRunner().invoke(
+        generate_persona.main,
+        [
+            "--input",
+            str(paths["sample"]),
+            "--config",
+            str(paths["config"]),
+            "--output-dir",
+            "outputs",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "origin" in result.output.lower()
+    assert CurrentGenerationClient.requests == 0
 
 
 def test_checksum_only_upstream_mismatches_are_scoped_to_ignore_policy(
