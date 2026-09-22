@@ -63,7 +63,7 @@ and cooking. The prompts were tightened before the final run to:
 Manual review of all 18 final historical descriptions found natural Danish, no
 identifying details, no sensitive-attribute inference, no demographic changes, and more
 varied interests. Those observations apply only to the historical six-text output. The
-current persona-only v5/v19 contract additionally rejects contradictory grounding,
+current persona-only v5/v20 contract additionally rejects contradictory grounding,
 unsupported elaboration, and unhedged personality assertions; it has no historical
 persona-only run recorded here. The sample is too small to assess systematic
 stereotyping, diversity, cross-record repetition, or broad language quality.
