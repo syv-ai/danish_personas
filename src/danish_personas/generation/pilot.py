@@ -23,7 +23,6 @@ from .pipeline import (
     generation_context_sha256,
     validate_upstream_sample,
 )
-from .report import validate_persona_pilot, validate_persona_run
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,11 +42,9 @@ def run_pilot(
     output_price_per_million: float = 0.0,
     progress_callback: c.Callable[[int], None] | None = None,
 ) -> Path:
-    """Generate and merge a validated, resumable persona pilot.
+    """Generate and merge a schema-parsed, resumable persona dataset.
 
-    The caller is responsible for obtaining explicit operator approval before invoking
-    this generation service. Each invocation remains bounded to five records by
-    the generation pipeline and is validated before it is merged.
+    Each invocation remains bounded to five records by the generation pipeline.
 
     Args:
         input_path:
@@ -74,15 +71,14 @@ def run_pilot(
         output_price_per_million:
             Output-token price used for cost accounting.
         progress_callback (optional):
-            Callback invoked with the number of rows in each validated shard.
+            Callback invoked with the number of rows in each completed shard.
 
     Returns:
         Completed pilot directory.
 
     Raises:
         ValueError:
-            If provenance, limits, generation, shard validation, or merge validation
-            fails.
+            If provenance, limits, generation, or merging fails.
     """
     _validate_pilot_arguments(
         rows=rows,
@@ -236,10 +232,6 @@ def _merge_pilot(
             run_id=manifest.run_id,
             manifest_file=(run_dir / "generation-manifest.json").relative_to(pilot_dir),
             manifest_sha256=sha256_file(run_dir / "generation-manifest.json"),
-            validation_report_file=(run_dir / "validation-report.json").relative_to(
-                pilot_dir
-            ),
-            validation_report_sha256=sha256_file(run_dir / "validation-report.json"),
             job_title_mapping_file=manifest.job_title_mapping_file,
             job_title_mapping_sha256=manifest.job_title_mapping_sha256,
             job_title_mapping_version=manifest.job_title_mapping_version,
@@ -265,8 +257,6 @@ def _merge_pilot(
         generation_config_file=config_path,
         generation_config_sha256=sha256_file(config_path),
         generation_context_sha256=first.generation_context_sha256,
-        validator_version=first.validator_version,
-        content_validation_policy=first.content_validation_policy,
         job_title_mapping_file=first.job_title_mapping_file,
         job_title_mapping_sha256=first.job_title_mapping_sha256,
         job_title_mapping_version=first.job_title_mapping_version,
@@ -303,10 +293,6 @@ def _merge_pilot(
         llm_generation=True,
     )
     write_json(path=pilot_dir / "pilot-manifest.json", payload=pilot_manifest)
-    report = validate_persona_pilot(pilot_dir=pilot_dir)
-    if not report.passed:
-        message = "Merged pilot failed validation"
-        raise ValueError(message)
     return pilot_dir
 
 
@@ -390,14 +376,14 @@ def _find_completed_batches(
     expected_generation_context_sha256: str,
     progress_callback: c.Callable[[int], None] | None,
 ) -> dict[int, Path]:
-    """Find and validate completed shards left by an earlier pilot attempt.
+    """Find completed shards left by an earlier pilot attempt.
 
     Returns:
         Completed run directories keyed by batch offset.
 
     Raises:
         ValueError:
-            If a completed shard conflicts with the requested pilot or fails validation.
+            If a completed shard conflicts with the requested pilot.
     """
     if not output_dir.exists():
         return {}
@@ -484,10 +470,6 @@ def _validated_completed_batch(
     if output_checksum != manifest.output_sha256:
         message = f"Pilot batch output checksum mismatch: {manifest_path}"
         raise ValueError(message)
-    report = validate_persona_run(run_dir=run_dir)
-    if not report.passed:
-        message = f"Completed pilot batch failed validation: {manifest_path}"
-        raise ValueError(message)
     return manifest
 
 
@@ -502,14 +484,10 @@ def _process_completed_batches(
     maximum_total_requests: int | None,
     progress_callback: c.Callable[[int], None] | None,
 ) -> int:
-    """Validate completed pilot batches.
+    """Collect completed pilot batches.
 
     Returns:
         The number of newly completed batches.
-
-    Raises:
-        ValueError:
-            If a completed batch fails validation.
     """
     completed_count = 0
     for completed_future in completed:
@@ -521,10 +499,6 @@ def _process_completed_batches(
                 submit(offset)
                 continue
             raise
-        report = validate_persona_run(run_dir=run_dir)
-        if not report.passed:
-            message = f"Pilot batch at offset {offset} failed validation"
-            raise ValueError(message)
         run_dirs[offset] = run_dir
         completed_count += 1
         _report_progress(

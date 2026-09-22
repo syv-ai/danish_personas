@@ -1,10 +1,8 @@
 """Tests for the deterministic internal partner target."""
 
-import json
 from pathlib import Path
 
 import pytest
-from validation_test_helpers import attributes, demographic
 
 import danish_personas.generation.partner_target as partner_target
 from danish_personas.generation.config import load_generation_config
@@ -15,7 +13,6 @@ from danish_personas.generation.partner_target import (
     same_sex_partner_target,
 )
 from danish_personas.generation.pipeline import _generation_payload
-from danish_personas.generation.validation import parse_attributes
 
 
 def test_config_default_and_bounds() -> None:
@@ -93,16 +90,3 @@ def test_target_uses_exact_digest_threshold_boundaries(
         partner_target.hashlib, "sha256", lambda _material: Digest(2**64 - 1)
     )
     assert same_sex_partner_target(persona_id="boundary", probability=1.0)
-
-
-def test_validation_rejects_wrong_target_and_accepts_matching_target() -> None:
-    """Contextual validation recomputes the target rather than trusting output."""
-    config = load_generation_config(Path("config/config.yaml"))
-    config = config.model_copy(update={"same_sex_partner_probability": 1.0})
-    context = demographic(sex="female")
-    valid = attributes()
-    valid["partner_gender"] = "female"
-    parse_attributes(json.dumps(valid), context, generation_config=config)
-    valid["partner_gender"] = "male"
-    with pytest.raises(ValueError, match="stable relationship target"):
-        parse_attributes(json.dumps(valid), context, generation_config=config)

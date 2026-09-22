@@ -1,6 +1,5 @@
-"""Guarded OpenAI-compatible persona generation."""
+"""OpenAI-compatible persona generation."""
 
-from .grounding import PersonaGroundingFacts, build_persona_grounding_facts
 from .personality import (
     all_personality_phrases,
     all_personality_tendencies,
@@ -8,9 +7,7 @@ from .personality import (
 )
 
 __all__ = [
-    "PersonaGroundingFacts",
     "all_personality_phrases",
     "all_personality_tendencies",
     "allowed_personality_tendencies",
-    "build_persona_grounding_facts",
 ]

@@ -15,8 +15,6 @@ from danish_personas.generation.pipeline import (
     models_match,
     validate_upstream_sample,
 )
-from danish_personas.generation.report import validate_persona_run
-from danish_personas.generation.validation import VALIDATOR_VERSION
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import RunManifest
 
@@ -225,7 +223,6 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
         (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
     )
     assert generation_manifest["input_sha256"] == sha256_file(paths["sample"])
-    assert generation_manifest["validator_version"] == VALIDATOR_VERSION
     assert generation_manifest["origin_label_contract_file"] == (
         "config/folk2-ieland-labels-da.yaml"
     )
@@ -233,12 +230,7 @@ def test_generation_withholds_resolution_provenance_from_both_prompts(
     assert generation_manifest["origin_label_contract_content"]["labels_da"][
         "5100"
     ] == ("Danmark")
-    assert validate_persona_run(run_dir=run_dir).passed
-    report = json.loads((run_dir / "validation-report.json").read_text())
-    assert (
-        report["origin_label_contract_sha256"]
-        == generation_manifest["origin_label_contract_sha256"]
-    )
+    assert not (run_dir / "validation-report.json").exists()
     output = pl.read_parquet(run_dir / "generated-personas.parquet")
     assert set(resolution_columns) <= set(output.columns)
     assert output.select(list(resolution_columns)).equals(
@@ -281,7 +273,6 @@ def test_pipeline_selects_an_offset_range(
     assert isinstance(demographics, dict)
     assert demographics["origin_country_da"] == "Libanon"
     assert "origin_country" not in demographics
-    assert validate_persona_run(run_dir=second_run).passed
 
 
 def test_provider_qualified_model_alias_matches_case_insensitively() -> None:

@@ -25,8 +25,7 @@ OCEAN_TERMS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-# These are deliberately closed phrases rather than terms that a caller can combine
-# with an arbitrary hedge.  The wording is shared by the prompt and the validator.
+# These are closed phrases so the provider receives reviewed, cautious wording.
 PERSONALITY_PHRASES = {
     term: f"har ofte tendens til at være {term}"
     for levels in OCEAN_TERMS.values()

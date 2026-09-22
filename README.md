@@ -2,24 +2,21 @@
 
 A reproducible pipeline for creating statistically grounded Danish synthetic persona
 records from public aggregate data. The default workflow is deterministic and does not
-call an LLM or use personal microdata. A separate, explicitly guarded workflow can add
-Danish attributes and persona text to a small frozen sample.
+call an LLM or use personal microdata. A separate OpenAI-compatible workflow can add
+schema-constrained attributes and persona text to a frozen sample.
 
 ## Status and scope
 
-The source-acquisition, preparation, deterministic sampling, and validation stages are
-implemented. The Hydra config defaults to a local OpenAI-compatible endpoint. Each
-direct generation shard is capped at five rows, while a pilot can span multiple shards.
-Release-scale generation and human approval remain pending; schema-2 package
-verification and evidence are required before any release claim.
+The source-acquisition, preparation, deterministic sampling, and demographic validation
+stages are implemented. Each LLM generation shard is capped at five rows, while a
+dataset can span multiple shards. Generated responses are constrained by the Pydantic
+JSON schema and parsed locally once; no semantic content or completed-run validation is
+performed.
 
 Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
-and generation contract 5 with validator `persona-safety-v20`. The default frozen
-sample mode is population-proportional; stratified round-robin remains an explicit
-alternative. No new bundle, deterministic run, frozen sample, persona output, or
-release has been generated for this contract change. Existing IDs and checksums are
-historical evidence only and are not resumable under these contracts. Review any
-generated evidence before reusing it.
+and generation contract 6. The default frozen sample mode is population-proportional;
+stratified round-robin remains an explicit alternative. Existing generation IDs and
+checkpoints are historical and are not resumable under generation contract 6.
 
 ## Developer setup guide
 
@@ -92,13 +89,12 @@ uv run src/scripts/build_persona_dashboard.py --help
 
 The three Hydra-based scripts use `config/config.yaml`. Override values
 with expressions such as `llm.model=MODEL`, `build_dataset.rows=10`, and
-`persona_dashboard.input=PATH`. `generate_persona.py` emits one schema-valid Danish
-persona to stdout; this direct command deliberately skips semantic content gates and is
-unsafe for release evidence. `build_dataset.py` saves the merged Parquet dataset below
-`data/`
-and displays row progress on stderr. The dataset builder can optionally package,
-verify, and upload an approved release to a Hugging Face dataset pull request. The
-dashboard builder writes a self-contained offline HTML file.
+`persona_dashboard.input=PATH`. `generate_persona.py` emits one schema-valid persona to
+stdout. `build_dataset.py` saves the merged Parquet dataset below `data/` and displays
+row progress on stderr. Setting `build_dataset.hf_repo=OWNER/DATASET` uploads that
+Parquet file directly to a Hugging Face dataset pull request using standard Hugging Face
+authentication. No content review or release-policy gate is applied. The dashboard
+builder writes a self-contained offline HTML file.
 
 When `generate_persona.input` or `build_dataset.input` is null, the script automatically
 restores the committed archive when necessary, prepares and validates the deterministic
@@ -134,7 +130,8 @@ overwriting data.
 
 This workflow is separate from the non-LLM pipeline and may incur provider charges. It
 sends frozen aggregate-derived records to the configured OpenAI-compatible endpoint.
-Automated checks are necessary but do not replace blinded human review.
+The request includes a strict JSON schema and the response is parsed against the same
+Pydantic model. Generated content is not otherwise checked.
 
 All model settings live in Hydra
 [`config/config.yaml`](config/config.yaml). Its defaults are:
@@ -153,12 +150,12 @@ Generation commands execute immediately and can consume paid requests. Each comm
 persists the resolved, secret-free flat generation configuration below its output area
 and uses that immutable snapshot for generation provenance.
 
-The single-persona command validates upstream provenance, prompts, the strict response
-schema, and request limits before emitting the final Danish text. It deliberately skips
-Danish, grounding, safety, relationship/title, duplicate, and final-run content gates,
-so its output is unsafe for release evidence. Library validation, `build_dataset.py`,
-and release verification remain guarded and checksum-strict. The standard sample is
-prepared automatically when needed:
+Both persona commands validate deterministic upstream inputs and request limits, send
+the Pydantic JSON schema to the provider, and parse each response once against that
+schema. They do not check language, safety, names, grounding, age, pronouns,
+relationships, job titles, personality wording, or duplicates, and they do not produce
+completed-run validation reports. The standard sample is prepared automatically when
+needed:
 
 ```bash
 uv run src/scripts/generate_persona.py
@@ -186,19 +183,11 @@ uv run src/scripts/build_dataset.py \
 
 Pricing is not a public Hydra setting. The builder uses zero list-price values for
 internal accounting while retaining provider-reported costs when available. It limits
-each shard to five rows, validates and merges all shards, records request/token/cost
+each shard to five rows, merges schema-parsed shards, records request/token/cost
 accounting, shows `tqdm` progress on stderr, and writes only the completed Parquet path
-to stdout.
-
-Setting `build_dataset.hf_repo=OWNER/DATASET` additionally requires the
-`build_dataset.attestation`, `build_dataset.policy`, `build_dataset.dataset_card`, and
-`build_dataset.licence` paths. The script checks them before generation and packages the
-release below
-`<output-dir>/releases`, uses the current working directory as repository root, and
-independently verifies it before uploading to a Hugging Face dataset pull request.
-Authentication comes from the standard `HF_TOKEN` or cached Hugging Face credentials;
-tokens are never CLI arguments. Re-running after review resumes already validated
-generation shards.
+to stdout. Setting `build_dataset.hf_repo=OWNER/DATASET` uploads the merged Parquet
+directly. Authentication comes from the standard `HF_TOKEN` or cached Hugging Face
+credentials; tokens are never CLI arguments.
 Build a self-contained offline dashboard with explicit Hydra path overrides:
 
 ```bash
@@ -227,18 +216,14 @@ are:
 - `data/runs/<name>/<run-id>/`: `structured-records.parquet`, `run-manifest.json`, and
   JSON/Markdown validation reports;
 - the frozen sample Parquet file and adjacent `.manifest.json` file;
-- `data/persona-smoke/<run-id>/`: generated Parquet, `generation-manifest.json`, request
-  ledger, checkpoints, and validation report;
-- `data/persona-pilot/<pilot-id>/`: merged Parquet, pilot manifest, shard directories,
-  and pilot validation report.
+- persona run directories: generated Parquet, `generation-manifest.json`, request ledger,
+  and per-person checkpoints;
+- persona dataset directories: merged Parquet, pilot manifest, and shard directories.
 
-Manifests contain SHA-256 checksums, source/config/prompt provenance, row counts, seeds,
-model metadata, request/retry/token accounting, and (when available) cost estimates.
-The current release documentation targets release manifest schema 2 and evidence
-schema 3; release identifiers and checksums are placeholders until regeneration and
-packaging produce them. Accepted LLM response metadata and response hashes are
-checkpointed; rejected completion text is not stored. Generated outputs remain local
-until privacy and human review approve any proposed release.
+Manifests contain SHA-256 checksums, source/config/prompt/schema provenance, row counts,
+model metadata, request/retry/token accounting, and available cost estimates. Provider
+response metadata and response hashes are checkpointed. Setting `build_dataset.hf_repo`
+can upload generated output without additional review or packaging.
 
 ## Safety and privacy boundary
 
@@ -256,18 +241,15 @@ occupations, income, household details, ancestry, citizenship, health, religion,
 sexuality, politics, criminal history, or free text. The sole occupation-related
 exception is the optional synthetic broad job function allocated from the incomplete
 LONS20 earnings-statistics universe; it is not conditioned on municipality, origin,
-education, age, OCEAN, or any unsupported joint. LLM prompts prohibit identifying and
-sensitive details, stereotypes, and deterministic claims about demographics or
-personality. Validators check strict schemas, Danish text, contact and
-identifying-number patterns, configured sensitive terms, duplicate descriptions,
-grounded persona facts, upstream preservation, checksums, and checkpoint provenance.
-Neither origin label is ethnicity, citizenship, residence, or appearance; origin cannot
-drive culture, religion, job, interests, personality, or visual traits. Job titles are
-synthetic and must not imply unsupported work history or family claims. Downstream image
-models may still stereotype, so text validation is not a guarantee of safe image
-generation. These are finite automated checks, not a guarantee of anonymity or safe use.
-Treat municipality-level combinations, accepted text, checkpoints, tokens, and provider
-telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for vulnerability
+education, age, OCEAN, or any unsupported joint. LLM prompts ask the provider to avoid
+identifying and sensitive details, stereotypes, and deterministic claims about
+demographics or personality, but those instructions are
+not enforced after generation. The local parser checks only the response schema. Output
+may therefore be non-Danish, unsafe, contradictory, duplicated, or ungrounded and must
+not be treated as reviewed. Neither origin label is ethnicity, citizenship, residence,
+or appearance; origin should not drive culture, religion, job, interests, personality,
+or visual traits. Treat municipality-level combinations, generated text, checkpoints,
+tokens, and provider telemetry as restricted. Review [`SECURITY.md`](SECURITY.md) for vulnerability
 reporting.
 
 ## Validation and development checks

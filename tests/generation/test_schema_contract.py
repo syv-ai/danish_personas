@@ -63,3 +63,23 @@ def _assert_strict_object_schemas(schema: object) -> None:
     elif isinstance(schema, list):
         for value in schema:
             _assert_strict_object_schemas(value)
+
+
+def test_schema_accepts_content_without_semantic_checks() -> None:
+    """Schema-valid content is accepted without language or grounding checks."""
+    persona = GeneratedPersona.model_validate(
+        {
+            "cultural_context": "unsafe@example.com repeated repeated",
+            "skills_and_expertise": ["same", "same", "same"],
+            "hobbies_and_interests": ["SAME!", "SAME!", "SAME!"],
+            "career_goals_and_ambitions": None,
+            "job_title": "unreviewed title",
+            "current_relationship_status": "partnered",
+            "partner_gender": None,
+            "legal_status_detail": None,
+            "persona": "English content without supplied facts. " * 10,
+        }
+    )
+
+    assert persona.partner_gender is None
+    assert persona.skills_and_expertise == ["same", "same", "same"]

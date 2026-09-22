@@ -187,8 +187,6 @@ class OpenAIClient:
     def _response_format(
         self, schema_name: str, json_schema: dict[str, object]
     ) -> dict[str, object]:
-        if self._config.response_format == "json_object":
-            return {"type": "json_object"}
         return {
             "type": "json_schema",
             "json_schema": {"name": schema_name, "strict": True, "schema": json_schema},

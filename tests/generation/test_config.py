@@ -12,6 +12,7 @@ from danish_personas.generation.config import (
     load_generation_config,
     persist_effective_generation_config,
 )
+from danish_personas.generation.models import GenerationConfig
 
 
 def test_effective_snapshot_is_stable_and_immutable(tmp_path: Path) -> None:
@@ -43,14 +44,12 @@ model: fixture-model
 api_key_env: null
 timeout_seconds: 30
 maximum_http_attempts: 1
-maximum_validation_attempts: 1
 maximum_total_requests: 2
 retry_backoff_seconds: 0
 maximum_rows_per_shard: 5
 max_tokens: null
 enable_thinking: null
 reasoning_effort: null
-response_format: json_schema
 prompt: prompt.md
 job_title_mapping: null
 origin_label_contract: config/folk2-ieland-labels-da.yaml
@@ -59,6 +58,16 @@ origin_label_contract: config/folk2-ieland-labels-da.yaml
     config_path.write_text(content, encoding="utf-8")
 
     assert load_generation_config(config_path).model == "fixture-model"
+
+
+def test_generation_config_rejects_schema_less_response_mode() -> None:
+    """Provider requests cannot be configured to omit the Pydantic JSON schema."""
+    config = load_generation_config(Path("config/config.yaml"))
+
+    with pytest.raises(ValidationError):
+        GenerationConfig.model_validate(
+            config.model_dump() | {"response_format": "json_object"}
+        )
 
 
 def test_hydra_resolves_nested_values_and_rejects_obsolete_llm_fields(

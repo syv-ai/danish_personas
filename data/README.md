@@ -30,19 +30,18 @@ provenance. Mandatory `origin_country_da` is the Danish display label from the a
 official FOLK2 `metadata-da` 241-code contract at
 `config/folk2-ieland-labels-da.yaml`, whose source metadata SHA-256 is
 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`. Only the Danish
-label reaches the provider request and exact persona grounding; code, English label,
-resolutions, and contract metadata are withheld. Neither label is ethnicity,
+label reaches the provider request; code, English label, resolutions, and contract
+metadata are withheld. Neither label is ethnicity,
 citizenship, residence, or appearance. Origin cannot drive culture, religion, job,
 interests, personality, or visual traits. RAS209 remains locked to all 99 official
 level-3 areas, including Christiansø.
 
 Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
-and generation contract 5 with validator `persona-safety-v20`. Both frozen-sample modes
-first preserve the eligible origin marginal; population-proportional is the default
-within-origin mode and stratified round-robin remains an explicit alternative. No new
-bundle, deterministic run, frozen sample, persona output, or release has been generated
-for this contract change. Existing IDs and checksums are
-historical and non-resumable under these contracts.
+and generation contract 6. Generated persona responses receive schema parsing only;
+there is no semantic content or completed-run validation. Both frozen-sample modes first
+preserve the eligible origin marginal; population-proportional is the default
+within-origin mode and stratified round-robin remains an explicit alternative. Existing
+generation IDs and checkpoints are historical and non-resumable under this contract.
 
 Archive SHA-256 (reproducible from the restored snapshot tree):
 

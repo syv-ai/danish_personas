@@ -1,4 +1,4 @@
-"""Generate and emit one schema-valid, unguarded Danish persona."""
+"""Generate and emit one schema-valid persona."""
 
 import logging
 import secrets
@@ -13,10 +13,7 @@ from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
 from danish_personas.generation.config import persist_effective_generation_config
 from danish_personas.generation.pipeline import generate_personas
-from danish_personas.generation.policy import (
-    ChecksumValidationPolicy,
-    ContentValidationPolicy,
-)
+from danish_personas.generation.policy import ChecksumValidationPolicy
 from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import sha256_file
 from danish_personas.models import FrozenSampleManifest
@@ -83,7 +80,6 @@ def _run(*, config: DictConfig) -> None:
         rows=1,
         offset=sampled_offset,
         checksum_policy=ChecksumValidationPolicy.IGNORE,
-        content_validation_policy=ContentValidationPolicy.SCHEMA_ONLY,
     )
     LOGGER.info("Provider generation finished; reading schema-valid output")
     output = pl.read_parquet(run_dir / "generated-personas.parquet")

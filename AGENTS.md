@@ -2,7 +2,7 @@
 
 This repository builds a synthetic Danish persona dataset from public Statistics Denmark
 aggregate tables. It has a deterministic demographic/OCEAN pipeline and a separate,
-small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
+small OpenAI-compatible LLM pipeline for schema-constrained attributes and persona prose.
 
 ## Stack and layout
 
@@ -14,9 +14,8 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 - `src/danish_personas/` contains importable package code. `src/scripts/` contains
   executable command-line scripts. `tests/` contains unit and fixture-based integration
   tests. `config/` contains versioned inputs and prompts. `data/` is local output only.
-- `docs/` contains the plan, source register, privacy register, acceptance criteria, and
-  experiment/validation reports. `.github/workflows/ci.yaml` runs pre-commit and pytest
-  on Python 3.14 across Ubuntu, macOS, and Windows.
+- `docs/` contains the source register. `.github/workflows/ci.yaml` runs pre-commit and
+  pytest on Python 3.14 across Ubuntu, macOS, and Windows.
 
 ## Modules and packages
 
@@ -28,9 +27,8 @@ small, guarded OpenAI-compatible LLM pipeline for attributes and persona prose.
 | `danish_personas/generation/__init__.py`    | LLM-generation package marker.                      |
 | `danish_personas/generation/client.py`      | Retrying OpenAI client and accounting.              |
 | `danish_personas/generation/models.py`      | LLM, checkpoint, ledger, pilot contracts.           |
-| `danish_personas/generation/pipeline.py`    | Guarded generation, resume, provenance.             |
-| `danish_personas/generation/report.py`      | Persona-run and pilot integrity gates.              |
-| `danish_personas/generation/validation.py`  | JSON, Danish, safety, duplicate gates.              |
+| `danish_personas/generation/pipeline.py`    | Schema parsing, generation, resume, provenance.     |
+| `danish_personas/publishing.py`             | Direct Hugging Face Parquet upload.                 |
 | `danish_personas/sampling/__init__.py`      | Sampling package marker.                            |
 | `danish_personas/sampling/generator.py`     | Deterministic demographics, back-off, OCEAN.        |
 | `danish_personas/sources/__init__.py`       | Source-acquisition package marker.                  |
@@ -49,7 +47,7 @@ files and prompts are interpreted relative to that working directory.
 
 | Script                       | Responsibility                                      |
 | ---------------------------- | --------------------------------------------------- |
-| `generate_persona.py`        | Schema-only LLM run; unsafe for release evidence.   |
+| `generate_persona.py`        | Generates one schema-parsed LLM persona.            |
 | `build_dataset.py`           | Builds and optionally publishes persona datasets.   |
 | `build_persona_dashboard.py` | Builds a self-contained offline dashboard.          |
 | `fix_dot_env_file.py`        | Creates `.env`; may configure local Git identity.   |
@@ -66,11 +64,10 @@ request returns structured attributes and the persona together.
 | Path                 | Coverage                                                    |
 | -------------------- | ----------------------------------------------------------- |
 | `tests/cli/`         | Command contracts, guards, delegation, and workflows.       |
-| `tests/generation/`  | Client, pipeline, pilot, provenance, and persona gates.     |
+| `tests/generation/`  | Client, schema, pipeline, pilot, and provenance.            |
 | `tests/integration/` | Deterministic generation and cross-boundary invariants.     |
 | `tests/models/`      | Strict record and source-selection contracts.               |
 | `tests/origin/`      | Origin labels, source preparation, contracts, and sampling. |
-| `tests/release/`     | Packaging, policy, security, and verifier contracts.        |
 | `tests/sampling/`    | Sparse-cell back-off and job-function allocation.           |
 | `tests/sources/`     | Acquisition, archives, bundles, geography, and StatBank.    |
 | `tests/validation/`  | Dataset validation contracts.                               |
@@ -101,8 +98,8 @@ rewrites a lock that predates the current schema, while `fetch_sources` fetches
 classifications as well as
 tables.
 
-Changing a lock, category map, sampling setting, validation threshold, prompt, schema,
-or validator changes provenance and can change content-addressed run IDs. Do not adjust
+Changing a lock, category map, sampling setting, validation threshold, prompt, or schema
+changes provenance and can change content-addressed run IDs. Do not adjust
 thresholds retrospectively to make an existing run pass.
 
 ## Setup and checks
@@ -167,9 +164,9 @@ Do not skip a boundary or call an LLM before the demographic gate passes:
 4. Validate the smoke run, then generate and validate the statistical run.
 5. Freeze the stratified text-development sample.
 6. Configure `config/config.yaml` for the intended provider and model.
-7. Generate the direct schema-only persona only for exploratory output; do not use it
-   as release evidence. Validate each guarded persona run; each `build_dataset.py` shard
-   is capped at five rows before merge and pilot validation.
+7. Generate schema-parsed persona output. Each `build_dataset.py` shard is capped at
+   five rows before mechanical merge; no generated-content or completed-run validation
+   follows.
 
 The normal deterministic stages are orchestrated by
 `danish_personas.workflows.prepare_standard_sample()`. The public persona scripts call
@@ -205,18 +202,14 @@ missing, duplicate, or mismatched hierarchy values fail. Municipality code and n
 remain in generated records; landsdel stays inside the prepared bundle. Deterministic
 runs contain `structured-records.parquet`, `run-manifest.json`, and JSON/Markdown
 validation reports. Frozen samples have an adjacent `.manifest.json`. Persona runs
-contain `generated-personas.parquet`, `generation-manifest.json`, `request-ledger.json`,
-per-person attribute/final checkpoints, and `validation-report.json`. Current v5 outputs
-retain one detailed grounded `persona`; they contain no person or partner names and do
-not contain the removed specialised fields or `visual_persona`. Pilots
-additionally contain merged output, a pilot manifest, shard references, and
-`pilot-validation-report.json`. Release packages use release manifest
-schema 2 and evidence schema 3.
+contain `generated-personas.parquet`, `generation-manifest.json`,
+`request-ledger.json`, and per-person checkpoints. Dataset runs additionally contain
+merged output, a pilot manifest, and shard references. They do not contain persona-run
+or pilot validation reports.
 
-Manifests bind outputs to input/config/prompt/schema/validator checksums, row order,
-and request accounting. The current versions are prepared bundle 8, sampler 8, frozen
-sample 5, generation 5, validator `persona-safety-v20`, release manifest 2, and release
-evidence 3.
+Manifests bind outputs to input/config/prompt/schema checksums, row order, and request
+accounting. The current versions are prepared bundle 8, sampler 8, frozen sample 5, and
+generation 6.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be
 repaired by overwriting files. Do not document a canonical bundle or run ID until the
@@ -239,40 +232,31 @@ current contracts have been regenerated; use placeholders in instructions.
 ## Non-obvious gotchas and safety
 
 - `generate_persona.py` and `build_dataset.py` load Hydra `config/config.yaml` and
-  execute immediately. The direct command retains strict schema and upstream checks but
-  skips generated-content semantic and final-run validation, so it is unsafe for release
-  evidence. They require provider reachability and may spend money. Dataset
+  execute immediately. Both retain strict schema parsing and upstream integrity checks
+  but perform no generated-content semantic or completed-run validation. They require
+  provider reachability and may spend money. Dataset
   generation has its own global request limit. Public dataset builds use zero list-price
   values for internal accounting, while direct library callers may provide current
   input and output prices. `build_dataset.concurrency` can issue requests in parallel.
-- `build_dataset.py build_dataset.hf_repo=...` may upload only a freshly packaged and
-  independently
-  verified release after the configured policy and blinded-review gates pass. It creates
-  a Hugging Face dataset pull request and obtains credentials from standard Hugging Face
-  authentication, never from a CLI token option.
+- `build_dataset.py build_dataset.hf_repo=...` uploads the merged Parquet directly to a
+  Hugging Face dataset pull request. There are no review, policy, packaging, or verifier
+  gates. Credentials come from standard Hugging Face authentication, never a CLI token.
 - The LLM input must be a frozen sample with a matching manifest and successful upstream
-  demographic report. Checkpoints reject changed inputs, prompts, config, model, or
-  validator context. Human-readable municipality, the official Danish
-  `origin_country_da`, sampled legal `marital_status`, job-function labels, and an
+  demographic report. Checkpoints reject changed inputs, prompts, config, or model.
+  Human-readable municipality, the official Danish `origin_country_da`, sampled legal
+  `marital_status`, job-function labels, and an
   internal deterministic same-sex-partner target reach the provider request. The target
   is synthetic, non-public, not observed individual data, and not sexual orientation.
   The origin code, English `origin_country`, resolution fields, and origin-contract
-  metadata do not reach the provider. The Danish label is also the exact origin fact in
-  the grounded persona. Re-running a valid current-v5 run resumes completed records, but
-  v1-v4 checkpoints, v5 contexts predating the partner-target policy, the previous
-  v2/v13 ten-person smoke, and old pilots are historical and not resumable.
+  metadata do not reach the provider. Generation contract 6 resumes only matching v6
+  checkpoints; all earlier persona checkpoints and pilots are historical.
 - The generation client records HTTP attempts before network I/O, retries only bounded
   transport/rate/server failures, and persists a request ledger. Accepted response
   metadata and hashes are retained; rejected completion text is not.
-- LLM output must remain strict JSON, Danish, non-identifying, free of configured
-  sensitive terms, and free of exact duplicate descriptions. The detailed persona must
-  be grounded in its supplied facts, use a synthetic job title or current nonemployee
-  status, include concrete fictional biographical detail, and treat OCEAN as cautious
-  tendencies. Person and partner names are prohibited; use `han` or `hun` for the
-  persona and relationship terms for other people. Ordinary family details are allowed;
-  real organisations, exact addresses, appearance, and sensitive details are not.
-  Automated validation is not a substitute for blinded human review; downstream image
-  models may still stereotype.
+- LLM output receives only request-schema enforcement and one local Pydantic parse.
+  Prompt instructions about Danish, grounding, names, safety, relationships, job titles,
+  and personality are not checked. Schema-valid output may be unsafe, contradictory,
+  duplicated, or ungrounded.
 - The sampler backs off through ordered ladders when a conditional cell is missing, and
   each record records the level that produced it. A ladder stops at the most general
   cell that is still structurally valid, never a national one, so an age cannot leave
@@ -291,8 +275,8 @@ current contracts have been regenerated; use placeholders in instructions.
   `origin_country` remains official source/audit provenance, while the mandatory Danish
   `origin_country_da` comes from the archived official FOLK2 metadata-da 241-code
   contract (SHA-256 `f5c1f0a20f29372d6b222ce7a23cdc4ef0481d9e23fa6bd9b66b116e7adcb213`).
-  Only the Danish label reaches the provider request and exact persona grounding; the
-  code, English label, resolutions, and contract metadata are withheld. Neither label is
+  Only the Danish label reaches the provider request; the code, English label,
+  resolutions, and contract metadata are withheld. Neither label is
   ethnicity, citizenship, residence, or appearance, and origin cannot drive culture,
   religion, job, interests, personality, or visual traits. Treat municipality-level
   combinations and provider payloads as restricted. Do not add names, addresses,

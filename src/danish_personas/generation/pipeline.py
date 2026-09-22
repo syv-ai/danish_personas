@@ -51,13 +51,7 @@ from .models import (
 )
 from .partner_target import SAME_SEX_PARTNER_POLICY_VERSION, same_sex_partner_target
 from .personality import allowed_personality_tendencies
-from .policy import ChecksumValidationPolicy, ContentValidationPolicy
-from .validation import (
-    VALIDATOR_VERSION,
-    parse_attributes,
-    parse_descriptions,
-    parse_generated_persona,
-)
+from .policy import ChecksumValidationPolicy
 
 LOGGER = logging.getLogger(__name__)
 # Codes and sampler provenance are withheld from prompts. Human-readable labels are
@@ -115,68 +109,6 @@ GENERATION_PROMPT_FIELDS = PROMPT_FIELDS
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
-def _complete_schema_only(
-    client: OpenAIClient,
-    prompt: str,
-    payload: dict[str, object],
-    schema_name: str,
-    schema: dict[str, object],
-    parser: c.Callable[[str], GeneratedModel],
-    maximum_attempts: int,
-    responses: list[LLMResponse],
-) -> GeneratedModel:
-    """Complete once and retain only strict schema parsing for the response.
-
-    Returns:
-        The strictly schema-parsed model.
-    """
-    del maximum_attempts
-    response = client.complete(
-        system_prompt=prompt,
-        user_payload=payload,
-        schema_name=schema_name,
-        json_schema=schema,
-    )
-    responses.append(response)
-    return parser(response.content)
-
-
-def _complete_validated(
-    client: OpenAIClient,
-    prompt: str,
-    payload: dict[str, object],
-    schema_name: str,
-    schema: dict[str, object],
-    parser: c.Callable[[str], GeneratedModel],
-    maximum_attempts: int,
-    responses: list[LLMResponse],
-) -> GeneratedModel:
-    current_payload = payload
-    last_error: ValueError | None = None
-    for _ in range(maximum_attempts):
-        response = client.complete(
-            system_prompt=prompt,
-            user_payload=current_payload,
-            schema_name=schema_name,
-            json_schema=schema,
-        )
-        responses.append(response)
-        try:
-            return parser(response.content)
-        except ValueError as error:
-            last_error = error
-            responses[-1] = response.model_copy(update={"content": ""})
-            current_payload = {
-                **payload,
-                "validation_feedback": str(error),
-                "instruction": "Ret JSON-svaret uden at ændre de faste input.",
-            }
-    if last_error is None:
-        message = "Generation exhausted attempts without validation feedback"
-        raise RuntimeError(message)
-    raise last_error
-
-
 def generate_personas(
     input_path: Path,
     sample_manifest_path: Path,
@@ -185,9 +117,6 @@ def generate_personas(
     rows: int,
     offset: int = 0,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    content_validation_policy: ContentValidationPolicy = (
-        ContentValidationPolicy.GUARDED
-    ),
 ) -> Path:
     """Generate structured attributes and one persona in one model request.
 
@@ -207,9 +136,6 @@ def generate_personas(
         checksum_policy:
             Whether persisted checksum comparisons are strict. The default is strict;
             the CLI may explicitly opt out.
-        content_validation_policy:
-            Whether generated content receives guarded checks or schema parsing only.
-            Defaults to the guarded policy.
 
     Returns:
         Planned or completed generation run directory.
@@ -251,7 +177,6 @@ def generate_personas(
         origin_label_contract=origin_contract,
         origin_label_contract_sha256=origin_contract_sha,
         checksum_policy=checksum_policy,
-        content_validation_policy=content_validation_policy,
     )
     run_id = generation_run_id(
         input_sha256=sha256_file(input_path),
@@ -266,7 +191,6 @@ def generate_personas(
         generation_context_sha=generation_context_sha,
         maximum_attempts=config.maximum_total_requests,
         checksum_policy=checksum_policy,
-        content_validation_policy=content_validation_policy,
     )
 
     def record_request(attempts: int) -> None:
@@ -288,10 +212,7 @@ def generate_personas(
     persisted_http_requests = sum(
         PersonaCheckpoint.model_validate_json(
             path.read_text(encoding="utf-8"),
-            context={
-                "checksum_policy": checksum_policy,
-                "content_validation_policy": content_validation_policy,
-            },
+            context={"checksum_policy": checksum_policy},
         ).http_requests
         for path in (run_dir / "checkpoints").glob("*.json")
         if not path.name.endswith(".attributes.json")
@@ -324,7 +245,6 @@ def generate_personas(
                         0 if checkpoint_exists else unattributed_http_requests
                     ),
                     checksum_policy=checksum_policy,
-                    content_validation_policy=content_validation_policy,
                 )
             )
             if not checkpoint_exists:
@@ -345,7 +265,6 @@ def generate_personas(
             "generation_config_file": config_path,
             "generation_config_sha256": sha256_file(config_path),
             "generation_context_sha256": generation_context_sha,
-            "validator_version": VALIDATOR_VERSION,
             "job_title_mapping_file": mapping_path,
             "job_title_mapping_sha256": mapping_sha,
             "job_title_mapping_version": job_title_mapping.version,
@@ -377,7 +296,6 @@ def generate_personas(
             "output_file": Path(output_path.name),
             "output_sha256": sha256_file(output_path),
             "llm_generation": True,
-            "content_validation_policy": content_validation_policy,
         },
         context={"checksum_policy": checksum_policy},
     )
@@ -401,14 +319,11 @@ def _generate_one(
     origin_label_contract_path: Path,
     prior_http_requests: int,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    content_validation_policy: ContentValidationPolicy = (
-        ContentValidationPolicy.GUARDED
-    ),
 ) -> PersonaCheckpoint:
-    """Generate or resume one persona with one combined provider response.
+    """Generate or resume one persona from one schema-constrained response.
 
     Returns:
-        The validated persona checkpoint.
+        The persona checkpoint.
     """
     persona_id = str(row["persona_id"])
     input_sha = sha256_text(canonical_json(row))
@@ -417,26 +332,20 @@ def _generate_one(
     if checkpoint_path.exists():
         checkpoint = PersonaCheckpoint.model_validate_json(
             checkpoint_path.read_text(encoding="utf-8"),
-            context={
-                "checksum_policy": checksum_policy,
-                "content_validation_policy": content_validation_policy,
-            },
+            context={"checksum_policy": checksum_policy},
         )
         _validate_checkpoint(
             checkpoint=checkpoint,
             input_sha=input_sha,
             checksum_policy=checksum_policy,
-            content_validation_policy=content_validation_policy,
             generation_context_sha=generation_context_sha,
             model=config.model or "",
-            demographic=row,
             job_title_mapping=job_title_mapping,
             job_title_mapping_sha256=job_title_mapping_sha256,
             job_title_mapping_path=job_title_mapping_path,
             origin_label_contract=origin_label_contract,
             origin_label_contract_sha256=origin_label_contract_sha256,
             origin_label_contract_path=origin_label_contract_path,
-            generation_config=config,
         )
         return checkpoint
 
@@ -445,12 +354,7 @@ def _generate_one(
     same_sex_target = same_sex_partner_target(
         persona_id=persona_id, probability=config.same_sex_partner_probability
     )
-    completion = (
-        _complete_validated
-        if content_validation_policy is ContentValidationPolicy.GUARDED
-        else _complete_schema_only
-    )
-    generated = completion(
+    generated = _complete(
         client=client,
         prompt=generation_prompt,
         payload=_generation_payload(
@@ -461,30 +365,21 @@ def _generate_one(
         ),
         schema_name="generated_persona",
         schema=t.cast(dict[str, object], GeneratedPersona.model_json_schema()),
-        parser=lambda content: parse_generated_persona(
-            content,
-            row,
-            job_title_mapping=job_title_mapping,
-            generation_config=config,
-            content_validation_policy=content_validation_policy,
-        ),
-        maximum_attempts=config.maximum_validation_attempts,
+        parser=GeneratedPersona.model_validate_json,
         responses=responses,
     )
-    attributes = GeneratedAttributes.model_validate(
-        {
+    attributes = GeneratedAttributes.model_construct(
+        **{
             field: getattr(generated, field)
             for field in GeneratedAttributes.model_fields
-        },
-        context={"content_validation_policy": content_validation_policy},
+        }
     )
-    descriptions = PersonaDescriptions(persona=generated.persona)
+    descriptions = PersonaDescriptions.model_construct(persona=generated.persona)
     checkpoint = PersonaCheckpoint.model_validate(
         {
             "persona_id": persona_id,
             "input_sha256": input_sha,
             "generation_context_sha256": generation_context_sha,
-            "validator_version": VALIDATOR_VERSION,
             "job_title_mapping_sha256": job_title_mapping_sha256,
             "job_title_mapping_version": job_title_mapping.version,
             "job_title_mapping_file": job_title_mapping_path,
@@ -500,12 +395,8 @@ def _generate_one(
             "http_requests": (
                 prior_http_requests + client.requests_made - request_start
             ),
-            "content_validation_policy": content_validation_policy,
         },
-        context={
-            "checksum_policy": checksum_policy,
-            "content_validation_policy": content_validation_policy,
-        },
+        context={"checksum_policy": checksum_policy},
     )
     write_json(path=checkpoint_path, payload=checkpoint)
     return checkpoint
@@ -519,6 +410,30 @@ def _allowed_job_titles(
     if not isinstance(code, str) or code not in mapping.job_functions:
         return []
     return list(mapping.job_functions[code].titles)
+
+
+def _complete(
+    client: OpenAIClient,
+    prompt: str,
+    payload: dict[str, object],
+    schema_name: str,
+    schema: dict[str, object],
+    parser: c.Callable[[str], GeneratedModel],
+    responses: list[LLMResponse],
+) -> GeneratedModel:
+    """Complete once and parse the response against the request schema.
+
+    Returns:
+        The schema-parsed model.
+    """
+    response = client.complete(
+        system_prompt=prompt,
+        user_payload=payload,
+        schema_name=schema_name,
+        json_schema=schema,
+    )
+    responses.append(response)
+    return parser(response.content)
 
 
 def _generation_demographics(*, row: dict[str, object]) -> dict[str, object]:
@@ -601,19 +516,20 @@ def _validate_checkpoint(
     input_sha: str,
     generation_context_sha: str,
     model: str,
-    demographic: dict[str, object],
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    content_validation_policy: ContentValidationPolicy = (
-        ContentValidationPolicy.GUARDED
-    ),
     job_title_mapping: JobFunctionTitleMapping | None = None,
     job_title_mapping_sha256: str | None = None,
     job_title_mapping_path: Path | None = None,
     origin_label_contract: OriginLabelContract | None = None,
     origin_label_contract_sha256: str | None = None,
     origin_label_contract_path: Path | None = None,
-    generation_config: GenerationConfig | None = None,
 ) -> None:
+    """Reject a checkpoint produced for different generation inputs.
+
+    Raises:
+        ValueError:
+            If the checkpoint does not match the current generation inputs.
+    """
     if checksum_policy.validates_checksums and checkpoint.input_sha256 != input_sha:
         message = f"Stale checkpoint input for {checkpoint.persona_id}"
         raise ValueError(message)
@@ -622,12 +538,6 @@ def _validate_checkpoint(
         and checkpoint.generation_context_sha256 != generation_context_sha
     ):
         message = f"Stale generation context for {checkpoint.persona_id}"
-        raise ValueError(message)
-    if checkpoint.content_validation_policy is not content_validation_policy:
-        message = f"Stale content validation policy for {checkpoint.persona_id}"
-        raise ValueError(message)
-    if checkpoint.validator_version != VALIDATOR_VERSION:
-        message = f"Stale validator context for {checkpoint.persona_id}"
         raise ValueError(message)
     if job_title_mapping_sha256 is not None and (
         (
@@ -650,45 +560,12 @@ def _validate_checkpoint(
         or checkpoint.origin_label_contract_file != origin_label_contract_path
     ):
         raise ValueError(f"Stale origin-label contract for {checkpoint.persona_id}")
-    _validate_origin_row(row=demographic, contract=origin_label_contract)
-    if content_validation_policy is ContentValidationPolicy.SCHEMA_ONLY:
-        return
-    parse_attributes(
-        checkpoint.attributes.model_dump_json(),
-        demographic,
-        job_title_mapping=job_title_mapping,
-        generation_config=generation_config,
-    )
-    parse_descriptions(
-        checkpoint.descriptions.model_dump_json(), demographic, checkpoint.attributes
-    )
     if any(
         not models_match(configured=model, returned=response.model)
         for response in checkpoint.responses
     ):
         message = f"Checkpoint model mismatch for {checkpoint.persona_id}"
         raise ValueError(message)
-
-
-def _validate_origin_row(
-    *, row: c.Mapping[str, object], contract: OriginLabelContract
-) -> None:
-    """Validate one code-English-Danish origin tuple against the contract.
-
-    Raises:
-        ValueError:
-            If the row does not contain the exact contracted English and Danish labels.
-    """
-    code = row.get("origin_country_code")
-    english = row.get("origin_country")
-    danish = row.get("origin_country_da")
-    if (
-        not isinstance(code, str)
-        or not isinstance(english, str)
-        or contract.labels_en.get(code) != english
-        or contract.labels_da.get(code) != danish
-    ):
-        raise ValueError("Origin code-English-Danish triple does not match contract")
 
 
 def models_match(configured: str, returned: str) -> bool:
@@ -713,9 +590,6 @@ def _load_request_ledger(
     generation_context_sha: str,
     maximum_attempts: int | None,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    content_validation_policy: ContentValidationPolicy = (
-        ContentValidationPolicy.GUARDED
-    ),
 ) -> RequestLedger:
     ledger_path = run_dir / "request-ledger.json"
     if ledger_path.exists():
@@ -736,10 +610,7 @@ def _load_request_ledger(
                 continue
             checkpoint = PersonaCheckpoint.model_validate_json(
                 checkpoint_path.read_text(encoding="utf-8"),
-                context={
-                    "checksum_policy": checksum_policy,
-                    "content_validation_policy": content_validation_policy,
-                },
+                context={"checksum_policy": checksum_policy},
             )
             checkpoints[checkpoint.persona_id] = checkpoint
         ledger = RequestLedger(
@@ -784,6 +655,27 @@ def _validate_origin_labels(
         _validate_origin_row(row=t.cast(dict[str, object], row), contract=contract)
 
 
+def _validate_origin_row(
+    *, row: c.Mapping[str, object], contract: OriginLabelContract
+) -> None:
+    """Validate one code-English-Danish origin tuple against the contract.
+
+    Raises:
+        ValueError:
+            If the row does not contain the exact contracted English and Danish labels.
+    """
+    code = row.get("origin_country_code")
+    english = row.get("origin_country")
+    danish = row.get("origin_country_da")
+    if (
+        not isinstance(code, str)
+        or not isinstance(english, str)
+        or contract.labels_en.get(code) != english
+        or contract.labels_da.get(code) != danish
+    ):
+        raise ValueError("Origin code-English-Danish triple does not match contract")
+
+
 def _write_output(
     frame: pl.DataFrame, checkpoints: list[PersonaCheckpoint], run_dir: Path
 ) -> Path:
@@ -813,9 +705,6 @@ def generation_context_sha256(
     origin_label_contract: OriginLabelContract | None = None,
     origin_label_contract_sha256: str | None = None,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    content_validation_policy: ContentValidationPolicy = (
-        ContentValidationPolicy.GUARDED
-    ),
 ) -> str:
     """Hash every effective input that controls LLM generation.
 
@@ -835,11 +724,9 @@ def generation_context_sha256(
         checksum_policy:
             Whether the origin contract digest must match the reviewed digest.
             Defaults to strict validation.
-        content_validation_policy:
-            Content validation mode included in the generation provenance hash.
 
     Returns:
-        SHA-256 digest for the prompts, schemas, validator, and configuration.
+        SHA-256 digest for the prompt, schema, and configuration.
 
     Raises:
         ValueError: If the origin-label contract is not the reviewed contract.
@@ -879,8 +766,6 @@ def generation_context_sha256(
                 "prompt_sha256": sha256_text(prompt),
                 "generated_persona_schema": GeneratedPersona.model_json_schema(),
                 "generation_schema_version": GENERATION_SCHEMA_VERSION,
-                "content_validation_policy": content_validation_policy,
-                "validator_version": VALIDATOR_VERSION,
                 "same_sex_partner_policy_version": SAME_SEX_PARTNER_POLICY_VERSION,
                 "prompt_fields": PROMPT_FIELDS,
                 "generation_payload_fields": sorted(GENERATION_PROMPT_FIELDS),

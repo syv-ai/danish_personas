@@ -13,13 +13,13 @@ import yaml
 from manifest_helpers import origin_contract_fields
 
 from danish_personas.generation.client import RequestBudgetExceeded
+from danish_personas.generation.grounding import EDUCATION_DANISH
 from danish_personas.generation.models import (
     FrozenSampleManifest,
     GenerationConfig,
     LLMResponse,
 )
 from danish_personas.generation.personality import allowed_personality_tendencies
-from danish_personas.generation.validation import EDUCATION_DANISH
 from danish_personas.io import sha256_file, write_json
 from danish_personas.models import (
     FROZEN_SAMPLE_SCHEMA_VERSION,
@@ -341,14 +341,12 @@ def write_generation_inputs(root: Path) -> dict[str, Path]:
         "api_key_env": None,
         "timeout_seconds": 10.0,
         "maximum_http_attempts": 2,
-        "maximum_validation_attempts": 2,
         "maximum_total_requests": 5,
         "retry_backoff_seconds": 0.0,
         "maximum_rows_per_shard": 5,
         "max_tokens": None,
         "enable_thinking": None,
         "reasoning_effort": None,
-        "response_format": "json_schema",
         "prompt": str(prompt),
         "origin_label_contract": "config/folk2-ieland-labels-da.yaml",
     }

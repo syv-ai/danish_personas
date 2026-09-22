@@ -15,7 +15,7 @@ def generation_run_id(
         input_sha256:
             Frozen input file checksum.
         generation_context_sha256:
-            Effective model, prompt, schema, and validator checksum.
+            Effective model, prompt, and schema checksum.
         ordered_persona_ids_sha256:
             Checksum of the ordered selected persona identifiers.
 
@@ -43,7 +43,7 @@ def persona_pilot_id(
         generation_config_sha256:
             Generation configuration file checksum.
         generation_context_sha256:
-            Effective model, prompt, schema, and validator checksum.
+            Effective model, prompt, and schema checksum.
         rows:
             Number of pilot records.
         batch_size:
