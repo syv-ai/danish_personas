@@ -601,8 +601,8 @@ def test_origin_chart_filters_below_resolution_from_both_series() -> None:
         target={"A": 0.25, "B": 0.20, "C": 0.55},
     )
 
-    assert '"y":["A","C"]' in chart
-    assert "B" not in chart
+    assert chart.count('"y":["A","C"]') == 2
+    assert '"y":["A","B","C"]' not in chart
     assert "sample-resolution filter" in chart
 
 
