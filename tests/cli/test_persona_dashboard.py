@@ -591,6 +591,35 @@ def test_not_stated_is_removed_before_distribution_normalisation(
     assert load_dst_targets(bundle_path=tmp_path)["education_level"] == {"primary": 1.0}
 
 
+def test_origin_chart_filters_below_resolution_from_both_series() -> None:
+    """Below-resolution origin labels are removed from both chart series."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"origin_country_da": ["A", "A", "B", "C"]}),
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"A": 0.25, "B": 0.20, "C": 0.55},
+    )
+
+    assert '"y":["A","C"]' in chart
+    assert "B" not in chart
+    assert "sample-resolution filter" in chart
+
+
+def test_origin_chart_includes_target_at_sample_resolution() -> None:
+    """An origin target exactly at one expected persona remains displayed."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"origin_country_da": ["A", "A", "A", "B"]}),
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"A": 0.25, "B": 0.75},
+    )
+
+    assert '"y":["A","B"]' in chart
+    assert "sample-resolution filter" not in chart
+
+
 def test_origin_chart_note_warns_about_small_outputs() -> None:
     """Origin overlays explain the appropriate comparison population."""
     chart = _distribution_chart(
@@ -607,6 +636,20 @@ def test_origin_chart_note_warns_about_small_outputs() -> None:
         in chart.lower()
     )
     assert "merged/frozen outputs are the meaningful comparison" in chart
+
+
+def test_origin_chart_renormalises_after_sample_resolution_filter() -> None:
+    """Displayed origin generated and target series each remain normalised."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"origin_country_da": ["A", "A", "B", "C"]}),
+        field="origin_country_da",
+        title="Origin-country labels",
+        source="FOLK2",
+        target={"A": 0.25, "B": 0.20, "C": 0.55},
+    )
+
+    assert '"x":[0.6666666666666666,0.3333333333333333]' in chart
+    assert '"x":[0.3125,0.6875]' in chart
 
 
 def test_origin_target_excludes_zero_and_subthreshold_audit_rows(
@@ -742,6 +785,22 @@ def test_relationship_pair_chart_uses_partnered_gender_pairs() -> None:
     )
     assert all(label in chart for label in ("man-woman", "man-man", "woman-woman"))
     assert "Partner gender" not in chart
+
+
+def test_sample_resolution_filter_does_not_affect_other_fields() -> None:
+    """Sample-resolution filtering is scoped to the origin-country chart."""
+    chart = _distribution_chart(
+        frame=pl.DataFrame({"age": [18, 19, 19, 20]}),
+        field="age",
+        title="Ages",
+        source="FOLK2",
+        target={"18": 0.10, "19": 0.20, "20": 0.70},
+    )
+
+    assert '"x":["18","19","20"]' in chart
+    assert '"y":[0.25,0.5,0.25]' in chart
+    assert '"y":[0.1,0.2,0.7]' in chart
+    assert "sample-resolution filter" not in chart
 
 
 def test_tied_singular_embedding_is_exactly_repeatable(

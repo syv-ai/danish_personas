@@ -249,7 +249,7 @@ def _distribution_chart(
         An HTML section containing the interactive chart and semantic source label.
     """
     generated_counts = _generated_distribution(frame=frame, field=field)
-    labels = list(generated_counts)
+    origin_resolution_filter_applied = False
     if target and field in {"education_level", "origin_country_da"}:
         excluded = (
             {NOT_STATED} if field == "education_level" else DOMESTIC_ORIGIN_LABELS
@@ -262,6 +262,13 @@ def _distribution_chart(
         total_target = sum(target.values())
         if total_target > 0:
             target = {label: value / total_target for label, value in target.items()}
+        if target and field == "origin_country_da":
+            (generated_counts, target, origin_resolution_filter_applied) = (
+                _apply_origin_sample_resolution_filter(
+                    frame=frame, generated=generated_counts, target=target
+                )
+            )
+    labels = list(generated_counts)
     if target:
         labels.extend(label for label in target if label not in labels)
     if field == "age":
@@ -290,6 +297,12 @@ def _distribution_chart(
             "merged/frozen outputs are the meaningful comparison, not a statistical "
             "acceptance test."
         )
+        if origin_resolution_filter_applied:
+            note += (
+                " The sample-resolution filter omits origin-country labels with a "
+                "DST target share strictly below 1 / frame.height (fewer than one "
+                "expected persona) from both series."
+            )
     chart_height = min(6_000, max(390, 130 + 22 * len(labels))) if horizontal else 390
     figure.update_layout(
         height=chart_height,
@@ -314,6 +327,44 @@ def _distribution_chart(
         source=(f"Semantic source: {source}. " + note),
         height=chart_height,
     )
+
+
+def _apply_origin_sample_resolution_filter(
+    *, frame: pl.DataFrame, generated: dict[str, float], target: dict[str, float]
+) -> tuple[dict[str, float], dict[str, float], bool]:
+    """Remove below-resolution origin labels and renormalise both series.
+
+    Returns:
+        Generated proportions, target proportions, and whether labels were filtered.
+    """
+    if not frame.height:
+        return generated, target, False
+    sample_resolution = 1.0 / frame.height
+    below_resolution = {
+        label for label, value in target.items() if value < sample_resolution
+    }
+    if not below_resolution:
+        return generated, target, False
+    retained_target = {
+        label: value for label, value in target.items() if label not in below_resolution
+    }
+    total_target = sum(retained_target.values())
+    if total_target > 0:
+        retained_target = {
+            label: value / total_target for label, value in retained_target.items()
+        }
+    retained_generated = {
+        label: value
+        for label, value in generated.items()
+        if label not in below_resolution
+    }
+    total_generated = sum(retained_generated.values())
+    if total_generated > 0:
+        retained_generated = {
+            label: value / total_generated
+            for label, value in retained_generated.items()
+        }
+    return retained_generated, retained_target, True
 
 
 def _chart_card(
