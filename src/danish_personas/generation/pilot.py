@@ -25,153 +25,6 @@ from .pipeline import GenerationContext, generate_personas, prepare_generation_c
 LOGGER = logging.getLogger(__name__)
 
 
-class _PilotCostBudget:
-    """Atomically persist conservative shard reservations and settlements."""
-
-    def __init__(
-        self,
-        *,
-        path: Path,
-        input_sha256: str,
-        generation_config_sha256: str,
-        model: str,
-        input_price_per_million: float,
-        output_price_per_million: float,
-        maximum_campaign_cost_usd: float,
-        maximum_shard_cost_usd: float,
-    ) -> None:
-        self._path = path
-        self._lock = threading.RLock()
-        self._identity = {
-            "input_sha256": input_sha256,
-            "generation_config_sha256": generation_config_sha256,
-            "model": model,
-            "input_price_per_million_usd": input_price_per_million,
-            "output_price_per_million_usd": output_price_per_million,
-            "maximum_campaign_cost_usd": maximum_campaign_cost_usd,
-            "maximum_shard_cost_usd": maximum_shard_cost_usd,
-        }
-        with self._lock:
-            self._load()
-
-    @property
-    def identity_sha256(self) -> str:
-        """Checksum binding shard request ledgers to this budget."""
-        return sha256_text(canonical_json(self._identity))
-
-    def reserve(self, *, offset: int) -> None:
-        """Reserve one shard before it is submitted to the executor.
-
-        Raises:
-            ValueError:
-                If the shard is already settled or the campaign cap is exhausted.
-        """
-        with self._lock:
-            ledger = self._load()
-            existing = next(
-                (item for item in ledger.reservations if item.offset == offset), None
-            )
-            if existing is not None:
-                if existing.status == "settled":
-                    raise ValueError(f"Shard offset {offset} is already settled")
-                return
-            reserved = sum(
-                item.maximum_cost_usd
-                for item in ledger.reservations
-                if item.status == "reserved"
-            )
-            committed = sum(
-                item.settled_cost_usd or 0.0
-                for item in ledger.reservations
-                if item.status == "settled"
-            )
-            maximum = t.cast(float, self._identity["maximum_shard_cost_usd"])
-            campaign_cap = t.cast(float, self._identity["maximum_campaign_cost_usd"])
-            if committed + reserved + maximum > campaign_cap:
-                raise ValueError("Campaign cost cap would be exceeded")
-            ledger.reservations.append(
-                PilotCostReservation(
-                    offset=offset, maximum_cost_usd=maximum, status="reserved"
-                )
-            )
-            self._write(ledger)
-
-    def measured_cost(self, manifest: GenerationManifest) -> float:
-        """Return measured list-price cost for one completed shard."""
-        input_price = t.cast(float, self._identity["input_price_per_million_usd"])
-        output_price = t.cast(float, self._identity["output_price_per_million_usd"])
-        return (
-            manifest.prompt_tokens * input_price
-            + manifest.completion_tokens * output_price
-        ) / 1_000_000
-
-    def settle(self, *, offset: int, measured_cost_usd: float) -> None:
-        """Settle a successful shard to measured list-price token cost.
-
-        Raises:
-            ValueError:
-                If the reservation is missing or the measured cost exceeds it.
-        """
-        with self._lock:
-            ledger = self._load()
-            reservation = next(
-                (item for item in ledger.reservations if item.offset == offset), None
-            )
-            if reservation is None:
-                raise ValueError(f"Missing cost reservation for shard offset {offset}")
-            if measured_cost_usd > reservation.maximum_cost_usd + 1e-12:
-                raise ValueError("Measured shard cost exceeds its reservation")
-            if reservation.status == "settled":
-                if reservation.settled_cost_usd != measured_cost_usd:
-                    raise ValueError("Settled shard cost was changed")
-                return
-            reservation.status = "settled"
-            reservation.settled_cost_usd = measured_cost_usd
-            self._write(ledger)
-
-    def _load(self) -> PilotCostLedger:
-        if self._path.exists():
-            ledger = PilotCostLedger.model_validate_json(
-                self._path.read_text(encoding="utf-8")
-            )
-            if (
-                ledger.model_dump(mode="json", exclude={"reservations"})
-                != self._identity
-            ):
-                raise ValueError(
-                    "Pilot cost ledger identity does not match the campaign"
-                )
-            offsets = [item.offset for item in ledger.reservations]
-            if len(offsets) != len(set(offsets)):
-                raise ValueError("Pilot cost ledger contains duplicate shard offsets")
-            return ledger
-        ledger = PilotCostLedger(
-            input_sha256=t.cast(str, self._identity["input_sha256"]),
-            generation_config_sha256=t.cast(
-                str, self._identity["generation_config_sha256"]
-            ),
-            model=t.cast(str, self._identity["model"]),
-            input_price_per_million_usd=t.cast(
-                float, self._identity["input_price_per_million_usd"]
-            ),
-            output_price_per_million_usd=t.cast(
-                float, self._identity["output_price_per_million_usd"]
-            ),
-            maximum_campaign_cost_usd=t.cast(
-                float, self._identity["maximum_campaign_cost_usd"]
-            ),
-            maximum_shard_cost_usd=t.cast(
-                float, self._identity["maximum_shard_cost_usd"]
-            ),
-            reservations=[],
-        )
-        self._write(ledger)
-        return ledger
-
-    def _write(self, ledger: PilotCostLedger) -> None:
-        write_json(path=self._path, payload=ledger)
-
-
 def run_pilot(
     *,
     input_path: Path,
@@ -338,6 +191,153 @@ def run_pilot(
         maximum_campaign_cost_usd=maximum_campaign_cost_usd,
         maximum_shard_cost_usd=maximum_shard_cost_usd,
     )
+
+
+class _PilotCostBudget:
+    """Atomically persist conservative shard reservations and settlements."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        input_sha256: str,
+        generation_config_sha256: str,
+        model: str,
+        input_price_per_million: float,
+        output_price_per_million: float,
+        maximum_campaign_cost_usd: float,
+        maximum_shard_cost_usd: float,
+    ) -> None:
+        self._path = path
+        self._lock = threading.RLock()
+        self._identity = {
+            "input_sha256": input_sha256,
+            "generation_config_sha256": generation_config_sha256,
+            "model": model,
+            "input_price_per_million_usd": input_price_per_million,
+            "output_price_per_million_usd": output_price_per_million,
+            "maximum_campaign_cost_usd": maximum_campaign_cost_usd,
+            "maximum_shard_cost_usd": maximum_shard_cost_usd,
+        }
+        with self._lock:
+            self._load()
+
+    def _load(self) -> PilotCostLedger:
+        if self._path.exists():
+            ledger = PilotCostLedger.model_validate_json(
+                self._path.read_text(encoding="utf-8")
+            )
+            if (
+                ledger.model_dump(mode="json", exclude={"reservations"})
+                != self._identity
+            ):
+                raise ValueError(
+                    "Pilot cost ledger identity does not match the campaign"
+                )
+            offsets = [item.offset for item in ledger.reservations]
+            if len(offsets) != len(set(offsets)):
+                raise ValueError("Pilot cost ledger contains duplicate shard offsets")
+            return ledger
+        ledger = PilotCostLedger(
+            input_sha256=t.cast(str, self._identity["input_sha256"]),
+            generation_config_sha256=t.cast(
+                str, self._identity["generation_config_sha256"]
+            ),
+            model=t.cast(str, self._identity["model"]),
+            input_price_per_million_usd=t.cast(
+                float, self._identity["input_price_per_million_usd"]
+            ),
+            output_price_per_million_usd=t.cast(
+                float, self._identity["output_price_per_million_usd"]
+            ),
+            maximum_campaign_cost_usd=t.cast(
+                float, self._identity["maximum_campaign_cost_usd"]
+            ),
+            maximum_shard_cost_usd=t.cast(
+                float, self._identity["maximum_shard_cost_usd"]
+            ),
+            reservations=[],
+        )
+        self._write(ledger)
+        return ledger
+
+    def _write(self, ledger: PilotCostLedger) -> None:
+        write_json(path=self._path, payload=ledger)
+
+    @property
+    def identity_sha256(self) -> str:
+        """Checksum binding shard request ledgers to this budget."""
+        return sha256_text(canonical_json(self._identity))
+
+    def measured_cost(self, manifest: GenerationManifest) -> float:
+        """Return measured list-price cost for one completed shard."""
+        input_price = t.cast(float, self._identity["input_price_per_million_usd"])
+        output_price = t.cast(float, self._identity["output_price_per_million_usd"])
+        return (
+            manifest.prompt_tokens * input_price
+            + manifest.completion_tokens * output_price
+        ) / 1_000_000
+
+    def reserve(self, *, offset: int) -> None:
+        """Reserve one shard before it is submitted to the executor.
+
+        Raises:
+            ValueError:
+                If the shard is already settled or the campaign cap is exhausted.
+        """
+        with self._lock:
+            ledger = self._load()
+            existing = next(
+                (item for item in ledger.reservations if item.offset == offset), None
+            )
+            if existing is not None:
+                if existing.status == "settled":
+                    raise ValueError(f"Shard offset {offset} is already settled")
+                return
+            reserved = sum(
+                item.maximum_cost_usd
+                for item in ledger.reservations
+                if item.status == "reserved"
+            )
+            committed = sum(
+                item.settled_cost_usd or 0.0
+                for item in ledger.reservations
+                if item.status == "settled"
+            )
+            maximum = t.cast(float, self._identity["maximum_shard_cost_usd"])
+            campaign_cap = t.cast(float, self._identity["maximum_campaign_cost_usd"])
+            if committed + reserved + maximum > campaign_cap:
+                raise ValueError("Campaign cost cap would be exceeded")
+            ledger.reservations.append(
+                PilotCostReservation(
+                    offset=offset, maximum_cost_usd=maximum, status="reserved"
+                )
+            )
+            self._write(ledger)
+
+    def settle(self, *, offset: int, measured_cost_usd: float) -> None:
+        """Settle a successful shard to measured list-price token cost.
+
+        Raises:
+            ValueError:
+                If the reservation is missing or the measured cost exceeds it.
+        """
+        with self._lock:
+            ledger = self._load()
+            reservation = next(
+                (item for item in ledger.reservations if item.offset == offset), None
+            )
+            if reservation is None:
+                raise ValueError(f"Missing cost reservation for shard offset {offset}")
+            if measured_cost_usd > reservation.maximum_cost_usd + 1e-12:
+                raise ValueError("Measured shard cost exceeds its reservation")
+            if reservation.status == "settled":
+                if reservation.settled_cost_usd != measured_cost_usd:
+                    raise ValueError("Settled shard cost was changed")
+                return
+            reservation.status = "settled"
+            reservation.settled_cost_usd = measured_cost_usd
+            self._write(ledger)
 
 
 def _merge_pilot(

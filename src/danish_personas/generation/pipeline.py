@@ -110,294 +110,6 @@ GENERATION_PROMPT_FIELDS = PROMPT_FIELDS
 GeneratedModel = t.TypeVar("GeneratedModel", bound=BaseModel)
 
 
-@dataclasses.dataclass(frozen=True)
-class GenerationContext:
-    """Validated immutable inputs shared by all pilot shards."""
-
-    input_path: Path
-    sample_manifest_path: Path
-    config_path: Path
-    config: GenerationConfig
-    upstream_run: RunManifest
-    sample: pl.DataFrame
-    input_sha256: str
-    sample_manifest_sha256: str
-    generation_config_sha256: str
-    mapping_path: Path
-    mapping: JobFunctionTitleMapping
-    mapping_sha256: str
-    origin_contract_path: Path
-    origin_contract: OriginLabelContract
-    origin_contract_sha256: str
-    prompt: str
-    generation_context_sha256: str
-
-
-def prepare_generation_context(
-    *,
-    input_path: Path,
-    sample_manifest_path: Path,
-    config_path: Path,
-    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-) -> GenerationContext:
-    """Validate and materialise generation inputs once for a pilot.
-
-    The returned context prevents every five-row shard from re-reading and hashing the
-    full frozen sample while retaining the same provenance values in every manifest.
-
-    Returns:
-        Immutable validated inputs shared by generation shards.
-    """
-    config = load_generation_config(config_path)
-    _validate_guards(config=config, rows=1)
-    upstream_run = validate_upstream_sample(
-        input_path=input_path,
-        sample_manifest_path=sample_manifest_path,
-        checksum_policy=checksum_policy,
-    )
-    sample = pl.read_parquet(input_path).sort("persona_id")
-    mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
-    mapping = load_job_title_mapping(mapping_path)
-    mapping_sha = mapping_file_sha256(mapping_path)
-    origin_contract_path = config.origin_label_contract
-    origin_contract = load_origin_label_contract(
-        path=origin_contract_path, checksum_policy=checksum_policy
-    )
-    origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
-    _validate_origin_labels(frame=sample, contract=origin_contract)
-    prompt = config.prompt.read_text(encoding="utf-8")
-    context_sha = generation_context_sha256(
-        config=config,
-        prompt=prompt,
-        job_title_mapping=mapping,
-        job_title_mapping_sha256=mapping_sha,
-        origin_label_contract=origin_contract,
-        origin_label_contract_sha256=origin_contract_sha,
-        checksum_policy=checksum_policy,
-    )
-    return GenerationContext(
-        input_path=input_path,
-        sample_manifest_path=sample_manifest_path,
-        config_path=config_path,
-        config=config,
-        upstream_run=upstream_run,
-        sample=sample,
-        input_sha256=sha256_file(input_path),
-        sample_manifest_sha256=sha256_file(sample_manifest_path),
-        generation_config_sha256=sha256_file(config_path),
-        mapping_path=mapping_path,
-        mapping=mapping,
-        mapping_sha256=mapping_sha,
-        origin_contract_path=origin_contract_path,
-        origin_contract=origin_contract,
-        origin_contract_sha256=origin_contract_sha,
-        prompt=prompt,
-        generation_context_sha256=context_sha,
-    )
-
-
-def generate_personas(
-    input_path: Path,
-    sample_manifest_path: Path,
-    config_path: Path,
-    output_dir: Path,
-    rows: int,
-    offset: int = 0,
-    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
-    context: GenerationContext | None = None,
-    pilot_identity_sha256: str | None = None,
-) -> Path:
-    """Generate structured attributes and one persona in one model request.
-
-    Args:
-        input_path:
-            Frozen Phase-2 development sample.
-        sample_manifest_path:
-            Checksum manifest for the frozen sample.
-        config_path:
-            Local generation configuration.
-        output_dir:
-            Root directory for generation runs.
-        rows:
-            Number of records, capped at five per invocation.
-        offset:
-            Zero-based position within the ordered frozen sample.
-        checksum_policy:
-            Whether persisted checksum comparisons are strict. The default is strict;
-            the CLI may explicitly opt out.
-        context (optional):
-            Previously validated context shared by a pilot.
-        pilot_identity_sha256 (optional):
-            Campaign identity bound into the request ledger.
-
-    Returns:
-        Planned or completed generation run directory.
-
-    Raises:
-        ValueError:
-            If the requested range is outside the frozen sample.
-    """
-    LOGGER.info("Loading generation configuration and validating frozen sample")
-    if context is None:
-        context = prepare_generation_context(
-            input_path=input_path,
-            sample_manifest_path=sample_manifest_path,
-            config_path=config_path,
-            checksum_policy=checksum_policy,
-        )
-    elif (
-        context.input_path != input_path
-        or context.sample_manifest_path != sample_manifest_path
-        or context.config_path != config_path
-    ):
-        raise ValueError("Shared generation context does not match shard inputs")
-    config = context.config
-    _validate_guards(config=config, rows=rows)
-    upstream_run = context.upstream_run
-    sample = context.sample
-    if offset < 0 or offset + rows > sample.height:
-        message = "Requested row range exceeds the frozen sample"
-        raise ValueError(message)
-    frame = sample.slice(offset, rows)
-    selected_ids = frame.get_column("persona_id").to_list()
-    ordered_ids_sha = sha256_text(canonical_json(selected_ids))
-    mapping_path = context.mapping_path
-    job_title_mapping = context.mapping
-    mapping_sha = context.mapping_sha256
-    origin_contract_path = context.origin_contract_path
-    origin_contract = context.origin_contract
-    origin_contract_sha = context.origin_contract_sha256
-    prompt = context.prompt
-    generation_context_sha = context.generation_context_sha256
-    input_sha = context.input_sha256
-    config_sha = context.generation_config_sha256
-    run_id = generation_run_id(
-        input_sha256=input_sha,
-        generation_context_sha256=generation_context_sha,
-        ordered_persona_ids_sha256=ordered_ids_sha,
-    )
-    run_dir = output_dir / run_id
-    api_key = os.environ.get(config.api_key_env) if config.api_key_env else None
-    ledger_path = run_dir / "request-ledger.json"
-    ledger = _load_request_ledger(
-        run_dir=run_dir,
-        generation_context_sha=generation_context_sha,
-        maximum_attempts=config.maximum_total_requests,
-        checksum_policy=checksum_policy,
-        pilot_identity_sha256=pilot_identity_sha256,
-    )
-
-    def record_request(attempts: int) -> None:
-        nonlocal ledger
-        if ledger.maximum_attempts is not None and attempts > ledger.maximum_attempts:
-            message = "Generation HTTP request budget is exhausted"
-            raise RequestBudgetExceeded(message)
-        ledger = ledger.model_copy(update={"attempts": attempts})
-        write_json(path=ledger_path, payload=ledger)
-
-    client = OpenAIClient(
-        config=config,
-        api_key=api_key,
-        initial_requests_made=ledger.attempts,
-        record_request=record_request,
-    )
-    LOGGER.info("Starting provider generation for %s record(s)", rows)
-    checkpoints: list[PersonaCheckpoint] = []
-    persisted_http_requests = sum(
-        PersonaCheckpoint.model_validate_json(
-            path.read_text(encoding="utf-8"),
-            context={"checksum_policy": checksum_policy},
-        ).http_requests
-        for path in (run_dir / "checkpoints").glob("*.json")
-        if not path.name.endswith(".attributes.json")
-    )
-    unattributed_http_requests = ledger.attempts - persisted_http_requests
-    if unattributed_http_requests < 0:
-        raise ValueError("Checkpoint requests exceed the persisted request ledger")
-    try:
-        for row in frame.iter_rows(named=True):
-            typed_row = t.cast(dict[str, object], row)
-            checkpoint_path = (
-                run_dir / "checkpoints" / f"{typed_row['persona_id']}.json"
-            )
-            checkpoint_exists = checkpoint_path.exists()
-            checkpoints.append(
-                _generate_one(
-                    row=typed_row,
-                    run_dir=run_dir,
-                    config=config,
-                    client=client,
-                    generation_prompt=prompt,
-                    generation_context_sha=generation_context_sha,
-                    job_title_mapping=job_title_mapping,
-                    job_title_mapping_sha256=mapping_sha,
-                    job_title_mapping_path=mapping_path,
-                    origin_label_contract=origin_contract,
-                    origin_label_contract_sha256=origin_contract_sha,
-                    origin_label_contract_path=origin_contract_path,
-                    prior_http_requests=(
-                        0 if checkpoint_exists else unattributed_http_requests
-                    ),
-                    checksum_policy=checksum_policy,
-                )
-            )
-            if not checkpoint_exists:
-                unattributed_http_requests = 0
-    finally:
-        client.close()
-    LOGGER.info("Provider generation finished; persisting generation artefacts")
-    output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
-    responses = [response for item in checkpoints for response in item.responses]
-    manifest = GenerationManifest.model_validate(
-        {
-            "run_id": run_id,
-            "upstream_run_id": upstream_run.run_id,
-            "input_file": input_path,
-            "sample_manifest_file": sample_manifest_path,
-            "input_sha256": input_sha,
-            "ordered_persona_ids_sha256": ordered_ids_sha,
-            "generation_config_file": config_path,
-            "generation_config_sha256": config_sha,
-            "generation_context_sha256": generation_context_sha,
-            "job_title_mapping_file": mapping_path,
-            "job_title_mapping_sha256": mapping_sha,
-            "job_title_mapping_version": job_title_mapping.version,
-            "job_title_mapping_content": job_title_mapping,
-            "origin_label_contract_file": origin_contract_path,
-            "origin_label_contract_sha256": origin_contract_sha,
-            "origin_label_contract_version": origin_contract.version,
-            "origin_label_contract_content": origin_contract,
-            "prompt_sha256": sha256_text(prompt),
-            "model": config.model or "",
-            "base_url": config.base_url or "",
-            "rows": rows,
-            "offset": offset,
-            "requests": ledger.attempts,
-            "retries": max(0, ledger.attempts - rows),
-            "prompt_tokens": sum(response.prompt_tokens for response in responses),
-            "completion_tokens": sum(
-                response.completion_tokens for response in responses
-            ),
-            "total_tokens": sum(response.total_tokens for response in responses),
-            "estimated_cost_usd": _sum_estimated_cost(responses=responses),
-            "inference_providers": sorted(
-                {
-                    response.inference_provider
-                    for response in responses
-                    if response.inference_provider
-                }
-            ),
-            "output_file": Path(output_path.name),
-            "output_sha256": sha256_file(output_path),
-            "llm_generation": True,
-        },
-        context={"checksum_policy": checksum_policy},
-    )
-    write_json(path=run_dir / "generation-manifest.json", payload=manifest)
-    LOGGER.info("Completed persona run %s with %s requests", run_id, manifest.requests)
-    return run_dir
-
-
 def _generate_one(
     row: dict[str, object],
     run_dir: Path,
@@ -746,6 +458,26 @@ def _validate_guards(config: GenerationConfig, rows: int) -> None:
         raise ValueError(message)
 
 
+def _write_output(
+    frame: pl.DataFrame, checkpoints: list[PersonaCheckpoint], run_dir: Path
+) -> Path:
+    generated_rows: list[dict[str, object]] = []
+    for checkpoint in checkpoints:
+        generated_rows.append(
+            {
+                "persona_id": checkpoint.persona_id,
+                **checkpoint.attributes.model_dump(mode="json"),
+                **checkpoint.descriptions.model_dump(mode="json"),
+            }
+        )
+    generated = pl.DataFrame(generated_rows)
+    output = frame.join(generated, on="persona_id", how="left", validate="1:1")
+    output_path = run_dir / "generated-personas.parquet"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output.write_parquet(output_path, compression="zstd")
+    return output_path
+
+
 def _validate_origin_labels(
     *, frame: pl.DataFrame, contract: OriginLabelContract
 ) -> None:
@@ -773,26 +505,6 @@ def _validate_origin_row(
         or contract.labels_da.get(code) != danish
     ):
         raise ValueError("Origin code-English-Danish triple does not match contract")
-
-
-def _write_output(
-    frame: pl.DataFrame, checkpoints: list[PersonaCheckpoint], run_dir: Path
-) -> Path:
-    generated_rows: list[dict[str, object]] = []
-    for checkpoint in checkpoints:
-        generated_rows.append(
-            {
-                "persona_id": checkpoint.persona_id,
-                **checkpoint.attributes.model_dump(mode="json"),
-                **checkpoint.descriptions.model_dump(mode="json"),
-            }
-        )
-    generated = pl.DataFrame(generated_rows)
-    output = frame.join(generated, on="persona_id", how="left", validate="1:1")
-    output_path = run_dir / "generated-personas.parquet"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    output.write_parquet(output_path, compression="zstd")
-    return output_path
 
 
 def generation_context_sha256(
@@ -874,6 +586,294 @@ def generation_context_sha256(
                 ),
             }
         )
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class GenerationContext:
+    """Validated immutable inputs shared by all pilot shards."""
+
+    input_path: Path
+    sample_manifest_path: Path
+    config_path: Path
+    config: GenerationConfig
+    upstream_run: RunManifest
+    sample: pl.DataFrame
+    input_sha256: str
+    sample_manifest_sha256: str
+    generation_config_sha256: str
+    mapping_path: Path
+    mapping: JobFunctionTitleMapping
+    mapping_sha256: str
+    origin_contract_path: Path
+    origin_contract: OriginLabelContract
+    origin_contract_sha256: str
+    prompt: str
+    generation_context_sha256: str
+
+
+def generate_personas(
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    output_dir: Path,
+    rows: int,
+    offset: int = 0,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+    context: GenerationContext | None = None,
+    pilot_identity_sha256: str | None = None,
+) -> Path:
+    """Generate structured attributes and one persona in one model request.
+
+    Args:
+        input_path:
+            Frozen Phase-2 development sample.
+        sample_manifest_path:
+            Checksum manifest for the frozen sample.
+        config_path:
+            Local generation configuration.
+        output_dir:
+            Root directory for generation runs.
+        rows:
+            Number of records, capped at five per invocation.
+        offset:
+            Zero-based position within the ordered frozen sample.
+        checksum_policy:
+            Whether persisted checksum comparisons are strict. The default is strict;
+            the CLI may explicitly opt out.
+        context (optional):
+            Previously validated context shared by a pilot.
+        pilot_identity_sha256 (optional):
+            Campaign identity bound into the request ledger.
+
+    Returns:
+        Planned or completed generation run directory.
+
+    Raises:
+        ValueError:
+            If the requested range is outside the frozen sample.
+    """
+    LOGGER.info("Loading generation configuration and validating frozen sample")
+    if context is None:
+        context = prepare_generation_context(
+            input_path=input_path,
+            sample_manifest_path=sample_manifest_path,
+            config_path=config_path,
+            checksum_policy=checksum_policy,
+        )
+    elif (
+        context.input_path != input_path
+        or context.sample_manifest_path != sample_manifest_path
+        or context.config_path != config_path
+    ):
+        raise ValueError("Shared generation context does not match shard inputs")
+    config = context.config
+    _validate_guards(config=config, rows=rows)
+    upstream_run = context.upstream_run
+    sample = context.sample
+    if offset < 0 or offset + rows > sample.height:
+        message = "Requested row range exceeds the frozen sample"
+        raise ValueError(message)
+    frame = sample.slice(offset, rows)
+    selected_ids = frame.get_column("persona_id").to_list()
+    ordered_ids_sha = sha256_text(canonical_json(selected_ids))
+    mapping_path = context.mapping_path
+    job_title_mapping = context.mapping
+    mapping_sha = context.mapping_sha256
+    origin_contract_path = context.origin_contract_path
+    origin_contract = context.origin_contract
+    origin_contract_sha = context.origin_contract_sha256
+    prompt = context.prompt
+    generation_context_sha = context.generation_context_sha256
+    input_sha = context.input_sha256
+    config_sha = context.generation_config_sha256
+    run_id = generation_run_id(
+        input_sha256=input_sha,
+        generation_context_sha256=generation_context_sha,
+        ordered_persona_ids_sha256=ordered_ids_sha,
+    )
+    run_dir = output_dir / run_id
+    api_key = os.environ.get(config.api_key_env) if config.api_key_env else None
+    ledger_path = run_dir / "request-ledger.json"
+    ledger = _load_request_ledger(
+        run_dir=run_dir,
+        generation_context_sha=generation_context_sha,
+        maximum_attempts=config.maximum_total_requests,
+        checksum_policy=checksum_policy,
+        pilot_identity_sha256=pilot_identity_sha256,
+    )
+
+    def record_request(attempts: int) -> None:
+        nonlocal ledger
+        if ledger.maximum_attempts is not None and attempts > ledger.maximum_attempts:
+            message = "Generation HTTP request budget is exhausted"
+            raise RequestBudgetExceeded(message)
+        ledger = ledger.model_copy(update={"attempts": attempts})
+        write_json(path=ledger_path, payload=ledger)
+
+    client = OpenAIClient(
+        config=config,
+        api_key=api_key,
+        initial_requests_made=ledger.attempts,
+        record_request=record_request,
+    )
+    LOGGER.info("Starting provider generation for %s record(s)", rows)
+    checkpoints: list[PersonaCheckpoint] = []
+    persisted_http_requests = sum(
+        PersonaCheckpoint.model_validate_json(
+            path.read_text(encoding="utf-8"),
+            context={"checksum_policy": checksum_policy},
+        ).http_requests
+        for path in (run_dir / "checkpoints").glob("*.json")
+        if not path.name.endswith(".attributes.json")
+    )
+    unattributed_http_requests = ledger.attempts - persisted_http_requests
+    if unattributed_http_requests < 0:
+        raise ValueError("Checkpoint requests exceed the persisted request ledger")
+    try:
+        for row in frame.iter_rows(named=True):
+            typed_row = t.cast(dict[str, object], row)
+            checkpoint_path = (
+                run_dir / "checkpoints" / f"{typed_row['persona_id']}.json"
+            )
+            checkpoint_exists = checkpoint_path.exists()
+            checkpoints.append(
+                _generate_one(
+                    row=typed_row,
+                    run_dir=run_dir,
+                    config=config,
+                    client=client,
+                    generation_prompt=prompt,
+                    generation_context_sha=generation_context_sha,
+                    job_title_mapping=job_title_mapping,
+                    job_title_mapping_sha256=mapping_sha,
+                    job_title_mapping_path=mapping_path,
+                    origin_label_contract=origin_contract,
+                    origin_label_contract_sha256=origin_contract_sha,
+                    origin_label_contract_path=origin_contract_path,
+                    prior_http_requests=(
+                        0 if checkpoint_exists else unattributed_http_requests
+                    ),
+                    checksum_policy=checksum_policy,
+                )
+            )
+            if not checkpoint_exists:
+                unattributed_http_requests = 0
+    finally:
+        client.close()
+    LOGGER.info("Provider generation finished; persisting generation artefacts")
+    output_path = _write_output(frame=frame, checkpoints=checkpoints, run_dir=run_dir)
+    responses = [response for item in checkpoints for response in item.responses]
+    manifest = GenerationManifest.model_validate(
+        {
+            "run_id": run_id,
+            "upstream_run_id": upstream_run.run_id,
+            "input_file": input_path,
+            "sample_manifest_file": sample_manifest_path,
+            "input_sha256": input_sha,
+            "ordered_persona_ids_sha256": ordered_ids_sha,
+            "generation_config_file": config_path,
+            "generation_config_sha256": config_sha,
+            "generation_context_sha256": generation_context_sha,
+            "job_title_mapping_file": mapping_path,
+            "job_title_mapping_sha256": mapping_sha,
+            "job_title_mapping_version": job_title_mapping.version,
+            "job_title_mapping_content": job_title_mapping,
+            "origin_label_contract_file": origin_contract_path,
+            "origin_label_contract_sha256": origin_contract_sha,
+            "origin_label_contract_version": origin_contract.version,
+            "origin_label_contract_content": origin_contract,
+            "prompt_sha256": sha256_text(prompt),
+            "model": config.model or "",
+            "base_url": config.base_url or "",
+            "rows": rows,
+            "offset": offset,
+            "requests": ledger.attempts,
+            "retries": max(0, ledger.attempts - rows),
+            "prompt_tokens": sum(response.prompt_tokens for response in responses),
+            "completion_tokens": sum(
+                response.completion_tokens for response in responses
+            ),
+            "total_tokens": sum(response.total_tokens for response in responses),
+            "estimated_cost_usd": _sum_estimated_cost(responses=responses),
+            "inference_providers": sorted(
+                {
+                    response.inference_provider
+                    for response in responses
+                    if response.inference_provider
+                }
+            ),
+            "output_file": Path(output_path.name),
+            "output_sha256": sha256_file(output_path),
+            "llm_generation": True,
+        },
+        context={"checksum_policy": checksum_policy},
+    )
+    write_json(path=run_dir / "generation-manifest.json", payload=manifest)
+    LOGGER.info("Completed persona run %s with %s requests", run_id, manifest.requests)
+    return run_dir
+
+
+def prepare_generation_context(
+    *,
+    input_path: Path,
+    sample_manifest_path: Path,
+    config_path: Path,
+    checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
+) -> GenerationContext:
+    """Validate and materialise generation inputs once for a pilot.
+
+    The returned context prevents every five-row shard from re-reading and hashing the
+    full frozen sample while retaining the same provenance values in every manifest.
+
+    Returns:
+        Immutable validated inputs shared by generation shards.
+    """
+    config = load_generation_config(config_path)
+    _validate_guards(config=config, rows=1)
+    upstream_run = validate_upstream_sample(
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        checksum_policy=checksum_policy,
+    )
+    sample = pl.read_parquet(input_path).sort("persona_id")
+    mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
+    mapping = load_job_title_mapping(mapping_path)
+    mapping_sha = mapping_file_sha256(mapping_path)
+    origin_contract_path = config.origin_label_contract
+    origin_contract = load_origin_label_contract(
+        path=origin_contract_path, checksum_policy=checksum_policy
+    )
+    origin_contract_sha = origin_label_contract_sha256_file(path=origin_contract_path)
+    _validate_origin_labels(frame=sample, contract=origin_contract)
+    prompt = config.prompt.read_text(encoding="utf-8")
+    context_sha = generation_context_sha256(
+        config=config,
+        prompt=prompt,
+        job_title_mapping=mapping,
+        job_title_mapping_sha256=mapping_sha,
+        origin_label_contract=origin_contract,
+        origin_label_contract_sha256=origin_contract_sha,
+        checksum_policy=checksum_policy,
+    )
+    return GenerationContext(
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        config_path=config_path,
+        config=config,
+        upstream_run=upstream_run,
+        sample=sample,
+        input_sha256=sha256_file(input_path),
+        sample_manifest_sha256=sha256_file(sample_manifest_path),
+        generation_config_sha256=sha256_file(config_path),
+        mapping_path=mapping_path,
+        mapping=mapping,
+        mapping_sha256=mapping_sha,
+        origin_contract_path=origin_contract_path,
+        origin_contract=origin_contract,
+        origin_contract_sha256=origin_contract_sha,
+        prompt=prompt,
+        generation_context_sha256=context_sha,
     )
 
 

@@ -256,62 +256,6 @@ class PilotBatchReference(StrictModel):
     origin_label_contract_content: OriginLabelContract
 
 
-class PilotManifest(StrictModel):
-    """Provenance and accounting for a merged persona pilot."""
-
-    pilot_id: str
-    created_at: str
-    model: str
-    base_url: str
-    upstream_run_id: str
-    input_file: Path
-    input_sha256: str
-    sample_manifest_file: Path
-    sample_manifest_sha256: str
-    generation_config_file: Path
-    generation_config_sha256: str
-    generation_context_sha256: str
-    job_title_mapping_file: Path | None = None
-    job_title_mapping_sha256: str | None = None
-    job_title_mapping_version: int | None = None
-    job_title_mapping_content: JobFunctionTitleMapping | None = None
-    origin_label_contract_file: OriginLabelContractPath
-    origin_label_contract_sha256: str
-    origin_label_contract_version: int
-    origin_label_contract_content: OriginLabelContract
-    prompt_sha256: str
-    rows: int = Field(ge=1)
-    batch_size: int = Field(ge=1, le=5)
-    batches: int = Field(ge=1)
-    batch_runs: list[PilotBatchReference]
-    maximum_total_requests: int | None = Field(ge=1)
-    maximum_shard_requests: int | None = Field(ge=1)
-    maximum_campaign_cost_usd: float | None = Field(default=None, gt=0.0)
-    maximum_shard_cost_usd: float | None = Field(default=None, gt=0.0)
-    requests: int = Field(ge=0)
-    retries: int = Field(ge=0)
-    prompt_tokens: int = Field(ge=0)
-    completion_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
-    input_price_per_million_usd: float = Field(ge=0.0)
-    output_price_per_million_usd: float = Field(ge=0.0)
-    list_price_estimated_cost_usd: float = Field(ge=0.0)
-    provider_estimated_cost_usd: float | None = Field(default=None, ge=0.0)
-    inference_providers: list[str]
-    output_file: Path
-    output_sha256: str
-    llm_generation: bool
-
-
-class RequestLedger(StrictModel):
-    """Durable HTTP-attempt budget for one generation run."""
-
-    generation_context_sha256: str
-    pilot_identity_sha256: str | None = None
-    attempts: int = Field(ge=0)
-    maximum_attempts: int | None = Field(ge=1)
-
-
 class PilotCostReservation(StrictModel):
     """One durable conservative reservation for a pilot shard."""
 
@@ -370,3 +314,59 @@ class PilotCostLedger(StrictModel):
         if committed + reserved > self.maximum_campaign_cost_usd + 1e-12:
             raise ValueError("Pilot cost reservations exceed the campaign cap")
         return self
+
+
+class PilotManifest(StrictModel):
+    """Provenance and accounting for a merged persona pilot."""
+
+    pilot_id: str
+    created_at: str
+    model: str
+    base_url: str
+    upstream_run_id: str
+    input_file: Path
+    input_sha256: str
+    sample_manifest_file: Path
+    sample_manifest_sha256: str
+    generation_config_file: Path
+    generation_config_sha256: str
+    generation_context_sha256: str
+    job_title_mapping_file: Path | None = None
+    job_title_mapping_sha256: str | None = None
+    job_title_mapping_version: int | None = None
+    job_title_mapping_content: JobFunctionTitleMapping | None = None
+    origin_label_contract_file: OriginLabelContractPath
+    origin_label_contract_sha256: str
+    origin_label_contract_version: int
+    origin_label_contract_content: OriginLabelContract
+    prompt_sha256: str
+    rows: int = Field(ge=1)
+    batch_size: int = Field(ge=1, le=5)
+    batches: int = Field(ge=1)
+    batch_runs: list[PilotBatchReference]
+    maximum_total_requests: int | None = Field(ge=1)
+    maximum_shard_requests: int | None = Field(ge=1)
+    maximum_campaign_cost_usd: float | None = Field(default=None, gt=0.0)
+    maximum_shard_cost_usd: float | None = Field(default=None, gt=0.0)
+    requests: int = Field(ge=0)
+    retries: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    input_price_per_million_usd: float = Field(ge=0.0)
+    output_price_per_million_usd: float = Field(ge=0.0)
+    list_price_estimated_cost_usd: float = Field(ge=0.0)
+    provider_estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    inference_providers: list[str]
+    output_file: Path
+    output_sha256: str
+    llm_generation: bool
+
+
+class RequestLedger(StrictModel):
+    """Durable HTTP-attempt budget for one generation run."""
+
+    generation_context_sha256: str
+    pilot_identity_sha256: str | None = None
+    attempts: int = Field(ge=0)
+    maximum_attempts: int | None = Field(ge=1)

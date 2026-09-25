@@ -144,6 +144,77 @@ def _origin_dashboard_frame(*, bundle_dir: Path, code: str = "5100") -> pl.DataF
     )
 
 
+def test_dashboard_can_omit_embedding_without_http_call(tmp_path: Path) -> None:
+    """Embedding can be disabled while the other dashboard plots remain."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    source = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    ).filter(pl.col("origin_country_code") == "5100")
+    origin = source.to_dicts()[0]
+    frame = _personas().with_columns(
+        pl.lit("5100").alias("origin_country_code"),
+        pl.lit(origin["origin_country"]).alias("origin_country"),
+        pl.lit(origin["origin_country_da"]).alias("origin_country_da"),
+    )
+    calls = 0
+
+    def fail_if_called(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(f"Embedding client called: {request.url}")
+
+    client = httpx.Client(transport=httpx.MockTransport(fail_if_called))
+    document = build_dashboard(
+        frame=frame,
+        bundle_path=bundle_dir,
+        include_embedding=False,
+        embedding_client=client,
+    )
+
+    assert calls == 0
+    assert "Persona text embedding" not in document
+    assert "Ages" in document
+    assert "Partner relationship pair" in document
+    assert "OCEAN scores" in document
+
+
+def _personas() -> pl.DataFrame:
+    """Return a tiny complete dashboard fixture."""
+    return pl.DataFrame(
+        {
+            "persona_id": ["p-1", "p-2", "p-3"],
+            "first_name": ["Anna", "Bo", "Clara"],
+            "persona": [
+                "Anna beskriver en rolig hverdag med bøger og cykling.",
+                "Bo arbejder med planlægning og holder af musik i byen.",
+                "Clara møder venner og lærer nye færdigheder i fritiden.",
+            ],
+            "age": [30, 40, 40],
+            "age_band": ["30-49", "30-49", "30-49"],
+            "sex": ["female", "male", "female"],
+            "marital_status": ["single", "married", "single"],
+            "education_level": ["higher_education", "higher_education", "primary"],
+            "labour_market_status": ["employed", "employed", "retired"],
+            "region": ["North", "North", "South"],
+            "municipality": ["Aarhus", "Aarhus", "Odense"],
+            "origin_country_da": ["Danmark", "Sverige", "Danmark"],
+            "job_function": ["Care", "Care", None],
+            "job_title": ["Planlægger", "Rådgiver", None],
+            "current_relationship_status": [
+                "not_partnered",
+                "partnered",
+                "not_partnered",
+            ],
+            "partner_gender": [None, "female", None],
+            "openness_score": [40.0, 50.0, 60.0],
+            "conscientiousness_score": [40.0, 50.0, 60.0],
+            "extraversion_score": [40.0, 50.0, 60.0],
+            "agreeableness_score": [40.0, 50.0, 60.0],
+            "neuroticism_score": [40.0, 50.0, 60.0],
+        }
+    )
+
+
 def test_dashboard_handles_frame_without_colour_fields(
     tmp_path: Path, embedding_client: tuple[httpx.Client, list[dict[str, object]]]
 ) -> None:
@@ -166,39 +237,6 @@ def test_dashboard_handles_frame_without_colour_fields(
     assert 'marker":{"opacity":0.6}' in document
     assert '<div class="plot" style="height:700px">' in document
     assert "PCA" not in document
-
-
-def test_dashboard_can_omit_embedding_without_http_call(tmp_path: Path) -> None:
-    """Embedding can be disabled while the other dashboard plots remain."""
-    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
-    source = pl.read_parquet(
-        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
-    ).filter(pl.col("origin_country_code") == "5100")
-    origin = source.to_dicts()[0]
-    frame = _personas().with_columns(
-        pl.lit("5100").alias("origin_country_code"),
-        pl.lit(origin["origin_country"]).alias("origin_country"),
-    )
-    calls = 0
-
-    def fail_if_called(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        raise AssertionError(f"Embedding client called: {request.url}")
-
-    client = httpx.Client(transport=httpx.MockTransport(fail_if_called))
-    document = build_dashboard(
-        frame=frame,
-        bundle_path=bundle_dir,
-        include_embedding=False,
-        embedding_client=client,
-    )
-
-    assert calls == 0
-    assert "Persona text embedding" not in document
-    assert "Ages" in document
-    assert "Partner relationship pair" in document
-    assert "OCEAN scores" in document
 
 
 def test_dashboard_is_one_inline_plotly_html(
@@ -247,43 +285,6 @@ def _dashboard_config(*, overrides: list[str]) -> DictConfig:
     """
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "config")):
         return compose(config_name="config", overrides=overrides)
-
-
-def _personas() -> pl.DataFrame:
-    """Return a tiny complete dashboard fixture."""
-    return pl.DataFrame(
-        {
-            "persona_id": ["p-1", "p-2", "p-3"],
-            "first_name": ["Anna", "Bo", "Clara"],
-            "persona": [
-                "Anna beskriver en rolig hverdag med bøger og cykling.",
-                "Bo arbejder med planlægning og holder af musik i byen.",
-                "Clara møder venner og lærer nye færdigheder i fritiden.",
-            ],
-            "age": [30, 40, 40],
-            "age_band": ["30-49", "30-49", "30-49"],
-            "sex": ["female", "male", "female"],
-            "marital_status": ["single", "married", "single"],
-            "education_level": ["higher_education", "higher_education", "primary"],
-            "labour_market_status": ["employed", "employed", "retired"],
-            "region": ["North", "North", "South"],
-            "municipality": ["Aarhus", "Aarhus", "Odense"],
-            "origin_country_da": ["Danmark", "Sverige", "Danmark"],
-            "job_function": ["Care", "Care", None],
-            "job_title": ["Planlægger", "Rådgiver", None],
-            "current_relationship_status": [
-                "not_partnered",
-                "partnered",
-                "not_partnered",
-            ],
-            "partner_gender": [None, "female", None],
-            "openness_score": [40.0, 50.0, 60.0],
-            "conscientiousness_score": [40.0, 50.0, 60.0],
-            "extraversion_score": [40.0, 50.0, 60.0],
-            "agreeableness_score": [40.0, 50.0, 60.0],
-            "neuroticism_score": [40.0, 50.0, 60.0],
-        }
-    )
 
 
 def test_dashboard_rejects_ineligible_generated_origin_rows(
