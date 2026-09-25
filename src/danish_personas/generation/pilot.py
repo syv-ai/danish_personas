@@ -425,9 +425,7 @@ def _unknown_attempts(
             checkpoint_path.read_text(encoding="utf-8")
         )
         checkpoint_attempts += checkpoint.http_requests
-        successful_attempts += sum(
-            response.request_attempts for response in checkpoint.responses
-        )
+        successful_attempts += len(checkpoint.responses)
     if successful_attempts > checkpoint_attempts:
         raise ValueError("Generation checkpoint responses are inconsistent")
     if checkpoint_attempts > manifest.requests:
