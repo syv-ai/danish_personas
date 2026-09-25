@@ -45,6 +45,7 @@ persona_dashboard:
   input: null
   bundle: null
   output: null
+  include_embedding: true
   embedding_base_url: http://127.0.0.1:18080/v1
   embedding_model: jina-embeddings-v5-text-small-clustering
   embedding_batch_size: 32
