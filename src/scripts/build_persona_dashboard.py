@@ -118,6 +118,7 @@ def _run(*, config: DictConfig) -> None:
         frame=frame,
         bundle_path=script_config.bundle,
         input_path=script_config.input,
+        include_embedding=script_config.include_embedding,
         embedding_base_url=script_config.embedding_base_url,
         embedding_model=script_config.embedding_model,
         embedding_batch_size=script_config.embedding_batch_size,
@@ -132,6 +133,7 @@ def build_dashboard(
     frame: pl.DataFrame,
     bundle_path: Path,
     input_path: Path | None = None,
+    include_embedding: bool = True,
     embedding_base_url: str = DEFAULT_EMBEDDING_BASE_URL,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
@@ -147,6 +149,9 @@ def build_dashboard(
         input_path (optional):
             Deprecated input path accepted for caller compatibility. Defaults to
             ``None``.
+        include_embedding (optional):
+            Whether to render the persona embedding scatter and request embeddings.
+            Defaults to ``True``.
         embedding_base_url (optional):
             Base URL for the local OpenAI-compatible embeddings service. Defaults to
             ``DEFAULT_EMBEDDING_BASE_URL``.
@@ -179,15 +184,16 @@ def build_dashboard(
         if _chart_field_available(frame=frame, field=field)
     )
     sections.append(_ocean_chart(frame=frame))
-    sections.append(
-        _embedding_chart(
-            frame=frame,
-            base_url=embedding_base_url,
-            model=embedding_model,
-            batch_size=embedding_batch_size,
-            http_client=embedding_client,
+    if include_embedding:
+        sections.append(
+            _embedding_chart(
+                frame=frame,
+                base_url=embedding_base_url,
+                model=embedding_model,
+                batch_size=embedding_batch_size,
+                http_client=embedding_client,
+            )
         )
-    )
     data_json = json.dumps(
         [_json_safe_row(row) for row in frame.to_dicts()],
         ensure_ascii=False,

@@ -38,6 +38,7 @@ class PersonaDashboardConfig(StrictModel):
     input: FilePath
     bundle: DirectoryPath
     output: Path
+    include_embedding: bool = True
     embedding_base_url: str
     embedding_model: str
     embedding_batch_size: int = Field(ge=1)

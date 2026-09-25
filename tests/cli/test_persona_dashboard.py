@@ -168,6 +168,39 @@ def test_dashboard_handles_frame_without_colour_fields(
     assert "PCA" not in document
 
 
+def test_dashboard_can_omit_embedding_without_http_call(tmp_path: Path) -> None:
+    """Embedding can be disabled while the other dashboard plots remain."""
+    bundle_dir, _, _, _ = _write_bundle(root=tmp_path)
+    source = pl.read_parquet(
+        bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
+    ).filter(pl.col("origin_country_code") == "5100")
+    origin = source.to_dicts()[0]
+    frame = _personas().with_columns(
+        pl.lit("5100").alias("origin_country_code"),
+        pl.lit(origin["origin_country"]).alias("origin_country"),
+    )
+    calls = 0
+
+    def fail_if_called(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(f"Embedding client called: {request.url}")
+
+    client = httpx.Client(transport=httpx.MockTransport(fail_if_called))
+    document = build_dashboard(
+        frame=frame,
+        bundle_path=bundle_dir,
+        include_embedding=False,
+        embedding_client=client,
+    )
+
+    assert calls == 0
+    assert "Persona text embedding" not in document
+    assert "Ages" in document
+    assert "Partner relationship pair" in document
+    assert "OCEAN scores" in document
+
+
 def test_dashboard_is_one_inline_plotly_html(
     tmp_path: Path,
     embedding_client: tuple[httpx.Client, list[dict[str, object]]],
