@@ -3,28 +3,173 @@
 import collections.abc as c
 import concurrent.futures as futures
 import logging
+import threading
 import time
+import typing as t
 from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 
-from ..io import sha256_file, write_json
-from .config import load_generation_config
+from ..io import canonical_json, sha256_file, sha256_text, write_json
 from .identity import persona_pilot_id
-from .job_titles import (
-    DEFAULT_JOB_TITLE_MAPPING_PATH,
-    job_title_mapping_sha256,
-    load_job_title_mapping,
+from .models import (
+    GenerationManifest,
+    PilotBatchReference,
+    PilotCostLedger,
+    PilotCostReservation,
+    PilotManifest,
 )
-from .models import GenerationManifest, PilotBatchReference, PilotManifest
-from .pipeline import (
-    generate_personas,
-    generation_context_sha256,
-    validate_upstream_sample,
-)
+from .pipeline import GenerationContext, generate_personas, prepare_generation_context
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _PilotCostBudget:
+    """Atomically persist conservative shard reservations and settlements."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        input_sha256: str,
+        generation_config_sha256: str,
+        model: str,
+        input_price_per_million: float,
+        output_price_per_million: float,
+        maximum_campaign_cost_usd: float,
+        maximum_shard_cost_usd: float,
+    ) -> None:
+        self._path = path
+        self._lock = threading.RLock()
+        self._identity = {
+            "input_sha256": input_sha256,
+            "generation_config_sha256": generation_config_sha256,
+            "model": model,
+            "input_price_per_million_usd": input_price_per_million,
+            "output_price_per_million_usd": output_price_per_million,
+            "maximum_campaign_cost_usd": maximum_campaign_cost_usd,
+            "maximum_shard_cost_usd": maximum_shard_cost_usd,
+        }
+        with self._lock:
+            self._load()
+
+    @property
+    def identity_sha256(self) -> str:
+        """Checksum binding shard request ledgers to this budget."""
+        return sha256_text(canonical_json(self._identity))
+
+    def reserve(self, *, offset: int) -> None:
+        """Reserve one shard before it is submitted to the executor.
+
+        Raises:
+            ValueError:
+                If the shard is already settled or the campaign cap is exhausted.
+        """
+        with self._lock:
+            ledger = self._load()
+            existing = next(
+                (item for item in ledger.reservations if item.offset == offset), None
+            )
+            if existing is not None:
+                if existing.status == "settled":
+                    raise ValueError(f"Shard offset {offset} is already settled")
+                return
+            reserved = sum(
+                item.maximum_cost_usd
+                for item in ledger.reservations
+                if item.status == "reserved"
+            )
+            committed = sum(
+                item.settled_cost_usd or 0.0
+                for item in ledger.reservations
+                if item.status == "settled"
+            )
+            maximum = t.cast(float, self._identity["maximum_shard_cost_usd"])
+            campaign_cap = t.cast(float, self._identity["maximum_campaign_cost_usd"])
+            if committed + reserved + maximum > campaign_cap:
+                raise ValueError("Campaign cost cap would be exceeded")
+            ledger.reservations.append(
+                PilotCostReservation(
+                    offset=offset, maximum_cost_usd=maximum, status="reserved"
+                )
+            )
+            self._write(ledger)
+
+    def measured_cost(self, manifest: GenerationManifest) -> float:
+        """Return measured list-price cost for one completed shard."""
+        input_price = t.cast(float, self._identity["input_price_per_million_usd"])
+        output_price = t.cast(float, self._identity["output_price_per_million_usd"])
+        return (
+            manifest.prompt_tokens * input_price
+            + manifest.completion_tokens * output_price
+        ) / 1_000_000
+
+    def settle(self, *, offset: int, measured_cost_usd: float) -> None:
+        """Settle a successful shard to measured list-price token cost.
+
+        Raises:
+            ValueError:
+                If the reservation is missing or the measured cost exceeds it.
+        """
+        with self._lock:
+            ledger = self._load()
+            reservation = next(
+                (item for item in ledger.reservations if item.offset == offset), None
+            )
+            if reservation is None:
+                raise ValueError(f"Missing cost reservation for shard offset {offset}")
+            if measured_cost_usd > reservation.maximum_cost_usd + 1e-12:
+                raise ValueError("Measured shard cost exceeds its reservation")
+            if reservation.status == "settled":
+                if reservation.settled_cost_usd != measured_cost_usd:
+                    raise ValueError("Settled shard cost was changed")
+                return
+            reservation.status = "settled"
+            reservation.settled_cost_usd = measured_cost_usd
+            self._write(ledger)
+
+    def _load(self) -> PilotCostLedger:
+        if self._path.exists():
+            ledger = PilotCostLedger.model_validate_json(
+                self._path.read_text(encoding="utf-8")
+            )
+            if (
+                ledger.model_dump(mode="json", exclude={"reservations"})
+                != self._identity
+            ):
+                raise ValueError(
+                    "Pilot cost ledger identity does not match the campaign"
+                )
+            offsets = [item.offset for item in ledger.reservations]
+            if len(offsets) != len(set(offsets)):
+                raise ValueError("Pilot cost ledger contains duplicate shard offsets")
+            return ledger
+        ledger = PilotCostLedger(
+            input_sha256=t.cast(str, self._identity["input_sha256"]),
+            generation_config_sha256=t.cast(
+                str, self._identity["generation_config_sha256"]
+            ),
+            model=t.cast(str, self._identity["model"]),
+            input_price_per_million_usd=t.cast(
+                float, self._identity["input_price_per_million_usd"]
+            ),
+            output_price_per_million_usd=t.cast(
+                float, self._identity["output_price_per_million_usd"]
+            ),
+            maximum_campaign_cost_usd=t.cast(
+                float, self._identity["maximum_campaign_cost_usd"]
+            ),
+            maximum_shard_cost_usd=t.cast(
+                float, self._identity["maximum_shard_cost_usd"]
+            ),
+            reservations=[],
+        )
+        self._write(ledger)
+        return ledger
+
+    def _write(self, ledger: PilotCostLedger) -> None:
+        write_json(path=self._path, payload=ledger)
 
 
 def run_pilot(
@@ -40,6 +185,8 @@ def run_pilot(
     maximum_total_requests: int | None,
     input_price_per_million: float = 0.0,
     output_price_per_million: float = 0.0,
+    maximum_campaign_cost_usd: float | None = None,
+    maximum_shard_cost_usd: float = 1.0,
     progress_callback: c.Callable[[int], None] | None = None,
 ) -> Path:
     """Generate and merge a schema-parsed, resumable persona dataset.
@@ -70,6 +217,10 @@ def run_pilot(
             Input-token price used for cost accounting.
         output_price_per_million:
             Output-token price used for cost accounting.
+        maximum_campaign_cost_usd (optional):
+            Positive pilot-wide list-price cap. Defaults to no cap.
+        maximum_shard_cost_usd:
+            Conservative maximum list-price cost reserved for every shard.
         progress_callback (optional):
             Callback invoked with the number of rows in each completed shard.
 
@@ -88,12 +239,16 @@ def run_pilot(
         maximum_total_requests=maximum_total_requests,
         input_price_per_million=input_price_per_million,
         output_price_per_million=output_price_per_million,
+        maximum_campaign_cost_usd=maximum_campaign_cost_usd,
+        maximum_shard_cost_usd=maximum_shard_cost_usd,
     )
-    validate_upstream_sample(
-        input_path=input_path, sample_manifest_path=sample_manifest_path
+    context = prepare_generation_context(
+        input_path=input_path,
+        sample_manifest_path=sample_manifest_path,
+        config_path=config_path,
     )
-    config = load_generation_config(config_path)
-    sample = pl.read_parquet(input_path).sort("persona_id")
+    config = context.config
+    sample = context.sample
     if rows > sample.height:
         message = "Requested pilot exceeds the frozen sample"
         raise ValueError(message)
@@ -101,16 +256,7 @@ def run_pilot(
         message = "Pilot batch size exceeds the per-invocation row limit"
         raise ValueError(message)
     offsets = list(range(0, rows, batch_size))
-    mapping_path = config.job_title_mapping or DEFAULT_JOB_TITLE_MAPPING_PATH
-    mapping = load_job_title_mapping(mapping_path)
-    mapping_sha = job_title_mapping_sha256(mapping_path)
-    prompt = config.prompt.read_text(encoding="utf-8")
-    generation_context_sha = generation_context_sha256(
-        config=config,
-        prompt=prompt,
-        job_title_mapping=mapping,
-        job_title_mapping_sha256=mapping_sha,
-    )
+    generation_context_sha = context.generation_context_sha256
     if maximum_total_requests is not None and config.maximum_total_requests is not None:
         worst_case_requests = len(offsets) * config.maximum_total_requests
         if worst_case_requests > maximum_total_requests:
@@ -120,13 +266,31 @@ def run_pilot(
             )
             raise ValueError(message)
     pilot_id = persona_pilot_id(
-        input_sha256=sha256_file(input_path),
-        generation_config_sha256=sha256_file(config_path),
+        input_sha256=context.input_sha256,
+        generation_config_sha256=context.generation_config_sha256,
         generation_context_sha256=generation_context_sha,
         rows=rows,
         batch_size=batch_size,
+        input_price_per_million=input_price_per_million,
+        output_price_per_million=output_price_per_million,
+        maximum_campaign_cost_usd=maximum_campaign_cost_usd,
+        maximum_shard_cost_usd=maximum_shard_cost_usd,
     )
     pilot_dir = output_dir / pilot_id
+    budget = (
+        _PilotCostBudget(
+            path=pilot_dir / "pilot-cost-ledger.json",
+            input_sha256=context.input_sha256,
+            generation_config_sha256=context.generation_config_sha256,
+            model=config.model or "",
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+            maximum_campaign_cost_usd=maximum_campaign_cost_usd,
+            maximum_shard_cost_usd=maximum_shard_cost_usd,
+        )
+        if maximum_campaign_cost_usd is not None
+        else None
+    )
     batch_root = pilot_dir / "batches"
     run_dirs = _run_batches(
         offsets=offsets,
@@ -140,6 +304,13 @@ def run_pilot(
         output_dir=batch_root,
         expected_generation_context_sha256=generation_context_sha,
         maximum_total_requests=maximum_total_requests,
+        context=context,
+        budget=budget,
+        pilot_identity_sha256=(
+            budget.identity_sha256
+            if budget is not None
+            else sha256_text(canonical_json({"pilot_id": pilot_id}))
+        ),
         progress_callback=progress_callback,
     )
     manifests = [
@@ -164,6 +335,8 @@ def run_pilot(
         maximum_shard_requests=config.maximum_total_requests,
         input_price_per_million=input_price_per_million,
         output_price_per_million=output_price_per_million,
+        maximum_campaign_cost_usd=maximum_campaign_cost_usd,
+        maximum_shard_cost_usd=maximum_shard_cost_usd,
     )
 
 
@@ -180,6 +353,8 @@ def _merge_pilot(
     maximum_shard_requests: int | None,
     input_price_per_million: float,
     output_price_per_million: float,
+    maximum_campaign_cost_usd: float | None,
+    maximum_shard_cost_usd: float | None,
 ) -> Path:
     output = pl.concat(
         [
@@ -272,6 +447,8 @@ def _merge_pilot(
         batch_runs=batch_runs,
         maximum_total_requests=maximum_total_requests,
         maximum_shard_requests=maximum_shard_requests,
+        maximum_campaign_cost_usd=maximum_campaign_cost_usd,
+        maximum_shard_cost_usd=maximum_shard_cost_usd,
         requests=sum(manifest.requests for manifest in manifests),
         retries=sum(manifest.retries for manifest in manifests),
         prompt_tokens=prompt_tokens,
@@ -309,6 +486,9 @@ def _run_batches(
     output_dir: Path,
     expected_generation_context_sha256: str,
     maximum_total_requests: int | None,
+    context: GenerationContext,
+    budget: _PilotCostBudget | None,
+    pilot_identity_sha256: str | None,
     progress_callback: c.Callable[[int], None] | None,
 ) -> list[Path]:
     run_dirs = _find_completed_batches(
@@ -317,6 +497,7 @@ def _run_batches(
         batch_size=batch_size,
         output_dir=output_dir,
         expected_generation_context_sha256=expected_generation_context_sha256,
+        budget=budget,
         progress_callback=progress_callback,
     )
     remaining = iter(offset for offset in offsets if offset not in run_dirs)
@@ -326,6 +507,8 @@ def _run_batches(
     pending: dict[futures.Future[Path], int] = {}
 
     def submit(offset: int) -> None:
+        if budget is not None:
+            budget.reserve(offset=offset)
         pending[
             _submit_batch(
                 executor=executor,
@@ -336,6 +519,8 @@ def _run_batches(
                 sample_manifest_path=sample_manifest_path,
                 config_path=config_path,
                 output_dir=output_dir,
+                context=context,
+                pilot_identity_sha256=pilot_identity_sha256,
             )
         ] = offset
 
@@ -354,6 +539,7 @@ def _run_batches(
                 rows=rows,
                 batch_size=batch_size,
                 maximum_total_requests=maximum_total_requests,
+                budget=budget,
                 progress_callback=progress_callback,
             )
             if delay_between_batches and not pending:
@@ -374,6 +560,7 @@ def _find_completed_batches(
     batch_size: int,
     output_dir: Path,
     expected_generation_context_sha256: str,
+    budget: _PilotCostBudget | None,
     progress_callback: c.Callable[[int], None] | None,
 ) -> dict[int, Path]:
     """Find completed shards left by an earlier pilot attempt.
@@ -401,12 +588,16 @@ def _find_completed_batches(
             expected_offsets=expected_offsets,
             rows=rows,
             batch_size=batch_size,
-            expected_generation_context_sha256=(expected_generation_context_sha256),
+            expected_generation_context_sha256=expected_generation_context_sha256,
         )
         if manifest.offset in run_dirs:
             message = f"Duplicate completed pilot batch offset: {manifest.offset}"
             raise ValueError(message)
         run_dirs[manifest.offset] = run_dir
+        if budget is not None:
+            budget.settle(
+                offset=manifest.offset, measured_cost_usd=budget.measured_cost(manifest)
+            )
         _report_progress(
             callback=progress_callback, rows=min(batch_size, rows - manifest.offset)
         )
@@ -482,6 +673,7 @@ def _process_completed_batches(
     rows: int,
     batch_size: int,
     maximum_total_requests: int | None,
+    budget: _PilotCostBudget | None,
     progress_callback: c.Callable[[int], None] | None,
 ) -> int:
     """Collect completed pilot batches.
@@ -500,6 +692,13 @@ def _process_completed_batches(
                 continue
             raise
         run_dirs[offset] = run_dir
+        if budget is not None:
+            manifest = GenerationManifest.model_validate_json(
+                (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
+            )
+            budget.settle(
+                offset=offset, measured_cost_usd=budget.measured_cost(manifest)
+            )
         completed_count += 1
         _report_progress(
             callback=progress_callback, rows=min(batch_size, rows - offset)
@@ -517,6 +716,8 @@ def _submit_batch(
     sample_manifest_path: Path,
     config_path: Path,
     output_dir: Path,
+    context: GenerationContext,
+    pilot_identity_sha256: str | None,
 ) -> futures.Future[Path]:
     return executor.submit(
         generate_personas,
@@ -526,6 +727,8 @@ def _submit_batch(
         output_dir=output_dir,
         rows=min(batch_size, rows - offset),
         offset=offset,
+        context=context,
+        pilot_identity_sha256=pilot_identity_sha256,
     )
 
 
@@ -538,6 +741,8 @@ def _validate_pilot_arguments(
     maximum_total_requests: int | None,
     input_price_per_million: float,
     output_price_per_million: float,
+    maximum_campaign_cost_usd: float | None,
+    maximum_shard_cost_usd: float,
 ) -> None:
     if rows < 1:
         raise ValueError("Pilot rows must be at least 1")
@@ -551,3 +756,12 @@ def _validate_pilot_arguments(
         raise ValueError("Pilot request budget must be at least 1")
     if input_price_per_million < 0 or output_price_per_million < 0:
         raise ValueError("Pilot token prices must not be negative")
+    if maximum_campaign_cost_usd is not None and maximum_campaign_cost_usd <= 0:
+        raise ValueError("Pilot campaign cost cap must be positive")
+    if maximum_shard_cost_usd <= 0:
+        raise ValueError("Pilot shard cost reservation must be positive")
+    if (
+        maximum_campaign_cost_usd is not None
+        and maximum_shard_cost_usd > maximum_campaign_cost_usd
+    ):
+        raise ValueError("Pilot shard reservation exceeds the campaign cost cap")

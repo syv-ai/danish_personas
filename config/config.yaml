@@ -35,6 +35,10 @@ build_dataset:
   rows: null
   concurrency: 4
   request_limit: 30
+  input_price_per_million: 0.0
+  output_price_per_million: 0.0
+  maximum_campaign_cost_usd: null
+  maximum_shard_cost_usd: 1.0
   hf_repo: null
 
 persona_dashboard:

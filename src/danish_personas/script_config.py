@@ -18,6 +18,10 @@ class BuildDatasetConfig(StrictModel):
     rows: int = Field(gt=0)
     concurrency: int = Field(ge=1, le=8)
     request_limit: int = Field(gt=0)
+    input_price_per_million: float = Field(default=0.0, ge=0.0)
+    output_price_per_million: float = Field(default=0.0, ge=0.0)
+    maximum_campaign_cost_usd: float | None = Field(default=None, gt=0.0)
+    maximum_shard_cost_usd: float = Field(default=1.0, gt=0.0)
     hf_repo: str | None = None
 
 

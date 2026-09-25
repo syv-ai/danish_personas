@@ -70,8 +70,10 @@ def _run(*, config: DictConfig) -> None:
             concurrency=script_config.concurrency,
             delay_between_batches=0.0,
             maximum_total_requests=script_config.request_limit,
-            input_price_per_million=0.0,
-            output_price_per_million=0.0,
+            input_price_per_million=script_config.input_price_per_million,
+            output_price_per_million=script_config.output_price_per_million,
+            maximum_campaign_cost_usd=script_config.maximum_campaign_cost_usd,
+            maximum_shard_cost_usd=script_config.maximum_shard_cost_usd,
             progress_callback=progress.update,
         )
         output_path = _merged_output_path(pilot_dir=pilot_dir)
