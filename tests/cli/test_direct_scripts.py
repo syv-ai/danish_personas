@@ -52,6 +52,10 @@ def test_build_dataset_prints_merged_path(
             f"build_dataset.output_dir={tmp_path / 'output'}",
             "build_dataset.rows=1",
             "build_dataset.request_limit=2",
+            "build_dataset.input_price_per_million=0.3",
+            "build_dataset.output_price_per_million=1.2",
+            "build_dataset.maximum_campaign_cost_usd=10.0",
+            "build_dataset.maximum_shard_cost_usd=0.5",
             "llm.model=overridden-model",
         ]
     )
@@ -61,8 +65,10 @@ def test_build_dataset_prints_merged_path(
     captured = capsys.readouterr()
     assert captured.out == f"{output_path}\n"
     assert "Starting persona dataset build" in captured.err
-    assert calls["input_price_per_million"] == 0.0
-    assert calls["output_price_per_million"] == 0.0
+    assert calls["input_price_per_million"] == 0.3
+    assert calls["output_price_per_million"] == 1.2
+    assert calls["maximum_campaign_cost_usd"] == 10.0
+    assert calls["maximum_shard_cost_usd"] == 0.5
     config_path = calls["config_path"]
     assert isinstance(config_path, Path)
     assert load_generation_config(config_path).model == "overridden-model"

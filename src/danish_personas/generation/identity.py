@@ -34,6 +34,10 @@ def persona_pilot_id(
     generation_context_sha256: str,
     rows: int,
     batch_size: int,
+    input_price_per_million: float = 0.0,
+    output_price_per_million: float = 0.0,
+    maximum_campaign_cost_usd: float | None = None,
+    maximum_shard_cost_usd: float | None = None,
 ) -> str:
     """Return the identity for a merged persona pilot.
 
@@ -48,6 +52,14 @@ def persona_pilot_id(
             Number of pilot records.
         batch_size:
             Requested maximum records per shard.
+        input_price_per_million:
+            Input-token list price.
+        output_price_per_million:
+            Output-token list price.
+        maximum_campaign_cost_usd:
+            Optional campaign-wide cost cap.
+        maximum_shard_cost_usd:
+            Conservative per-shard reservation.
 
     Returns:
         Sixteen-character content identity.
@@ -60,6 +72,10 @@ def persona_pilot_id(
                 "generation_context_sha256": generation_context_sha256,
                 "rows": rows,
                 "batch_size": batch_size,
+                "input_price_per_million": input_price_per_million,
+                "output_price_per_million": output_price_per_million,
+                "maximum_campaign_cost_usd": maximum_campaign_cost_usd,
+                "maximum_shard_cost_usd": maximum_shard_cost_usd,
             }
         )
     )[:16]

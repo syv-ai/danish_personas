@@ -286,6 +286,8 @@ class PilotManifest(StrictModel):
     batch_runs: list[PilotBatchReference]
     maximum_total_requests: int | None = Field(ge=1)
     maximum_shard_requests: int | None = Field(ge=1)
+    maximum_campaign_cost_usd: float | None = Field(default=None, gt=0.0)
+    maximum_shard_cost_usd: float | None = Field(default=None, gt=0.0)
     requests: int = Field(ge=0)
     retries: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
@@ -305,5 +307,66 @@ class RequestLedger(StrictModel):
     """Durable HTTP-attempt budget for one generation run."""
 
     generation_context_sha256: str
+    pilot_identity_sha256: str | None = None
     attempts: int = Field(ge=0)
     maximum_attempts: int | None = Field(ge=1)
+
+
+class PilotCostReservation(StrictModel):
+    """One durable conservative reservation for a pilot shard."""
+
+    offset: int = Field(ge=0)
+    maximum_cost_usd: float = Field(gt=0.0)
+    status: t.Literal["reserved", "settled"]
+    settled_cost_usd: float | None = Field(default=None, ge=0.0)
+
+
+class PilotCostLedger(StrictModel):
+    """Durable, content-bound campaign cost reservations."""
+
+    input_sha256: str
+    generation_config_sha256: str
+    model: str
+    input_price_per_million_usd: float = Field(ge=0.0)
+    output_price_per_million_usd: float = Field(ge=0.0)
+    maximum_campaign_cost_usd: float = Field(gt=0.0)
+    maximum_shard_cost_usd: float = Field(gt=0.0)
+    reservations: list[PilotCostReservation]
+
+    @model_validator(mode="after")
+    def validate_reservations(self) -> "PilotCostLedger":
+        """Reject malformed or over-cap reservation state.
+
+        Returns:
+            The validated ledger.
+
+        Raises:
+            ValueError:
+                If offsets, states, or totals are inconsistent.
+        """
+        offsets = [item.offset for item in self.reservations]
+        if len(offsets) != len(set(offsets)):
+            raise ValueError("Pilot cost ledger contains duplicate shard offsets")
+        for item in self.reservations:
+            if item.status == "settled" and item.settled_cost_usd is None:
+                raise ValueError("Settled reservation is missing its measured cost")
+            if item.status == "reserved" and item.settled_cost_usd is not None:
+                raise ValueError("Reserved reservation has a measured cost")
+            if (
+                item.settled_cost_usd is not None
+                and item.settled_cost_usd > item.maximum_cost_usd + 1e-12
+            ):
+                raise ValueError("Measured reservation cost exceeds its maximum")
+        committed = sum(
+            item.settled_cost_usd or 0.0
+            for item in self.reservations
+            if item.status == "settled"
+        )
+        reserved = sum(
+            item.maximum_cost_usd
+            for item in self.reservations
+            if item.status == "reserved"
+        )
+        if committed + reserved > self.maximum_campaign_cost_usd + 1e-12:
+            raise ValueError("Pilot cost reservations exceed the campaign cap")
+        return self
