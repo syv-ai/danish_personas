@@ -275,6 +275,7 @@ class PilotCostLedger(StrictModel):
     output_price_per_million_usd: float = Field(ge=0.0)
     maximum_campaign_cost_usd: float = Field(gt=0.0)
     maximum_shard_cost_usd: float = Field(gt=0.0)
+    maximum_shard_requests: int | None = Field(ge=1)
     reservations: list[PilotCostReservation]
 
     @model_validator(mode="after")

@@ -15,10 +15,12 @@ from ..io import canonical_json, sha256_file, sha256_text, write_json
 from .identity import persona_pilot_id
 from .models import (
     GenerationManifest,
+    PersonaCheckpoint,
     PilotBatchReference,
     PilotCostLedger,
     PilotCostReservation,
     PilotManifest,
+    RequestLedger,
 )
 from .pipeline import GenerationContext, generate_personas, prepare_generation_context
 
@@ -118,6 +120,11 @@ def run_pilot(
                 f"limit ({maximum_total_requests})"
             )
             raise ValueError(message)
+    maximum_shard_requests = _effective_shard_requests(
+        config_maximum_requests=config.maximum_total_requests,
+        batch_size=batch_size,
+        maximum_http_attempts=config.maximum_http_attempts,
+    )
     pilot_id = persona_pilot_id(
         input_sha256=context.input_sha256,
         generation_config_sha256=context.generation_config_sha256,
@@ -128,6 +135,7 @@ def run_pilot(
         output_price_per_million=output_price_per_million,
         maximum_campaign_cost_usd=maximum_campaign_cost_usd,
         maximum_shard_cost_usd=maximum_shard_cost_usd,
+        maximum_shard_requests=maximum_shard_requests,
     )
     pilot_dir = output_dir / pilot_id
     budget = (
@@ -140,6 +148,7 @@ def run_pilot(
             output_price_per_million=output_price_per_million,
             maximum_campaign_cost_usd=maximum_campaign_cost_usd,
             maximum_shard_cost_usd=maximum_shard_cost_usd,
+            maximum_shard_requests=maximum_shard_requests,
         )
         if maximum_campaign_cost_usd is not None
         else None
@@ -185,7 +194,7 @@ def run_pilot(
         sample_manifest_path=sample_manifest_path,
         config_path=config_path,
         maximum_total_requests=maximum_total_requests,
-        maximum_shard_requests=config.maximum_total_requests,
+        maximum_shard_requests=maximum_shard_requests,
         input_price_per_million=input_price_per_million,
         output_price_per_million=output_price_per_million,
         maximum_campaign_cost_usd=maximum_campaign_cost_usd,
@@ -207,6 +216,7 @@ class _PilotCostBudget:
         output_price_per_million: float,
         maximum_campaign_cost_usd: float,
         maximum_shard_cost_usd: float,
+        maximum_shard_requests: int | None = None,
     ) -> None:
         self._path = path
         self._lock = threading.RLock()
@@ -218,6 +228,7 @@ class _PilotCostBudget:
             "output_price_per_million_usd": output_price_per_million,
             "maximum_campaign_cost_usd": maximum_campaign_cost_usd,
             "maximum_shard_cost_usd": maximum_shard_cost_usd,
+            "maximum_shard_requests": maximum_shard_requests,
         }
         with self._lock:
             self._load()
@@ -255,6 +266,9 @@ class _PilotCostBudget:
             ),
             maximum_shard_cost_usd=t.cast(
                 float, self._identity["maximum_shard_cost_usd"]
+            ),
+            maximum_shard_requests=t.cast(
+                int | None, self._identity["maximum_shard_requests"]
             ),
             reservations=[],
         )
@@ -315,12 +329,30 @@ class _PilotCostBudget:
             )
             self._write(ledger)
 
-    def settle(self, *, offset: int, measured_cost_usd: float) -> None:
-        """Settle a successful shard to measured list-price token cost.
+    def settle(
+        self,
+        *,
+        offset: int,
+        measured_cost_usd: float,
+        run_dir: Path | None = None,
+        manifest: GenerationManifest | None = None,
+    ) -> None:
+        """Settle a shard, retaining a reservation for unaccounted attempts.
+
+        Args:
+            offset:
+                Shard offset whose reservation is being settled.
+            measured_cost_usd:
+                Measured list-price cost of durable successful responses.
+            run_dir (optional):
+                Completed shard directory containing durable request facts.
+            manifest (optional):
+                Validated manifest for ``run_dir``. Loaded when omitted.
 
         Raises:
             ValueError:
-                If the reservation is missing or the measured cost exceeds it.
+                If durable request facts are inconsistent or the reservation is
+                exceeded.
         """
         with self._lock:
             ledger = self._load()
@@ -331,13 +363,87 @@ class _PilotCostBudget:
                 raise ValueError(f"Missing cost reservation for shard offset {offset}")
             if measured_cost_usd > reservation.maximum_cost_usd + 1e-12:
                 raise ValueError("Measured shard cost exceeds its reservation")
+            maximum_requests = t.cast(
+                int | None, self._identity["maximum_shard_requests"]
+            )
+            unknown_attempts = (
+                _unknown_attempts(
+                    run_dir=run_dir,
+                    manifest=manifest,
+                    maximum_requests=maximum_requests,
+                )
+                if run_dir is not None
+                else 0
+            )
+            if maximum_requests is None:
+                unknown_share = reservation.maximum_cost_usd
+            else:
+                unknown_share = reservation.maximum_cost_usd / maximum_requests
+            remaining = reservation.maximum_cost_usd - measured_cost_usd
+            retained_unknown_cost = min(remaining, unknown_attempts * unknown_share)
+            settled_cost = measured_cost_usd + retained_unknown_cost
             if reservation.status == "settled":
-                if reservation.settled_cost_usd != measured_cost_usd:
+                if reservation.settled_cost_usd != settled_cost:
                     raise ValueError("Settled shard cost was changed")
                 return
             reservation.status = "settled"
-            reservation.settled_cost_usd = measured_cost_usd
+            reservation.settled_cost_usd = settled_cost
             self._write(ledger)
+
+
+def _unknown_attempts(
+    *, run_dir: Path, manifest: GenerationManifest | None, maximum_requests: int | None
+) -> int:
+    """Count attempts without durable successful-response token usage.
+
+    Returns:
+        Number of HTTP attempts without durable successful-response usage.
+
+    Raises:
+        ValueError:
+            If the manifest, request ledger, or checkpoints disagree.
+    """
+    manifest_path = run_dir / "generation-manifest.json"
+    if manifest is None:
+        manifest = GenerationManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    ledger = RequestLedger.model_validate_json(
+        (run_dir / "request-ledger.json").read_text(encoding="utf-8")
+    )
+    if manifest.offset < 0 or manifest.requests != ledger.attempts:
+        raise ValueError("Generation request facts do not agree")
+    if maximum_requests is not None and manifest.requests > maximum_requests:
+        raise ValueError("Generation requests exceed the shard reservation")
+    checkpoint_attempts = 0
+    successful_attempts = 0
+    checkpoint_dir = run_dir / "checkpoints"
+    for checkpoint_path in checkpoint_dir.glob("*.json"):
+        if checkpoint_path.name.endswith(".attributes.json"):
+            continue
+        checkpoint = PersonaCheckpoint.model_validate_json(
+            checkpoint_path.read_text(encoding="utf-8")
+        )
+        checkpoint_attempts += checkpoint.http_requests
+        successful_attempts += sum(
+            response.request_attempts for response in checkpoint.responses
+        )
+    if successful_attempts > checkpoint_attempts:
+        raise ValueError("Generation checkpoint responses are inconsistent")
+    if checkpoint_attempts > manifest.requests:
+        raise ValueError("Generation checkpoint requests exceed the manifest")
+    if successful_attempts > manifest.requests:
+        raise ValueError("Generation response attempts exceed the manifest")
+    return manifest.requests - successful_attempts
+
+
+def _effective_shard_requests(
+    *, config_maximum_requests: int | None, batch_size: int, maximum_http_attempts: int
+) -> int:
+    """Return a finite per-shard attempt bound for conservative accounting."""
+    if config_maximum_requests is not None:
+        return config_maximum_requests
+    return batch_size * maximum_http_attempts
 
 
 def _merge_pilot(
@@ -596,7 +702,10 @@ def _find_completed_batches(
         run_dirs[manifest.offset] = run_dir
         if budget is not None:
             budget.settle(
-                offset=manifest.offset, measured_cost_usd=budget.measured_cost(manifest)
+                offset=manifest.offset,
+                measured_cost_usd=budget.measured_cost(manifest),
+                run_dir=run_dir,
+                manifest=manifest,
             )
         _report_progress(
             callback=progress_callback, rows=min(batch_size, rows - manifest.offset)
@@ -697,7 +806,10 @@ def _process_completed_batches(
                 (run_dir / "generation-manifest.json").read_text(encoding="utf-8")
             )
             budget.settle(
-                offset=offset, measured_cost_usd=budget.measured_cost(manifest)
+                offset=offset,
+                measured_cost_usd=budget.measured_cost(manifest),
+                run_dir=run_dir,
+                manifest=manifest,
             )
         completed_count += 1
         _report_progress(
