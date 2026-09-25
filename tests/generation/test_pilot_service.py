@@ -1,6 +1,7 @@
 """Public pilot-service lifecycle and scheduling tests."""
 
 import json
+import typing as t
 from pathlib import Path
 
 import polars as pl
@@ -9,6 +10,22 @@ from generation_test_helpers import MockGenerationClient, write_generation_input
 
 from danish_personas.generation.pilot import run_pilot
 from danish_personas.io import write_json
+
+
+class _PilotKwargs(t.TypedDict):
+    """Keyword arguments shared by pilot-service tests."""
+
+    input_path: Path
+    sample_manifest_path: Path
+    config_path: Path
+    output_dir: Path
+    rows: int
+    batch_size: int
+    concurrency: int
+    delay_between_batches: float
+    maximum_total_requests: int
+    input_price_per_million: float
+    output_price_per_million: float
 
 
 def test_pilot_service_preserves_order_enforces_budget_and_resumes(
@@ -21,7 +38,7 @@ def test_pilot_service_preserves_order_enforces_budget_and_resumes(
     )
     MockGenerationClient.requests = 0
 
-    pilot_kwargs = {
+    pilot_kwargs: _PilotKwargs = {
         "input_path": paths["sample"],
         "sample_manifest_path": paths["sample_manifest"],
         "config_path": paths["config"],

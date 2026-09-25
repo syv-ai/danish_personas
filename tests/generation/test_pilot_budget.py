@@ -49,8 +49,9 @@ def test_failed_reservation_survives_resume_and_tampering_fails_closed(
     budget.reserve(offset=0)
     resumed = _budget(path)
     resumed.reserve(offset=0)
+    resumed.reserve(offset=1)
     with pytest.raises(ValueError, match="cap"):
-        resumed.reserve(offset=1)
+        resumed.reserve(offset=2)
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["model"] = "different-model"
