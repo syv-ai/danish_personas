@@ -7,8 +7,8 @@ that a generated persona omits the corresponding idea.
 from __future__ import annotations
 
 import re
-import typing as t
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import polars as pl
@@ -55,9 +55,11 @@ def check_generated_fields(
 ) -> GeneratedChecksReport:
     """Check objective generated-field contracts and flag text for human review.
 
-    ``same_sex_partner_target`` is read from the row when present. Otherwise, an
-    effective config derives it deterministically from persona ID and its configured
-    probability. Text diagnostics never assert that absence of a phrase is definitive.
+    The partner target is derived only from the effective generation config and
+    persona ID; a row-level target is not trusted as a config binding. Without config,
+    partnered rows receive an advisory unable-to-check finding. Text diagnostics are
+    advisory pattern matches: absence of a phrase is not proof that an idea is absent,
+    and a detected pattern is not proof of a contradiction.
 
     Returns:
         Aggregated hard-failure and text-review counts and findings.
@@ -97,61 +99,59 @@ def check_generated_fields(
     )
 
 
-def _check_row(
-    row: dict[str, t.Any],
+def _check_partner_target(
+    row: dict[str, object],
     persona_id: str,
-    failures: list[Finding],
-    flags: list[Finding],
     config: GenerationConfig | None,
-    mapping: JobFunctionTitleMapping | None,
+    partner_gender: object,
+    fail: Callable[[str], None],
+    flag: Callable[[str], None],
 ) -> None:
-    def fail(name: str) -> None:
-        failures.append(Finding(persona_id, name))
+    """Check partner gender only against the effective generation configuration."""
+    if config is None:
+        flag("partner_target_unavailable")
+        return
+    sex = row.get("sex")
+    if not isinstance(sex, str):
+        fail("partner_target_input")
+        return
+    target = same_sex_partner_target(
+        persona_id=persona_id, probability=config.same_sex_partner_probability
+    )
+    try:
+        expected = required_partner_gender(sex=sex, same_sex_target=target)
+    except KeyError, ValueError:
+        fail("partner_target_input")
+        return
+    if partner_gender != expected:
+        fail("partner_target_gender")
 
-    def flag(name: str) -> None:
-        flags.append(Finding(persona_id, name))
 
-    marital = row["marital_status"]
-    detail = row["legal_status_detail"]
-    relationship = row["current_relationship_status"]
-    partner_gender = row["partner_gender"]
-    if (marital == "married_or_separated") != (detail is not None):
-        fail("legal_status_detail_presence")
-    if detail == "married" and relationship != "partnered":
-        fail("married_requires_partnered")
-    if (relationship == "partnered") != (partner_gender is not None):
-        fail("partner_gender_presence")
-
-    target = row.get("same_sex_partner_target")
-    if target is None and config is not None:
-        target = same_sex_partner_target(
-            persona_id=persona_id, probability=config.same_sex_partner_probability
+def _check_job_title(
+    row: dict[str, object],
+    mapping: JobFunctionTitleMapping,
+    fail: Callable[[str], None],
+) -> None:
+    """Check a generated job title against its exact configured allowlist."""
+    code, title = row.get("job_function_code"), row.get("job_title")
+    function = mapping.job_functions.get(code) if isinstance(code, str) else None
+    allowed = function.titles if function is not None else []
+    if title is None:
+        if allowed:
+            fail("job_title_missing")
+    elif isinstance(title, str) and title not in allowed:
+        check = (
+            "job_title_case_only"
+            if any(title.casefold() == item.casefold() for item in allowed)
+            else "job_title_not_allowed"
         )
-    if target is not None and relationship == "partnered":
-        try:
-            expected = required_partner_gender(sex=row["sex"], same_sex_target=target)
-        except KeyError, ValueError:
-            fail("partner_target_input")
-        else:
-            if partner_gender != expected:
-                fail("partner_target_gender")
+        fail(check)
+    elif not isinstance(title, str):
+        fail("job_title_not_allowed")
 
-    if mapping is not None:
-        code, title = row.get("job_function_code"), row.get("job_title")
-        allowed = (
-            mapping.job_functions.get(code).titles
-            if code in mapping.job_functions
-            else []
-        )
-        if title is None:
-            if allowed:
-                fail("job_title_missing")
-        elif title not in allowed:
-            if any(title.casefold() == candidate.casefold() for candidate in allowed):
-                fail("job_title_case_only")
-            else:
-                fail("job_title_not_allowed")
 
+def _check_lists(row: dict[str, object], fail: Callable[[str], None]) -> None:
+    """Check list-valued generated fields for valid, unique items and formatting."""
     for field in ("skills_and_expertise", "hobbies_and_interests"):
         values = row[field]
         if not isinstance(values, (list, tuple)) or any(
@@ -170,6 +170,42 @@ def _check_row(
             ):
                 fail("interest_format")
 
+
+def _check_row(
+    row: dict[str, object],
+    persona_id: str,
+    failures: list[Finding],
+    flags: list[Finding],
+    config: GenerationConfig | None,
+    mapping: JobFunctionTitleMapping | None,
+) -> None:
+    def fail(name: str) -> None:
+        failures.append(Finding(persona_id, name))
+
+    def flag(name: str) -> None:
+        flags.append(Finding(persona_id, name))
+
+    marital = row["marital_status"]
+    detail = row["legal_status_detail"]
+    relationship = row["current_relationship_status"]
+    partner_gender = row["partner_gender"]
+    if marital != "married_or_separated" and detail is not None:
+        fail("legal_status_detail_presence")
+    elif marital == "married_or_separated" and detail not in {"married", "separated"}:
+        fail("legal_status_detail_presence")
+    if detail == "married" and relationship != "partnered":
+        fail("married_requires_partnered")
+    if (relationship == "partnered") != (partner_gender is not None):
+        fail("partner_gender_presence")
+
+    if relationship == "partnered":
+        _check_partner_target(row, persona_id, config, partner_gender, fail, flag)
+
+    if mapping is not None:
+        _check_job_title(row, mapping, fail)
+
+    _check_lists(row, fail)
+
     text = row["persona"]
     if not isinstance(text, str):
         flag("persona_text_unavailable")
@@ -178,12 +214,24 @@ def _check_row(
 
 
 def _text_review(
-    row: dict[str, t.Any], text: str, flag: t.Callable[[str], None]
+    row: dict[str, object], text: str, flag: Callable[[str], None]
 ) -> None:
-    """Apply intentionally conservative literal-pattern review diagnostics."""
+    """Emit advisory pattern matches that require human interpretation."""
     folded = text.casefold()
     if not 300 <= len(text) <= 900:
         flag("persona_length")
+    _review_literal_fields(row, folded, flag)
+    _review_relationship(row, folded, flag)
+    _review_safety(folded, flag)
+    _review_age(row, folded, flag)
+    _review_conflicts(row, folded, flag)
+    _review_legal_status(row, folded, flag)
+
+
+def _review_literal_fields(
+    row: dict[str, object], folded: str, flag: Callable[[str], None]
+) -> None:
+    """Flag literal phrases not detected; paraphrases may still satisfy intent."""
     if not re.search(r"\b(?:18|19|[2-9]\d|1[01]\d|12[0-5])\s*[- ]?år", folded):
         flag("age_not_literal")
     for field, check in (
@@ -194,11 +242,25 @@ def _text_review(
         value = row.get(field)
         if value and str(value).casefold() not in folded:
             flag(check)
+
+
+def _review_relationship(
+    row: dict[str, object], folded: str, flag: Callable[[str], None]
+) -> None:
+    """Flag relationship wording patterns for human review."""
     if row.get("current_relationship_status") == "partnered" and not re.search(
         r"\b(partner|kæreste|ægtefælle|mand|kone)\b", folded
     ):
         flag("partner_term_not_literal")
-    unsafe = (
+    if row.get("current_relationship_status") == "not_partnered" and re.search(
+        r"\b(?:min|sin|hendes|hans)\s+(?:partner|kæreste|ægtefælle)\b", folded
+    ):
+        flag("partner_conflict")
+
+
+def _review_safety(folded: str, flag: Callable[[str], None]) -> None:
+    """Flag literal safety patterns without deciding whether text is harmful."""
+    unsafe_patterns = (
         r"\bvedkommende\b",
         r"\bpersonen\b",
         r"\bkan\s+\w+\s+være\b",
@@ -206,15 +268,26 @@ def _text_review(
         r"https?://|www\.",
         r"\b\d{10}\b",
     )
-    if any(re.search(pattern, folded) for pattern in unsafe):
+    if any(re.search(pattern, folded) for pattern in unsafe_patterns):
         flag("unsafe_or_forbidden_pattern")
-    # Explicit numeric age disagreement is review-worthy, never automatically rejected.
+
+
+def _review_age(
+    row: dict[str, object], folded: str, flag: Callable[[str], None]
+) -> None:
+    """Flag explicit age disagreement as an advisory review item."""
     age = row.get("age")
-    if age is not None and re.search(r"\b(\d{2,3})\s*[- ]?år", folded):
-        if any(
-            int(match) != age for match in re.findall(r"\b(\d{2,3})\s*[- ]?år", folded)
-        ):
-            flag("age_conflict")
+    if isinstance(age, int) and any(
+        int(match) != age for match in re.findall(r"\b(\d{2,3})\s*[- ]?år", folded)
+    ):
+        flag("age_conflict")
+
+
+def _review_conflicts(
+    row: dict[str, object], folded: str, flag: Callable[[str], None]
+) -> None:
+    """Flag possible contradictions; negation scope is not inferred."""
+    negation = r"\b(?:ikke|ikke fra|bor ikke i|arbejder ikke som)\b"
     for field, check in (
         ("origin_country_da", "origin_conflict"),
         ("municipality", "municipality_conflict"),
@@ -222,25 +295,28 @@ def _text_review(
     ):
         value = row.get(field)
         if (
-            value
+            isinstance(value, str)
             and value.casefold() in folded
-            and re.search(r"\b(?:ikke|ikke fra|bor ikke i|arbejder ikke som)\b", folded)
+            and re.search(negation, folded)
         ):
             flag(check)
-    if row.get("current_relationship_status") == "not_partnered" and re.search(
-        r"\b(?:min|sin|hendes|hans)\s+(?:partner|kæreste|ægtefælle)\b", folded
-    ):
-        flag("partner_conflict")
+
+
+def _review_legal_status(
+    row: dict[str, object], folded: str, flag: Callable[[str], None]
+) -> None:
+    """Flag absent literal legal-status terms for review, not as proof of omission."""
+    detail_patterns = {"married": r"gift|ægtefælle", "separated": r"separeret"}
     detail = row.get("legal_status_detail")
-    if detail:
-        words = {"married": r"gift|ægtefælle", "separated": r"separeret"}
-        if not re.search(words[detail], folded):
+    if isinstance(detail, str) and detail in detail_patterns:
+        if not re.search(detail_patterns[detail], folded):
             flag("legal_status_not_literal")
-    statuses = {
+    status_patterns = {
         "never_married": r"aldrig været gift",
         "divorced": r"skilt",
         "widowed": r"enke|enkemand",
     }
     status = row.get("marital_status")
-    if status in statuses and not re.search(statuses[status], folded):
-        flag("marital_status_not_literal")
+    if isinstance(status, str) and status in status_patterns:
+        if not re.search(status_patterns[status], folded):
+            flag("marital_status_not_literal")

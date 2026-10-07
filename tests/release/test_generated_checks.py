@@ -1,7 +1,10 @@
 """Offline contracts for generated-field checks and text-review diagnostics."""
 
+from pathlib import Path
+
 import polars as pl
 
+from danish_personas.generation.config import load_generation_config
 from danish_personas.generation.job_titles import load_job_title_mapping
 from danish_personas.release.generated_checks import check_generated_fields
 
@@ -100,8 +103,8 @@ def test_each_marital_status_has_expected_detail_contract() -> None:
     } == {"missing", "unexpected"}
 
 
-def test_same_sex_target_and_exact_job_title_allowlist() -> None:
-    """Partner targets and case-only title deviations are rejected."""
+def test_case_only_and_unlisted_job_titles_are_distinguished() -> None:
+    """Case-only and genuinely unlisted title deviations have distinct findings."""
     mapping = load_job_title_mapping()
     code = next(iter(mapping.job_functions))
     exact_title = mapping.job_functions[code].titles[0]
@@ -120,26 +123,50 @@ def test_same_sex_target_and_exact_job_title_allowlist() -> None:
         partner_gender="female",
         same_sex_partner_target=True,
     )
-    wrong = _row(
-        persona_id="wrong",
+    case_only = _row(
+        persona_id="case-only", job_function_code=code, job_title=case_only_title
+    )
+    unlisted = _row(
+        persona_id="unlisted",
         job_function_code=code,
-        job_title=case_only_title,
+        job_title="A completely different title",
+    )
+    target_mismatch = _row(
+        persona_id="target-mismatch",
         current_relationship_status="partnered",
         partner_gender="male",
-        same_sex_partner_target=True,
+    )
+    config = load_generation_config(Path("config/config.yaml")).model_copy(
+        update={"same_sex_partner_probability": 1.0}
     )
     report = check_generated_fields(
-        pl.DataFrame([base, wrong]), job_title_mapping=mapping
+        pl.DataFrame([base, case_only, unlisted, target_mismatch]),
+        job_title_mapping=mapping,
+        generation_config=config,
     )
-    assert {
-        item.check for item in report.hard_failures if item.persona_id == "wrong"
-    } == {"job_title_case_only", "partner_target_gender"}
+    checks_by_persona = {
+        persona_id: {
+            item.check for item in report.hard_failures if item.persona_id == persona_id
+        }
+        for persona_id in ("case-only", "unlisted", "target-mismatch")
+    }
+    assert checks_by_persona == {
+        "case-only": {"job_title_case_only"},
+        "unlisted": {"job_title_not_allowed"},
+        "target-mismatch": {"partner_target_gender"},
+    }
 
 
-def test_text_absence_is_advisory_and_conflicting_age_is_review_flag() -> None:
-    """Text mismatch is advisory and an explicit age conflict is flagged."""
-    row = _row(age=37, persona="Hun er 42 år og holder af at være ude i naturen.")
+def test_missing_target_config_is_advisory_and_text_flags_are_review_only() -> None:
+    """Missing target config and text mismatches remain advisory findings."""
+    row = _row(
+        age=37,
+        persona="Hun er 42 år og holder af at være ude i naturen.",
+        current_relationship_status="partnered",
+        partner_gender="female",
+    )
     report = check_generated_fields(pl.DataFrame([row]))
     assert report.hard_failures == ()
+    assert "partner_target_unavailable" in report.review_flag_counts
     assert "age_conflict" in report.review_flag_counts
     assert "origin_not_literal" in report.review_flag_counts
