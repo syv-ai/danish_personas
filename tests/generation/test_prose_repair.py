@@ -39,10 +39,20 @@ def config() -> GenerationConfig:
 class FakeClient:
     """Capture the request payload and emulate durable attempt callbacks."""
 
-    def __init__(self, content: str, attempts: int = 1) -> None:
+    def __init__(
+        self,
+        content: str,
+        attempts: int = 1,
+        model: str = "local-model",
+        prompt_tokens: int = 10,
+        completion_tokens: int = 20,
+    ) -> None:
         """Initialise canned response content and request count."""
         self.content = content
         self.attempts = attempts
+        self.model = model
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
         self.payload: dict[str, object] | None = None
         self.reservations = 0
 
@@ -65,11 +75,11 @@ class FakeClient:
             self.reservations += 1
         return LLMResponse(
             response_id="response-1",
-            model="local-model",
+            model=self.model,
             content=self.content,
-            prompt_tokens=10,
-            completion_tokens=20,
-            total_tokens=30,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.prompt_tokens + self.completion_tokens,
             request_attempts=self.attempts,
             latency_seconds=0,
             raw_response_sha256=sha256(b"response").hexdigest(),
@@ -123,6 +133,11 @@ def test_schema_prose_repair_payload_allowlist_and_resume(
         "gender": "female",
         "partner_gender": "male",
         "sexual_orientation": "private",
+        "partner_sexual_orientation": "private",
+        "transgender": True,
+        "partner_transgender": True,
+        "variation_in_sex_characteristics": True,
+        "partner_variation_in_sex_characteristics": True,
         "same_sex_partner_target": True,
         "job_title": "lærer",
     }
@@ -134,6 +149,17 @@ def test_schema_prose_repair_payload_allowlist_and_resume(
         "partner_gender": "male",
         "job_title": "lærer",
     }
+    assert {"gender", "partner_gender"}.issubset(client.payload)
+    assert not set(client.payload).intersection(
+        {
+            "sexual_orientation",
+            "partner_sexual_orientation",
+            "transgender",
+            "partner_transgender",
+            "variation_in_sex_characteristics",
+            "partner_variation_in_sex_characteristics",
+        }
+    )
     assert set(row.items()).issubset(set(result[0].items()))
     resumed = _run(tmp_path, config, FakeClient("unused"), rows=[row])
     assert resumed == result
@@ -168,6 +194,58 @@ def test_attempt_reservations_are_durable_and_cap_checked(
         _run(tmp_path, config, client, cost_cap_usd=0.0000001)
     ledger = json.loads((tmp_path / "ledger.json").read_text())
     assert ledger["reservations"] == []
+
+    retry_dir = tmp_path / "retry"
+    _run(retry_dir, config, client, cost_cap_usd=100.0)
+    retry_ledger = json.loads((retry_dir / "ledger.json").read_text())
+    assert len(retry_ledger["reservations"]) == 2
+    assert client.reservations == 2
+
+
+def test_malformed_ledger_reservation_fails_closed(
+    tmp_path: Path, config: GenerationConfig
+) -> None:
+    """Reject malformed durable request accounting before any provider call."""
+    _run(tmp_path, config, FakeClient(json.dumps({"persona": "d" * 300})))
+    ledger_path = tmp_path / "ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    ledger["reservations"] = [{"id": "a", "usd": "not-a-number"}]
+    ledger_path.write_text(json.dumps(ledger))
+    client = FakeClient("unused")
+    with pytest.raises(RepairError, match="Malformed repair ledger reservation"):
+        _run(tmp_path, config, client)
+    assert client.reservations == 0
+
+
+def test_cost_cap_of_one_hundred_usd_is_allowed(
+    tmp_path: Path, config: GenerationConfig
+) -> None:
+    """Accept the inclusive maximum cap without weakening per-attempt checks."""
+    client = FakeClient(json.dumps({"persona": "d" * 300}))
+    _run(tmp_path, config, client, cost_cap_usd=100.0)
+    assert client.reservations == 1
+
+
+@pytest.mark.parametrize(
+    ("response_model", "prompt_tokens", "completion_tokens"),
+    [("other-model", 10, 20), ("local-model", 100_000, 20), ("local-model", 10, 257)],
+)
+def test_response_usage_and_model_must_match_reservation(
+    tmp_path: Path,
+    config: GenerationConfig,
+    response_model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> None:
+    """Fail closed when provider metadata exceeds the requested bounds."""
+    client = FakeClient(
+        json.dumps({"persona": "d" * 300}),
+        model=response_model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    with pytest.raises(RepairError, match="response model|usage exceeds"):
+        _run(tmp_path, config, client)
 
 
 @pytest.mark.parametrize("cap", [float("nan"), float("inf"), 100.01])
