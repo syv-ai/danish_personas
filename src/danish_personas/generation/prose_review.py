@@ -400,17 +400,6 @@ def _validate_unchanged_evidence(
             raise ProseReviewError("Quoted evidence must include the new value")
 
 
-def _quote_shows_verified_null_detail(
-    *, item: ProseReviewEvidence, new_value: object, verified_context: dict[str, str]
-) -> bool:
-    if item.field != "legal_status_detail" or new_value is not None:
-        return False
-    target = verified_context.get(item.field)
-    if target is None:
-        return False
-    return _quote_contains_contextual_category(quote=item.quote, target=target)
-
-
 def _quote_shows_new_value(*, quote: str, new_value: object) -> bool:
     normalised_quote = quote.casefold()
     if isinstance(new_value, int) and not isinstance(new_value, bool):
@@ -425,15 +414,22 @@ def _quote_shows_new_value(*, quote: str, new_value: object) -> bool:
     return False
 
 
+def _quote_shows_verified_null_detail(
+    *, item: ProseReviewEvidence, new_value: object, verified_context: dict[str, str]
+) -> bool:
+    if item.field != "legal_status_detail" or new_value is not None:
+        return False
+    target = verified_context.get(item.field)
+    if target is None:
+        return False
+    return _quote_contains_contextual_category(quote=item.quote, target=target)
+
+
 def _quote_contains_contextual_category(*, quote: str, target: str) -> bool:
     normalised_quote = quote.casefold()
-    if target == "skilt" and re.search(
-        r"(?:^|\W)separeret(?:\W|$)", normalised_quote
-    ):
+    if target == "skilt" and re.search(r"(?:^|\W)separeret(?:\W|$)", normalised_quote):
         return False
-    if target == "aldrig gift" and _NEVER_MARRIED_REJECT_RE.search(
-        normalised_quote
-    ):
+    if target == "aldrig gift" and _NEVER_MARRIED_REJECT_RE.search(normalised_quote):
         return False
     return any(
         _quote_contains_unnegated_synonym(

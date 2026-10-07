@@ -184,6 +184,31 @@ def _build_binding(
     return binding
 
 
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _insufficient_evidence_result(
+    *, original_text: str, changed_facts: dict[str, dict[str, object]]
+) -> ProseReviewResult:
+    return validate_prose_review(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        response={
+            "disposition": "needs_manual_review",
+            "patches": [],
+            "unchanged_evidence": [],
+            "manual_review_reason": "insufficient_evidence",
+        },
+    )
+
+
 def _payload_with_null_detail_context(
     *,
     payload: dict[str, object],
@@ -213,20 +238,6 @@ def _payload_with_null_detail_context(
     return with_context
 
 
-def _verified_context_from_payload(
-    *, payload: dict[str, object]
-) -> dict[str, object] | None:
-    context = payload.get(_LEGAL_STATUS_DETAIL_NULL_CONTEXT)
-    if context is None:
-        return None
-    if not isinstance(context, dict):
-        raise ProxyReviewError("legal_status_detail null context is malformed")
-    target = context.get("target_marital_category_da")
-    if not isinstance(target, str):
-        raise ProxyReviewError("legal_status_detail null context is malformed")
-    return {_LEGAL_STATUS_DETAIL_NULL_CONTEXT: {"target_marital_category_da": target}}
-
-
 def _marital_status_is_verified(
     *,
     marital_status: object,
@@ -237,31 +248,6 @@ def _marital_status_is_verified(
     if marital_change is not None:
         return marital_change.get("new") == marital_status
     return row.get("marital_status") == marital_status
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-
-def _sha(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _insufficient_evidence_result(
-    *, original_text: str, changed_facts: dict[str, dict[str, object]]
-) -> ProseReviewResult:
-    return validate_prose_review(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        response={
-            "disposition": "needs_manual_review",
-            "patches": [],
-            "unchanged_evidence": [],
-            "manual_review_reason": "insufficient_evidence",
-        },
-    )
 
 
 def _prepare_checkpoint_parent(parent: Path) -> None:
@@ -505,6 +491,20 @@ def _write_checkpoint(path: Path, value: dict[str, object]) -> None:
         os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _verified_context_from_payload(
+    *, payload: dict[str, object]
+) -> dict[str, object] | None:
+    context = payload.get(_LEGAL_STATUS_DETAIL_NULL_CONTEXT)
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ProxyReviewError("legal_status_detail null context is malformed")
+    target = context.get("target_marital_category_da")
+    if not isinstance(target, str):
+        raise ProxyReviewError("legal_status_detail null context is malformed")
+    return {_LEGAL_STATUS_DETAIL_NULL_CONTEXT: {"target_marital_category_da": target}}
 
 
 __all__ = ["ProxyReviewError", "run_proxy_review"]

@@ -18,6 +18,7 @@ import httpx
 import polars as pl
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_review import (
     ProseReviewResponse,
@@ -896,4 +897,5 @@ def _run_proxy_review_adapter(
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()
