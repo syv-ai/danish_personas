@@ -77,9 +77,10 @@ FORBIDDEN = frozenset(
         "same_sex_partner_target",
     }
 )
-USD_PER_EUR = 1.30
-INPUT_EUR_PER_MILLION = 0.10
-OUTPUT_EUR_PER_MILLION = 0.25
+PRICING_CURRENCY = "USD"
+INPUT_USD_PER_MILLION = 0.15
+OUTPUT_USD_PER_MILLION = 0.60
+PRICING_SOURCE = "https://docs.mistral.ai/inference/pricing"
 
 
 class RepairError(RuntimeError):
@@ -243,12 +244,14 @@ def _validate_inputs(
         or cost_cap_usd > 100
     ):
         raise RepairError("Cost cap must be finite, positive, and no greater than $100")
-    if not model or config.model != model:
-        raise RepairError("Model must match configuration")
-    if config.max_tokens is None or config.max_tokens <= 0:
-        raise RepairError("max_tokens must be positive and bounded")
-    if config.max_tokens > 4096:
-        raise RepairError("max_tokens exceeds the repair safety limit")
+    if model != "mistral-small-2603" or config.model != "mistral-small-2603":
+        raise RepairError("Repair model must be mistral-small-2603")
+    if config.base_url != "https://api.mistral.ai/v1":
+        raise RepairError("Repair base URL must be the official Mistral API")
+    if config.api_key_env != "MISTRAL_API_KEY":
+        raise RepairError("Repair API key environment must be MISTRAL_API_KEY")
+    if config.max_tokens != 800:
+        raise RepairError("Repair max_tokens must be 800")
     if not input_manifest_sha256 or not sidecar_sha256:
         raise RepairError("Input manifest and schema sidecar hashes are required")
     return _validate_row_metadata(
@@ -392,9 +395,10 @@ def _make_binding(
         "base_url": config.base_url,
         "api_key_env": config.api_key_env,
         "maximum_http_attempts": config.maximum_http_attempts,
-        "usd_per_eur": USD_PER_EUR,
-        "input_eur_per_million": INPUT_EUR_PER_MILLION,
-        "output_eur_per_million": OUTPUT_EUR_PER_MILLION,
+        "pricing_currency": PRICING_CURRENCY,
+        "input_usd_per_million": INPUT_USD_PER_MILLION,
+        "output_usd_per_million": OUTPUT_USD_PER_MILLION,
+        "pricing_source": PRICING_SOURCE,
         "enable_thinking": config.enable_thinking,
         "reasoning_effort": config.reasoning_effort,
     }
@@ -612,13 +616,9 @@ def _attempt_cost(*, input_token_bound: int, max_tokens: int | None) -> float:
     """
     assert max_tokens is not None
     return (
-        USD_PER_EUR
-        * (
-            input_token_bound * INPUT_EUR_PER_MILLION
-            + max_tokens * OUTPUT_EUR_PER_MILLION
-        )
-        / 1_000_000
-    )
+        input_token_bound * INPUT_USD_PER_MILLION
+        + max_tokens * OUTPUT_USD_PER_MILLION
+    ) / 1_000_000
 
 
 def _verify_response(

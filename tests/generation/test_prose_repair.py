@@ -20,16 +20,16 @@ from danish_personas.generation.prose_repair import RepairError, run_prose_repai
 def config() -> GenerationConfig:
     """Return a bounded offline generation configuration."""
     return GenerationConfig.model_construct(
-        base_url="https://offline.invalid/v1",
-        model="local-model",
-        api_key_env=None,
+        base_url="https://api.mistral.ai/v1",
+        model="mistral-small-2603",
+        api_key_env="MISTRAL_API_KEY",
         timeout_seconds=1,
         maximum_http_attempts=2,
         maximum_total_requests=None,
         retry_backoff_seconds=0,
         maximum_rows_per_shard=1,
         same_sex_partner_probability=0.1,
-        max_tokens=256,
+        max_tokens=800,
         enable_thinking=None,
         reasoning_effort=None,
         prompt=Path("repair.md"),
@@ -45,7 +45,7 @@ class FakeClient:
         self,
         content: str,
         attempts: int = 1,
-        model: str = "local-model",
+        model: str = "mistral-small-2603",
         prompt_tokens: int = 10,
         completion_tokens: int = 20,
     ) -> None:
@@ -111,7 +111,7 @@ def _run(
         "changed_fields": {"a": {"job_title"}},
         "id_field": "id",
         "prompt": "Skriv persona.",
-        "model": "local-model",
+        "model": "mistral-small-2603",
         "config": config,
         "input_manifest_sha256": "manifest",
         "sidecar_sha256": "schema",
@@ -135,7 +135,7 @@ def test_real_client_mock_reserves_before_network(
             status_code=200,
             json={
                 "id": "offline-response",
-                "model": "local-model",
+                "model": "mistral-small-2603",
                 "choices": [
                     {"message": {"content": json.dumps({"persona": "d" * 300})}}
                 ],
@@ -230,6 +230,14 @@ def test_schema_prose_repair_payload_allowlist_and_resume(
     ledger_path = tmp_path / "ledger.jsonl"
     lines = [json.loads(line) for line in ledger_path.read_text().splitlines()]
     assert lines[0]["type"] == "header"
+    binding = lines[0]["binding"]
+    assert binding["pricing_currency"] == "USD"
+    assert binding["input_usd_per_million"] == 0.15
+    assert binding["output_usd_per_million"] == 0.60
+    assert binding["pricing_source"] == (
+        "https://docs.mistral.ai/inference/pricing"
+    )
+    assert "usd_per_eur" not in binding
     assert len(lines[1:]) == 1
     assert (ledger_path.stat().st_mode & 0o777) == 0o600
     assert os.stat(tmp_path).st_mode & 0o777 == 0o700
@@ -321,6 +329,41 @@ def test_malformed_ledger_reservation_fails_closed(
     assert client.reservations == 0
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("base_url", "https://wrong.example/v1"),
+        ("model", "another-model"),
+        ("api_key_env", "OTHER_API_KEY"),
+    ],
+)
+def test_provider_configuration_must_match_mistral(
+    tmp_path: Path,
+    config: GenerationConfig,
+    field: str,
+    value: str,
+) -> None:
+    """Reject non-Mistral provider settings before invoking the client."""
+    wrong_config = GenerationConfig.model_construct(
+        **{**config.__dict__, field: value}
+    )
+    client = FakeClient("unused")
+    with pytest.raises(RepairError, match="Mistral|mistral-small-2603"):
+        _run(tmp_path, wrong_config, client)
+    assert client.payload is None
+    assert not (tmp_path / "ledger.jsonl").exists()
+
+
+def test_model_argument_must_match_mistral_model(
+    tmp_path: Path, config: GenerationConfig
+) -> None:
+    """Reject an alternate requested model before invoking the client."""
+    client = FakeClient("unused")
+    with pytest.raises(RepairError, match="mistral-small-2603"):
+        _run(tmp_path, config, client, model="another-model")
+    assert client.payload is None
+
+
 def test_cost_cap_of_one_hundred_usd_is_allowed(
     tmp_path: Path, config: GenerationConfig
 ) -> None:
@@ -332,7 +375,11 @@ def test_cost_cap_of_one_hundred_usd_is_allowed(
 
 @pytest.mark.parametrize(
     ("response_model", "prompt_tokens", "completion_tokens"),
-    [("other-model", 10, 20), ("local-model", 100_000, 20), ("local-model", 10, 257)],
+    [
+        ("other-model", 10, 20),
+        ("mistral-small-2603", 100_000, 20),
+        ("mistral-small-2603", 10, 801),
+    ],
 )
 def test_response_usage_and_model_must_match_reservation(
     tmp_path: Path,
