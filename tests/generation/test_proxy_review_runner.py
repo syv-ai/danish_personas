@@ -16,10 +16,14 @@ import danish_personas.generation.proxy_budget as proxy_budget
 import danish_personas.generation.proxy_review_runner as review_runner
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_review import (
-    ProseReviewError,
     ProseReviewResponse,
+    ProseReviewResult,
 )
-from danish_personas.generation.proxy_budget import JSONValue, ProxyBudget
+from danish_personas.generation.proxy_budget import (
+    JSONValue,
+    ProxyBudget,
+    ProxyBudgetError,
+)
 from danish_personas.generation.proxy_review_runner import (
     ProxyReviewError,
     run_proxy_review,
@@ -260,7 +264,7 @@ def _run(
     *,
     changed_facts: dict[str, dict[str, object]] | None = None,
     budget: ProxyBudget | None = None,
-) -> object:
+) -> ProseReviewResult:
     source = _row()
     facts = (
         {"marital_status": {"old": "single", "new": "married"}}
@@ -282,7 +286,7 @@ def _run(
 def test_records_usage_before_semantic_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Record token usage for a successful HTTP response before quarantining it."""
+    """Record token usage for a successful HTTP response before abstaining."""
     events: list[str] = []
     budget = _budget(tmp_path)
     original_usage = budget.record_usage
@@ -313,10 +317,170 @@ def test_records_usage_before_semantic_validation(
     monkeypatch.setattr(budget, "record_usage", record_usage)
     monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
 
-    with pytest.raises(ProseReviewError):
-        _run(tmp_path, _transport("not json", []), budget=budget)
+    result = _run(tmp_path, _transport("not json", []), budget=budget)
 
-    assert events == ["usage", "validate"]
+    assert result.disposition == "needs_manual_review"
+    assert result.manual_review_reason == "insufficient_evidence"
+    assert events == ["usage", "validate", "validate"]
+    assert (tmp_path / "review.json").exists()
+
+
+def test_mismatched_quote_abstains_and_resumes_without_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Store one manual checkpoint when local evidence validation fails."""
+    requests: list[httpx.Request] = []
+    events: list[str] = []
+    budget = _budget(tmp_path)
+    original_reserve = budget.reserve_attempt
+    original_usage = budget.record_usage
+    row = _row()
+    row["persona"] = "Maria beskrives som gift i teksten. " + (
+        "Dette er en syntetisk person med hverdagsbeskrivelser. " * 8
+    )
+    changed_facts = {"marital_status": {"old": "single", "new": "married"}}
+    checkpoint_path = tmp_path / "review.json"
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        events.append("reservation")
+        return original_reserve(request_id, request)
+
+    def record_usage(
+        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
+    ) -> None:
+        events.append("usage")
+        original_usage(
+            request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_sha256=response_sha256,
+        )
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    monkeypatch.setattr(budget, "record_usage", record_usage)
+
+    result = run_proxy_review(
+        row=row,
+        candidate_row=_candidate_row(changed_facts, row=row),
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=checkpoint_path,
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "unchanged_consistent",
+                    "patches": [],
+                    "unchanged_evidence": [
+                        {
+                            "field": "marital_status",
+                            "kind": "new_value_present",
+                            "quote": "gift",
+                        }
+                    ],
+                    "manual_review_reason": None,
+                }
+            ),
+            requests,
+        ),
+    )
+
+    assert result.disposition == "needs_manual_review"
+    assert result.manual_review_reason == "insufficient_evidence"
+    assert result.patches == ()
+    assert result.unchanged_evidence == ()
+    assert events == ["reservation", "usage"]
+    assert len(requests) == 1
+
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["disposition"] == "needs_manual_review"
+    assert checkpoint["manual_review_reason"] == "insufficient_evidence"
+    assert checkpoint["patches"] == []
+    assert checkpoint["unchanged_evidence"] == []
+    assert "completion" not in checkpoint
+    assert "gift" not in json.dumps(checkpoint, ensure_ascii=False)
+
+    def must_not_send(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("a manual checkpoint resume must not make a request")
+
+    resumed = run_proxy_review(
+        row=row,
+        candidate_row=_candidate_row(changed_facts, row=row),
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=checkpoint_path,
+        transport=httpx.MockTransport(must_not_send),
+    )
+
+    assert resumed == result
+    assert events == ["reservation", "usage"]
+    assert len(requests) == 1
+
+
+def test_accounting_failure_does_not_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail hard if durable accounting rejects observed usage."""
+    budget = _budget(tmp_path)
+
+    def fail_usage(_request_id: str, **_usage: object) -> None:
+        raise ProxyBudgetError("ledger failure")
+
+    monkeypatch.setattr(budget, "record_usage", fail_usage)
+
+    with pytest.raises(ProxyBudgetError):
+        _run(
+            tmp_path,
+            _transport(
+                json.dumps(
+                    {
+                        "disposition": "needs_manual_review",
+                        "patches": [],
+                        "unchanged_evidence": [],
+                        "manual_review_reason": "ambiguous",
+                    }
+                ),
+                [],
+            ),
+            budget=budget,
+        )
+
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_invalid_provider_metadata_does_not_checkpoint(tmp_path: Path) -> None:
+    """Fail hard if a successful response is not bound to the pinned model."""
+
+    def wrong_model(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "other-model",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "disposition": "needs_manual_review",
+                                    "patches": [],
+                                    "unchanged_evidence": [],
+                                    "manual_review_reason": "ambiguous",
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    with pytest.raises(ProxyReviewError, match="model"):
+        _run(tmp_path, httpx.MockTransport(wrong_model))
+
     assert not (tmp_path / "review.json").exists()
 
 
