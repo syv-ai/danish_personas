@@ -495,10 +495,14 @@ def test_records_usage_before_semantic_validation(
         original_text: str,
         changed_facts: Mapping[str, Mapping[str, object]],
         response: str | Mapping[str, object],
+        verified_context: Mapping[str, object] | None = None,
     ) -> object:
         events.append("validate")
         return original_validate(
-            original_text=original_text, changed_facts=changed_facts, response=response
+            original_text=original_text,
+            changed_facts=changed_facts,
+            response=response,
+            verified_context=verified_context,
         )
 
     monkeypatch.setattr(budget, "record_usage", record_usage)
@@ -531,7 +535,11 @@ def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None
 
 @pytest.mark.parametrize(
     ("marital_status", "expected_label"),
-    [("divorced", "skilt"), ("widowed", "enkestand"), ("never_married", "aldrig gift")],
+    [
+        ("divorced", "skilt"),
+        ("widowed", "enkestand"),
+        ("never_married", "aldrig gift"),
+    ],
 )
 def test_adds_minimal_null_detail_context_for_allowed_statuses(
     tmp_path: Path, marital_status: str, expected_label: str
@@ -593,10 +601,158 @@ def test_adds_minimal_null_detail_context_for_allowed_statuses(
         checkpoint["payload_sha256"]
         == hashlib.sha256(
             json.dumps(
-                user_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                user_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
             ).encode()
         ).hexdigest()
     )
+
+
+def test_accepts_verified_null_detail_quote_and_resumes(tmp_path: Path) -> None:
+    """Accept contextual Danish category evidence without certifying release safety."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs("divorced")
+    persona = "Hun er skilt. " + "Dette er en syntetisk person. " * 12
+    row["persona"] = persona
+    candidate_row["persona"] = persona
+    requests: list[httpx.Request] = []
+
+    result = run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "unchanged_consistent",
+                    "patches": [],
+                    "unchanged_evidence": [
+                        {
+                            "field": "legal_status_detail",
+                            "kind": "new_value_present",
+                            "quote": "Hun er skilt",
+                        }
+                    ],
+                    "manual_review_reason": None,
+                }
+            ),
+            requests,
+        ),
+    )
+
+    assert result.disposition == "unchanged_consistent"
+    assert result.unchanged_consistent_note == (
+        "provisional_classifier_not_independently_certified"
+    )
+
+    restarted = run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+    )
+
+    assert len(requests) == 1
+    assert restarted == result
+
+
+def test_wrong_null_detail_quote_abstains_manual(tmp_path: Path) -> None:
+    """Store a bounded manual decision when contextual quote validation fails."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs("divorced")
+    persona = "Hun er separeret. " + "Dette er en syntetisk person. " * 12
+    row["persona"] = persona
+    candidate_row["persona"] = persona
+
+    result = run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "unchanged_consistent",
+                    "patches": [],
+                    "unchanged_evidence": [
+                        {
+                            "field": "legal_status_detail",
+                            "kind": "new_value_present",
+                            "quote": "Hun er separeret",
+                        }
+                    ],
+                    "manual_review_reason": None,
+                }
+            ),
+            [],
+        ),
+    )
+
+    assert result.disposition == "needs_manual_review"
+    assert result.manual_review_reason == "insufficient_evidence"
+    checkpoint = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+    assert checkpoint["disposition"] == "needs_manual_review"
+
+
+def test_rejects_stale_null_detail_context_checkpoint(tmp_path: Path) -> None:
+    """Bind resumed null-detail decisions to the current contextual payload."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs("divorced")
+    run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            [],
+        ),
+    )
+    checkpoint_path = tmp_path / "review.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["payload_sha256"] = "b" * 64
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    with pytest.raises(ProxyReviewError, match="changed"):
+        run_proxy_review(
+            row=row,
+            candidate_row=candidate_row,
+            changed_facts=changed_facts,
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=checkpoint_path,
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
 
 
 @pytest.mark.parametrize("marital_status", ["single", "married_or_separated", None])

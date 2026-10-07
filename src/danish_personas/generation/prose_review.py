@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import typing as t
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ ManualReviewReason: t.TypeAlias = t.Literal[
     "ambiguous", "multiple_edits", "sensitive", "insufficient_evidence"
 ]
 EvidenceKind: t.TypeAlias = t.Literal["fact_not_stated", "new_value_present"]
+VerifiedContext: t.TypeAlias = Mapping[str, object]
 
 REVIEW_MODEL = "gpt-6-luna"
 _DISPOSITIONS: tuple[str, ...] = (
@@ -37,6 +39,20 @@ _MAX_FACTS = 20
 _MAX_FIELD_LENGTH = 80
 _MAX_FACT_VALUE_LENGTH = 120
 _MAX_QUOTE_LENGTH = 160
+_NULL_DETAIL_CONTEXT_KEY = "legal_status_detail_null_context"
+_NULL_DETAIL_TARGET_KEY = "target_marital_category_da"
+_NULL_DETAIL_TARGET_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "skilt": ("skilt", "fraskilt"),
+    "enkestand": ("enke", "enkemand", "enkestand"),
+    "aldrig gift": ("aldrig gift", "ugift"),
+}
+_NEGATED_CONTEXT_RE = re.compile(
+    r"(?:^|\W)(?:ikke|ingen|hverken|aldrig)\W*$", re.IGNORECASE
+)
+_NEVER_MARRIED_REJECT_RE = re.compile(
+    r"(?:^|\W)(?:ikke|længere|tidligere|før|førhen|var|blev)\W+ugift(?:\W|$)",
+    re.IGNORECASE,
+)
 UNCHANGED_CONSISTENT_NOTE = "provisional_classifier_not_independently_certified"
 
 
@@ -164,6 +180,29 @@ def _safe_fact_value(value: object) -> bool:
     return False
 
 
+def _validate_verified_context(
+    *,
+    verified_context: VerifiedContext | None,
+    changed_facts: dict[str, dict[str, object]],
+) -> dict[str, str]:
+    if verified_context is None:
+        return {}
+    if set(verified_context) != {_NULL_DETAIL_CONTEXT_KEY}:
+        raise ProseReviewError("Verified context is outside the local allowlist")
+    detail_change = changed_facts.get("legal_status_detail")
+    if detail_change is None or detail_change.get("new") is not None:
+        raise ProseReviewError("Verified context requires a null legal detail change")
+    detail_context = verified_context[_NULL_DETAIL_CONTEXT_KEY]
+    if not isinstance(detail_context, Mapping) or set(detail_context) != {
+        _NULL_DETAIL_TARGET_KEY
+    }:
+        raise ProseReviewError("Verified context is malformed")
+    target = detail_context[_NULL_DETAIL_TARGET_KEY]
+    if not isinstance(target, str) or target not in _NULL_DETAIL_TARGET_SYNONYMS:
+        raise ProseReviewError("Verified context target is outside the allowlist")
+    return {"legal_status_detail": target}
+
+
 @dataclass(frozen=True)
 class ProseReviewPatchResult:
     """Immutable accepted patch evidence."""
@@ -206,6 +245,7 @@ def validate_prose_review(
     original_text: str,
     changed_facts: Mapping[str, Mapping[str, object]],
     response: str | Mapping[str, object],
+    verified_context: VerifiedContext | None = None,
 ) -> ProseReviewResult:
     """Validate one gpt-6-luna prose-review response locally.
 
@@ -218,18 +258,27 @@ def validate_prose_review(
         response:
             Provider JSON text or decoded object. Invalid responses are rejected
             without returning or embedding the raw completion text.
+        verified_context (optional):
+            Local runner-verified contextual evidence for allowlisted transitions that
+            are not represented by a concrete new fact value. Defaults to None.
 
     Returns:
         Immutable result containing the original text, proposed text, and changed
         fraction. ``unchanged_consistent`` is only a provisional classifier.
     """
     facts = _validate_changed_facts(changed_facts)
+    context = _validate_verified_context(
+        verified_context=verified_context, changed_facts=facts
+    )
     review = _parse_response(response)
     if review.disposition == "patched":
         return _validated_patched(original_text=original_text, review=review)
     if review.disposition == "unchanged_consistent":
         return _validated_unchanged(
-            original_text=original_text, changed_facts=facts, review=review
+            original_text=original_text,
+            changed_facts=facts,
+            review=review,
+            verified_context=context,
         )
     return _validated_manual_review(original_text=original_text, review=review)
 
@@ -292,6 +341,7 @@ def _validated_unchanged(
     original_text: str,
     changed_facts: dict[str, dict[str, object]],
     review: ProseReviewResponse,
+    verified_context: dict[str, str],
 ) -> ProseReviewResult:
     if review.patches:
         raise ProseReviewError("Unchanged-consistent review must not include patches")
@@ -301,6 +351,7 @@ def _validated_unchanged(
         original_text=original_text,
         changed_facts=changed_facts,
         evidence=review.unchanged_evidence,
+        verified_context=verified_context,
     )
     return ProseReviewResult(
         disposition="unchanged_consistent",
@@ -324,6 +375,7 @@ def _validate_unchanged_evidence(
     original_text: str,
     changed_facts: dict[str, dict[str, object]],
     evidence: list[ProseReviewEvidence],
+    verified_context: dict[str, str],
 ) -> None:
     if not evidence:
         raise ProseReviewError("Unchanged-consistent review requires evidence")
@@ -340,8 +392,23 @@ def _validate_unchanged_evidence(
             continue
         if not item.quote or item.quote not in original_text:
             raise ProseReviewError("New-value evidence must quote the original text")
-        if not _quote_shows_new_value(quote=item.quote, new_value=new_value):
+        if not _quote_shows_new_value(
+            quote=item.quote, new_value=new_value
+        ) and not _quote_shows_verified_null_detail(
+            item=item, new_value=new_value, verified_context=verified_context
+        ):
             raise ProseReviewError("Quoted evidence must include the new value")
+
+
+def _quote_shows_verified_null_detail(
+    *, item: ProseReviewEvidence, new_value: object, verified_context: dict[str, str]
+) -> bool:
+    if item.field != "legal_status_detail" or new_value is not None:
+        return False
+    target = verified_context.get(item.field)
+    if target is None:
+        return False
+    return _quote_contains_contextual_category(quote=item.quote, target=target)
 
 
 def _quote_shows_new_value(*, quote: str, new_value: object) -> bool:
@@ -356,6 +423,34 @@ def _quote_shows_new_value(*, quote: str, new_value: object) -> bool:
             for item in new_value
         )
     return False
+
+
+def _quote_contains_contextual_category(*, quote: str, target: str) -> bool:
+    normalised_quote = quote.casefold()
+    if target == "skilt" and re.search(
+        r"(?:^|\W)separeret(?:\W|$)", normalised_quote
+    ):
+        return False
+    if target == "aldrig gift" and _NEVER_MARRIED_REJECT_RE.search(
+        normalised_quote
+    ):
+        return False
+    return any(
+        _quote_contains_unnegated_synonym(
+            normalised_quote=normalised_quote, synonym=synonym
+        )
+        for synonym in _NULL_DETAIL_TARGET_SYNONYMS[target]
+    )
+
+
+def _quote_contains_unnegated_synonym(*, normalised_quote: str, synonym: str) -> bool:
+    pattern = re.compile(rf"(?:^|\W){re.escape(synonym.casefold())}(?:\W|$)")
+    return any(
+        not _NEGATED_CONTEXT_RE.search(
+            normalised_quote[max(0, match.start() - 24) : match.start()]
+        )
+        for match in pattern.finditer(normalised_quote)
+    )
 
 
 __all__ = [
