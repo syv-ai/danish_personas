@@ -24,22 +24,33 @@ def test_actual_field_reasons_and_marker_only_persona_are_supported() -> None:
         },
     )
 
-    assert result["personas"]["p1"]["classification"] == (
+    assert _persona_result(result, "p1")["classification"] == (
         "needs_prose_review_or_regeneration"
     )
-    assert result["personas"]["p1"]["changed_fields"] == [
+    assert _persona_result(result, "p1")["changed_fields"] == [
         "origin_country_code",
         "hobbies_and_interests",
         "marital_status",
     ]
-    assert result["personas"]["p2"]["classification"] == (
+    assert _persona_result(result, "p2")["classification"] == (
         "needs_prose_review_or_regeneration"
     )
-    assert result["personas"]["p2"]["changed_fields"] == []
+    assert _persona_result(result, "p2")["changed_fields"] == []
     assert result["counts"] == {
         "semantic_equivalence_reviewed": 0,
         "needs_prose_review_or_regeneration": 2,
     }
+
+
+def _persona_result(result: object, persona_id: str) -> dict[str, object]:
+    """Narrow the triage result to one typed persona record."""
+    assert isinstance(result, dict)
+    personas = result.get("personas")
+    assert isinstance(personas, dict)
+    persona = personas.get(persona_id)
+    assert isinstance(persona, dict)
+    assert all(isinstance(key, str) for key in persona)
+    return {key: value for key, value in persona.items() if isinstance(key, str)}
 
 
 def _frame(**updates: list[object]) -> pl.DataFrame:
@@ -77,13 +88,13 @@ def test_lexical_identity_preserves_internal_punctuation_and_words() -> None:
     repaired = _frame(job_title=["Sygeplejerske!", "lærer"])
 
     result = triage_prose_changes(original, repaired, {"p1": ["job_title"]})
-    assert result["personas"]["p1"]["classification"] == (
+    assert _persona_result(result, "p1")["classification"] == (
         "semantic_equivalence_reviewed"
     )
 
     changed = _frame(job_title=["sygeplejerske-assistent", "lærer"])
     result = triage_prose_changes(original, changed, {"p1": ["job_title"]})
-    assert result["personas"]["p1"]["classification"] == (
+    assert _persona_result(result, "p1")["classification"] == (
         "needs_prose_review_or_regeneration"
     )
 

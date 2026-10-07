@@ -62,14 +62,14 @@ def test_sex_characteristics_remain_separate() -> None:
         }
     )
     overlay, provenance = generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
-    counts = provenance["marginal_counts"]
+    counts = _mapping(provenance["marginal_counts"])
     assert "trans_or_nonbinary_identity" not in overlay.columns
     assert set(overlay["variation_in_sex_characteristics"].unique().to_list()) <= {
         "yes",
         "no",
         "uncertain",
     }
-    limitations = " ".join(provenance["limitations"])
+    limitations = " ".join(_strings(provenance["limitations"]))
     assert "joint distributions are unsupported" in limitations
     assert counts["variation_in_sex_characteristics"]
 
@@ -110,10 +110,33 @@ def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
         heterosexual_rate = 1 - sum(expected.values())
         assert abs(observed.count("heterosexual") / count - heterosexual_rate) < 0.002
 
-    counts = provenance["marginal_counts"]["sexual_orientation_identity_by_sex"]
-    assert counts["male"]["homosexual"] == identities[:count].count("homosexual")
-    assert "SHILD 2020" in provenance["sources"]["sexual_orientation_identity"]
-    assert provenance["sources"]["sample_size"] == 17929
+    marginal_counts = _mapping(provenance["marginal_counts"])
+    counts = _mapping(marginal_counts["sexual_orientation_identity_by_sex"])
+    male_counts = _mapping(counts["male"])
+    assert male_counts["homosexual"] == identities[:count].count("homosexual")
+    sources = _mapping(provenance["sources"])
+    assert "SHILD 2020" in _string(sources["sexual_orientation_identity"])
+    assert sources["sample_size"] == 17929
+
+
+def _mapping(value: object) -> dict[str, object]:
+    """Narrow provenance objects to string-keyed mappings for assertions."""
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _string(value: object) -> str:
+    """Narrow a provenance value to a string for assertions."""
+    assert isinstance(value, str)
+    return value
+
+
+def _strings(value: object) -> list[str]:
+    """Narrow provenance arrays to strings for assertions."""
+    assert isinstance(value, list)
+    assert all(isinstance(item, str) for item in value)
+    return [item for item in value if isinstance(item, str)]
 
 
 def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:

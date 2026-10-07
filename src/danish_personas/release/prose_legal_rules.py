@@ -68,6 +68,8 @@ def propose_legal_prose_repair(
 
     if _ALTERNATE_PRONOUN.search(old_persona_text):
         return _abstain("persona text contains alternate pronouns")
+    if old_legal_status_detail is None:
+        return _abstain("old legal detail must be married or separated")
     clause = _replacement_for_clause(
         text=old_persona_text,
         old_detail=old_legal_status_detail,

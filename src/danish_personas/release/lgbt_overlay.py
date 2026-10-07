@@ -231,7 +231,7 @@ def _orientation_label(draw: float, sex: object) -> str:
     Returns:
         The synthetic orientation identity, or ``unknown`` for an unstratified sex.
     """
-    rates = {
+    rates: dict[str, tuple[tuple[str, float], ...]] = {
         "male": (
             ("homosexual", 0.024),
             ("bisexual", 0.024),
@@ -245,7 +245,7 @@ def _orientation_label(draw: float, sex: object) -> str:
             ("other", 0.009),
         ),
     }
-    if sex not in rates:
+    if not isinstance(sex, str) or sex not in rates:
         return "unknown"
     cumulative = 0.0
     for label, rate in rates[sex]:
