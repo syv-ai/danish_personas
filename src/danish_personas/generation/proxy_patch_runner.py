@@ -8,14 +8,14 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
 from .client import OpenAIClient
 from .models import GenerationConfig, LLMResponse
 from .prose_patch import ProsePatchError, ProsePatchResponse, apply_patches
-from .proxy_budget import BASE_URL, MODEL, ProxyBudget
+from .proxy_budget import BASE_URL, MODEL, JSONValue, ProxyBudget
 
 _ALLOWED_FACTS = frozenset(
     {
@@ -121,10 +121,7 @@ def _validated_input(
             raise ProxyPatchError(f"Changed fact {field!r} must contain old and new")
         if any(not _safe_fact_value(value) for value in pair.values()):
             raise ProxyPatchError(f"Changed fact {field!r} contains an unsafe value")
-    payload: dict[str, object] = {
-        "persona": old_text,
-        "changed_facts": changed_facts,
-    }
+    payload: dict[str, object] = {"persona": old_text, "changed_facts": changed_facts}
     if gender is not None:
         payload["gender"] = gender
     if partner_gender is not None:
@@ -201,12 +198,12 @@ def _resume_checkpoint(
         raise ProxyPatchError("Provisional checkpoint is malformed")
     parsed_evidence = _validate_evidence(evidence)
     try:
-        recomputed = apply_patches(old_text, parsed_evidence)
+        recomputed = apply_patches(old_text, {"patches": parsed_evidence})
     except ProsePatchError as exc:
         raise ProxyPatchError("Provisional checkpoint evidence is invalid") from exc
-    actual_fraction = sum(
-        len(item["old_excerpt"]) for item in parsed_evidence
-    ) / len(old_text)
+    actual_fraction = sum(len(item["old_excerpt"]) for item in parsed_evidence) / len(
+        old_text
+    )
     if (
         proposed != recomputed
         or not isinstance(fraction, (int, float))
@@ -217,9 +214,7 @@ def _resume_checkpoint(
         )
     digest = checkpoint.get("checkpoint_sha256")
     unsigned = {
-        key: value
-        for key, value in checkpoint.items()
-        if key != "checkpoint_sha256"
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
     }
     if digest != _sha(_canonical(unsigned)):
         raise ProxyPatchError("Provisional checkpoint checksum is invalid")
@@ -256,7 +251,7 @@ def _request_patch(
         nonlocal reserved
         if attempt != 1 or reserved:
             raise ProxyPatchError("Only one HTTP attempt is permitted")
-        budget.reserve_attempt(request_id, request_body)
+        budget.reserve_attempt(request_id, cast(dict[str, JSONValue], request_body))
         reserved = True
 
     client = OpenAIClient(
@@ -264,8 +259,11 @@ def _request_patch(
     )
     try:
         response = client.complete(
-            system_prompt=prompt, user_payload=payload, schema_name="prose_patch",
-            json_schema=schema, record_request=reserve,
+            system_prompt=prompt,
+            user_payload=payload,
+            schema_name="prose_patch",
+            json_schema=schema,
+            record_request=reserve,
         )
     finally:
         client.close()
@@ -276,8 +274,10 @@ def _request_patch(
     if response.completion_tokens > 128_000 or response.prompt_tokens < 0:
         raise ProxyPatchError("Provider token usage exceeds the reservation policy")
     budget.record_usage(
-        request_id, input_tokens=response.prompt_tokens,
-        output_tokens=response.completion_tokens, response=response.raw_response_sha256,
+        request_id,
+        input_tokens=response.prompt_tokens,
+        output_tokens=response.completion_tokens,
+        response=response.raw_response_sha256,
     )
     return response
 
@@ -296,8 +296,10 @@ def _save_proposal(
         for patch in parsed.patches
     )
     document: dict[str, object] = {
-        **binding, "proposed_persona_text": patched,
-        "changed_fraction": fraction, "evidence": list(evidence),
+        **binding,
+        "proposed_persona_text": patched,
+        "changed_fraction": fraction,
+        "evidence": list(evidence),
     }
     document["checkpoint_sha256"] = _sha(_canonical(document))
     _write_checkpoint(path, document)

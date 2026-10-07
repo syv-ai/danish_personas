@@ -13,9 +13,14 @@ import pytest
 
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_patch import ProsePatchResponse
-from danish_personas.generation.proxy_budget import ProxyBudget
+from danish_personas.generation.proxy_budget import (
+    JSONValue,
+    ProxyBudget,
+    ProxyBudgetError,
+)
 from danish_personas.generation.proxy_patch_runner import (
     ProxyPatchError,
+    ProxyPatchProposal,
     run_proxy_patch,
 )
 
@@ -37,7 +42,7 @@ def _config(**overrides: object) -> GenerationConfig:
         "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
     }
     values.update(overrides)
-    return GenerationConfig(**values)  # type: ignore[arg-type]
+    return GenerationConfig.model_validate(values)
 
 
 def _budget(tmp_path: Path) -> ProxyBudget:
@@ -91,9 +96,7 @@ def _row() -> dict[str, Any]:
 
 
 def _transport(
-    response_content: str,
-    seen: list[httpx.Request],
-    events: list[str] | None = None,
+    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
 ) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(request)
@@ -113,26 +116,40 @@ def _transport(
     return httpx.MockTransport(respond)
 
 
-def _run(tmp_path: Path, transport: httpx.BaseTransport, **kwargs: object):
+def _run(
+    tmp_path: Path,
+    transport: httpx.BaseTransport,
+    *,
+    row: dict[str, Any] | None = None,
+    changed_facts: dict[str, dict[str, object]] | None = None,
+    config: GenerationConfig | None = None,
+) -> ProxyPatchProposal:
+    """Run one synthetic proposal with caller-selected negative-test inputs.
+
+    Returns:
+        The provisional patch proposal.
+    """
     return run_proxy_patch(
-        row=kwargs.pop("row", _row()),
-        changed_facts=kwargs.pop(
-            "changed_facts", {"marital_status": {"old": "single", "new": "married"}}
+        row=_row() if row is None else row,
+        changed_facts=(
+            {"marital_status": {"old": "single", "new": "married"}}
+            if changed_facts is None
+            else changed_facts
         ),
         gender="kvinde",
         partner_gender="mand",
         prompt="Ret kun den nødvendige lokale formulering.",
-        config=kwargs.pop("config", _config()),
+        config=_config() if config is None else config,
         budget=_budget(tmp_path),
         checkpoint_path=tmp_path / "provisional.json",
         transport=transport,
-        **kwargs,
     )
 
 
 def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     tmp_path: Path,
 ) -> None:
+    """Reserve before sending and reuse a validated checkpoint on restart."""
     old = _row()["persona"]
     raw = json.dumps(
         {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
@@ -142,11 +159,11 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     budget = _budget(tmp_path)
     original_reserve = budget.reserve_attempt
 
-    def reserve(request_id: str, request: dict[str, Any]) -> Decimal:
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
         events.append("reserved")
         return original_reserve(request_id, request)
 
-    budget.reserve_attempt = reserve  # type: ignore[method-assign]
+    pytest.MonkeyPatch().setattr(budget, "reserve_attempt", reserve)
     result = run_proxy_patch(
         row=_row(),
         changed_facts={"marital_status": {"old": "single", "new": "married"}},
@@ -169,12 +186,7 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     }
     assert all(
         secret not in requests[0].content.decode()
-        for secret in [
-            "private-id",
-            "private-sex",
-            "municipality",
-            "origin_country_da",
-        ]
+        for secret in ["private-id", "private-sex", "municipality", "origin_country_da"]
     )
     assert result.persona_text == old.replace("Før ændring", "Efter ændring")
     assert result.persona_text[len("Efter ændring") :] == old[len("Før ændring") :]
@@ -200,6 +212,7 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
 def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
     tmp_path: Path,
 ) -> None:
+    """Reject unsupported settings and identity data before network I/O."""
     with pytest.raises(ProxyPatchError):
         _run(
             tmp_path,
@@ -230,6 +243,7 @@ def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
     ],
 )
 def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> None:
+    """Refuse sensitive values even when their fact key is allowlisted."""
     with pytest.raises(ProxyPatchError):
         _run(
             tmp_path,
@@ -241,6 +255,7 @@ def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> No
 def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
     tmp_path: Path,
 ) -> None:
+    """Never change the permissions of a caller-owned shared directory."""
     shared = tmp_path / "shared"
     shared.mkdir(mode=0o755)
     shared.chmod(0o755)
@@ -262,6 +277,7 @@ def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
 def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
     tmp_path: Path,
 ) -> None:
+    """Reapply evidence even when a forged checkpoint has a valid digest."""
     old = _row()["persona"]
     raw = json.dumps(
         {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
@@ -272,9 +288,7 @@ def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
     checkpoint = json.loads(path.read_text(encoding="utf-8"))
     checkpoint["proposed_persona_text"] = old + " En skjult ændring."
     unsigned = {
-        key: value
-        for key, value in checkpoint.items()
-        if key != "checkpoint_sha256"
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
     }
     checkpoint["checkpoint_sha256"] = hashlib.sha256(
         json.dumps(
@@ -301,6 +315,7 @@ def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
     ],
 )
 def test_rejects_malformed_and_unmatched_patch(tmp_path: Path, content: str) -> None:
+    """Quarantine malformed and non-matching model patch suggestions."""
     requests: list[httpx.Request] = []
     with pytest.raises((ProxyPatchError, ValueError)):
         _run(tmp_path, _transport(content, requests))
@@ -308,8 +323,7 @@ def test_rejects_malformed_and_unmatched_patch(tmp_path: Path, content: str) -> 
 
 
 def test_rejects_oversized_actual_http_body_before_network(tmp_path: Path) -> None:
-    from danish_personas.generation.proxy_budget import ProxyBudgetError
-
+    """Abort if the encoded request exceeds the reserved input bound."""
     budget = _budget(tmp_path)
     # Force a reservation bound too small for the constructed HTTP body.
     budget.overhead = -1
