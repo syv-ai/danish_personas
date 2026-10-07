@@ -79,7 +79,7 @@ def test_hydra_resolves_nested_values_and_rejects_obsolete_llm_fields(
         Path("config/config.yaml")
         .read_text(encoding="utf-8")
         .replace(
-            "  model: deepseek-v4-flash-0731",
+            "  model: mistral-small-2603",
             "  model: ${oc.env:TEST_GENERATION_MODEL}",
         )
     )
