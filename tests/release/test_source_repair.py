@@ -1,6 +1,7 @@
 """Offline tests for source-backed release repair primitives."""
 
 from pathlib import Path
+from typing import TypedDict, cast
 
 import polars as pl
 import pytest
@@ -10,6 +11,15 @@ from danish_personas.release.source_repair import (
     assess_release_support,
     repair_from_source,
 )
+
+
+class _SourceSupport(TypedDict):
+    """Per-source row-support counts returned by the assessment helper."""
+
+    supported_rows: int
+    unsupported_rows: int
+    missing_columns: list[str]
+    missing_keys: list[object]
 
 
 def test_assessment_maps_pooled_release_values_to_source_support(
@@ -87,7 +97,10 @@ def test_assessment_maps_pooled_release_values_to_source_support(
             "detailed_status_code": ["A"] * 8,
         }
     )
-    result = assess_release_support(frame=frame, bundle_dir=tmp_path)
+    result = cast(
+        dict[str, _SourceSupport],
+        assess_release_support(frame=frame, bundle_dir=tmp_path),
+    )
     assert result["folk1a"]["supported_rows"] == 4
     assert result["folk1a"]["unsupported_rows"] == 4
     assert result["ras209"]["supported_rows"] == 5
