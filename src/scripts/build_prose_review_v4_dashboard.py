@@ -98,6 +98,7 @@ class ReviewDecision:
     unchanged_evidence: tuple[tuple[str, str, str], ...]
     manual_review_reason: str | None
     unchanged_consistent_note: str | None
+    legacy_provisional: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -277,6 +278,8 @@ def render_dashboard(
     unchanged = _render_unchanged_summary(decisions=decisions)
     manual = _render_manual_summary(decisions=decisions)
     campaign = html.escape(_manifest_text(manifest=manifest, key="campaign"))
+    legacy_count = sum(decision.legacy_provisional for decision in decisions)
+    legacy_notice = _render_legacy_notice(count=legacy_count)
     notice = (
         "<strong>NOT accepted repairs.</strong> This private offline dashboard "
         "shows locally validated checkpoint proposals for human audit only. It "
@@ -310,6 +313,7 @@ def render_dashboard(
 <p>Campaign: <code>{campaign}</code>. Each rendered checkpoint passed local schema,
 source-row, candidate-row, prompt, schema, model, base URL, source-pin, checksum,
 patch-application, and proposed-text hash validation. Raw persona IDs are not shown.</p>
+{legacy_notice}
 </section>
 {unchanged}
 {manual}
@@ -371,11 +375,11 @@ def _verify_checkpoint_decision(
         raise ProseReviewV4DashboardError("Checkpoint has no allowlisted fact change")
     original_text = _row_text(row=original, label="original")
     try:
-        _, payload = _validated_input(
+        _, pre_context_payload = _validated_input(
             original, candidate, changed_facts, None, None, prompt
         )
         payload = _payload_with_null_detail_context(
-            payload=payload,
+            payload=pre_context_payload,
             row=original,
             candidate_row=candidate,
             changed_facts=changed_facts,
@@ -394,6 +398,17 @@ def _verify_checkpoint_decision(
         manifest=manifest,
         payload=payload,
     )
+    legacy_provisional = _checkpoint_uses_legacy_contextless_binding(
+        checkpoint=checkpoint,
+        binding=binding,
+        changed_facts=changed_facts,
+        original_text=original_text,
+        pre_context_payload=pre_context_payload,
+        context=context,
+    )
+    validation_context = None if legacy_provisional else context
+    if legacy_provisional:
+        binding = _legacy_contextless_binding(binding=binding)
     _verify_checkpoint_keys(checkpoint=checkpoint, binding=binding)
     _verify_checkpoint_digest(checkpoint=checkpoint)
     for key, value in binding.items():
@@ -405,7 +420,7 @@ def _verify_checkpoint_decision(
             original_text=original_text,
             changed_facts=changed_facts,
             response=response,
-            verified_context=context,
+            verified_context=validation_context,
         )
     except ProseReviewError as exc:
         raise ProseReviewV4DashboardError(
@@ -413,7 +428,10 @@ def _verify_checkpoint_decision(
         ) from exc
     _verify_checkpoint_result(checkpoint=checkpoint, result=result)
     return _decision_from_result(
-        persona_hash=persona_hash, changed_facts=changed_facts, result=result
+        persona_hash=persona_hash,
+        changed_facts=changed_facts,
+        result=result,
+        legacy_provisional=legacy_provisional,
     )
 
 
@@ -446,11 +464,52 @@ def _checkpoint_binding(
     return binding
 
 
+def _checkpoint_uses_legacy_contextless_binding(
+    *,
+    checkpoint: dict[str, JSONValue],
+    binding: dict[str, str | int],
+    changed_facts: dict[str, dict[str, object]],
+    original_text: str,
+    pre_context_payload: dict[str, object],
+    context: dict[str, object] | None,
+) -> bool:
+    if checkpoint.get("payload_sha256") is not None:
+        return False
+    if "payload_sha256" not in binding:
+        return False
+    if context is None:
+        return False
+    detail_change = changed_facts.get("legal_status_detail")
+    if (
+        detail_change is None
+        or not isinstance(detail_change.get("old"), str)
+        or detail_change.get("new") is not None
+    ):
+        return False
+    expected_payload = {"persona": original_text, "changed_facts": changed_facts}
+    if pre_context_payload != expected_payload:
+        raise ProseReviewV4DashboardError("Legacy checkpoint payload is malformed")
+    legacy_binding = _legacy_contextless_binding(binding=binding)
+    expected_keys = _checkpoint_expected_keys(binding=legacy_binding)
+    if set(checkpoint) != expected_keys:
+        return False
+    return True
+
+
+def _legacy_contextless_binding(
+    *, binding: dict[str, str | int]
+) -> dict[str, str | int]:
+    legacy_binding = dict(binding)
+    legacy_binding.pop("payload_sha256", None)
+    return legacy_binding
+
+
 def _decision_from_result(
     *,
     persona_hash: str,
     changed_facts: dict[str, dict[str, object]],
     result: ProseReviewResult,
+    legacy_provisional: bool = False,
 ) -> ReviewDecision:
     facts = tuple(
         (field, _display_value(values["old"]), _display_value(values["new"]))
@@ -473,6 +532,7 @@ def _decision_from_result(
         ),
         manual_review_reason=result.manual_review_reason,
         unchanged_consistent_note=result.unchanged_consistent_note,
+        legacy_provisional=legacy_provisional,
     )
 
 
@@ -644,7 +704,12 @@ def _load_complete_checkpoint(*, path: Path) -> dict[str, JSONValue]:
 def _verify_checkpoint_keys(
     *, checkpoint: dict[str, JSONValue], binding: dict[str, str | int]
 ) -> None:
-    expected = set(binding) | {
+    if set(checkpoint) != _checkpoint_expected_keys(binding=binding):
+        raise ProseReviewV4DashboardError("Checkpoint schema is malformed")
+
+
+def _checkpoint_expected_keys(*, binding: dict[str, str | int]) -> set[str]:
+    return set(binding) | {
         "disposition",
         "changed_fraction",
         "proposed_text_sha256",
@@ -654,8 +719,6 @@ def _verify_checkpoint_keys(
         "unchanged_consistent_note",
         "checkpoint_sha256",
     }
-    if set(checkpoint) != expected:
-        raise ProseReviewV4DashboardError("Checkpoint schema is malformed")
 
 
 def _verify_checkpoint_digest(*, checkpoint: dict[str, JSONValue]) -> None:
@@ -768,6 +831,18 @@ def _fraction_bucket_index(value: float) -> int:
     return _FRACTION_ORDER[_fraction_bucket(value)]
 
 
+def _render_legacy_notice(*, count: int) -> str:
+    if count == 0:
+        return ""
+    return (
+        '<p class="warning"><strong>LEGACY PROVISIONAL:</strong> '
+        f"{count} contextless historical checkpoint(s) were verified against the "
+        "signed pre-context persona and changed-facts binding, then revalidated "
+        "without source-verified context. They require renewed review before any "
+        "dataset change.</p>"
+    )
+
+
 def _render_unchanged_summary(*, decisions: list[ReviewDecision]) -> str:
     unchanged = [
         decision
@@ -848,11 +923,18 @@ def _render_patched_card(*, index: int, decision: ReviewDecision) -> str:
             )
         )
     )
+    legacy_label = ""
+    if decision.legacy_provisional:
+        legacy_label = (
+            '<p class="warning"><strong>LEGACY PROVISIONAL:</strong> '
+            "contextless historical checkpoint requiring renewed review.</p>"
+        )
     return f"""<article class="card">
 <header>
 <h3>Patched sample {index}: {html.escape(decision.short_id)}</h3>
 <p class="meta">Fields: {html.escape(", ".join(decision.changed_fields))}; changed
 fraction: {decision.changed_fraction:.1%}</p>
+{legacy_label}
 </header>
 <section aria-label="Allowlisted changed facts">
 <h4>Allowlisted source/candidate fact changes</h4>
@@ -883,6 +965,7 @@ body { margin: 0; background: #f8fafc; color: #172033; }
 main { max-width: 1180px; margin: 0 auto; padding: 2rem; }
 h1 { margin-bottom: 0.4rem; }
 .notice { border: 2px solid #9a3412; background: #fff7ed; padding: 1rem; }
+.warning { border-left: 4px solid #b45309; background: #fffbeb; padding: 0.75rem; }
 .counts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
