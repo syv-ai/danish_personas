@@ -11,6 +11,78 @@ from pathlib import Path
 import polars as pl
 
 
+def _missing_column_result(
+    *, frame: pl.DataFrame, missing: set[str]
+) -> dict[str, object]:
+    """Build a privacy-safe result when the release schema is incomplete.
+
+    Returns:
+        An assessment result without row-level keys.
+    """
+    return {
+        "supported_rows": 0,
+        "unsupported_rows": frame.height,
+        "missing_columns": sorted(missing),
+        "missing_keys": [],
+    }
+
+
+def _ras209_age_band(age: pl.Expr) -> pl.Expr:
+    """Map exact release ages to the original RAS209 age subbands.
+
+    Returns:
+        An expression yielding the source age subband.
+    """
+    return (
+        pl.when(age < 20)
+        .then(pl.lit("16-19"))
+        .when(age < 25)
+        .then(pl.lit("20-24"))
+        .when(age < 30)
+        .then(pl.lit("25-29"))
+        .when(age < 35)
+        .then(pl.lit("30-34"))
+        .when(age < 40)
+        .then(pl.lit("35-39"))
+        .when(age < 45)
+        .then(pl.lit("40-44"))
+        .when(age < 50)
+        .then(pl.lit("45-49"))
+        .when(age < 55)
+        .then(pl.lit("50-54"))
+        .when(age < 60)
+        .then(pl.lit("55-59"))
+        .when(age < 65)
+        .then(pl.lit("60-64"))
+        .when(age < 67)
+        .then(pl.lit("65-66"))
+        .otherwise(pl.lit("67-"))
+    )
+
+
+def _education_pool_code() -> pl.Expr:
+    """Convert an unpooled RAS209 H-code to the release pooling label.
+
+    Returns:
+        An expression yielding the pooled release education code.
+    """
+    code_number = (
+        pl.col("education_source_code")
+        .cast(pl.String)
+        .str.extract(r"^H(\d+)$", 1)
+        .cast(pl.Int16, strict=False)
+    )
+    return (
+        pl.when(code_number == 10)
+        .then(pl.lit("H10"))
+        .when(code_number.is_between(20, 35))
+        .then(pl.lit("H20-H35"))
+        .when(code_number.is_between(40, 80))
+        .then(pl.lit("H40-H80"))
+        .otherwise(pl.lit(None, dtype=pl.String))
+    )
+
+
 class InfeasibleRepairError(ValueError):
     """Raised when release strata cannot be reconciled to disclosed source support."""
 
@@ -18,21 +90,19 @@ class InfeasibleRepairError(ValueError):
 def assess_release_support(
     *, frame: pl.DataFrame, bundle_dir: Path
 ) -> dict[str, object]:
-    """Report row-level support coverage against prepared FOLK1A, RAS209 and RAS202.
+    """Report source support coverage without exposing missing row-level keys.
 
     FOLK1A checks exact age/sex/municipality/marital cells. RAS209 checks the
-    unpooled age-band/municipality/sex/education/broad-status joint. RAS202 checks
-    age-band/sex/broad-status/detailed-status support. For RAS202, the prepared
-    age bands encode the source's 18-70 exact ages and 71+ top-code; this function
-    deliberately does not extrapolate those cells to other ages.
+    original age subband and source education codes represented by each pooled
+    release category. RAS202 checks exact ages through 70 and its 71+ top-code.
 
     Args:
         frame: Release rows with source-aligned demographic columns.
         bundle_dir: Prepared bundle root containing normalized Parquets.
 
     Returns:
-        Per-source supported and unsupported row counts and representative missing
-        source keys. This is diagnostic only; it does not validate distributions.
+        Per-source supported and unsupported row counts. This is diagnostic only;
+        it does not validate distributions or disclose missing row-level keys.
     """
     normalized = bundle_dir / "normalized"
     specifications = {
@@ -60,39 +130,102 @@ def assess_release_support(
         ),
         "ras202": (
             "ras202_detail_unpooled.parquet",
-            ["age_band", "sex", "labour_market_status", "detailed_status_code"],
-            ["age_band", "sex", "labour_market_status", "detailed_status_code"],
+            ["age_key", "sex", "labour_market_status", "detailed_status_code"],
+            ["age_key", "sex", "labour_market_status", "detailed_status_code"],
         ),
     }
     results: dict[str, object] = {}
     for name, (filename, source_keys, frame_keys) in specifications.items():
-        missing_columns = set(frame_keys).difference(frame.columns)
+        required_frame_keys = {
+            "folk1a": frame_keys,
+            "ras209": [
+                "age",
+                "municipality_code",
+                "sex",
+                "education_source_code",
+                "labour_market_status",
+            ],
+            "ras202": ["age", "sex", "labour_market_status", "detailed_status_code"],
+        }[name]
+        missing_columns = set(required_frame_keys).difference(frame.columns)
         if missing_columns:
-            results[name] = {
-                "supported_rows": 0,
-                "unsupported_rows": frame.height,
-                "missing_columns": sorted(missing_columns),
-                "missing_keys": [],
-            }
+            results[name] = _missing_column_result(frame=frame, missing=missing_columns)
             continue
-        source = pl.read_parquet(normalized / filename).filter(~pl.col("suppressed"))
+        source = pl.read_parquet(normalized / filename)
         _require_columns(source, source_keys)
+        source = source.filter((~pl.col("suppressed")) & (pl.col("count") > 0))
+        checked_frame = frame
+        if name == "ras209":
+            missing = {"age", "education_source_code"}.difference(frame.columns)
+            if missing:
+                results[name] = _missing_column_result(frame=frame, missing=missing)
+                continue
+            source = source.with_columns(
+                _education_pool_code().alias("_release_education_code")
+            )
+            source_keys = [
+                "age_band",
+                "municipality_code",
+                "sex",
+                "_release_education_code",
+                "labour_market_status",
+            ]
+            checked_frame = frame.with_columns(
+                _ras209_age_band(pl.col("age")).alias("_release_age_band")
+            )
+            frame_keys = [
+                "_release_age_band",
+                "municipality_code",
+                "sex",
+                "education_source_code",
+                "labour_market_status",
+            ]
+        elif name == "ras202":
+            missing = {"age"}.difference(frame.columns)
+            if missing:
+                results[name] = _missing_column_result(frame=frame, missing=missing)
+                continue
+            source = source.with_columns(
+                pl.col("age_key")
+                .cast(pl.String)
+                .str.replace(r"\+$", "")
+                .cast(pl.Int16, strict=False)
+                .alias("_age_key")
+            )
+            source_keys = [
+                "_age_key",
+                "sex",
+                "labour_market_status",
+                "detailed_status_code",
+            ]
+            checked_frame = frame.with_columns(
+                pl.when(pl.col("age") <= 70)
+                .then(pl.col("age").cast(pl.Int16))
+                .otherwise(pl.lit(71, dtype=pl.Int16))
+                .alias("_age_key")
+            )
+            frame_keys = [
+                "_age_key",
+                "sex",
+                "labour_market_status",
+                "detailed_status_code",
+            ]
         keys = source.select(source_keys).unique()
-        checked = frame.with_row_index("_repair_row").join(
+        checked = checked_frame.with_row_index("_repair_row").join(
             keys.with_columns(pl.lit(True).alias("_supported")),
             left_on=frame_keys,
             right_on=source_keys,
             how="left",
         )
         unsupported_expression = pl.col("_supported").is_null()
-        if name == "ras202" and "age" in checked.columns:
+        if name == "ras202":
             unsupported_expression |= pl.col("age") < 18
         unsupported = checked.filter(unsupported_expression)
         results[name] = {
             "supported_rows": checked.height - unsupported.height,
             "unsupported_rows": unsupported.height,
             "missing_columns": [],
-            "missing_keys": unsupported.select(frame_keys).unique().head(10).to_dicts(),
+            "missing_keys": [],
         }
     return results
 

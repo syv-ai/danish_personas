@@ -64,8 +64,10 @@ def test_repair_fails_for_unsupported_stratum() -> None:
         )
 
 
-def test_assessment_reports_exact_joint_support(tmp_path: Path) -> None:
-    """Support assessment counts exact source joint matches offline."""
+def test_assessment_maps_pooled_release_values_to_source_support(
+    tmp_path: Path,
+) -> None:
+    """Assess RAS support using its native age and education categories."""
     normalized = tmp_path / "normalized"
     normalized.mkdir()
     folk = pl.DataFrame(
@@ -74,45 +76,74 @@ def test_assessment_reports_exact_joint_support(tmp_path: Path) -> None:
             "sex": ["female"],
             "municipality_code": ["101"],
             "marital_status": ["single"],
+            "count": [1],
             "suppressed": [False],
         }
     )
     ras209 = pl.DataFrame(
         {
-            "age_band": ["30-34"],
-            "municipality_code": ["101"],
-            "sex": ["female"],
-            "education_source_code": ["E"],
-            "labour_market_status": ["employed"],
-            "suppressed": [False],
+            "age_band": ["30-34", "35-39", "30-34", "30-34"],
+            "municipality_code": ["101"] * 4,
+            "sex": ["female"] * 4,
+            "education_source_code": ["H20", "H35", "H40", "H90"],
+            "labour_market_status": ["employed"] * 4,
+            "count": [4, 5, 6, 7],
+            "suppressed": [False, False, False, False],
         }
     )
     ras202 = pl.DataFrame(
         {
-            "age_band": ["30-34"],
-            "sex": ["female"],
-            "labour_market_status": ["employed"],
-            "detailed_status_code": ["A"],
-            "suppressed": [False],
+            "age_band": ["30-34", "71+"],
+            "age_key": ["30", "71"],
+            "sex": ["female", "female"],
+            "labour_market_status": ["employed", "employed"],
+            "detailed_status_code": ["A", "A"],
+            "count": [1, 1],
+            "suppressed": [False, False],
         }
+    )
+    # Positive source support only: both suppressed and zero-count cells fail.
+    ras209 = pl.concat(
+        [
+            ras209,
+            ras209.head(1).with_columns(
+                pl.lit("25-29").alias("age_band"),
+                pl.lit("H20").alias("education_source_code"),
+                pl.lit(0).alias("count"),
+            ),
+            ras209.head(1).with_columns(
+                pl.lit("20-24").alias("age_band"), pl.lit(True).alias("suppressed")
+            ),
+        ]
     )
     folk.write_parquet(normalized / "folk1a_base_unpooled.parquet")
     ras209.write_parquet(normalized / "ras209_joint_unpooled.parquet")
     ras202.write_parquet(normalized / "ras202_detail_unpooled.parquet")
     frame = pl.DataFrame(
         {
-            "age": [30, 31],
-            "sex": ["female", "female"],
-            "municipality_code": ["101", "101"],
-            "marital_status": ["single", "married"],
-            "age_band": ["30-34", "30-34"],
-            "education_source_code": ["E", "E"],
-            "labour_market_status": ["employed", "employed"],
-            "detailed_status_code": ["A", "missing"],
+            "age": [30, 36, 30, 22, 30, 30, 71, 72],
+            "sex": ["female"] * 8,
+            "municipality_code": ["101"] * 8,
+            "marital_status": ["single"] * 8,
+            "education_source_code": [
+                "H20-H35",
+                "H20-H35",
+                "H40-H80",
+                "H20-H35",
+                "H20-H35",
+                "H90",
+                "H20-H35",
+                "H20-H35",
+            ],
+            "labour_market_status": ["employed"] * 8,
+            "detailed_status_code": ["A"] * 8,
         }
     )
     result = assess_release_support(frame=frame, bundle_dir=tmp_path)
     assert result["folk1a"]["supported_rows"] == 1
-    assert result["folk1a"]["unsupported_rows"] == 1
-    assert result["ras209"]["supported_rows"] == 2
-    assert result["ras202"]["unsupported_rows"] == 1
+    assert result["folk1a"]["unsupported_rows"] == 7
+    assert result["ras209"]["supported_rows"] == 3
+    assert result["ras209"]["unsupported_rows"] == 5
+    assert result["ras202"]["supported_rows"] == 3
+    assert result["ras202"]["unsupported_rows"] == 5
+    assert all(source["missing_keys"] == [] for source in result.values())
