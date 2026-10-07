@@ -7,9 +7,9 @@ llm:
   # base_url: http://127.0.0.1:18080/v1
   # model: gpt-5.6-sol
   # api_key_env: null
-  base_url: https://api.melious.ai/v1
-  model: deepseek-v4-flash-0731
-  api_key_env: MELIOUS_API_KEY
+  base_url: https://api.mistral.ai/v1
+  model: mistral-small-2603
+  api_key_env: MISTRAL_API_KEY
   timeout_seconds: 300.0
   maximum_http_attempts: 3
   maximum_total_requests: 15
@@ -18,7 +18,7 @@ llm:
   # 2026 FAM100N share among legally formalised couples; applied to partnered
   # personas, not an all-partnership rate or sexual orientation estimate.
   same_sex_partner_probability: 0.00701
-  max_tokens: null
+  max_tokens: 800
   enable_thinking: null
   reasoning_effort: null
   prompt: config/persona-da.md

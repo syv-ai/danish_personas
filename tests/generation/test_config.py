@@ -115,8 +115,10 @@ def test_root_generation_config_has_provider_defaults() -> None:
     """The canonical config retains the configured provider endpoint and model."""
     config = load_generation_config(Path("config/config.yaml"))
 
-    assert config.base_url == "https://api.melious.ai/v1"
-    assert config.model == "deepseek-v4-flash-0731"
+    assert config.base_url == "https://api.mistral.ai/v1"
+    assert config.model == "mistral-small-2603"
+    assert config.api_key_env == "MISTRAL_API_KEY"
+    assert config.max_tokens == 800
 
 
 def test_root_prompts_render_origin_as_natural_prose() -> None:
