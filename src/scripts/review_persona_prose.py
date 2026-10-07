@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import collections.abc as c
 import concurrent.futures as futures
+import datetime as dt
+import email.utils
 import json
 import logging
 import os
 import re
 import tempfile
+import time
 import typing as t
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +61,10 @@ PERSONA_FIELD = "persona"
 TRIAGE_CLASSIFICATION = "needs_prose_review_or_regeneration"
 STATUS_VERSION = 1
 MANIFEST_VERSION = 1
+TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+MAX_HTTP_ATTEMPTS_PER_ROW = 5
+MAX_RETRY_DELAY_SECONDS = 120.0
+MIN_RETRY_DELAY_SECONDS = 1.0
 
 RESTRICTED_FIELDS = frozenset(
     {
@@ -119,6 +126,23 @@ class ReviewRow:
     changed_facts: dict[str, dict[str, object]]
 
 
+@dataclass(frozen=True)
+class ReviewAttemptResult:
+    """One logical row result and the transient retries it needed."""
+
+    result: ProseReviewResult
+    transient_retries: int
+
+
+class TransientReviewAttemptsExhausted(RuntimeError):
+    """Raised when a row exhausts bounded transient provider retries."""
+
+    def __init__(self, *, transient_retries: int) -> None:
+        """Initialise with the number of retries already consumed."""
+        super().__init__("Transient prose review provider failures exhausted")
+        self.transient_retries = transient_retries
+
+
 class ReviewRunner(t.Protocol):
     """Callable contract for the injectable proxy review runner."""
 
@@ -137,7 +161,7 @@ class ReviewRunner(t.Protocol):
         """Run or resume one prose review."""
 
 
-ReviewFutureMap: t.TypeAlias = dict[futures.Future[ProseReviewResult], ReviewRow]
+ReviewFutureMap: t.TypeAlias = dict[futures.Future[ReviewAttemptResult], ReviewRow]
 
 
 @click.command()
@@ -329,6 +353,7 @@ def _generation_config(*, prompt_path: Path) -> GenerationConfig:
 def _validate_status(status: object) -> dict[str, object]:
     if not isinstance(status, dict):
         raise PersonaProseReviewError("status.json must be an object")
+    status.setdefault("transient_retries", 0)
     for key in (
         "total_triage_selected",
         "reviewable",
@@ -339,6 +364,7 @@ def _validate_status(status: object) -> dict[str, object]:
         "needs_manual_review",
         "failed",
         "attempted",
+        "transient_retries",
         "processed",
         "pending",
     ):
@@ -479,15 +505,16 @@ def _has_completed_future(*, future_map: ReviewFutureMap) -> bool:
 
 def _record_completed_review_future(
     *,
-    future: futures.Future[ProseReviewResult],
+    future: futures.Future[ReviewAttemptResult],
     row: ReviewRow,
     status: dict[str, object],
     status_path: Path,
 ) -> Exception | None:
     status["attempted"] = _status_int(status, "attempted") + 1
     try:
-        result = future.result()
+        attempt_result = future.result()
     except Exception as exc:
+        _record_transient_retries(status=status, exc=exc)
         status["failed"] = _status_int(status, "failed") + 1
         status["pending"] = _pending_count(status=status)
         _write_status(path=status_path, status=status)
@@ -495,17 +522,27 @@ def _record_completed_review_future(
             return exc
         LOGGER.warning("Persona prose review failed for one selected row")
         return None
-    _record_result(status=status, row=row, result=result)
+    status["transient_retries"] = (
+        _status_int(status, "transient_retries") + attempt_result.transient_retries
+    )
+    _record_result(status=status, row=row, result=attempt_result.result)
     _write_status(path=status_path, status=status)
     return None
 
 
+def _record_transient_retries(*, status: dict[str, object], exc: Exception) -> None:
+    if isinstance(exc, TransientReviewAttemptsExhausted):
+        status["transient_retries"] = (
+            _status_int(status, "transient_retries") + exc.transient_retries
+        )
+
+
 def _must_stop(exc: Exception) -> bool:
+    if isinstance(exc, TransientReviewAttemptsExhausted):
+        return True
     if isinstance(exc, (ProxyBudgetError, ProxyReviewError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {429, 500, 502, 503, 504}
-    return False
+    return isinstance(exc, httpx.HTTPStatusError)
 
 
 def _pending_count(*, status: dict[str, object]) -> int:
@@ -593,6 +630,7 @@ def _public_status_summary(
         "no_changed_fact": status["no_changed_fact"],
         "failed": status["failed"],
         "attempted": status["attempted"],
+        "transient_retries": status["transient_retries"],
         "processed": status["processed"],
         "pending": status["pending"],
         "max_rows": max_rows,
@@ -743,6 +781,7 @@ def _load_or_create_status(
         "needs_manual_review": 0,
         "failed": 0,
         "attempted": 0,
+        "transient_retries": 0,
         "processed": 0,
         "pending": len(selection.reviewable),
         "processed_persona_hashes": [],
@@ -850,23 +889,72 @@ def _run_one_review(
     config: GenerationConfig,
     budget: ProxyBudget,
     review_runner: ReviewRunner,
-) -> ProseReviewResult:
-    transport = httpx.HTTPTransport()
-    try:
-        return review_runner(
-            row=row.original_row,
-            candidate_row=row.candidate_row,
-            changed_facts=row.changed_facts,
-            prompt=prompt,
-            config=config,
-            budget=budget,
-            checkpoint_path=_checkpoint_path(
-                output_dir=output_dir, persona_hash=row.persona_hash
-            ),
-            transport=transport,
-        )
-    finally:
+) -> ReviewAttemptResult:
+    transient_retries = 0
+    for attempt in range(1, MAX_HTTP_ATTEMPTS_PER_ROW + 1):
+        transport = httpx.HTTPTransport()
+        try:
+            result = review_runner(
+                row=row.original_row,
+                candidate_row=row.candidate_row,
+                changed_facts=row.changed_facts,
+                prompt=prompt,
+                config=config,
+                budget=budget,
+                checkpoint_path=_checkpoint_path(
+                    output_dir=output_dir, persona_hash=row.persona_hash
+                ),
+                transport=transport,
+            )
+        except Exception as exc:
+            transport.close()
+            if not _is_retryable_transient_error(exc):
+                raise
+            if attempt == MAX_HTTP_ATTEMPTS_PER_ROW:
+                raise TransientReviewAttemptsExhausted(
+                    transient_retries=transient_retries
+                ) from exc
+            transient_retries += 1
+            time.sleep(_retry_delay_seconds(exc=exc, attempt=attempt))
+            continue
         transport.close()
+        return ReviewAttemptResult(result=result, transient_retries=transient_retries)
+    raise PersonaProseReviewError("Prose review retry loop ended unexpectedly")
+
+
+def _is_retryable_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in TRANSIENT_STATUS_CODES
+    return isinstance(exc, httpx.TransportError)
+
+
+def _retry_delay_seconds(*, exc: Exception, attempt: int) -> float:
+    retry_after = _retry_after_seconds(exc=exc)
+    if retry_after is None:
+        delay = 2 ** (attempt - 1)
+    else:
+        delay = retry_after
+    return min(MAX_RETRY_DELAY_SECONDS, max(MIN_RETRY_DELAY_SECONDS, float(delay)))
+
+
+def _retry_after_seconds(*, exc: Exception) -> float | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    value = exc.response.headers.get("Retry-After")
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.isdecimal():
+        return float(stripped)
+    try:
+        retry_at = email.utils.parsedate_to_datetime(stripped)
+    except TypeError, ValueError:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=dt.UTC)
+    return (retry_at - dt.datetime.now(tz=dt.UTC)).total_seconds()
 
 
 def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
