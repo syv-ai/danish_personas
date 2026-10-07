@@ -10,8 +10,8 @@ import pytest
 from danish_personas.release.list_completion import complete_generated_lists
 
 
-def test_completes_three_duplicate_patterns_preserving_rows_and_prose() -> None:
-    """Complete the observed uniqueness-failure shapes and preserve other fields."""
+def test_completes_real_like_duplicate_fields_preserving_rows_and_prose() -> None:
+    """Complete only the three-persona, five-field uniqueness failures."""
     frame = _three_case_frame()
 
     completed, report = complete_generated_lists(frame)
@@ -38,6 +38,7 @@ def test_completes_three_duplicate_patterns_preserving_rows_and_prose() -> None:
         ("p-3", "skills_and_expertise"),
         ("p-3", "hobbies_and_interests"),
     }
+    assert len(report["changes"]) == 5
     assert {item["persona_id"] for item in report["prose_review"]} == {
         "p-1",
         "p-2",
@@ -49,6 +50,8 @@ def test_completes_three_duplicate_patterns_preserving_rows_and_prose() -> None:
     assert "Uændret prose" not in report_text
     for change in report["changes"]:
         assert change["original"] != change["new"]
+        assert change["new"][0] == change["original"][0]
+        assert len(change["new"]) == len(change["original"])
         assert change["seed"] > 0
         assert change["method"] == (
             "synthetic_list_completion_v1_seeded_by_persona_id_and_field"
@@ -71,43 +74,71 @@ def test_completion_is_idempotent_and_independent_of_row_order() -> None:
     assert _lists_by_persona(reordered_completed) == _lists_by_persona(completed)
 
 
-def test_completed_lists_are_unique_canonical_and_simple() -> None:
-    """Completed list items remain schema-sized, unique, canonical, and simple."""
+def test_repairs_hobby_format_without_treating_eller_as_defect() -> None:
+    """Repair objective hobby-format failures without marital-disjunction rules."""
     frame = pl.DataFrame(
         [
             _row(
-                "p-disjunction",
+                "p-format",
                 skills_and_expertise=[
                     "analyse eller tal",
                     "analyse",
-                    "analyse",
                     "formidling",
                 ],
-                hobbies_and_interests=["Løb eller gang", "Musik.", "musik", "læsning"],
+                hobbies_and_interests=["Løb", "musik.", "gåture "],
             )
         ]
     )
 
-    completed, _ = complete_generated_lists(frame)
+    completed, report = complete_generated_lists(frame)
 
-    for field in ("skills_and_expertise", "hobbies_and_interests"):
-        values = completed[field][0].to_list()
-        assert 3 <= len(values) <= 6
-        assert len({value.casefold() for value in values}) == len(values)
-        assert all(" eller " not in f" {value.casefold()} " for value in values)
-    hobbies = completed["hobbies_and_interests"][0].to_list()
-    assert all(value == value.lower() for value in hobbies)
-    assert all(value[-1] not in ".!?;:," for value in hobbies)
+    assert completed["skills_and_expertise"][0].to_list() == [
+        "analyse eller tal",
+        "analyse",
+        "formidling",
+    ]
+    assert completed["hobbies_and_interests"][0].to_list() == [
+        "løb",
+        "musik",
+        "gåture ",
+    ]
+    assert [(item["persona_id"], item["field"]) for item in report["changes"]] == [
+        ("p-format", "hobbies_and_interests")
+    ]
 
 
-def test_rejects_invalid_ids_list_types_items_and_sizes() -> None:
+def test_unique_punctuated_whitespace_disjunctive_lists_stay_unchanged() -> None:
+    """Leave unique list text untouched when objective list checks pass."""
+    frame = pl.DataFrame(
+        [
+            _row(
+                "p-untouched",
+                skills_and_expertise=[
+                    "analyse.",
+                    "tal eller data",
+                    " samarbejde ",
+                ],
+                hobbies_and_interests=[
+                    "musik eller radio",
+                    "gåture ",
+                    "brætspil…",
+                ],
+            )
+        ]
+    )
+
+    completed, report = complete_generated_lists(frame)
+
+    assert completed.to_dicts() == frame.to_dicts()
+    assert report["changes"] == []
+    assert report["prose_review"] == []
+
+
+def test_rejects_invalid_ids_list_types_and_sizes() -> None:
     """Fail closed for structures that are not safe synthetic-list repairs."""
     duplicate_ids = pl.DataFrame([_row("p-1"), _row("p-1")])
     non_string_id = pl.DataFrame([_row("")])
     non_list = pl.DataFrame([_row("p-1", skills_and_expertise="analyse")], strict=False)
-    blank_item = pl.DataFrame(
-        [_row("p-1", hobbies_and_interests=["musik", " ", "læsning"])]
-    )
     undersized = pl.DataFrame(
         [_row("p-1", skills_and_expertise=["analyse", "formidling"])]
     )
@@ -116,7 +147,6 @@ def test_rejects_invalid_ids_list_types_items_and_sizes() -> None:
         duplicate_ids,
         non_string_id,
         non_list,
-        blank_item,
         undersized,
     ):
         with pytest.raises(ValueError):
@@ -149,8 +179,8 @@ def _three_case_frame() -> pl.DataFrame:
         [
             _row(
                 "p-1",
-                skills_and_expertise=["analyse", "analyse", "ANALYSE"],
-                hobbies_and_interests=["musik", "Musik.", "MUSIK"],
+                skills_and_expertise=["analyse", "analyse", "formidling"],
+                hobbies_and_interests=["musik", "musik", "læsning"],
             ),
             _row(
                 "p-2",
@@ -163,13 +193,13 @@ def _three_case_frame() -> pl.DataFrame:
                     "planlægning",
                     "planlægning",
                     "samarbejde",
-                    "SAMARBEJDE",
+                    "samarbejde",
                 ],
                 hobbies_and_interests=[
                     "brætspil",
-                    "Brætspil",
+                    "brætspil",
                     "madlavning",
-                    "MADLAVNING.",
+                    "madlavning",
                 ],
             ),
         ]
