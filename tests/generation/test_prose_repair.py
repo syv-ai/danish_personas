@@ -163,9 +163,11 @@ def test_schema_prose_repair_payload_allowlist_and_resume(
     assert set(row.items()).issubset(set(result[0].items()))
     resumed = _run(tmp_path, config, FakeClient("unused"), rows=[row])
     assert resumed == result
-    ledger = json.loads((tmp_path / "ledger.json").read_text())
-    assert len(ledger["reservations"]) == 1
-    assert (tmp_path / "ledger.json").stat().st_mode & 0o777 == 0o600
+    ledger_path = tmp_path / "ledger.jsonl"
+    lines = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    assert lines[0]["type"] == "header"
+    assert len(lines[1:]) == 1
+    assert (ledger_path.stat().st_mode & 0o777) == 0o600
     assert os.stat(tmp_path).st_mode & 0o777 == 0o700
 
 
@@ -192,14 +194,49 @@ def test_attempt_reservations_are_durable_and_cap_checked(
     client = FakeClient(json.dumps({"persona": "d" * 300}), attempts=2)
     with pytest.raises(RepairError, match="Cost cap"):
         _run(tmp_path, config, client, cost_cap_usd=0.0000001)
-    ledger = json.loads((tmp_path / "ledger.json").read_text())
-    assert ledger["reservations"] == []
+    ledger = [
+        json.loads(line)
+        for line in (tmp_path / "ledger.jsonl").read_text().splitlines()
+    ]
+    assert len(ledger) == 1
+    assert ledger[0]["type"] == "header"
 
     retry_dir = tmp_path / "retry"
     _run(retry_dir, config, client, cost_cap_usd=100.0)
-    retry_ledger = json.loads((retry_dir / "ledger.json").read_text())
-    assert len(retry_ledger["reservations"]) == 2
+    retry_ledger = [
+        json.loads(line)
+        for line in (retry_dir / "ledger.jsonl").read_text().splitlines()
+    ]
+    assert len(retry_ledger[1:]) == 2
     assert client.reservations == 2
+
+
+def test_interrupted_request_resumes_with_cumulative_reservation(
+    tmp_path: Path, config: GenerationConfig
+) -> None:
+    """Keep a durable reservation after interruption and resume without rewriting it."""
+
+    class InterruptedClient(FakeClient):
+        def complete(
+            self,
+            *,
+            record_request: c.Callable[[int], None],
+            **kwargs: object,
+        ) -> LLMResponse:
+            del kwargs
+            record_request(1)
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        _run(tmp_path, config, InterruptedClient("unused"))
+
+    ledger_path = tmp_path / "ledger.jsonl"
+    first_run = ledger_path.read_text().splitlines()
+    assert len(first_run) == 2
+    _run(tmp_path, config, FakeClient(json.dumps({"persona": "d" * 300})))
+    resumed = ledger_path.read_text().splitlines()
+    assert len(resumed) == 3
+    assert resumed[:2] == first_run
 
 
 def test_malformed_ledger_reservation_fails_closed(
@@ -207,10 +244,18 @@ def test_malformed_ledger_reservation_fails_closed(
 ) -> None:
     """Reject malformed durable request accounting before any provider call."""
     _run(tmp_path, config, FakeClient(json.dumps({"persona": "d" * 300})))
-    ledger_path = tmp_path / "ledger.json"
-    ledger = json.loads(ledger_path.read_text())
-    ledger["reservations"] = [{"id": "a", "usd": "not-a-number"}]
-    ledger_path.write_text(json.dumps(ledger))
+    ledger_path = tmp_path / "ledger.jsonl"
+    ledger_path.write_text(
+        "\n".join(
+            [
+                *ledger_path.read_text().splitlines()[:1],
+                json.dumps(
+                    {"type": "reservation", "id": "a", "usd": "not-a-number"}
+                ),
+            ]
+        )
+        + "\n"
+    )
     client = FakeClient("unused")
     with pytest.raises(RepairError, match="Malformed repair ledger reservation"):
         _run(tmp_path, config, client)
