@@ -234,9 +234,7 @@ def test_schema_prose_repair_payload_allowlist_and_resume(
     assert binding["pricing_currency"] == "USD"
     assert binding["input_usd_per_million"] == 0.15
     assert binding["output_usd_per_million"] == 0.60
-    assert binding["pricing_source"] == (
-        "https://docs.mistral.ai/inference/pricing"
-    )
+    assert binding["pricing_source"] == ("https://docs.mistral.ai/inference/pricing")
     assert "usd_per_eur" not in binding
     assert len(lines[1:]) == 1
     assert (ledger_path.stat().st_mode & 0o777) == 0o600
@@ -338,17 +336,12 @@ def test_malformed_ledger_reservation_fails_closed(
     ],
 )
 def test_provider_configuration_must_match_mistral(
-    tmp_path: Path,
-    config: GenerationConfig,
-    field: str,
-    value: str,
+    tmp_path: Path, config: GenerationConfig, field: str, value: str
 ) -> None:
     """Reject non-Mistral provider settings before invoking the client."""
-    wrong_config = GenerationConfig.model_construct(
-        **{**config.__dict__, field: value}
-    )
+    wrong_config = GenerationConfig.model_construct(**{**config.__dict__, field: value})
     client = FakeClient("unused")
-    with pytest.raises(RepairError, match="Mistral|mistral-small-2603"):
+    with pytest.raises(RepairError, match="Mistral|mistral-small-2603|MISTRAL_API_KEY"):
         _run(tmp_path, wrong_config, client)
     assert client.payload is None
     assert not (tmp_path / "ledger.jsonl").exists()
