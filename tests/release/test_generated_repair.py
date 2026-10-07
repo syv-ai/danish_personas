@@ -9,7 +9,8 @@ from danish_personas.release.generated_repair import repair_generated_attributes
 def _row(persona_id: str, **updates: object) -> dict[str, object]:
     row: dict[str, object] = {
         "persona_id": persona_id,
-        "marital_status": "single",
+        "marital_status": "never_married",
+        "detailed_status_code": "130",
         "legal_status_detail": "married",
         "current_relationship_status": "not_partnered",
         "partner_gender": "female",
@@ -29,11 +30,17 @@ def _row(persona_id: str, **updates: object) -> dict[str, object]:
 
 
 def test_repairs_are_deterministic_idempotent_and_keep_every_record() -> None:
+    """Keep every row and flag rather than fabricate duplicate-list replacements."""
     mapping = load_job_title_mapping()
     code = next(iter(mapping.job_functions))
     title = mapping.job_functions[code].titles[0]
     rows = [
-        _row("a", job_function_code=code, job_title=title.swapcase()),
+        _row(
+            "a",
+            detailed_status_code="15",
+            job_function_code=code,
+            job_title=title.swapcase(),
+        ),
         _row(
             "b",
             marital_status="married_or_separated",
@@ -66,20 +73,35 @@ def test_repairs_are_deterministic_idempotent_and_keep_every_record() -> None:
     assert repaired["partner_gender"].to_list() == [None, "male", None]
     for field in ("skills_and_expertise", "hobbies_and_interests"):
         assert all(3 <= len(values) <= 6 for values in repaired[field].to_list())
-        assert all(len({value.casefold() for value in values}) == len(values)
-                   for values in repaired[field].to_list())
-    assert "same_sex_partner_target" in report["unresolved"]["a"]
+        assert field in report["unresolved"]["a"]
+    assert repaired["hobbies_and_interests"][0].to_list() == ["musik", "musik", "natur"]
 
 
 def test_allowed_title_retained_and_missing_or_unlisted_title_is_stable() -> None:
+    """Choose only a reviewed title for eligible employee rows."""
     mapping = load_job_title_mapping()
     code = next(iter(mapping.job_functions))
     title = mapping.job_functions[code].titles[0]
     frame = pl.DataFrame(
         [
-            _row("allowed", job_function_code=code, job_title=title),
-            _row("missing", job_function_code=code, job_title=None),
-            _row("unlisted", job_function_code=code, job_title="ukendt"),
+            _row(
+                "allowed",
+                detailed_status_code="15",
+                job_function_code=code,
+                job_title=title,
+            ),
+            _row(
+                "missing",
+                detailed_status_code="15",
+                job_function_code=code,
+                job_title=None,
+            ),
+            _row(
+                "unlisted",
+                detailed_status_code="15",
+                job_function_code=code,
+                job_title="ukendt",
+            ),
             _row("ineligible", job_function_code=None, job_title=title),
         ]
     )
