@@ -107,17 +107,24 @@ def generate_paired_identity(
             "and 0.44% nonbinary; nonbinary transgender status is unknown.",
             "Partner gender is assigned from self orientation under the requested "
             "scenario; this is synthetic, not observed relationship evidence.",
-            "Partner orientation uses source binary-sex marginal rates conditioned "
-            "on binary partner gender, filtered for scenario compatibility; this "
-            "is not an observed joint distribution.",
+            "Partner orientation uses source binary-sex marginal rates by proxying "
+            "binary partner gender to source sex, then filtering for scenario "
+            "compatibility; neither the proxy nor the joint is observed.",
+            "Partner age is not observed; ages 18–64 for the persona are used as "
+            "a proxy for the chart's partner age eligibility.",
             "Partner transgender status is a separate source-based synthetic draw; "
             "nonbinary and ages 65+ are unknown.",
-            "Ages 65+ retain source partner gender for partnered records and have "
-            "unknown self gender, orientation, and transgender status.",
+            "Ages 65+ retain existing partner gender for partnered records and "
+            "have unknown self gender, orientation, and transgender status.",
+            "The available figures do not split another-gender identities from "
+            "nonbinary, so no additional gender category is sampled.",
         ],
         "sources": {
             "binary_trans_and_nonbinary_rates": (
-                "SEXUS 2019 reported rates supplied by task"
+                "Frisch et al. (2019), Sex i Danmark, Projekt SEXUS 2017–2018, "
+                "gender-identity estimates: 0.05% trans men, 0.05% trans women, "
+                "0.44% nonbinary; "
+                "https://files.projektsexus.dk/2019-10-26_SEXUS-rapport_2017-2018.pdf"
             ),
             "partner_orientation_rates": (
                 "SHILD 2020 sex-specific marginals in lgbt_overlay.py"
@@ -199,7 +206,6 @@ def _build_record(
             identifier=identifier,
             partner_gender=partner_gender,
             self_gender=gender,
-            self_orientation=orientation,
             seed=seed,
         )
         partner_transgender = _partner_transgender(
@@ -241,16 +247,7 @@ def _assign_partner_gender(
     gender_weights: dict[str, int],
 ) -> str:
     if orientation == "homo":
-        return (
-            gender
-            if gender in ("man", "woman")
-            else _weighted_gender(
-                identifier=identifier,
-                seed=seed,
-                domain="same_gender_partner",
-                gender_weights=gender_weights,
-            )
-        )
+        return gender
     if orientation == "hetero":
         if gender == "man":
             return "woman"
@@ -261,6 +258,7 @@ def _assign_partner_gender(
             seed=seed,
             domain="hetero_partner_gender",
             gender_weights=gender_weights,
+            excluded="nonbinary",
         )
     return _weighted_gender(
         identifier=identifier,
@@ -271,29 +269,29 @@ def _assign_partner_gender(
 
 
 def _weighted_gender(
-    *, identifier: str, seed: int, domain: str, gender_weights: dict[str, int]
+    *,
+    identifier: str,
+    seed: int,
+    domain: str,
+    gender_weights: dict[str, int],
+    excluded: str | None = None,
 ) -> str:
-    draw = _draw(identifier=identifier, domain=domain, seed=seed)
-    total = sum(gender_weights.values())
+    options = [gender for gender in _GENDERS if gender != excluded]
+    total = sum(gender_weights[gender] for gender in options)
     if total == 0:
         return "unknown"
-    threshold = draw * total
-    for gender in _GENDERS:
+    threshold = _draw(identifier=identifier, domain=domain, seed=seed) * total
+    for gender in options:
         threshold -= gender_weights[gender]
         if threshold < 0:
             return gender
-    return _GENDERS[-1]
+    return options[-1]
 
 
 def _partner_orientation(
-    *,
-    identifier: str,
-    partner_gender: str,
-    self_gender: str,
-    self_orientation: str,
-    seed: int,
+    *, identifier: str, partner_gender: str, self_gender: str, seed: int
 ) -> str:
-    if partner_gender == "nonbinary":
+    if partner_gender not in ("man", "woman") or self_gender not in ("man", "woman"):
         return "unknown"
     sex = "male" if partner_gender == "man" else "female"
     rates = _PARTNER_RATES[sex]
@@ -311,7 +309,6 @@ def _partner_orientation(
             label == "homo"
             and self_gender != partner_gender
             and self_gender in ("man", "woman")
-            and self_orientation in ("hetero", "homo")
         )
     ]
     return _weighted_label(

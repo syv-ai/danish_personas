@@ -34,12 +34,11 @@ def test_overlay_is_deterministic_and_separate_from_input() -> None:
     assert result.columns == [
         "persona_id",
         "sexual_orientation_identity",
-        "trans_or_nonbinary_identity",
         "variation_in_sex_characteristics",
     ]
     assert "provider_payload" not in result.columns
     assert "provider_payload" not in str(provenance)
-    assert provenance["overlay_schema_version"] == 2
+    assert provenance["overlay_schema_version"] == 3
 
 
 def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:
@@ -55,11 +54,6 @@ def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:
 
     assert overlay["sexual_orientation_identity"].to_list() == [
         "unknown",
-        "unknown",
-        "unknown",
-        "unknown",
-    ]
-    assert overlay["trans_or_nonbinary_identity"].to_list()[:3] == [
         "unknown",
         "unknown",
         "unknown",
@@ -112,8 +106,8 @@ def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
     assert provenance["sources"]["sample_size"] == 17929
 
 
-def test_other_broad_axes_remain_available() -> None:
-    """The orientation update does not remove the other two synthetic axes."""
+def test_sex_characteristics_remain_separate() -> None:
+    """Gender status is not sampled independently of the paired gender model."""
     frame = pl.DataFrame(
         {
             "persona_id": [f"p-{index}" for index in range(1000)],
@@ -123,11 +117,7 @@ def test_other_broad_axes_remain_available() -> None:
     )
     overlay, provenance = generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
     counts = provenance["marginal_counts"]
-    assert set(overlay["trans_or_nonbinary_identity"].unique().to_list()) <= {
-        "yes",
-        "no",
-        "uncertain",
-    }
+    assert "trans_or_nonbinary_identity" not in overlay.columns
     assert set(overlay["variation_in_sex_characteristics"].unique().to_list()) <= {
         "yes",
         "no",
@@ -135,7 +125,7 @@ def test_other_broad_axes_remain_available() -> None:
     }
     limitations = " ".join(provenance["limitations"])
     assert "joint distributions are unsupported" in limitations
-    assert counts["trans_or_nonbinary_identity"]
+    assert counts["variation_in_sex_characteristics"]
 
 
 def test_invalid_config_and_duplicate_ids_fail_closed() -> None:

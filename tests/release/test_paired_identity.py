@@ -3,6 +3,10 @@
 import polars as pl
 import pytest
 
+from danish_personas.release.lgbt_overlay import (
+    LgbtOverlayConfig,
+    generate_lgbt_overlay,
+)
 from danish_personas.release.paired_identity import generate_paired_identity
 
 
@@ -121,7 +125,7 @@ def test_trans_gender_mapping_nonbinary_and_marginals() -> None:
     result, _ = generate_paired_identity(frame, orientation, seed=87)
     counts = result.group_by("gender").len().to_dict(as_series=False)
     observed = dict(zip(counts["gender"], counts["len"], strict=True))
-    assert 25 <= observed.get("man", 0) <= 75
+    assert 99_400 <= observed.get("man", 0) <= 99_600
     assert 25 <= observed.get("woman", 0) <= 75
     assert 390 <= observed.get("nonbinary", 0) <= 490
     assert observed.get("unknown", 0) == 0
@@ -145,8 +149,9 @@ def test_partner_fields_compatibility_and_weighted_gender_draws() -> None:
     result, provenance = generate_paired_identity(frame, orientation, seed=19)
     genders = result.get_column("partner_gender").value_counts()
     gender_counts = dict(zip(genders["partner_gender"], genders["count"], strict=True))
-    assert 2_350 < gender_counts["man"] < 2_650
-    assert 2_350 < gender_counts["woman"] < 2_650
+    assert 350 < gender_counts["man"] < 650
+    assert 4_300 < gender_counts["woman"] < 4_650
+    assert 0 < gender_counts["nonbinary"] < 60
     assert provenance["changed_partner_gender_ids"]
     assert "do not copy" not in str(result)
 
@@ -157,6 +162,36 @@ def test_partner_fields_compatibility_and_weighted_gender_draws() -> None:
     ).unique().to_dicts() == [
         {"partner_sexual_orientation": "unknown", "partner_transgender": "unknown"}
     ]
+
+
+def test_nonbinary_partner_rules_follow_scenario() -> None:
+    """Same/different-gender assumptions also handle nonbinary people."""
+    frame, orientation = _frames(count=5_000, orientation="homo")
+    homo, _ = generate_paired_identity(frame, orientation, seed=47)
+    nonbinary_homo = homo.filter(pl.col("gender") == "nonbinary")
+    assert nonbinary_homo.height > 0
+    assert nonbinary_homo["partner_gender"].unique().to_list() == ["nonbinary"]
+    assert nonbinary_homo["partner_sexual_orientation"].unique().to_list() == [
+        "unknown"
+    ]
+    hetero_orientation = orientation.with_columns(
+        pl.lit("hetero").alias("sexual_orientation_identity")
+    )
+    hetero, _ = generate_paired_identity(frame, hetero_orientation, seed=47)
+    nonbinary_hetero = hetero.filter(pl.col("gender") == "nonbinary")
+    assert nonbinary_hetero.height > 0
+    assert set(nonbinary_hetero["partner_gender"].to_list()) <= {"man", "woman"}
+
+
+def test_chart_overlay_feeds_paired_identity_without_label_mismatch() -> None:
+    """The categorical chart labels and the paired-identity input interoperate."""
+    frame, _ = _frames(count=200, sex="female", partner_gender="male")
+    chart_overlay, _ = generate_lgbt_overlay(frame, config=LgbtOverlayConfig(seed=11))
+    paired, provenance = generate_paired_identity(frame, chart_overlay, seed=11)
+    assert paired.height == frame.height
+    assert paired["sexual_orientation"].null_count() == 0
+    assert provenance["row_count"] == 200
+    assert "sexual_orientation_minority_identity" not in paired.columns
 
 
 def test_duplicate_ids_and_invalid_orientation_fail_closed() -> None:

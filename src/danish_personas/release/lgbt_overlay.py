@@ -1,6 +1,6 @@
 """Local-only synthetic LGBT+ overlay, separate from canonical persona records.
 
-This module produces broad synthetic identity axes for restricted local exploration.
+This module produces orientation and sex-characteristics axes for restricted local use.
 It must not be connected to generation-provider payloads, public releases, or uploads.
 """
 
@@ -13,7 +13,7 @@ from typing import Literal
 import polars as pl
 
 SOURCE_URL = "https://datawrapper.dwcdn.net/3HTgD/5/data.csv"
-OVERLAY_SCHEMA_VERSION = 2
+OVERLAY_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class LgbtOverlayConfig:
     """Versioned settings for deterministic, local overlay generation.
 
     Attributes:
-        version: Overlay semantics version. Only version 2 is supported.
+        version: Overlay semantics version. Only version 3 is supported.
         seed: Non-negative salt that allows reproducible independent scenarios.
         scenario: ``low`` applies published lower estimates; ``high`` represents
             published upper estimates with the excess recorded as uncertain.
@@ -56,11 +56,12 @@ def generate_lgbt_overlay(
 ) -> tuple[pl.DataFrame, dict[str, object]]:
     """Create an ID-keyed overlay and aggregate-only provenance.
 
-    The result is a new frame containing only the persona ID and three broad axes;
-    ``frame`` is never modified or returned. Axes are drawn independently using
-    domain-separated SHA-256 hashes. Sexual-orientation identity is sampled from
-    sex-specific SHILD 2020 rates for ages 18–64. Other axes retain their existing
-    estimates; ages outside 18–64, including 65+, are ``unknown`` on every axis.
+    The result is a new frame containing only the persona ID, orientation, and
+    sex-characteristics variation; ``frame`` is never modified or returned.
+    These axes use domain-separated SHA-256 hashes. Sexual orientation uses
+    sex-specific SHILD 2020 rates for ages 18–64. Ages outside 18–64, including
+    65+, are ``unknown`` on both axes. Gender and transgender status are modelled
+    together in the restricted paired-identity overlay, not independently here.
 
     Args:
         frame: Canonical/local input frame with an ID and integer age column.
@@ -84,7 +85,6 @@ def generate_lgbt_overlay(
     identifiers: list[str] = []
     orientations: list[str] = []
     orientation_sexes: list[str] = []
-    gender_identities: list[str] = []
     sex_characteristics: list[str] = []
     eligible = 0
 
@@ -99,20 +99,15 @@ def generate_lgbt_overlay(
         supported_age = isinstance(age, int) and 18 <= age <= 64
         if not supported_age:
             orientations.append("unknown")
-            gender_identities.append("unknown")
             sex_characteristics.append("unknown")
             continue
 
         eligible += 1
-        gender_draw = _draw(identifier, "gender_identity", config)
         characteristics_draw = _draw(identifier, "sex_characteristics", config)
         orientations.append(
             _orientation_label(
                 _draw(identifier, "orientation", config), row[sex_column]
             )
-        )
-        gender_identities.append(
-            _range_label(gender_draw, low=0.005, high=0.014, scenario=config.scenario)
         )
         sex_characteristics.append(
             _range_label(
@@ -127,7 +122,6 @@ def generate_lgbt_overlay(
         {
             persona_id_column: identifiers,
             "sexual_orientation_identity": orientations,
-            "trans_or_nonbinary_identity": gender_identities,
             "variation_in_sex_characteristics": sex_characteristics,
         }
     )
@@ -156,7 +150,6 @@ def generate_lgbt_overlay(
                 )
                 for sex in ("male", "female")
             },
-            "trans_or_nonbinary_identity": _counts(gender_identities),
             "variation_in_sex_characteristics": _counts(sex_characteristics),
         },
         "sources": {
@@ -181,7 +174,6 @@ def generate_lgbt_overlay(
                 },
                 "remainder": "heterosexual",
             },
-            "trans_or_nonbinary_identity": "0.5–1.4%, SHILD 2020 and SEXUS 2019",
             "variation_in_sex_characteristics": (
                 "Approximately 1% Danish self-report; 1.7% international definition"
             ),
@@ -190,8 +182,9 @@ def generate_lgbt_overlay(
             "Synthetic marginal draws are not observed individual data.",
             "Axes are drawn independently; overlaps and joint distributions are "
             "unsupported and are not claimed.",
-            "No identity is inferred from sex, partner gender, origin, or status; "
-            "relationships do not establish orientation.",
+            "Orientation is sampled by source-sex survey stratum, not inferred "
+            "from partner gender, origin, or status; relationships do not establish "
+            "orientation.",
             "Sexual-orientation rates are conditional on the published male/female "
             "stratum; other sex values are unknown for this axis.",
             "No supported estimate is available outside ages 18–64; unsupported "
