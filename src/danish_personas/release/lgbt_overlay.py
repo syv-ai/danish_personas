@@ -12,8 +12,8 @@ from typing import Literal
 
 import polars as pl
 
-SOURCE_URL = "https://menneskeret.dk/lgbt-barometer/lgbt-hvad-hvor-mange"
-OVERLAY_SCHEMA_VERSION = 1
+SOURCE_URL = "https://datawrapper.dwcdn.net/3HTgD/5/data.csv"
+OVERLAY_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class LgbtOverlayConfig:
     """Versioned settings for deterministic, local overlay generation.
 
     Attributes:
-        version: Overlay semantics version. Only version 1 is supported.
+        version: Overlay semantics version. Only version 2 is supported.
         seed: Non-negative salt that allows reproducible independent scenarios.
         scenario: ``low`` applies published lower estimates; ``high`` represents
             published upper estimates with the excess recorded as uncertain.
@@ -52,19 +52,22 @@ def generate_lgbt_overlay(
     config: LgbtOverlayConfig,
     persona_id_column: str = "persona_id",
     age_column: str = "age",
+    sex_column: str = "sex",
 ) -> tuple[pl.DataFrame, dict[str, object]]:
     """Create an ID-keyed overlay and aggregate-only provenance.
 
     The result is a new frame containing only the persona ID and three broad axes;
     ``frame`` is never modified or returned. Axes are drawn independently using
-    domain-separated SHA-256 hashes. Ages outside 16–64, including 65+, are
-    ``unknown`` on every axis because the cited estimates do not support them.
+    domain-separated SHA-256 hashes. Sexual-orientation identity is sampled from
+    sex-specific SHILD 2020 rates for ages 18–64. Other axes retain their existing
+    estimates; ages outside 18–64, including 65+, are ``unknown`` on every axis.
 
     Args:
         frame: Canonical/local input frame with an ID and integer age column.
         config: Versioned scenario and deterministic seed.
         persona_id_column: Name of the unique identifier column.
         age_column: Name of the age column; age is used only for support eligibility.
+        sex_column: Name of the sex column used for orientation-rate strata.
 
     Returns:
         A tuple of an ID-keyed overlay frame and provenance containing no row IDs.
@@ -72,14 +75,15 @@ def generate_lgbt_overlay(
     Raises:
         ValueError: If the version, required columns, IDs, or ID uniqueness is invalid.
     """
-    required = {persona_id_column, age_column}
+    required = {persona_id_column, age_column, sex_column}
     missing = required.difference(frame.columns)
     if missing:
         raise ValueError(f"Missing overlay input columns: {sorted(missing)}")
 
-    rows = frame.select(persona_id_column, age_column).iter_rows(named=True)
+    rows = frame.select(persona_id_column, age_column, sex_column).iter_rows(named=True)
     identifiers: list[str] = []
     orientations: list[str] = []
+    orientation_sexes: list[str] = []
     gender_identities: list[str] = []
     sex_characteristics: list[str] = []
     eligible = 0
@@ -90,8 +94,9 @@ def generate_lgbt_overlay(
             raise ValueError("Persona IDs must be non-empty")
         identifier = str(raw_id)
         identifiers.append(identifier)
+        orientation_sexes.append(str(row[sex_column]))
         age = row[age_column]
-        supported_age = isinstance(age, int) and 16 <= age <= 64
+        supported_age = isinstance(age, int) and 18 <= age <= 64
         if not supported_age:
             orientations.append("unknown")
             gender_identities.append("unknown")
@@ -99,11 +104,13 @@ def generate_lgbt_overlay(
             continue
 
         eligible += 1
-        orientation_draw = _draw(identifier, "orientation", config)
         gender_draw = _draw(identifier, "gender_identity", config)
         characteristics_draw = _draw(identifier, "sex_characteristics", config)
-
-        orientations.append("minority" if orientation_draw < 0.065 else "not_minority")
+        orientations.append(
+            _orientation_label(
+                _draw(identifier, "orientation", config), row[sex_column]
+            )
+        )
         gender_identities.append(
             _range_label(gender_draw, low=0.005, high=0.014, scenario=config.scenario)
         )
@@ -129,18 +136,48 @@ def generate_lgbt_overlay(
         "scenario": config.scenario,
         "seed": config.seed,
         "row_count": len(identifiers),
-        "supported_age_range": [16, 64],
+        "supported_age_range": [18, 64],
         "supported_age_count": eligible,
         "unknown_age_count": len(identifiers) - eligible,
         "marginal_counts": {
-            "sexual_orientation_minority_identity": _counts(orientations),
+            "sexual_orientation_identity": _counts(orientations),
+            "sexual_orientation_identity_by_sex": {
+                sex: _counts(
+                    [
+                        orientation
+                        for orientation, row_sex in zip(
+                            orientations, orientation_sexes, strict=True
+                        )
+                        if row_sex == sex
+                    ]
+                )
+                for sex in ("male", "female")
+            },
             "trans_or_nonbinary_identity": _counts(gender_identities),
             "variation_in_sex_characteristics": _counts(sex_characteristics),
         },
         "sources": {
             "url": SOURCE_URL,
+            "sample_size": 17929,
             "editorial_cutoff": "2025-07",
-            "sexual_orientation_minority_identity": "Approximately 6.5%, SHILD 2020",
+            "sexual_orientation_identity": (
+                "SHILD 2020, n=17,929; published sex-specific chart"
+            ),
+            "sexual_orientation_identity_rates": {
+                "male": {
+                    "homosexual": 0.024,
+                    "bisexual": 0.024,
+                    "asexual": 0.004,
+                    "other": 0.010,
+                },
+                "female": {
+                    "homosexual": 0.017,
+                    "bisexual": 0.032,
+                    "asexual": 0.007,
+                    "other": 0.009,
+                },
+                "remainder": "heterosexual",
+            },
             "trans_or_nonbinary_identity": "0.5–1.4%, SHILD 2020 and SEXUS 2019",
             "variation_in_sex_characteristics": (
                 "Approximately 1% Danish self-report; 1.7% international definition"
@@ -152,7 +189,9 @@ def generate_lgbt_overlay(
             "unsupported and are not claimed.",
             "No identity is inferred from sex, partner gender, origin, or status; "
             "relationships do not establish orientation.",
-            "No supported estimate is available for ages 65 and older; unsupported "
+            "Sexual-orientation rates are conditional on the published male/female "
+            "stratum; other sex values are unknown for this axis.",
+            "No supported estimate is available outside ages 18–64; unsupported "
             "ages are unknown, not negative.",
             "The approximately 8% overall LGBT+ estimate is overlapping and is not "
             "used as a target or additive rate.",
@@ -161,6 +200,36 @@ def generate_lgbt_overlay(
         ],
     }
     return overlay, aggregate
+
+
+def _orientation_label(draw: float, sex: object) -> str:
+    """Sample a chart category from the sex-specific cumulative rates.
+
+    Returns:
+        The synthetic orientation identity, or ``unknown`` for an unstratified sex.
+    """
+    rates = {
+        "male": (
+            ("homosexual", 0.024),
+            ("bisexual", 0.024),
+            ("asexual", 0.004),
+            ("other", 0.010),
+        ),
+        "female": (
+            ("homosexual", 0.017),
+            ("bisexual", 0.032),
+            ("asexual", 0.007),
+            ("other", 0.009),
+        ),
+    }
+    if sex not in rates:
+        return "unknown"
+    cumulative = 0.0
+    for label, rate in rates[sex]:
+        cumulative += rate
+        if draw < cumulative:
+            return label
+    return "heterosexual"
 
 
 def _draw(identifier: str, axis: str, config: LgbtOverlayConfig) -> float:
