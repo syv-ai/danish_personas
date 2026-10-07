@@ -121,8 +121,8 @@ class VerifyRow:
     """One first-pass patched row available for second-pass verification."""
 
     persona_hash: str
-    original_row: dict[str, JSONValue]
-    candidate_row: dict[str, JSONValue]
+    original_row: dict[str, object]
+    candidate_row: dict[str, object]
     changed_facts: dict[str, dict[str, object]]
     proposed_text: str
     patches: list[dict[str, str]]
@@ -418,8 +418,8 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
         verify_rows.append(
             VerifyRow(
                 persona_hash=persona_hash,
-                original_row=original,
-                candidate_row=candidate,
+                original_row=_object_row(row=original),
+                candidate_row=_object_row(row=candidate),
                 changed_facts=changed_facts,
                 proposed_text=decision.proposed_text,
                 patches=patches,
@@ -439,6 +439,10 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
         manifest=first_manifest,
         verify_prompt=paths.verify_prompt.read_text(encoding="utf-8"),
     )
+
+
+def _object_row(*, row: c.Mapping[str, JSONValue]) -> dict[str, object]:
+    return {key: value for key, value in row.items()}
 
 
 def _verification_manifest(
