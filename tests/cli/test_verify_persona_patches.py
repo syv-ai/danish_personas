@@ -461,7 +461,7 @@ def test_follow_stall_timeout_avoids_idle_provider_calls(
 ) -> None:
     """Follow mode aborts after bounded idle polling without provider calls."""
     paths = _write_fixture(tmp_path)
-    _set_first_status_progress(paths=paths, reviewable=4, pending=1)
+    _set_first_status_progress(paths=paths, reviewable=4, pending=1, failed=1)
     calls = 0
     budget_calls = 0
     sleeps: list[float] = []
@@ -545,8 +545,49 @@ def test_follow_manifest_change_fails_before_idle_provider(
     assert calls == 1
 
 
-def test_follow_requires_run_and_clean_first_pass(tmp_path: Path) -> None:
-    """Follow mode never starts in dry-run or after a first-pass failure."""
+def test_follow_historical_failed_attempts_allow_terminal_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Historical first-pass failures do not block recovered terminal rows."""
+    paths = _write_fixture(tmp_path)
+    status = json.loads(paths.first_status.read_text(encoding="utf-8"))
+    status["failed"] = 2
+    status["attempted"] = 5
+    _write_json(paths.first_status, status)
+    calls = 0
+    budget_calls = 0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal budget_calls
+            budget_calls += 1
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        nonlocal calls
+        calls += 1
+        return _verification_result(accepted=True)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+
+    summary = verify.follow_patch_verification_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        verify_runner=fake_runner,
+    )
+
+    assert calls == 1
+    assert budget_calls == 1
+    assert summary["processed"] == 1
+    assert summary["pending"] == 0
+    assert summary["first_pass_pending"] == 0
+    assert summary["first_pass_patched"] == 1
+    assert summary["follow_first_pass"] is True
+
+
+def test_follow_requires_run_and_consistent_first_pass(tmp_path: Path) -> None:
+    """Follow mode never starts in dry-run or with inconsistent status counts."""
     paths = _write_fixture(tmp_path)
 
     def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
@@ -561,8 +602,8 @@ def test_follow_requires_run_and_clean_first_pass(tmp_path: Path) -> None:
             verify_runner=fake_runner,
         )
 
-    _set_first_status_progress(paths=paths, reviewable=3, pending=0, failed=1)
-    with pytest.raises(verify.PatchVerificationCampaignError, match="failed rows"):
+    _set_first_status_progress(paths=paths, reviewable=5, pending=0, failed=1)
+    with pytest.raises(verify.PatchVerificationCampaignError, match="inconsistent"):
         verify.follow_patch_verification_campaign(
             paths=paths,
             execute=True,

@@ -336,11 +336,11 @@ def follow_patch_verification_campaign(
     if poll_seconds <= 0 or stall_seconds <= 0:
         raise PatchVerificationCampaignError("follow polling bounds must be positive")
 
-    last_progress: tuple[int, int, int, int, int] | None = None
+    last_progress: tuple[int, int, int, int] | None = None
     last_advance_at = time.monotonic()
     while True:
         loaded = load_first_pass(paths=paths)
-        _raise_if_first_pass_failed(loaded=loaded)
+        _ensure_first_pass_follow_status_consistent(loaded=loaded)
         summary = _run_loaded_patch_verification_campaign(
             paths=paths,
             loaded=loaded,
@@ -350,7 +350,7 @@ def follow_patch_verification_campaign(
             verify_runner=verify_runner,
         )
         current = load_first_pass(paths=paths)
-        _raise_if_first_pass_failed(loaded=current)
+        _ensure_first_pass_follow_status_consistent(loaded=current)
         progress = _first_pass_progress(loaded=current)
         now = time.monotonic()
         if progress != last_progress:
@@ -446,19 +446,19 @@ class PatchVerificationCampaignError(Exception):
     """Raised when the patch-verification CLI must fail closed."""
 
 
-def _raise_if_first_pass_failed(*, loaded: LoadedFirstPass) -> None:
-    if loaded.first_failed > 0:
+def _ensure_first_pass_follow_status_consistent(*, loaded: LoadedFirstPass) -> None:
+    if loaded.first_processed + loaded.first_pending != loaded.first_reviewable:
         raise PatchVerificationCampaignError(
-            "First-pass review has failed rows; aborting follow mode"
+            "First-pass status is inconsistent: processed plus pending must "
+            "equal reviewable"
         )
 
 
-def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int, int]:
+def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int]:
     return (
         loaded.first_reviewable,
         loaded.first_processed,
         loaded.first_pending,
-        loaded.first_attempted,
         len(loaded.rows),
     )
 
@@ -466,8 +466,10 @@ def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int, i
 def _ensure_follow_status_consistent(
     *, summary: dict[str, object], loaded: LoadedFirstPass
 ) -> None:
+    available = _summary_int(summary=summary, key="available")
     processed = _summary_int(summary=summary, key="processed")
-    if processed > len(loaded.rows):
+    pending = _summary_int(summary=summary, key="pending")
+    if processed + pending != available or available > len(loaded.rows):
         raise PatchVerificationCampaignError(
             "Second-pass status does not match the current first-pass patched rows"
         )
