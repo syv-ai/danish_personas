@@ -379,7 +379,9 @@ def _validate_checkpoint_directory(*, directory: Path) -> None:
     try:
         mode = directory.lstat().st_mode
     except OSError as exc:
-        raise ProxyPatchVerificationError("Checkpoint directory path is unsafe") from exc
+        raise ProxyPatchVerificationError(
+            "Checkpoint directory path is unsafe"
+        ) from exc
     if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
         raise ProxyPatchVerificationError(
             "Checkpoint directory must be a real directory"

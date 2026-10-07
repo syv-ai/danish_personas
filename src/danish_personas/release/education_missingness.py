@@ -46,10 +46,6 @@ _REQUIRED_SOURCE_COLUMNS = frozenset(
 )
 
 
-class EducationMissingnessError(ValueError):
-    """Raised when the source-backed H90 allocation is infeasible."""
-
-
 class EducationMissingnessReport(t.TypedDict):
     """Aggregate provenance for an offline H90 education allocation."""
 
@@ -214,157 +210,42 @@ def allocate_education_missingness(
     return repaired, report
 
 
+class EducationMissingnessError(ValueError):
+    """Raised when the source-backed H90 allocation is infeasible."""
+
+
 build_candidate = build_education_missingness_candidate
 repair_education_missingness = allocate_education_missingness
 
 
-def _validate_inputs(*, frame: pl.DataFrame, source: pl.DataFrame, seed: int) -> None:
-    if seed < 0:
-        raise ValueError("Seed must be non-negative")
-    missing_frame = _REQUIRED_FRAME_COLUMNS.difference(frame.columns)
-    if missing_frame:
-        raise ValueError(
-            f"Missing education-missingness columns: {sorted(missing_frame)}"
-        )
-    missing_source = _REQUIRED_SOURCE_COLUMNS.difference(source.columns)
-    if missing_source:
-        raise ValueError(f"Missing RAS209 source columns: {sorted(missing_source)}")
-    persona_ids = [
-        str(value) if value is not None else "" for value in frame["persona_id"]
-    ]
-    if any(not value for value in persona_ids):
-        raise ValueError("Persona IDs must be non-empty")
-    if len(set(persona_ids)) != len(persona_ids):
-        raise ValueError("Persona IDs must be unique")
-
-
-def _positive_unsuppressed_source(*, source: pl.DataFrame) -> pl.DataFrame:
-    return source.filter((~pl.col("suppressed")) & (pl.col("count") > 0))
-
-
-def _source_share(
-    *, source: pl.DataFrame, diagnostic_path: Path | None, explicit_share: float | None
-) -> tuple[float, int, int]:
-    age20plus = source.filter(_source_age20plus_expr())
-    source_age20plus_count = _sum_count(frame=age20plus)
-    source_h90_count = _sum_count(
-        frame=age20plus.filter(pl.col("education_source_code") == _H90)
-    )
-    source_share = (
-        explicit_share
-        if explicit_share is not None
-        else _diagnostic_share(path=diagnostic_path)
-    )
-    if source_share is None and source_age20plus_count > 0:
-        source_share = source_h90_count / source_age20plus_count
-    if source_share is None:
-        source_share = 0.0
-    if not 0 <= source_share <= 1:
-        raise ValueError("Official age-20-plus H90 share must be between 0 and 1")
-    return source_share, source_h90_count, source_age20plus_count
-
-
-def _diagnostic_share(*, path: Path | None) -> float | None:
-    if path is None:
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return _find_share(value=payload)
-
-
-def _find_share(*, value: object) -> float | None:
-    parsed = _parse_share_scalar(value=value)
-    if parsed is not None:
-        return parsed
-    if isinstance(value, list):
-        return _find_share_in_items(items=value)
-    if not isinstance(value, dict):
-        return None
-    found = _find_preferred_share(mapping=value)
-    if found is not None:
-        return found
-    return _find_named_share(mapping=value)
-
-
-def _parse_share_scalar(*, value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        parsed = float(value)
-    elif isinstance(value, str):
-        try:
-            parsed = float(value)
-        except ValueError:
-            return None
-    else:
-        return None
-    return parsed if 0 <= parsed <= 1 else None
-
-
-def _find_share_in_items(*, items: list[object]) -> float | None:
-    for item in items:
-        found = _find_share(value=item)
-        if found is not None:
-            return found
-    return None
-
-
-def _find_preferred_share(*, mapping: dict[object, object]) -> float | None:
-    preferred = (
-        "official_age20plus_h90_share",
-        "official_age20plus_not_stated_share",
-        "source_age20plus_h90_share",
-        "source_age20plus_not_stated_share",
-        "official_share",
-        "source_share",
-    )
-    for key in preferred:
-        if key not in mapping:
-            continue
-        found = _find_share(value=mapping[key])
-        if found is not None:
-            return found
-    return None
-
-
-def _find_named_share(*, mapping: dict[object, object]) -> float | None:
-    for key, item in mapping.items():
-        if "share" not in str(key).casefold():
-            continue
-        found = _find_share(value=item)
-        if found is not None:
-            return found
-    return None
-
-
-def _sum_count(*, frame: pl.DataFrame) -> int:
-    if frame.height == 0:
-        return 0
-    return int(frame.select(pl.col("count").sum()).item())
-
-
-def _rounded_count(value: float) -> int:
-    return int(value + 0.5)
-
-
-def _source_age20plus_expr() -> pl.Expr:
-    lower = pl.col("age_band").cast(pl.String).str.extract(r"^(\d+)", 1)
-    return lower.cast(pl.Int16, strict=False) >= 20
-
-
-def _is_h90_expr() -> pl.Expr:
-    return (pl.col("education_source_code") == _H90) | (
-        pl.col("education_level") == _NOT_STATED
-    )
-
-
-def _h90_source_by_stratum(*, source: pl.DataFrame) -> pl.DataFrame:
+def _apply_h90(*, frame: pl.DataFrame, changed_row_ids: set[int]) -> pl.DataFrame:
+    if not changed_row_ids:
+        return frame.clone()
+    row_ids = sorted(changed_row_ids)
     return (
-        source.filter(
-            _source_age20plus_expr() & (pl.col("education_source_code") == _H90)
+        frame.with_row_index("_education_missingness_row")
+        .with_columns(
+            pl.when(pl.col("_education_missingness_row").is_in(row_ids))
+            .then(pl.lit(_H90))
+            .otherwise(pl.col("education_source_code"))
+            .alias("education_source_code"),
+            pl.when(pl.col("_education_missingness_row").is_in(row_ids))
+            .then(pl.lit(_NOT_STATED))
+            .otherwise(pl.col("education_level"))
+            .alias("education_level"),
         )
-        .group_by(_stratum_columns())
-        .agg(pl.col("count").sum().alias("source_h90_count"))
-        .sort(_stratum_columns())
+        .drop("_education_missingness_row")
+    )
+
+
+def _changed_id_hashes(*, frame: pl.DataFrame, changed_row_ids: set[int]) -> list[str]:
+    if not changed_row_ids:
+        return []
+    identifiers = frame.filter(
+        pl.col("_education_missingness_row").is_in(sorted(changed_row_ids))
+    ).get_column("persona_id")
+    return sorted(
+        hashlib.sha256(str(value).encode()).hexdigest() for value in identifiers
     )
 
 
@@ -380,6 +261,65 @@ def _eligible_rows(*, frame: pl.DataFrame, h90_source: pl.DataFrame) -> pl.DataF
         & (~_is_h90_expr())
         & pl.col("_education_missingness_supported").fill_null(False)
     )
+
+
+def _frame_stratum_columns() -> list[str]:
+    return [
+        "_education_missingness_age_band",
+        "municipality_code",
+        "sex",
+        "labour_market_status",
+    ]
+
+
+def _is_h90_expr() -> pl.Expr:
+    return (pl.col("education_source_code") == _H90) | (
+        pl.col("education_level") == _NOT_STATED
+    )
+
+
+def _stratum_columns() -> list[str]:
+    return ["age_band", "municipality_code", "sex", "labour_market_status"]
+
+
+def _h90_source_by_stratum(*, source: pl.DataFrame) -> pl.DataFrame:
+    return (
+        source.filter(
+            _source_age20plus_expr() & (pl.col("education_source_code") == _H90)
+        )
+        .group_by(_stratum_columns())
+        .agg(pl.col("count").sum().alias("source_h90_count"))
+        .sort(_stratum_columns())
+    )
+
+
+def _source_age20plus_expr() -> pl.Expr:
+    lower = pl.col("age_band").cast(pl.String).str.extract(r"^(\d+)", 1)
+    return lower.cast(pl.Int16, strict=False) >= 20
+
+
+def _h90_support(*, frame: pl.DataFrame, h90_source: pl.DataFrame) -> dict[str, int]:
+    h90_rows = frame.filter((pl.col("age") >= 20) & _is_h90_expr())
+    if h90_rows.height == 0:
+        return {"h90_rows": 0, "supported_h90_rows": 0, "unsupported_h90_rows": 0}
+    checked = h90_rows.join(
+        h90_source.with_columns(pl.lit(True).alias("_education_missingness_supported")),
+        left_on=_frame_stratum_columns(),
+        right_on=_stratum_columns(),
+        how="left",
+    )
+    supported = checked.filter(
+        pl.col("_education_missingness_supported").fill_null(False)
+    ).height
+    return {
+        "h90_rows": h90_rows.height,
+        "supported_h90_rows": supported,
+        "unsupported_h90_rows": h90_rows.height - supported,
+    }
+
+
+def _positive_unsuppressed_source(*, source: pl.DataFrame) -> pl.DataFrame:
+    return source.filter((~pl.col("suppressed")) & (pl.col("count") > 0))
 
 
 def _quota_by_stratum(
@@ -430,6 +370,27 @@ def _apportion_into_capacities(
     return remaining
 
 
+def _apply_quota_increments(
+    *,
+    increments: dict[tuple[object, ...], int],
+    capacities: dict[tuple[object, ...], int],
+    quotas: dict[tuple[object, ...], int],
+    active: set[tuple[object, ...]],
+    remaining: int,
+) -> int:
+    progressed = 0
+    for key, increment in increments.items():
+        if increment <= 0:
+            continue
+        room = capacities[key] - quotas[key]
+        applied = min(room, increment, remaining - progressed)
+        quotas[key] += applied
+        progressed += applied
+        if quotas[key] >= capacities[key]:
+            active.remove(key)
+    return progressed
+
+
 def _largest_remainder_increments(
     *,
     active: set[tuple[object, ...]],
@@ -454,25 +415,8 @@ def _largest_remainder_increments(
     return increments
 
 
-def _apply_quota_increments(
-    *,
-    increments: dict[tuple[object, ...], int],
-    capacities: dict[tuple[object, ...], int],
-    quotas: dict[tuple[object, ...], int],
-    active: set[tuple[object, ...]],
-    remaining: int,
-) -> int:
-    progressed = 0
-    for key, increment in increments.items():
-        if increment <= 0:
-            continue
-        room = capacities[key] - quotas[key]
-        applied = min(room, increment, remaining - progressed)
-        quotas[key] += applied
-        progressed += applied
-        if quotas[key] >= capacities[key]:
-            active.remove(key)
-    return progressed
+def _sort_key(key: tuple[object, ...]) -> str:
+    return repr(key)
 
 
 def _capacity_by_stratum(*, eligible: pl.DataFrame) -> dict[tuple[object, ...], int]:
@@ -492,6 +436,10 @@ def _weight_by_stratum(
         if capacities.get(key, 0) > 0:
             weights[key] = int(row["source_h90_count"])
     return weights
+
+
+def _rounded_count(value: float) -> int:
+    return int(value + 0.5)
 
 
 def _select_rows(
@@ -524,55 +472,111 @@ def _ranking(*, seed: int, persona_id: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _apply_h90(*, frame: pl.DataFrame, changed_row_ids: set[int]) -> pl.DataFrame:
-    if not changed_row_ids:
-        return frame.clone()
-    row_ids = sorted(changed_row_ids)
-    return (
-        frame.with_row_index("_education_missingness_row")
-        .with_columns(
-            pl.when(pl.col("_education_missingness_row").is_in(row_ids))
-            .then(pl.lit(_H90))
-            .otherwise(pl.col("education_source_code"))
-            .alias("education_source_code"),
-            pl.when(pl.col("_education_missingness_row").is_in(row_ids))
-            .then(pl.lit(_NOT_STATED))
-            .otherwise(pl.col("education_level"))
-            .alias("education_level"),
-        )
-        .drop("_education_missingness_row")
+def _stratum_expr(*, key: tuple[object, ...]) -> pl.Expr:
+    expression = pl.lit(True)
+    for column, value in zip(_frame_stratum_columns(), key, strict=True):
+        expression &= pl.col(column).eq(value)
+    return expression
+
+
+def _source_share(
+    *, source: pl.DataFrame, diagnostic_path: Path | None, explicit_share: float | None
+) -> tuple[float, int, int]:
+    age20plus = source.filter(_source_age20plus_expr())
+    source_age20plus_count = _sum_count(frame=age20plus)
+    source_h90_count = _sum_count(
+        frame=age20plus.filter(pl.col("education_source_code") == _H90)
     )
-
-
-def _h90_support(*, frame: pl.DataFrame, h90_source: pl.DataFrame) -> dict[str, int]:
-    h90_rows = frame.filter((pl.col("age") >= 20) & _is_h90_expr())
-    if h90_rows.height == 0:
-        return {"h90_rows": 0, "supported_h90_rows": 0, "unsupported_h90_rows": 0}
-    checked = h90_rows.join(
-        h90_source.with_columns(pl.lit(True).alias("_education_missingness_supported")),
-        left_on=_frame_stratum_columns(),
-        right_on=_stratum_columns(),
-        how="left",
+    source_share = (
+        explicit_share
+        if explicit_share is not None
+        else _diagnostic_share(path=diagnostic_path)
     )
-    supported = checked.filter(
-        pl.col("_education_missingness_supported").fill_null(False)
-    ).height
-    return {
-        "h90_rows": h90_rows.height,
-        "supported_h90_rows": supported,
-        "unsupported_h90_rows": h90_rows.height - supported,
-    }
+    if source_share is None and source_age20plus_count > 0:
+        source_share = source_h90_count / source_age20plus_count
+    if source_share is None:
+        source_share = 0.0
+    if not 0 <= source_share <= 1:
+        raise ValueError("Official age-20-plus H90 share must be between 0 and 1")
+    return source_share, source_h90_count, source_age20plus_count
 
 
-def _changed_id_hashes(*, frame: pl.DataFrame, changed_row_ids: set[int]) -> list[str]:
-    if not changed_row_ids:
-        return []
-    identifiers = frame.filter(
-        pl.col("_education_missingness_row").is_in(sorted(changed_row_ids))
-    ).get_column("persona_id")
-    return sorted(
-        hashlib.sha256(str(value).encode()).hexdigest() for value in identifiers
+def _diagnostic_share(*, path: Path | None) -> float | None:
+    if path is None:
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _find_share(value=payload)
+
+
+def _find_share(*, value: object) -> float | None:
+    parsed = _parse_share_scalar(value=value)
+    if parsed is not None:
+        return parsed
+    if isinstance(value, list):
+        return _find_share_in_items(items=value)
+    if not isinstance(value, dict):
+        return None
+    found = _find_preferred_share(mapping=value)
+    if found is not None:
+        return found
+    return _find_named_share(mapping=value)
+
+
+def _find_named_share(*, mapping: dict[object, object]) -> float | None:
+    for key, item in mapping.items():
+        if "share" not in str(key).casefold():
+            continue
+        found = _find_share(value=item)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_preferred_share(*, mapping: dict[object, object]) -> float | None:
+    preferred = (
+        "official_age20plus_h90_share",
+        "official_age20plus_not_stated_share",
+        "source_age20plus_h90_share",
+        "source_age20plus_not_stated_share",
+        "official_share",
+        "source_share",
     )
+    for key in preferred:
+        if key not in mapping:
+            continue
+        found = _find_share(value=mapping[key])
+        if found is not None:
+            return found
+    return None
+
+
+def _find_share_in_items(*, items: list[object]) -> float | None:
+    for item in items:
+        found = _find_share(value=item)
+        if found is not None:
+            return found
+    return None
+
+
+def _parse_share_scalar(*, value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        parsed = float(value)
+    elif isinstance(value, str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if 0 <= parsed <= 1 else None
+
+
+def _sum_count(*, frame: pl.DataFrame) -> int:
+    if frame.height == 0:
+        return 0
+    return int(frame.select(pl.col("count").sum()).item())
 
 
 def _stratum_report(
@@ -610,25 +614,21 @@ def _source_count_by_stratum(
     }
 
 
-def _stratum_expr(*, key: tuple[object, ...]) -> pl.Expr:
-    expression = pl.lit(True)
-    for column, value in zip(_frame_stratum_columns(), key, strict=True):
-        expression &= pl.col(column).eq(value)
-    return expression
-
-
-def _sort_key(key: tuple[object, ...]) -> str:
-    return repr(key)
-
-
-def _stratum_columns() -> list[str]:
-    return ["age_band", "municipality_code", "sex", "labour_market_status"]
-
-
-def _frame_stratum_columns() -> list[str]:
-    return [
-        "_education_missingness_age_band",
-        "municipality_code",
-        "sex",
-        "labour_market_status",
+def _validate_inputs(*, frame: pl.DataFrame, source: pl.DataFrame, seed: int) -> None:
+    if seed < 0:
+        raise ValueError("Seed must be non-negative")
+    missing_frame = _REQUIRED_FRAME_COLUMNS.difference(frame.columns)
+    if missing_frame:
+        raise ValueError(
+            f"Missing education-missingness columns: {sorted(missing_frame)}"
+        )
+    missing_source = _REQUIRED_SOURCE_COLUMNS.difference(source.columns)
+    if missing_source:
+        raise ValueError(f"Missing RAS209 source columns: {sorted(missing_source)}")
+    persona_ids = [
+        str(value) if value is not None else "" for value in frame["persona_id"]
     ]
+    if any(not value for value in persona_ids):
+        raise ValueError("Persona IDs must be non-empty")
+    if len(set(persona_ids)) != len(persona_ids):
+        raise ValueError("Persona IDs must be unique")

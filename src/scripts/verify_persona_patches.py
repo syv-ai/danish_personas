@@ -271,38 +271,6 @@ def main(
     click.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
 
 
-def run_patch_verification_campaign(
-    *,
-    paths: VerifyPaths,
-    execute: bool,
-    max_rows: int | None,
-    workers: int,
-    verify_runner: VerifyRunner,
-) -> dict[str, object]:
-    """Run or dry-run the second-pass patch-verification campaign.
-
-    Args:
-        paths: Input and private output paths.
-        execute: If true, provider I/O is allowed. The CLI defaults to dry-run.
-        max_rows: Optional prefix bound for pilot processing.
-        workers: Worker count from one to four.
-        verify_runner: Injectable proxy verifier for offline tests.
-
-    Returns:
-        Machine-readable progress summary without raw persona IDs or prose.
-    """
-    _require_worker_count(workers=workers)
-    loaded = load_first_pass(paths=paths)
-    return _run_loaded_patch_verification_campaign(
-        paths=paths,
-        loaded=loaded,
-        execute=execute,
-        max_rows=max_rows,
-        workers=workers,
-        verify_runner=verify_runner,
-    )
-
-
 def follow_patch_verification_campaign(
     *,
     paths: VerifyPaths,
@@ -373,6 +341,71 @@ def follow_patch_verification_campaign(
         time.sleep(poll_seconds)
 
 
+class PatchVerificationCampaignError(Exception):
+    """Raised when the patch-verification CLI must fail closed."""
+
+
+def _ensure_first_pass_follow_status_consistent(*, loaded: LoadedFirstPass) -> None:
+    if loaded.first_processed + loaded.first_pending != loaded.first_reviewable:
+        raise PatchVerificationCampaignError(
+            "First-pass status is inconsistent: processed plus pending must "
+            "equal reviewable"
+        )
+
+
+def _ensure_follow_status_consistent(
+    *, summary: dict[str, object], loaded: LoadedFirstPass
+) -> None:
+    available = _summary_int(summary=summary, key="available")
+    processed = _summary_int(summary=summary, key="processed")
+    pending = _summary_int(summary=summary, key="pending")
+    if processed + pending != available or available > len(loaded.rows):
+        raise PatchVerificationCampaignError(
+            "Second-pass status does not match the current first-pass patched rows"
+        )
+
+
+def _summary_int(*, summary: dict[str, object], key: str) -> int:
+    value = summary.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise PatchVerificationCampaignError(f"summary counter is malformed: {key}")
+    return value
+
+
+def _first_pass_is_still_open(*, loaded: LoadedFirstPass) -> bool:
+    return loaded.first_pending > 0 or loaded.first_processed < loaded.first_reviewable
+
+
+def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int]:
+    return (
+        loaded.first_reviewable,
+        loaded.first_processed,
+        loaded.first_pending,
+        len(loaded.rows),
+    )
+
+
+def _follow_is_complete(*, summary: dict[str, object], loaded: LoadedFirstPass) -> bool:
+    return (
+        not _first_pass_is_still_open(loaded=loaded)
+        and _summary_int(summary=summary, key="processed") == len(loaded.rows)
+        and _summary_int(summary=summary, key="pending") == 0
+    )
+
+
+def _has_second_pass_work(
+    *, summary: dict[str, object], loaded: LoadedFirstPass
+) -> bool:
+    processed = _summary_int(summary=summary, key="processed")
+    pending = _summary_int(summary=summary, key="pending")
+    return processed < len(loaded.rows) or pending > 0
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if workers < 1 or workers > 4:
+        raise PatchVerificationCampaignError("workers must be between one and four")
+
+
 def _run_loaded_patch_verification_campaign(
     *,
     paths: VerifyPaths,
@@ -440,66 +473,6 @@ def _run_loaded_patch_verification_campaign(
             "Full patch verification run ended with pending rows"
         )
     return summary
-
-
-class PatchVerificationCampaignError(Exception):
-    """Raised when the patch-verification CLI must fail closed."""
-
-
-def _ensure_first_pass_follow_status_consistent(*, loaded: LoadedFirstPass) -> None:
-    if loaded.first_processed + loaded.first_pending != loaded.first_reviewable:
-        raise PatchVerificationCampaignError(
-            "First-pass status is inconsistent: processed plus pending must "
-            "equal reviewable"
-        )
-
-
-def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int]:
-    return (
-        loaded.first_reviewable,
-        loaded.first_processed,
-        loaded.first_pending,
-        len(loaded.rows),
-    )
-
-
-def _ensure_follow_status_consistent(
-    *, summary: dict[str, object], loaded: LoadedFirstPass
-) -> None:
-    available = _summary_int(summary=summary, key="available")
-    processed = _summary_int(summary=summary, key="processed")
-    pending = _summary_int(summary=summary, key="pending")
-    if processed + pending != available or available > len(loaded.rows):
-        raise PatchVerificationCampaignError(
-            "Second-pass status does not match the current first-pass patched rows"
-        )
-
-
-def _follow_is_complete(*, summary: dict[str, object], loaded: LoadedFirstPass) -> bool:
-    return (
-        not _first_pass_is_still_open(loaded=loaded)
-        and _summary_int(summary=summary, key="processed") == len(loaded.rows)
-        and _summary_int(summary=summary, key="pending") == 0
-    )
-
-
-def _first_pass_is_still_open(*, loaded: LoadedFirstPass) -> bool:
-    return loaded.first_pending > 0 or loaded.first_processed < loaded.first_reviewable
-
-
-def _has_second_pass_work(
-    *, summary: dict[str, object], loaded: LoadedFirstPass
-) -> bool:
-    processed = _summary_int(summary=summary, key="processed")
-    pending = _summary_int(summary=summary, key="pending")
-    return processed < len(loaded.rows) or pending > 0
-
-
-def _summary_int(*, summary: dict[str, object], key: str) -> int:
-    value = summary.get(key)
-    if not isinstance(value, int) or value < 0:
-        raise PatchVerificationCampaignError(f"summary counter is malformed: {key}")
-    return value
 
 
 def _dry_run_summary(
@@ -615,16 +588,6 @@ def _status_hashes(status: dict[str, object]) -> list[str]:
     if len(value) != len(set(value)):
         raise PatchVerificationCampaignError("status.json processed hashes are invalid")
     return list(value)
-
-
-def _verify_processed_hashes_are_available(
-    *, status: dict[str, object], rows: list[VerifyRow]
-) -> None:
-    available = {row.persona_hash for row in rows}
-    if any(persona_hash not in available for persona_hash in _status_hashes(status)):
-        raise PatchVerificationCampaignError(
-            "status.json processed hashes do not match first-pass patched rows"
-        )
 
 
 def _write_status(*, path: Path, status: dict[str, object]) -> None:
@@ -882,11 +845,6 @@ def _refresh_available_counts(
     status["provisional_notice"] = PROVISIONAL_NOTICE
 
 
-def _require_worker_count(*, workers: int) -> None:
-    if workers < 1 or workers > 4:
-        raise PatchVerificationCampaignError("workers must be between one and four")
-
-
 def _verification_manifest(
     *, paths: VerifyPaths, loaded: LoadedFirstPass
 ) -> dict[str, JSONValue]:
@@ -915,6 +873,16 @@ def _verification_manifest(
         "allowed_facts": sorted(_ALLOWED_FACTS),
         "provisional_notice": PROVISIONAL_NOTICE,
     }
+
+
+def _verify_processed_hashes_are_available(
+    *, status: dict[str, object], rows: list[VerifyRow]
+) -> None:
+    available = {row.persona_hash for row in rows}
+    if any(persona_hash not in available for persona_hash in _status_hashes(status)):
+        raise PatchVerificationCampaignError(
+            "status.json processed hashes do not match first-pass patched rows"
+        )
 
 
 def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
@@ -1046,6 +1014,38 @@ def _first_status_int(*, status: dict[str, JSONValue], key: str) -> int:
 
 def _object_row(*, row: c.Mapping[str, JSONValue]) -> dict[str, object]:
     return {key: value for key, value in row.items()}
+
+
+def run_patch_verification_campaign(
+    *,
+    paths: VerifyPaths,
+    execute: bool,
+    max_rows: int | None,
+    workers: int,
+    verify_runner: VerifyRunner,
+) -> dict[str, object]:
+    """Run or dry-run the second-pass patch-verification campaign.
+
+    Args:
+        paths: Input and private output paths.
+        execute: If true, provider I/O is allowed. The CLI defaults to dry-run.
+        max_rows: Optional prefix bound for pilot processing.
+        workers: Worker count from one to four.
+        verify_runner: Injectable proxy verifier for offline tests.
+
+    Returns:
+        Machine-readable progress summary without raw persona IDs or prose.
+    """
+    _require_worker_count(workers=workers)
+    loaded = load_first_pass(paths=paths)
+    return _run_loaded_patch_verification_campaign(
+        paths=paths,
+        loaded=loaded,
+        execute=execute,
+        max_rows=max_rows,
+        workers=workers,
+        verify_runner=verify_runner,
+    )
 
 
 def _run_one_verification(
