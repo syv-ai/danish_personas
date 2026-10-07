@@ -103,7 +103,11 @@ def _digest(value: object) -> str:
 
 
 def _append_ledger_line(path: Path, value: object) -> None:
-    """Append and durably sync one ledger record before any request proceeds."""
+    """Append and durably sync one ledger record before any request proceeds.
+
+    Raises:
+        OSError: If the record cannot be completely appended and synced.
+    """
     serialised = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
