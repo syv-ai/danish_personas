@@ -38,6 +38,164 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
 
 
+def test_accounting_failure_does_not_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail hard if durable accounting rejects observed usage."""
+    budget = _budget(tmp_path)
+
+    def fail_usage(_request_id: str, **_usage: object) -> None:
+        raise ProxyBudgetError("ledger failure")
+
+    monkeypatch.setattr(budget, "record_usage", fail_usage)
+
+    with pytest.raises(ProxyBudgetError):
+        _run(
+            tmp_path,
+            _transport(
+                json.dumps(
+                    {
+                        "disposition": "needs_manual_review",
+                        "patches": [],
+                        "unchanged_evidence": [],
+                        "manual_review_reason": "ambiguous",
+                    }
+                ),
+                [],
+            ),
+            budget=budget,
+        )
+
+    assert not (tmp_path / "review.json").exists()
+
+
+def _budget(tmp_path: Path) -> ProxyBudget:
+    registry = tmp_path / "models.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "models": [
+                        {
+                            "id": "gpt-6-luna",
+                            "maxTokens": 128_000,
+                            "cost": {"input": "0.1", "output": "0.5"},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return ProxyBudget(
+        ledger_path=tmp_path / "budget.jsonl",
+        registry_path=registry,
+        campaign="synthetic-review-test",
+        source_hash="a" * 64,
+        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
+        schema_hash=hashlib.sha256(
+            json.dumps(
+                ProseReviewResponse.provider_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+        cap_usd=Decimal("1"),
+    )
+
+
+def _run(
+    tmp_path: Path,
+    transport: httpx.BaseTransport,
+    *,
+    changed_facts: dict[str, dict[str, object]] | None = None,
+    budget: ProxyBudget | None = None,
+) -> ProseReviewResult:
+    source = _row()
+    facts = (
+        {"marital_status": {"old": "single", "new": "married"}}
+        if changed_facts is None
+        else changed_facts
+    )
+    return run_proxy_review(
+        row=source,
+        candidate_row=_candidate_row(facts, row=source),
+        changed_facts=facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path) if budget is None else budget,
+        checkpoint_path=tmp_path / "review.json",
+        transport=transport,
+    )
+
+
+def _candidate_row(
+    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    candidate = dict(_row() if row is None else row)
+    candidate.update(
+        {field: pair["new"] for field, pair in facts.items() if field in candidate}
+    )
+    return candidate
+
+
+def _row() -> dict[str, Any]:
+    return {
+        "persona_id": "private-id",
+        "record_id": "private-id",
+        "source_sex": "private-sex",
+        "municipality": "private municipality",
+        "origin_country_da": "private origin",
+        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "marital_status": "single",
+        "age": 41,
+        "skills_and_expertise": ["planlægning"] * 3,
+        "hobbies_and_interests": ["cykling"] * 3,
+    }
+
+
+def _config(**overrides: object) -> GenerationConfig:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:18080/v1",
+        "model": "gpt-6-luna",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 1,
+        "maximum_total_requests": None,
+        "retry_backoff_seconds": 0.0,
+        "maximum_rows_per_shard": 1,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": "none",
+        "prompt": Path("prompt.md"),
+        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+    }
+    values.update(overrides)
+    return GenerationConfig.model_validate(values)
+
+
+def _transport(
+    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
+) -> httpx.MockTransport:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if events is not None:
+            events.append("network")
+        assert "max_tokens" not in json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "gpt-6-luna",
+                "choices": [{"message": {"content": response_content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    return httpx.MockTransport(respond)
+
+
 @pytest.mark.parametrize(
     ("provider_content", "expected_disposition"),
     [
@@ -131,108 +289,6 @@ def test_all_dispositions_checkpoint_privately_and_resume_without_network(
     assert restarted == result
 
 
-def _budget(tmp_path: Path) -> ProxyBudget:
-    registry = tmp_path / "models.json"
-    registry.write_text(
-        json.dumps(
-            {
-                "openai-codex": {
-                    "models": [
-                        {
-                            "id": "gpt-6-luna",
-                            "maxTokens": 128_000,
-                            "cost": {"input": "0.1", "output": "0.5"},
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return ProxyBudget(
-        ledger_path=tmp_path / "budget.jsonl",
-        registry_path=registry,
-        campaign="synthetic-review-test",
-        source_hash="a" * 64,
-        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
-        schema_hash=hashlib.sha256(
-            json.dumps(
-                ProseReviewResponse.provider_json_schema(),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest(),
-        cap_usd=Decimal("1"),
-    )
-
-
-def _candidate_row(
-    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    candidate = dict(_row() if row is None else row)
-    candidate.update(
-        {field: pair["new"] for field, pair in facts.items() if field in candidate}
-    )
-    return candidate
-
-
-def _row() -> dict[str, Any]:
-    return {
-        "persona_id": "private-id",
-        "record_id": "private-id",
-        "source_sex": "private-sex",
-        "municipality": "private municipality",
-        "origin_country_da": "private origin",
-        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
-        "marital_status": "single",
-        "age": 41,
-        "skills_and_expertise": ["planlægning"] * 3,
-        "hobbies_and_interests": ["cykling"] * 3,
-    }
-
-
-def _config(**overrides: object) -> GenerationConfig:
-    values: dict[str, object] = {
-        "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-luna",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 1,
-        "maximum_total_requests": None,
-        "retry_backoff_seconds": 0.0,
-        "maximum_rows_per_shard": 1,
-        "max_tokens": None,
-        "enable_thinking": None,
-        "reasoning_effort": "none",
-        "prompt": Path("prompt.md"),
-        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
-    }
-    values.update(overrides)
-    return GenerationConfig.model_validate(values)
-
-
-def _transport(
-    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
-) -> httpx.MockTransport:
-    def respond(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        if events is not None:
-            events.append("network")
-        assert "max_tokens" not in json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "gpt-6-luna",
-                "choices": [{"message": {"content": response_content}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
-        )
-
-    return httpx.MockTransport(respond)
-
-
 def test_failed_http_retry_gets_unique_reservations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -258,71 +314,37 @@ def test_failed_http_retry_gets_unique_reservations(
     assert not (tmp_path / "review.json").exists()
 
 
-def _run(
-    tmp_path: Path,
-    transport: httpx.BaseTransport,
-    *,
-    changed_facts: dict[str, dict[str, object]] | None = None,
-    budget: ProxyBudget | None = None,
-) -> ProseReviewResult:
-    source = _row()
-    facts = (
-        {"marital_status": {"old": "single", "new": "married"}}
-        if changed_facts is None
-        else changed_facts
-    )
-    return run_proxy_review(
-        row=source,
-        candidate_row=_candidate_row(facts, row=source),
-        changed_facts=facts,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path) if budget is None else budget,
-        checkpoint_path=tmp_path / "review.json",
-        transport=transport,
-    )
+def test_invalid_provider_metadata_does_not_checkpoint(tmp_path: Path) -> None:
+    """Fail hard if a successful response is not bound to the pinned model."""
 
-
-def test_records_usage_before_semantic_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Record token usage for a successful HTTP response before abstaining."""
-    events: list[str] = []
-    budget = _budget(tmp_path)
-    original_usage = budget.record_usage
-    original_validate = review_runner.validate_prose_review
-
-    def record_usage(
-        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
-    ) -> None:
-        events.append("usage")
-        original_usage(
-            request_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            response_sha256=response_sha256,
+    def wrong_model(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "other-model",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "disposition": "needs_manual_review",
+                                    "patches": [],
+                                    "unchanged_evidence": [],
+                                    "manual_review_reason": "ambiguous",
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
         )
 
-    def validate_with_event(
-        *,
-        original_text: str,
-        changed_facts: Mapping[str, Mapping[str, object]],
-        response: str | Mapping[str, object],
-    ) -> object:
-        events.append("validate")
-        return original_validate(
-            original_text=original_text, changed_facts=changed_facts, response=response
-        )
+    with pytest.raises(ProxyReviewError, match="model"):
+        _run(tmp_path, httpx.MockTransport(wrong_model))
 
-    monkeypatch.setattr(budget, "record_usage", record_usage)
-    monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
-
-    result = _run(tmp_path, _transport("not json", []), budget=budget)
-
-    assert result.disposition == "needs_manual_review"
-    assert result.manual_review_reason == "insufficient_evidence"
-    assert events == ["usage", "validate", "validate"]
-    assert (tmp_path / "review.json").exists()
+    assert not (tmp_path / "review.json").exists()
 
 
 def test_mismatched_quote_abstains_and_resumes_without_network(
@@ -338,7 +360,9 @@ def test_mismatched_quote_abstains_and_resumes_without_network(
     row["persona"] = "Maria beskrives som gift i teksten. " + (
         "Dette er en syntetisk person med hverdagsbeskrivelser. " * 8
     )
-    changed_facts = {"marital_status": {"old": "single", "new": "married"}}
+    changed_facts: dict[str, dict[str, object]] = {
+        "marital_status": {"old": "single", "new": "married"}
+    }
     checkpoint_path = tmp_path / "review.json"
 
     def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
@@ -420,68 +444,46 @@ def test_mismatched_quote_abstains_and_resumes_without_network(
     assert len(requests) == 1
 
 
-def test_accounting_failure_does_not_checkpoint(
+def test_records_usage_before_semantic_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail hard if durable accounting rejects observed usage."""
+    """Record token usage for a successful HTTP response before abstaining."""
+    events: list[str] = []
     budget = _budget(tmp_path)
+    original_usage = budget.record_usage
+    original_validate = review_runner.validate_prose_review
 
-    def fail_usage(_request_id: str, **_usage: object) -> None:
-        raise ProxyBudgetError("ledger failure")
-
-    monkeypatch.setattr(budget, "record_usage", fail_usage)
-
-    with pytest.raises(ProxyBudgetError):
-        _run(
-            tmp_path,
-            _transport(
-                json.dumps(
-                    {
-                        "disposition": "needs_manual_review",
-                        "patches": [],
-                        "unchanged_evidence": [],
-                        "manual_review_reason": "ambiguous",
-                    }
-                ),
-                [],
-            ),
-            budget=budget,
+    def record_usage(
+        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
+    ) -> None:
+        events.append("usage")
+        original_usage(
+            request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_sha256=response_sha256,
         )
 
-    assert not (tmp_path / "review.json").exists()
-
-
-def test_invalid_provider_metadata_does_not_checkpoint(tmp_path: Path) -> None:
-    """Fail hard if a successful response is not bound to the pinned model."""
-
-    def wrong_model(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "other-model",
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "disposition": "needs_manual_review",
-                                    "patches": [],
-                                    "unchanged_evidence": [],
-                                    "manual_review_reason": "ambiguous",
-                                }
-                            )
-                        }
-                    }
-                ],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
+    def validate_with_event(
+        *,
+        original_text: str,
+        changed_facts: Mapping[str, Mapping[str, object]],
+        response: str | Mapping[str, object],
+    ) -> object:
+        events.append("validate")
+        return original_validate(
+            original_text=original_text, changed_facts=changed_facts, response=response
         )
 
-    with pytest.raises(ProxyReviewError, match="model"):
-        _run(tmp_path, httpx.MockTransport(wrong_model))
+    monkeypatch.setattr(budget, "record_usage", record_usage)
+    monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
 
-    assert not (tmp_path / "review.json").exists()
+    result = _run(tmp_path, _transport("not json", []), budget=budget)
+
+    assert result.disposition == "needs_manual_review"
+    assert result.manual_review_reason == "insufficient_evidence"
+    assert events == ["usage", "validate", "validate"]
+    assert (tmp_path / "review.json").exists()
 
 
 def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None:

@@ -169,6 +169,21 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _insufficient_evidence_result(
+    *, original_text: str, changed_facts: dict[str, dict[str, object]]
+) -> ProseReviewResult:
+    return validate_prose_review(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        response={
+            "disposition": "needs_manual_review",
+            "patches": [],
+            "unchanged_evidence": [],
+            "manual_review_reason": "insufficient_evidence",
+        },
+    )
+
+
 def _prepare_checkpoint_parent(parent: Path) -> None:
     missing: list[Path] = []
     current = parent
@@ -231,21 +246,6 @@ def _request_review(
     if response.completion_tokens > 128_000 or response.prompt_tokens < 0:
         raise ProxyReviewError("Provider token usage exceeds the reservation policy")
     return response
-
-
-def _insufficient_evidence_result(
-    *, original_text: str, changed_facts: dict[str, dict[str, object]]
-) -> ProseReviewResult:
-    return validate_prose_review(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        response={
-            "disposition": "needs_manual_review",
-            "patches": [],
-            "unchanged_evidence": [],
-            "manual_review_reason": "insufficient_evidence",
-        },
-    )
 
 
 class _BoundedTransport(httpx.BaseTransport):
