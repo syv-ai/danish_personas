@@ -1,5 +1,6 @@
 """Offline orchestration of source-backed demographic repairs."""
 
+import hashlib
 from pathlib import Path
 
 import polars as pl
@@ -186,7 +187,7 @@ def _repair_detail(
         return current
     try:
         repaired, positions, diagnostics = _compute_detail_repair(
-            current=current, path=path
+            current=current, path=path, bundle_dir=bundle_dir
         )
         item.update(changed_count=len(positions), diagnostics=diagnostics)
         if id_column and positions:
@@ -205,7 +206,7 @@ def _repair_detail(
 
 
 def _compute_detail_repair(
-    *, current: pl.DataFrame, path: Path
+    *, current: pl.DataFrame, path: Path, bundle_dir: Path
 ) -> tuple[pl.DataFrame, list[int], dict[str, object]]:
     """Apply source-backed RAS202 quotas and align dependent columns.
 
@@ -245,17 +246,23 @@ def _compute_detail_repair(
         after=repaired,
         columns=["detailed_status_code", "detailed_status"],
     )
-    return (
-        _update_detail_dependants(
-            before=current, repaired=repaired, positions=positions
-        ),
-        positions,
-        diagnostics,
+    repaired = _update_detail_dependants(
+        before=current,
+        repaired=repaired,
+        positions=positions,
+        bundle_dir=bundle_dir,
+        diagnostics=diagnostics,
     )
+    return repaired, positions, diagnostics
 
 
 def _update_detail_dependants(
-    *, before: pl.DataFrame, repaired: pl.DataFrame, positions: list[int]
+    *,
+    before: pl.DataFrame,
+    repaired: pl.DataFrame,
+    positions: list[int],
+    bundle_dir: Path,
+    diagnostics: dict[str, object],
 ) -> pl.DataFrame:
     """Update resolution and job fields for changed detailed categories.
 
@@ -266,6 +273,11 @@ def _update_detail_dependants(
         ValueError: If a required resolution or paired field is unavailable.
     """
     if not positions:
+        diagnostics.update(
+            newly_eligible_job_functions_assigned=0,
+            job_functions_cleared_ineligible=0,
+            job_function_allocations_retained=0,
+        )
         return repaired
     if "detailed_status_resolution" not in repaired.columns:
         raise ValueError("detailed-status resolution column is unavailable")
@@ -277,7 +289,11 @@ def _update_detail_dependants(
     )
     if "job_function_resolution" in repaired.columns:
         return _adjust_job_functions(
-            before=before, repaired=repaired, positions=positions
+            before=before,
+            repaired=repaired,
+            positions=positions,
+            bundle_dir=bundle_dir,
+            diagnostics=diagnostics,
         )
     if {"job_function_code", "job_function"}.issubset(repaired.columns):
         raise ValueError("job-function resolution column is unavailable")
@@ -289,16 +305,84 @@ def _update_detail_dependants(
     return repaired
 
 
-def _adjust_job_functions(
-    *, before: pl.DataFrame, repaired: pl.DataFrame, positions: list[int]
-) -> pl.DataFrame:
-    """Keep job-function fields paired or fail without source-backed support.
+def _job_function_source_rows(
+    *, bundle_dir: Path, sexes: set[str]
+) -> dict[str, list[tuple[str, str, int]]]:
+    """Load positive source-backed job-function rows for requested sexes.
 
     Returns:
-        Frame with paired job-function values and invalidated titles.
+        Positive-count code, label, and count rows keyed by sex.
 
     Raises:
-        ValueError: If a changed row becomes eligible without valid fields.
+        ValueError: If source rows are missing or incompatible.
+    """
+    source_path = bundle_dir / "normalized" / "job_function_sex_marginal.parquet"
+    if not source_path.is_file():
+        raise ValueError("job-function source marginal is unavailable")
+    source = pl.read_parquet(source_path)
+    required = {"job_function_code", "job_function", "sex", "count"}
+    if not required.issubset(source.columns):
+        raise ValueError("job-function source marginal has incompatible columns")
+    source = source.filter(pl.col("count") > 0)
+    result: dict[str, list[tuple[str, str, int]]] = {}
+    for sex in sexes:
+        rows = (
+            source.filter(pl.col("sex") == sex)
+            .select("job_function_code", "job_function", "count")
+            .to_dicts()
+        )
+        if not rows or any(
+            not row["job_function_code"] or not row["job_function"] for row in rows
+        ):
+            raise ValueError(f"no compatible job-function source rows for {sex}")
+        result[sex] = [
+            (str(row["job_function_code"]), str(row["job_function"]), int(row["count"]))
+            for row in rows
+        ]
+    return result
+
+
+def _weighted_job_function(
+    *, persona_id: object, rows: list[tuple[str, str, int]]
+) -> tuple[str, str]:
+    """Select one function by a stable persona hash and source count weights.
+
+    Returns:
+        Source-backed job-function code and label.
+
+    Raises:
+        ValueError: If source counts cannot support a weighted selection.
+    """
+    total = sum(count for _, _, count in rows)
+    if total <= 0:
+        raise ValueError("job-function source marginal has no positive counts")
+    digest = hashlib.sha256(str(persona_id).encode()).digest()
+    draw = int.from_bytes(digest[:8], "big") % total
+    for code, label, count in rows:
+        if draw < count:
+            return code, label
+        draw -= count
+    raise ValueError("job-function weighted source selection failed")
+
+
+def _adjust_job_functions(
+    *,
+    before: pl.DataFrame,
+    repaired: pl.DataFrame,
+    positions: list[int],
+    bundle_dir: Path,
+    diagnostics: dict[str, object],
+) -> pl.DataFrame:
+    """Keep job-function fields source-backed as detailed status changes.
+
+    Newly eligible rows receive a sex-conditioned, source-weighted assignment
+    selected by a stable hash of persona ID. Existing eligible assignments remain.
+
+    Returns:
+        Frame with dependent job-function fields updated.
+
+    Raises:
+        ValueError: If the source marginal cannot support a newly eligible row.
     """
     changed = set(positions)
     codes = repaired["detailed_status_code"].to_list()
@@ -309,11 +393,44 @@ def _adjust_job_functions(
     titles = (
         repaired["job_title"].to_list() if "job_title" in repaired.columns else None
     )
+    newly_eligible = [
+        index
+        for index in changed
+        if old_codes[index] not in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        and codes[index] in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+    ]
+    eligible_sexes = {repaired["sex"][index] for index in newly_eligible}
+    source_rows = (
+        _job_function_source_rows(bundle_dir=bundle_dir, sexes=eligible_sexes)
+        if newly_eligible
+        else {}
+    )
+    id_values = (
+        repaired["persona_id"].to_list()
+        if "persona_id" in repaired.columns
+        else list(range(repaired.height))
+    )
+    sexes = repaired["sex"].to_list()
+    for index in newly_eligible:
+        functions[index], labels[index] = _weighted_job_function(
+            persona_id=id_values[index], rows=source_rows[sexes[index]]
+        )
+        resolutions[index] = "lons20_sex_marginal"
+    diagnostics["newly_eligible_job_functions_assigned"] = len(newly_eligible)
+    diagnostics["job_functions_cleared_ineligible"] = sum(
+        1
+        for index in changed
+        if codes[index] not in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        and (functions[index] is not None or labels[index] is not None)
+    )
+    diagnostics["job_function_allocations_retained"] = sum(
+        1
+        for index in changed
+        if old_codes[index] in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+        and codes[index] in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
+    )
     for index in changed:
-        was_eligible = old_codes[index] in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
         is_eligible = codes[index] in ELIGIBLE_JOB_FUNCTION_STATUS_CODES
-        if was_eligible != is_eligible and is_eligible:
-            raise ValueError("newly eligible row has no source-backed job function")
         if not is_eligible:
             functions[index] = labels[index] = None
             resolutions[index] = "not_applicable"
