@@ -20,6 +20,17 @@ from .proxy_patch_runner import ProxyPatchError, _validate_config, _validated_in
 
 _CHECKPOINT_VERSION = 1
 _SCHEMA_NAME = "prose_review"
+_LEGAL_STATUS_DETAIL_NULL_CONTEXT = "legal_status_detail_null_context"
+_NULL_DETAIL_MARITAL_STATUS_DA = {
+    "divorced": "skilt",
+    "widowed": "enkestand",
+    "never_married": "aldrig gift",
+}
+_NULL_DETAIL_EXPLANATION_DA = (
+    "legal_status_detail = null betyder, at en ikke-understøttet fin detalje er "
+    "fjernet. Den aktuelle kildeunderstøttede civilstandskategori her er målet; "
+    "udled ingen nye personlige træk."
+)
 
 
 def run_proxy_review(
@@ -67,11 +78,18 @@ def run_proxy_review(
         )
     except ProxyPatchError as exc:
         raise ProxyReviewError(str(exc)) from exc
+    payload = _payload_with_null_detail_context(
+        payload=payload,
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+    )
 
     schema = ProseReviewResponse.provider_json_schema()
     binding = _build_binding(
         row=row,
         candidate_row=candidate_row,
+        payload=payload,
         original_text=original_text,
         changed_facts=changed_facts,
         prompt=prompt,
@@ -119,6 +137,7 @@ def _build_binding(
     *,
     row: dict[str, t.Any],
     candidate_row: dict[str, t.Any],
+    payload: dict[str, object],
     original_text: str,
     changed_facts: dict[str, dict[str, object]],
     prompt: str,
@@ -144,7 +163,7 @@ def _build_binding(
     except (TypeError, ValueError) as exc:
         raise ProxyReviewError("Review inputs cannot be checksum-bound") from exc
     source_pin = budget.pins.get("source_hash")
-    return {
+    binding: dict[str, str | int] = {
         "checkpoint_version": _CHECKPOINT_VERSION,
         "original_text_sha256": _sha(original_text.encode("utf-8")),
         "row_sha256": row_hash,
@@ -157,6 +176,50 @@ def _build_binding(
         "base_url_sha256": _sha(BASE_URL.encode("utf-8")),
         "source_pin_sha256": str(source_pin) if isinstance(source_pin, str) else "",
     }
+    if _LEGAL_STATUS_DETAIL_NULL_CONTEXT in payload:
+        binding["payload_sha256"] = _sha(_canonical(payload))
+    return binding
+
+
+def _payload_with_null_detail_context(
+    *,
+    payload: dict[str, object],
+    row: dict[str, t.Any],
+    candidate_row: dict[str, t.Any],
+    changed_facts: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    detail_change = changed_facts.get("legal_status_detail")
+    if detail_change is None or detail_change.get("new") is not None:
+        return payload
+    marital_status = candidate_row.get("marital_status")
+    if marital_status not in _NULL_DETAIL_MARITAL_STATUS_DA:
+        raise ProxyReviewError(
+            "legal_status_detail null reviews require a concrete marital_status"
+        )
+    if not _marital_status_is_verified(
+        marital_status=marital_status, row=row, changed_facts=changed_facts
+    ):
+        raise ProxyReviewError(
+            "legal_status_detail null context must be verified by the rows"
+        )
+    with_context = dict(payload)
+    with_context[_LEGAL_STATUS_DETAIL_NULL_CONTEXT] = {
+        "target_marital_category_da": _NULL_DETAIL_MARITAL_STATUS_DA[marital_status],
+        "explanation": _NULL_DETAIL_EXPLANATION_DA,
+    }
+    return with_context
+
+
+def _marital_status_is_verified(
+    *,
+    marital_status: object,
+    row: dict[str, t.Any],
+    changed_facts: dict[str, dict[str, object]],
+) -> bool:
+    marital_change = changed_facts.get("marital_status")
+    if marital_change is not None:
+        return marital_change.get("new") == marital_status
+    return row.get("marital_status") == marital_status
 
 
 def _canonical(value: object) -> bytes:
@@ -295,7 +358,7 @@ def _resume_checkpoint(
 ) -> ProseReviewResult:
     _require_private_checkpoint(path)
     checkpoint = _read_checkpoint(path)
-    expected_keys = _checkpoint_keys()
+    expected_keys = _checkpoint_keys(binding=binding)
     if set(checkpoint) != expected_keys:
         raise ProxyReviewError("Review checkpoint is malformed")
     if any(checkpoint.get(key) != value for key, value in binding.items()):
@@ -317,8 +380,8 @@ def _resume_checkpoint(
     return result
 
 
-def _checkpoint_keys() -> set[str]:
-    return {
+def _checkpoint_keys(*, binding: dict[str, str | int]) -> set[str]:
+    return set(binding) | {
         "checkpoint_version",
         "original_text_sha256",
         "row_sha256",
