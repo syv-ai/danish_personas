@@ -87,6 +87,8 @@ PROVISIONAL_NOTICE = (
     "accepted is provisional and is not a final release decision; a later release "
     "gate is still required"
 )
+FOLLOW_POLL_SECONDS = 300.0
+FOLLOW_STALL_SECONDS = 90.0 * 60.0
 
 JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -139,6 +141,11 @@ class LoadedFirstPass:
     unchanged_consistent: int
     manifest: dict[str, JSONValue]
     verify_prompt: str
+    first_reviewable: int
+    first_processed: int
+    first_attempted: int
+    first_pending: int
+    first_failed: int
 
 
 class VerifyRunner(t.Protocol):
@@ -197,6 +204,12 @@ VerifyFutureMap: t.TypeAlias = dict[futures.Future[VerifyAttemptResult], VerifyR
     "--workers", type=click.IntRange(min=1, max=4), default=1, show_default=True
 )
 @click.option("--run", "execute", is_flag=True, default=False)
+@click.option(
+    "--follow-first-pass",
+    is_flag=True,
+    default=False,
+    help="Poll for new first-pass patched rows until the first pass completes.",
+)
 def main(
     original: Path,
     candidate: Path,
@@ -211,6 +224,7 @@ def main(
     max_rows: int | None,
     workers: int,
     execute: bool,
+    follow_first_pass: bool,
 ) -> None:
     """Run or dry-run the private v4 patch-verification campaign.
 
@@ -231,13 +245,22 @@ def main(
         output_dir=output_dir,
     )
     try:
-        summary = run_patch_verification_campaign(
-            paths=paths,
-            execute=execute,
-            max_rows=max_rows,
-            workers=workers,
-            verify_runner=_run_proxy_patch_verification_adapter,
-        )
+        if follow_first_pass:
+            summary = follow_patch_verification_campaign(
+                paths=paths,
+                execute=execute,
+                max_rows=max_rows,
+                workers=workers,
+                verify_runner=_run_proxy_patch_verification_adapter,
+            )
+        else:
+            summary = run_patch_verification_campaign(
+                paths=paths,
+                execute=execute,
+                max_rows=max_rows,
+                workers=workers,
+                verify_runner=_run_proxy_patch_verification_adapter,
+            )
     except (
         PatchVerificationCampaignError,
         ProseReviewV4DashboardError,
@@ -267,12 +290,98 @@ def run_patch_verification_campaign(
 
     Returns:
         Machine-readable progress summary without raw persona IDs or prose.
-
-    Raises:
-        PatchVerificationCampaignError: If inputs, resume state, or workers are unsafe.
     """
     _require_worker_count(workers=workers)
     loaded = load_first_pass(paths=paths)
+    return _run_loaded_patch_verification_campaign(
+        paths=paths,
+        loaded=loaded,
+        execute=execute,
+        max_rows=max_rows,
+        workers=workers,
+        verify_runner=verify_runner,
+    )
+
+
+def follow_patch_verification_campaign(
+    *,
+    paths: VerifyPaths,
+    execute: bool,
+    max_rows: int | None,
+    workers: int,
+    verify_runner: VerifyRunner,
+    poll_seconds: float = FOLLOW_POLL_SECONDS,
+    stall_seconds: float = FOLLOW_STALL_SECONDS,
+) -> dict[str, object]:
+    """Follow a growing first-pass campaign until both passes are complete.
+
+    Args:
+        paths: Input and private output paths.
+        execute: If true, provider I/O is allowed.
+        max_rows: Optional prefix bound for each polling pass.
+        workers: Worker count from one to four.
+        verify_runner: Injectable proxy verifier for offline tests.
+        poll_seconds: Seconds to sleep when no second-pass work is available.
+        stall_seconds: Maximum idle time allowed while first-pass rows are pending.
+
+    Returns:
+        Machine-readable completion summary without raw persona IDs or prose.
+
+    Raises:
+        PatchVerificationCampaignError: If follow mode cannot safely continue.
+    """
+    _require_worker_count(workers=workers)
+    if not execute:
+        raise PatchVerificationCampaignError("--follow-first-pass requires --run")
+    if poll_seconds <= 0 or stall_seconds <= 0:
+        raise PatchVerificationCampaignError("follow polling bounds must be positive")
+
+    last_progress: tuple[int, int, int, int, int] | None = None
+    last_advance_at = time.monotonic()
+    while True:
+        loaded = load_first_pass(paths=paths)
+        _raise_if_first_pass_failed(loaded=loaded)
+        summary = _run_loaded_patch_verification_campaign(
+            paths=paths,
+            loaded=loaded,
+            execute=True,
+            max_rows=max_rows,
+            workers=workers,
+            verify_runner=verify_runner,
+        )
+        current = load_first_pass(paths=paths)
+        _raise_if_first_pass_failed(loaded=current)
+        progress = _first_pass_progress(loaded=current)
+        now = time.monotonic()
+        if progress != last_progress:
+            last_progress = progress
+            last_advance_at = now
+        _ensure_follow_status_consistent(summary=summary, loaded=current)
+        if _follow_is_complete(summary=summary, loaded=current):
+            summary["follow_first_pass"] = True
+            summary["first_pass_pending"] = current.first_pending
+            summary["first_pass_patched"] = len(current.rows)
+            return summary
+        if _has_second_pass_work(summary=summary, loaded=current):
+            continue
+        first_pass_stalled = now - last_advance_at >= stall_seconds
+        if _first_pass_is_still_open(loaded=current) and first_pass_stalled:
+            raise PatchVerificationCampaignError(
+                "First-pass review is still pending but has not advanced within "
+                "the configured follow timeout; aborting for safe inspection"
+            )
+        time.sleep(poll_seconds)
+
+
+def _run_loaded_patch_verification_campaign(
+    *,
+    paths: VerifyPaths,
+    loaded: LoadedFirstPass,
+    execute: bool,
+    max_rows: int | None,
+    workers: int,
+    verify_runner: VerifyRunner,
+) -> dict[str, object]:
     manifest = _verification_manifest(paths=paths, loaded=loaded)
     if not execute:
         return _dry_run_summary(
@@ -293,6 +402,7 @@ def run_patch_verification_campaign(
         manual=loaded.manual,
         unchanged_consistent=loaded.unchanged_consistent,
     )
+    _verify_processed_hashes_are_available(status=status, rows=loaded.rows)
     _refresh_available_counts(
         status=status,
         available=len(loaded.rows),
@@ -334,6 +444,60 @@ def run_patch_verification_campaign(
 
 class PatchVerificationCampaignError(Exception):
     """Raised when the patch-verification CLI must fail closed."""
+
+
+def _raise_if_first_pass_failed(*, loaded: LoadedFirstPass) -> None:
+    if loaded.first_failed > 0:
+        raise PatchVerificationCampaignError(
+            "First-pass review has failed rows; aborting follow mode"
+        )
+
+
+def _first_pass_progress(loaded: LoadedFirstPass) -> tuple[int, int, int, int, int]:
+    return (
+        loaded.first_reviewable,
+        loaded.first_processed,
+        loaded.first_pending,
+        loaded.first_attempted,
+        len(loaded.rows),
+    )
+
+
+def _ensure_follow_status_consistent(
+    *, summary: dict[str, object], loaded: LoadedFirstPass
+) -> None:
+    processed = _summary_int(summary=summary, key="processed")
+    if processed > len(loaded.rows):
+        raise PatchVerificationCampaignError(
+            "Second-pass status does not match the current first-pass patched rows"
+        )
+
+
+def _follow_is_complete(*, summary: dict[str, object], loaded: LoadedFirstPass) -> bool:
+    return (
+        not _first_pass_is_still_open(loaded=loaded)
+        and _summary_int(summary=summary, key="processed") == len(loaded.rows)
+        and _summary_int(summary=summary, key="pending") == 0
+    )
+
+
+def _first_pass_is_still_open(*, loaded: LoadedFirstPass) -> bool:
+    return loaded.first_pending > 0 or loaded.first_processed < loaded.first_reviewable
+
+
+def _has_second_pass_work(
+    *, summary: dict[str, object], loaded: LoadedFirstPass
+) -> bool:
+    processed = _summary_int(summary=summary, key="processed")
+    pending = _summary_int(summary=summary, key="pending")
+    return processed < len(loaded.rows) or pending > 0
+
+
+def _summary_int(*, summary: dict[str, object], key: str) -> int:
+    value = summary.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise PatchVerificationCampaignError(f"summary counter is malformed: {key}")
+    return value
 
 
 def _dry_run_summary(
@@ -449,6 +613,16 @@ def _status_hashes(status: dict[str, object]) -> list[str]:
     if len(value) != len(set(value)):
         raise PatchVerificationCampaignError("status.json processed hashes are invalid")
     return list(value)
+
+
+def _verify_processed_hashes_are_available(
+    *, status: dict[str, object], rows: list[VerifyRow]
+) -> None:
+    available = {row.persona_hash for row in rows}
+    if any(persona_hash not in available for persona_hash in _status_hashes(status)):
+        raise PatchVerificationCampaignError(
+            "status.json processed hashes do not match first-pass patched rows"
+        )
 
 
 def _write_status(*, path: Path, status: dict[str, object]) -> None:
@@ -574,10 +748,7 @@ def _record_completed_future(
         attempt_result = future.result()
     except Exception as exc:
         if isinstance(exc, httpx.HTTPStatusError):
-            LOGGER.error(
-                "Patch verification halted: HTTP %d",
-                exc.response.status_code,
-            )
+            LOGGER.error("Patch verification halted: HTTP %d", exc.response.status_code)
         else:
             LOGGER.error("Patch verification halted: %s", type(exc).__name__)
         _record_transient_retries(status=status, exc=exc)
@@ -856,7 +1027,19 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
         ),
         manifest=first_manifest,
         verify_prompt=paths.verify_prompt.read_text(encoding="utf-8"),
+        first_reviewable=_first_status_int(status=first_status, key="reviewable"),
+        first_processed=_first_status_int(status=first_status, key="processed"),
+        first_attempted=_first_status_int(status=first_status, key="attempted"),
+        first_pending=_first_status_int(status=first_status, key="pending"),
+        first_failed=_first_status_int(status=first_status, key="failed"),
     )
+
+
+def _first_status_int(*, status: dict[str, JSONValue], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise PatchVerificationCampaignError(f"first-pass status is malformed: {key}")
+    return value
 
 
 def _object_row(*, row: c.Mapping[str, JSONValue]) -> dict[str, object]:
