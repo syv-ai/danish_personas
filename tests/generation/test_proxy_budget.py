@@ -44,6 +44,7 @@ def _budget(tmp_path: Path, *, cap: str = "1") -> ProxyBudget:
 def test_reservation_is_durable_conservative_and_usage_does_not_refund(
     tmp_path: Path,
 ) -> None:
+    """Persist reservations and keep their budget charge after usage is recorded."""
     budget = _budget(tmp_path)
     reserved = budget.reserve_attempt("attempt-1", {"content": "fødselsdag"})
     lines = (tmp_path / "budget.jsonl").read_text(encoding="utf-8").splitlines()
@@ -64,6 +65,7 @@ def test_reservation_is_durable_conservative_and_usage_does_not_refund(
 def test_restart_keeps_prior_reservations_and_rejects_unknown_usage(
     tmp_path: Path,
 ) -> None:
+    """Reload complete newline-terminated records and prevent duplicate attempts."""
     budget = _budget(tmp_path)
     budget.reserve_attempt("attempt-1", {"x": 1})
     restarted = _budget(tmp_path)
@@ -76,6 +78,7 @@ def test_restart_keeps_prior_reservations_and_rejects_unknown_usage(
 
 
 def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:
+    """Reject an incomplete trailing record rather than authorising a request."""
     budget = _budget(tmp_path)
     budget.reserve_attempt("attempt-1", {"x": 1})
     with (tmp_path / "budget.jsonl").open("a", encoding="utf-8") as ledger:
@@ -85,6 +88,7 @@ def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:
 
 
 def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
+    """Count pinned historical charges against the campaign's internal cap."""
     budget = _budget(tmp_path, cap="0.065")
     with pytest.raises(ProxyBudgetError, match="cap exhausted"):
         budget.reserve_attempt("attempt-1", {"x": 1})
@@ -96,6 +100,7 @@ def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
 def test_registry_price_or_model_change_fails_closed(
     tmp_path: Path, price: str, model: str
 ) -> None:
+    """Fail closed when pinned model identity or pricing changes."""
     registry = _registry(tmp_path / "models-store.json")
     budget = ProxyBudget(
         ledger_path=tmp_path / "budget.jsonl",
@@ -111,6 +116,7 @@ def test_registry_price_or_model_change_fails_closed(
 
 
 def test_reservation_rejects_ids_reused_for_historical_entries(tmp_path: Path) -> None:
+    """Do not allow new attempts to alias a prior reservation."""
     budget = _budget(tmp_path)
     with pytest.raises(ProxyBudgetError, match="already reserved"):
         budget.reserve_attempt("prior-failed-melious", {"x": 1})
