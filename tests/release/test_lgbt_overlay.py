@@ -65,8 +65,9 @@ def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:
         "unknown",
     ]
     assert provenance["supported_age_range"] == [18, 64]
-    assert provenance["supported_age_count"] == 0
-    assert provenance["unknown_age_count"] == 4
+    assert provenance["supported_age_count"] == 1
+    assert provenance["unknown_age_count"] == 3
+    assert provenance["orientation_supported_count"] == 0
 
 
 def test_sex_specific_orientation_marginals_match_chart_rates() -> None:

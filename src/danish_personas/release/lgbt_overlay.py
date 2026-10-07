@@ -139,6 +139,9 @@ def generate_lgbt_overlay(
         "supported_age_range": [18, 64],
         "supported_age_count": eligible,
         "unknown_age_count": len(identifiers) - eligible,
+        "orientation_supported_count": sum(
+            value != "unknown" for value in orientations
+        ),
         "marginal_counts": {
             "sexual_orientation_identity": _counts(orientations),
             "sexual_orientation_identity_by_sex": {
@@ -260,5 +263,15 @@ def _counts(values: list[str]) -> dict[str, int]:
     Returns:
         Counts of labels present in the input.
     """
-    labels = ("yes", "no", "uncertain", "unknown", "minority", "not_minority")
+    labels = (
+        "yes",
+        "no",
+        "uncertain",
+        "unknown",
+        "heterosexual",
+        "homosexual",
+        "bisexual",
+        "asexual",
+        "other",
+    )
     return {label: values.count(label) for label in labels if label in values}
