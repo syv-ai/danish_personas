@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import typing as t
 from decimal import Decimal
 from pathlib import Path
 
@@ -10,7 +11,9 @@ import httpx
 import polars as pl
 import pytest
 
+from danish_personas.generation.proxy_budget import ProxyBudget
 from danish_personas.generation.proxy_patch_verifier import run_proxy_patch_verification
+from danish_personas.io import canonical_json, sha256_text
 from scripts import build_provisional_prose_candidate as candidate
 from scripts import verify_persona_patches as verify
 from tests.cli.test_verify_persona_patches import FixturePaths, _write_fixture
@@ -54,6 +57,12 @@ class _FakeBudget:
         assert input_tokens >= 0
         assert output_tokens >= 0
         assert len(response_sha256) == 64
+
+
+class _CheckpointBudget(_FakeBudget):
+    """Budget shape used only to forge genuine fixture checkpoints."""
+
+    overhead = 0
 
 
 def test_dry_run_and_write_revalidate_accepted_checkpoint_without_provider(
@@ -208,8 +217,9 @@ def _write_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
     loaded = verify.load_first_pass(paths=paths)
     manifest = verify._verification_manifest(paths=paths, loaded=loaded)
     _write_json(paths.output_dir / "manifest.json", manifest)
-    budget = verify._proxy_budget(
-        paths=paths, prompt=loaded.verify_prompt, manifest=manifest
+    budget = t.cast(
+        ProxyBudget,
+        _checkpoint_budget(paths=paths, prompt=loaded.verify_prompt, manifest=manifest),
     )
     config = verify._generation_config(prompt_path=paths.verify_prompt)
     row = loaded.rows[0]
@@ -247,6 +257,23 @@ def _write_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
         "provisional_notice": verify.PROVISIONAL_NOTICE,
     }
     _write_json(paths.output_dir / "status.json", status)
+
+
+def _checkpoint_budget(
+    *, paths: FixturePaths, prompt: str, manifest: dict[str, candidate.JSONValue]
+) -> _CheckpointBudget:
+    inputs = manifest["inputs"]
+    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
+        raise AssertionError("fixture manifest schema is malformed")
+    return _CheckpointBudget(
+        registry_path=paths.registry,
+        campaign=verify.CAMPAIGN,
+        source_hash=sha256_text(canonical_json(manifest)),
+        prompt_hash=sha256_text(prompt),
+        schema_hash=inputs["schema"],
+        uncapped=True,
+        uncapped_purpose=verify.PATCH_VERIFICATION_PURPOSE,
+    )
 
 
 def _review(*, row: verify.VerifyRow, accepted: bool) -> str:
