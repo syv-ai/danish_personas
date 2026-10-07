@@ -25,127 +25,6 @@ from danish_personas.generation.proxy_patch_runner import (
 )
 
 
-def _config(**overrides: object) -> GenerationConfig:
-    values: dict[str, object] = {
-        "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-luna",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 1,
-        "maximum_total_requests": None,
-        "retry_backoff_seconds": 0.0,
-        "maximum_rows_per_shard": 1,
-        "max_tokens": None,
-        "enable_thinking": None,
-        "reasoning_effort": "none",
-        "prompt": Path("prompt.md"),
-        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
-    }
-    values.update(overrides)
-    return GenerationConfig.model_validate(values)
-
-
-def _budget(tmp_path: Path) -> ProxyBudget:
-    registry = tmp_path / "models.json"
-    registry.write_text(
-        json.dumps(
-            {
-                "openai-codex": {
-                    "models": [
-                        {
-                            "id": "gpt-6-luna",
-                            "maxTokens": 128_000,
-                            "cost": {"input": "0.1", "output": "0.5"},
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return ProxyBudget(
-        ledger_path=tmp_path / "budget.jsonl",
-        registry_path=registry,
-        campaign="synthetic-test",
-        source_hash="a" * 64,
-        prompt_hash=hashlib.sha256(
-            "Ret kun den nødvendige lokale formulering.".encode()
-        ).hexdigest(),
-        schema_hash=hashlib.sha256(
-            json.dumps(
-                ProsePatchResponse.provider_json_schema(),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest(),
-        cap_usd=Decimal("1"),
-    )
-
-
-def _row() -> dict[str, Any]:
-    return {
-        "record_id": "private-id",
-        "source_sex": "private-sex",
-        "municipality": "private municipality",
-        "origin_country_da": "private origin",
-        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
-        "skills_and_expertise": ["planlægning"] * 3,
-        "hobbies_and_interests": ["cykling"] * 3,
-    }
-
-
-def _transport(
-    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
-) -> httpx.MockTransport:
-    def respond(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        if events is not None:
-            events.append("network")
-        assert "max_tokens" not in json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "gpt-6-luna",
-                "choices": [{"message": {"content": response_content}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
-        )
-
-    return httpx.MockTransport(respond)
-
-
-def _run(
-    tmp_path: Path,
-    transport: httpx.BaseTransport,
-    *,
-    row: dict[str, Any] | None = None,
-    changed_facts: dict[str, dict[str, object]] | None = None,
-    config: GenerationConfig | None = None,
-) -> ProxyPatchProposal:
-    """Run one synthetic proposal with caller-selected negative-test inputs.
-
-    Returns:
-        The provisional patch proposal.
-    """
-    return run_proxy_patch(
-        row=_row() if row is None else row,
-        changed_facts=(
-            {"marital_status": {"old": "single", "new": "married"}}
-            if changed_facts is None
-            else changed_facts
-        ),
-        gender="kvinde",
-        partner_gender="mand",
-        prompt="Ret kun den nødvendige lokale formulering.",
-        config=_config() if config is None else config,
-        budget=_budget(tmp_path),
-        checkpoint_path=tmp_path / "provisional.json",
-        transport=transport,
-    )
-
-
 def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -209,6 +88,97 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     assert restarted == result
 
 
+def _budget(tmp_path: Path) -> ProxyBudget:
+    registry = tmp_path / "models.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "models": [
+                        {
+                            "id": "gpt-6-luna",
+                            "maxTokens": 128_000,
+                            "cost": {"input": "0.1", "output": "0.5"},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return ProxyBudget(
+        ledger_path=tmp_path / "budget.jsonl",
+        registry_path=registry,
+        campaign="synthetic-test",
+        source_hash="a" * 64,
+        prompt_hash=hashlib.sha256(
+            "Ret kun den nødvendige lokale formulering.".encode()
+        ).hexdigest(),
+        schema_hash=hashlib.sha256(
+            json.dumps(
+                ProsePatchResponse.provider_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+        cap_usd=Decimal("1"),
+    )
+
+
+def _config(**overrides: object) -> GenerationConfig:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:18080/v1",
+        "model": "gpt-6-luna",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 1,
+        "maximum_total_requests": None,
+        "retry_backoff_seconds": 0.0,
+        "maximum_rows_per_shard": 1,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": "none",
+        "prompt": Path("prompt.md"),
+        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+    }
+    values.update(overrides)
+    return GenerationConfig.model_validate(values)
+
+
+def _row() -> dict[str, Any]:
+    return {
+        "record_id": "private-id",
+        "source_sex": "private-sex",
+        "municipality": "private municipality",
+        "origin_country_da": "private origin",
+        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "skills_and_expertise": ["planlægning"] * 3,
+        "hobbies_and_interests": ["cykling"] * 3,
+    }
+
+
+def _transport(
+    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
+) -> httpx.MockTransport:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if events is not None:
+            events.append("network")
+        assert "max_tokens" not in json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "gpt-6-luna",
+                "choices": [{"message": {"content": response_content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    return httpx.MockTransport(respond)
+
+
 def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
     tmp_path: Path,
 ) -> None:
@@ -231,47 +201,34 @@ def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
         )
 
 
-@pytest.mark.parametrize(
-    "identity_term",
-    [
-        "seksuel orientering",
-        "seksual orientation",
-        "homoseksuel",
-        "biseksuel",
-        "transkønnet",
-        "interkønnet",
-    ],
-)
-def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> None:
-    """Refuse sensitive values even when their fact key is allowlisted."""
-    with pytest.raises(ProxyPatchError):
-        _run(
-            tmp_path,
-            httpx.MockTransport(lambda _: httpx.Response(500)),
-            changed_facts={"job_title": {"old": "ordinary", "new": identity_term}},
-        )
-
-
-def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
+def _run(
     tmp_path: Path,
-) -> None:
-    """Never change the permissions of a caller-owned shared directory."""
-    shared = tmp_path / "shared"
-    shared.mkdir(mode=0o755)
-    shared.chmod(0o755)
-    with pytest.raises(ProxyPatchError, match="must be private"):
-        run_proxy_patch(
-            row=_row(),
-            changed_facts={"marital_status": {"old": "single", "new": "married"}},
-            gender=None,
-            partner_gender=None,
-            prompt="Ret kun den nødvendige lokale formulering.",
-            config=_config(),
-            budget=_budget(tmp_path),
-            checkpoint_path=shared / "checkpoint.json",
-            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
-        )
-    assert shared.stat().st_mode & 0o777 == 0o755
+    transport: httpx.BaseTransport,
+    *,
+    row: dict[str, Any] | None = None,
+    changed_facts: dict[str, dict[str, object]] | None = None,
+    config: GenerationConfig | None = None,
+) -> ProxyPatchProposal:
+    """Run one synthetic proposal with caller-selected negative-test inputs.
+
+    Returns:
+        The provisional patch proposal.
+    """
+    return run_proxy_patch(
+        row=_row() if row is None else row,
+        changed_facts=(
+            {"marital_status": {"old": "single", "new": "married"}}
+            if changed_facts is None
+            else changed_facts
+        ),
+        gender="kvinde",
+        partner_gender="mand",
+        prompt="Ret kun den nødvendige lokale formulering.",
+        config=_config() if config is None else config,
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "provisional.json",
+        transport=transport,
+    )
 
 
 def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
@@ -344,3 +301,46 @@ def test_rejects_oversized_actual_http_body_before_network(tmp_path: Path) -> No
             transport=_transport(raw, seen),
         )
     assert not seen
+
+
+@pytest.mark.parametrize(
+    "identity_term",
+    [
+        "seksuel orientering",
+        "seksual orientation",
+        "homoseksuel",
+        "biseksuel",
+        "transkønnet",
+        "interkønnet",
+    ],
+)
+def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> None:
+    """Refuse sensitive values even when their fact key is allowlisted."""
+    with pytest.raises(ProxyPatchError):
+        _run(
+            tmp_path,
+            httpx.MockTransport(lambda _: httpx.Response(500)),
+            changed_facts={"job_title": {"old": "ordinary", "new": identity_term}},
+        )
+
+
+def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
+    tmp_path: Path,
+) -> None:
+    """Never change the permissions of a caller-owned shared directory."""
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    shared.chmod(0o755)
+    with pytest.raises(ProxyPatchError, match="must be private"):
+        run_proxy_patch(
+            row=_row(),
+            changed_facts={"marital_status": {"old": "single", "new": "married"}},
+            gender=None,
+            partner_gender=None,
+            prompt="Ret kun den nødvendige lokale formulering.",
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=shared / "checkpoint.json",
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+    assert shared.stat().st_mode & 0o777 == 0o755

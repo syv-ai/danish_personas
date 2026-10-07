@@ -32,10 +32,6 @@ PRIOR_RESERVATIONS = {
 }
 
 
-class ProxyBudgetError(RuntimeError):
-    """Raised when the durable proxy budget cannot safely authorise a request."""
-
-
 class ProxyBudget:
     """Append-only request budget bound to pinned model and campaign inputs.
 
@@ -99,102 +95,30 @@ class ProxyBudget:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._locked(self._initialise)
 
-    def reserve_attempt(
-        self, request_id: str, request: dict[str, JSONValue]
-    ) -> Decimal:
-        """Durably reserve worst-case cost before an HTTP attempt.
-
-        Args:
-            request_id: Unique identifier for this HTTP attempt.
-            request: JSON-compatible provider request payload.
-
-        Returns:
-            The USD amount reserved for this attempt.
-
-        Raises:
-            ProxyBudgetError: If the request is invalid or the budget is exhausted.
-        """
-        if not request_id or not isinstance(request_id, str):
-            raise ProxyBudgetError("Request ID must be a non-empty string")
-        request_bytes = len(_canonical_json(request)) + self.overhead
-        # One token per UTF-8 byte is deliberately conservative.
-        input_tokens = request_bytes
-        per_request = (
-            Decimal(input_tokens) * Decimal(str(self.pins["input_usd_per_million"]))
-            + Decimal(str(self.pins["max_tokens"]))
-            * Decimal(str(self.pins["output_usd_per_million"]))
-        ) / Decimal(1_000_000)
-
-        def operation() -> Decimal:
-            header, records = self._load()
-            self._check_header(header)
-            reservations = {
-                str(r["request_id"]): Decimal(str(r["usd"]))
-                for r in records
-                if r["type"] == "reservation"
-            }
-            if request_id in reservations:
-                raise ProxyBudgetError("Request ID is already reserved")
-            total = sum(reservations.values(), Decimal(0))
-            if total + per_request > self.cap or total + per_request > HARD_CAP_USD:
-                raise ProxyBudgetError("Proxy campaign budget cap exhausted")
-            self._append(
-                {
-                    "type": "reservation",
-                    "request_id": request_id,
-                    "usd": str(per_request),
-                    "input_byte_bound": request_bytes,
-                    "max_output_tokens": self.pins["max_tokens"],
-                }
-            )
-            return per_request
-
-        return self._locked(operation)
-
-    def record_usage(
-        self,
-        request_id: str,
-        *,
-        input_tokens: int,
-        output_tokens: int,
-        response: bytes | str,
-    ) -> None:
-        """Record observed usage and response hash without refunding a reservation.
-
-        Raises:
-            ProxyBudgetError: If usage is invalid or has no matching reservation.
-        """
-        if input_tokens < 0 or output_tokens < 0:
-            raise ProxyBudgetError("Observed token counts must be non-negative")
-        response_bytes = (
-            response.encode("utf-8") if isinstance(response, str) else response
-        )
-        response_hash = hashlib.sha256(response_bytes).hexdigest()
-
-        def operation() -> None:
-            header, records = self._load()
-            self._check_header(header)
-            reservations = {
-                r["request_id"] for r in records if r["type"] == "reservation"
-            }
-            if request_id not in reservations:
-                raise ProxyBudgetError("Usage references an unknown request ID")
-            if any(
-                r.get("request_id") == request_id and r["type"] == "usage"
-                for r in records
-            ):
-                raise ProxyBudgetError("Usage already recorded for request ID")
-            self._append(
-                {
-                    "type": "usage",
-                    "request_id": request_id,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "response_sha256": response_hash,
-                }
-            )
-
-        self._locked(operation)
+    def _locked(self, function: Callable[[], Result]) -> Result:
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        locked = False
+        try:
+            if os.name == "nt":
+                os.chmod(lock_path, 0o600)
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+            return function()
+        finally:
+            if locked:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def _initialise(self) -> None:
         self._check_registry()
@@ -221,6 +145,13 @@ class ProxyBudget:
             ledger.flush()
             os.fsync(ledger.fileno())
         os.chmod(self.path, 0o600)
+
+    def _check_header(self, header: dict[str, JSONValue]) -> None:
+        self._check_registry()
+        if header != self.pins:
+            raise ProxyBudgetError(
+                "Budget ledger pins do not match current configuration"
+            )
 
     def _check_registry(self) -> None:
         try:
@@ -274,13 +205,6 @@ class ProxyBudget:
                 "Model registry is missing, changed, or unbounded"
             ) from exc
 
-    def _check_header(self, header: dict[str, JSONValue]) -> None:
-        self._check_registry()
-        if header != self.pins:
-            raise ProxyBudgetError(
-                "Budget ledger pins do not match current configuration"
-            )
-
     def _load(self) -> tuple[dict[str, JSONValue], list[dict[str, JSONValue]]]:
         try:
             contents = self.path.read_text(encoding="utf-8")
@@ -297,6 +221,51 @@ class ProxyBudget:
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise ProxyBudgetError("Budget ledger is malformed or truncated") from exc
 
+    def record_usage(
+        self,
+        request_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        response: bytes | str,
+    ) -> None:
+        """Record observed usage and response hash without refunding a reservation.
+
+        Raises:
+            ProxyBudgetError: If usage is invalid or has no matching reservation.
+        """
+        if input_tokens < 0 or output_tokens < 0:
+            raise ProxyBudgetError("Observed token counts must be non-negative")
+        response_bytes = (
+            response.encode("utf-8") if isinstance(response, str) else response
+        )
+        response_hash = hashlib.sha256(response_bytes).hexdigest()
+
+        def operation() -> None:
+            header, records = self._load()
+            self._check_header(header)
+            reservations = {
+                r["request_id"] for r in records if r["type"] == "reservation"
+            }
+            if request_id not in reservations:
+                raise ProxyBudgetError("Usage references an unknown request ID")
+            if any(
+                r.get("request_id") == request_id and r["type"] == "usage"
+                for r in records
+            ):
+                raise ProxyBudgetError("Usage already recorded for request ID")
+            self._append(
+                {
+                    "type": "usage",
+                    "request_id": request_id,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "response_sha256": response_hash,
+                }
+            )
+
+        self._locked(operation)
+
     def _append(self, record: dict[str, JSONValue]) -> None:
         fd = os.open(self.path, os.O_WRONLY | os.O_APPEND)
         try:
@@ -311,30 +280,67 @@ class ProxyBudget:
         finally:
             os.close(fd)
 
-    def _locked(self, function: Callable[[], Result]) -> Result:
-        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        locked = False
-        try:
-            if os.name == "nt":
-                os.chmod(lock_path, 0o600)
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b"\0")
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            else:
-                os.fchmod(fd, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            locked = True
-            return function()
-        finally:
-            if locked:
-                if os.name == "nt":
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+    def reserve_attempt(
+        self, request_id: str, request: dict[str, JSONValue]
+    ) -> Decimal:
+        """Durably reserve worst-case cost before an HTTP attempt.
+
+        Args:
+            request_id: Unique identifier for this HTTP attempt.
+            request: JSON-compatible provider request payload.
+
+        Returns:
+            The USD amount reserved for this attempt.
+
+        Raises:
+            ProxyBudgetError: If the request is invalid or the budget is exhausted.
+        """
+        if not request_id or not isinstance(request_id, str):
+            raise ProxyBudgetError("Request ID must be a non-empty string")
+        request_bytes = len(_canonical_json(request)) + self.overhead
+        # One token per UTF-8 byte is deliberately conservative.
+        input_tokens = request_bytes
+        per_request = (
+            Decimal(input_tokens) * Decimal(str(self.pins["input_usd_per_million"]))
+            + Decimal(str(self.pins["max_tokens"]))
+            * Decimal(str(self.pins["output_usd_per_million"]))
+        ) / Decimal(1_000_000)
+
+        def operation() -> Decimal:
+            header, records = self._load()
+            self._check_header(header)
+            reservations = {
+                str(r["request_id"]): Decimal(str(r["usd"]))
+                for r in records
+                if r["type"] == "reservation"
+            }
+            if request_id in reservations:
+                raise ProxyBudgetError("Request ID is already reserved")
+            total = sum(reservations.values(), Decimal(0))
+            if total + per_request > self.cap or total + per_request > HARD_CAP_USD:
+                raise ProxyBudgetError("Proxy campaign budget cap exhausted")
+            self._append(
+                {
+                    "type": "reservation",
+                    "request_id": request_id,
+                    "usd": str(per_request),
+                    "input_byte_bound": request_bytes,
+                    "max_output_tokens": self.pins["max_tokens"],
+                }
+            )
+            return per_request
+
+        return self._locked(operation)
+
+
+class ProxyBudgetError(RuntimeError):
+    """Raised when the durable proxy budget cannot safely authorise a request."""
+
+
+def _canonical_json(value: JSONValue) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
 
 
 def _validate_records(records: list[object]) -> list[dict[str, JSONValue]]:
@@ -421,9 +427,3 @@ def _validate_usage(
         or len(response_hash) != 64
     ):
         raise ValueError("invalid usage fields")
-
-
-def _canonical_json(value: JSONValue) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
