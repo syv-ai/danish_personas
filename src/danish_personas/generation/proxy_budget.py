@@ -23,6 +23,10 @@ HARD_CAP_USD = Decimal("100")
 INTERNAL_CAP_USD = Decimal("90")
 USER_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-budget.jsonl"
 USER_UNCAPPED_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-uncapped.jsonl"
+USER_PATCH_VERIFICATION_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
+)
+PATCH_VERIFICATION_PURPOSE = "patch_verification"
 JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 )
@@ -62,6 +66,7 @@ class ProxyBudget:
         cap_usd: Decimal = INTERNAL_CAP_USD,
         request_overhead_bytes: int = 4096,
         uncapped: bool = False,
+        uncapped_purpose: str | None = None,
     ) -> None:
         """Create or reopen a ledger after checking pinned registry and policy.
 
@@ -72,7 +77,11 @@ class ProxyBudget:
         # the ledger: all proxy campaigns share the same user-level budget.
         del ledger_path
         self.uncapped = uncapped
-        self.path = USER_UNCAPPED_BUDGET_PATH if uncapped else USER_BUDGET_PATH
+        self.uncapped_purpose = uncapped_purpose
+        if uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
+            self.path = USER_PATCH_VERIFICATION_BUDGET_PATH
+        else:
+            self.path = USER_UNCAPPED_BUDGET_PATH if uncapped else USER_BUDGET_PATH
         self.registry_path = Path(registry_path)
         self.pins: dict[str, JSONValue] = {
             "type": "header",
@@ -88,6 +97,8 @@ class ProxyBudget:
         }
         if uncapped:
             self.pins["uncapped"] = True
+            if uncapped_purpose is not None:
+                self.pins["uncapped_purpose"] = uncapped_purpose
         self.cap = Decimal(cap_usd)
         self.overhead = request_overhead_bytes
         if (
@@ -97,6 +108,10 @@ class ProxyBudget:
             or Decimal(input_usd_per_million) != Decimal("0.1")
             or Decimal(output_usd_per_million) != Decimal("0.5")
             or (not uncapped and not Decimal("0") < self.cap <= INTERNAL_CAP_USD)
+            or (
+                uncapped_purpose is not None
+                and (not uncapped or uncapped_purpose != PATCH_VERIFICATION_PURPOSE)
+            )
             or request_overhead_bytes < 0
             or not all((campaign, source_hash, prompt_hash, schema_hash))
         ):
