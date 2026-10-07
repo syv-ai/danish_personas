@@ -268,10 +268,9 @@ def build_provisional_prose_candidate(
         accepted_hashes.append(persona_hash)
         accepted_records.append(_second_pass_record(row=row, result=result))
 
-    if (
-        len(accepted_records) != status["accepted"]
-        or rejected_count != status["rejected"]
-    ):
+    if len(accepted_records) != _status_int(
+        status=status, key="accepted"
+    ) or rejected_count != _status_int(status=status, key="rejected"):
         raise ProvisionalProseCandidateError("Second-pass status counts are stale")
 
     original_frame = pl.read_parquet(original)
@@ -342,15 +341,36 @@ def _load_second_status(
         raise ProvisionalProseCandidateError(
             "Second-pass status does not match manifest"
         )
-    if status["available"] != available:
+    available_count = _status_int(status=status, key="available")
+    accepted_count = _status_int(status=status, key="accepted")
+    rejected_count = _status_int(status=status, key="rejected")
+    processed_count = _status_int(status=status, key="processed")
+    pending_count = _status_int(status=status, key="pending")
+    if available_count != available:
         raise ProvisionalProseCandidateError("Second-pass available count is stale")
-    if status["processed"] != status["accepted"] + status["rejected"]:
+    if processed_count != accepted_count + rejected_count:
         raise ProvisionalProseCandidateError("Second-pass processed count is stale")
-    if status["pending"] != status["available"] - status["processed"]:
+    if pending_count != available_count - processed_count:
         raise ProvisionalProseCandidateError("Second-pass pending count is stale")
-    if len(verify._status_hashes(status)) != status["processed"]:
+    if len(verify._status_hashes(status)) != processed_count:
         raise ProvisionalProseCandidateError("Second-pass processed IDs are stale")
     return status
+
+
+def _status_int(*, status: dict[str, object], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ProvisionalProseCandidateError(
+            f"Second-pass status {key} count is malformed"
+        )
+    return value
+
+
+def _json_int(*, document: dict[str, JSONValue], key: str, label: str) -> int:
+    value = document.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ProvisionalProseCandidateError(f"{label} {key} count is malformed")
+    return value
 
 
 def _checkpoint_is_accepted(*, path: Path) -> bool:
@@ -450,10 +470,10 @@ def _review_status_counts(
     *, status: dict[str, object], loaded: verify.LoadedFirstPass
 ) -> dict[str, int]:
     return {
-        "accepted": int(status["accepted"]),
-        "rejected": int(status["rejected"]),
-        "pending": int(status["pending"]),
-        "failed": int(status["failed"]),
+        "accepted": _status_int(status=status, key="accepted"),
+        "rejected": _status_int(status=status, key="rejected"),
+        "pending": _status_int(status=status, key="pending"),
+        "failed": _status_int(status=status, key="failed"),
         "needs_manual_review": loaded.manual,
         "unchanged_consistent": loaded.unchanged_consistent,
     }
@@ -482,8 +502,10 @@ def _summary(
         "not_release_ready": True,
         "accepted_patch_count": len(accepted_hashes),
         "manual_count": loaded.manual,
-        "pending_count": int(status["pending"]),
-        "unresolved_count": int(report["unresolved_count"]),
+        "pending_count": _status_int(status=status, key="pending"),
+        "unresolved_count": _json_int(
+            document=report, key="unresolved_count", label="candidate report"
+        ),
         "first_pass_counts": first_counts,
         "second_pass_counts": second_counts,
         "source_hashes": _source_hashes(metadata=source_metadata),
