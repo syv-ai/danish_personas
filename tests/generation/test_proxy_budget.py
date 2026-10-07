@@ -109,93 +109,6 @@ def test_changed_campaign_pins_fail_closed(tmp_path: Path) -> None:
             )
 
 
-def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
-    """Count pinned historical charges against the campaign's internal cap."""
-    budget = _budget(tmp_path, cap="0.065")
-    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
-        budget.reserve_attempt("attempt-1", {"x": 1})
-
-
-def test_patch_verification_requires_strict_purpose_and_local_model(
-    tmp_path: Path,
-) -> None:
-    """Patch verification is only the explicit local uncapped purpose."""
-    _budget(tmp_path)
-
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, uncapped=False)
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, uncapped_purpose="review")
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, model="different-model")
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, base_url="https://api.openai.com/v1")
-
-
-def _patch_verification_budget(
-    tmp_path: Path,
-    *,
-    model: str = "gpt-6-luna",
-    base_url: str = "http://127.0.0.1:18080/v1",
-    request_overhead_bytes: int = 4096,
-    uncapped: bool = True,
-    uncapped_purpose: str | None = "patch_verification",
-) -> ProxyBudget:
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored-patch-verification.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json", model=model),
-        campaign="campaign-1",
-        source_hash="a" * 64,
-        prompt_hash="b" * 64,
-        schema_hash="c" * 64,
-        model=model,
-        base_url=base_url,
-        request_overhead_bytes=request_overhead_bytes,
-        uncapped=uncapped,
-        uncapped_purpose=uncapped_purpose,
-    )
-
-
-def _education_review_budget(
-    tmp_path: Path, *, request_overhead_bytes: int = 4096
-) -> ProxyBudget:
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored-education-review.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json"),
-        campaign="campaign-education",
-        source_hash="d" * 64,
-        prompt_hash="e" * 64,
-        schema_hash="f" * 64,
-        request_overhead_bytes=request_overhead_bytes,
-        uncapped=True,
-        uncapped_purpose="h90_v5",
-    )
-
-
-def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
-    tmp_path: Path,
-) -> None:
-    """Patch verification reloads its own completed reservations."""
-    _budget(tmp_path)
-    patch = _patch_verification_budget(tmp_path)
-    patch.reserve_attempt("patch-attempt-1", {"x": 1})
-    patch.record_usage(
-        "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
-    )
-
-    restarted = _patch_verification_budget(tmp_path)
-    with pytest.raises(ProxyBudgetError, match="already reserved"):
-        restarted.reserve_attempt("patch-attempt-1", {"x": 1})
-    with pytest.raises(ProxyBudgetError, match="already recorded"):
-        restarted.record_usage(
-            "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
-        )
-    patch_records = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
-        encoding="utf-8"
-    ).splitlines()
-    assert len(patch_records) == 3
-
-
 def test_explicit_uncapped_purposes_use_independent_ledgers(tmp_path: Path) -> None:
     """Dedicated uncapped purposes preserve capped and v4 prose ledgers."""
     _budget(tmp_path)
@@ -241,6 +154,46 @@ def test_explicit_uncapped_purposes_use_independent_ledgers(tmp_path: Path) -> N
     assert education_mode & 0o777 == 0o600
 
 
+def _education_review_budget(
+    tmp_path: Path, *, request_overhead_bytes: int = 4096
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-education-review.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-education",
+        source_hash="d" * 64,
+        prompt_hash="e" * 64,
+        schema_hash="f" * 64,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+        uncapped_purpose="h90_v5",
+    )
+
+
+def _patch_verification_budget(
+    tmp_path: Path,
+    *,
+    model: str = "gpt-6-luna",
+    base_url: str = "http://127.0.0.1:18080/v1",
+    request_overhead_bytes: int = 4096,
+    uncapped: bool = True,
+    uncapped_purpose: str | None = "patch_verification",
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-patch-verification.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json", model=model),
+        campaign="campaign-1",
+        source_hash="a" * 64,
+        prompt_hash="b" * 64,
+        schema_hash="c" * 64,
+        model=model,
+        base_url=base_url,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=uncapped,
+        uncapped_purpose=uncapped_purpose,
+    )
+
+
 def _uncapped_budget(
     tmp_path: Path,
     *,
@@ -260,6 +213,53 @@ def _uncapped_budget(
         request_overhead_bytes=request_overhead_bytes,
         uncapped=True,
     )
+
+
+def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
+    """Count pinned historical charges against the campaign's internal cap."""
+    budget = _budget(tmp_path, cap="0.065")
+    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
+        budget.reserve_attempt("attempt-1", {"x": 1})
+
+
+def test_patch_verification_requires_strict_purpose_and_local_model(
+    tmp_path: Path,
+) -> None:
+    """Patch verification is only the explicit local uncapped purpose."""
+    _budget(tmp_path)
+
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, uncapped=False)
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, uncapped_purpose="review")
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, model="different-model")
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, base_url="https://api.openai.com/v1")
+
+
+def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
+    tmp_path: Path,
+) -> None:
+    """Patch verification reloads its own completed reservations."""
+    _budget(tmp_path)
+    patch = _patch_verification_budget(tmp_path)
+    patch.reserve_attempt("patch-attempt-1", {"x": 1})
+    patch.record_usage(
+        "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
+    )
+
+    restarted = _patch_verification_budget(tmp_path)
+    with pytest.raises(ProxyBudgetError, match="already reserved"):
+        restarted.reserve_attempt("patch-attempt-1", {"x": 1})
+    with pytest.raises(ProxyBudgetError, match="already recorded"):
+        restarted.record_usage(
+            "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
+        )
+    patch_records = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(patch_records) == 3
 
 
 @pytest.mark.parametrize(

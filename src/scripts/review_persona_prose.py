@@ -254,6 +254,64 @@ def main(
     click.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
 
 
+def _h90_report_candidate_sha256(*, candidate: Path) -> str:
+    report_path = _h90_report_path(candidate=candidate)
+    document = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
+    for key in (
+        "candidate_sha256",
+        "candidate_v5_sha256",
+        "candidate_h90_v5_sha256",
+        "output_sha256",
+        "parquet_sha256",
+    ):
+        value = document.get(key)
+        if isinstance(value, str):
+            if not _is_sha256(value):
+                raise PersonaProseReviewError(
+                    "H90 v5 report candidate SHA-256 malformed"
+                )
+            actual = sha256_file(candidate)
+            if value != actual:
+                raise PersonaProseReviewError(
+                    "H90 v5 report candidate SHA-256 mismatch"
+                )
+            return value
+    raise PersonaProseReviewError("H90 v5 report lacks candidate SHA-256")
+
+
+class PersonaProseReviewError(Exception):
+    """Raised when the prose review CLI must fail closed."""
+
+
+def _h90_report_path(*, candidate: Path) -> Path:
+    return candidate.with_suffix(".report.json")
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _require_h90_private_inputs(*, paths: ReviewPaths) -> None:
+    for path, label in (
+        (paths.original, "H90 original v4 parquet"),
+        (paths.candidate, "H90 candidate parquet"),
+        (paths.triage, "H90 triage JSON"),
+        (_h90_report_path(candidate=paths.candidate), "H90 report JSON"),
+    ):
+        _require_private_file(path=path, label=label)
+
+
+def _require_private_file(*, path: Path, label: str) -> None:
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise PersonaProseReviewError(f"{label} is missing or unreadable") from exc
+    if mode & 0o077:
+        raise PersonaProseReviewError(f"{label} must be private (mode 0600)")
+
+
 def run_review_campaign(
     *,
     paths: ReviewPaths,
@@ -348,10 +406,6 @@ def run_review_campaign(
     return summary
 
 
-class PersonaProseReviewError(Exception):
-    """Raised when the prose review CLI must fail closed."""
-
-
 def _base_manifest(
     *,
     paths: ReviewPaths,
@@ -422,6 +476,30 @@ def _generation_config(*, prompt_path: Path) -> GenerationConfig:
         prompt=prompt_path,
         origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
     )
+
+
+def _load_h90_report(*, candidate: Path) -> dict[str, object]:
+    report_path = _h90_report_path(candidate=candidate)
+    document = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
+    candidate_sha256 = _h90_report_candidate_sha256(candidate=candidate)
+    changed_hashes = document.get("changed_persona_id_sha256")
+    if not isinstance(changed_hashes, list) or not all(
+        _is_sha256(value) for value in changed_hashes
+    ):
+        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
+    if len(changed_hashes) != H90_CHANGED_ROWS or len(set(changed_hashes)) != len(
+        changed_hashes
+    ):
+        raise PersonaProseReviewError("H90 v5 report must contain exactly 506 IDs")
+    changed_rows = document.get("changed_rows")
+    if changed_rows is not None and changed_rows != H90_CHANGED_ROWS:
+        raise PersonaProseReviewError("H90 v5 report changed row count mismatch")
+    return {
+        "candidate_sha256": candidate_sha256,
+        "changed_persona_id_sha256": sorted(changed_hashes),
+    }
 
 
 def _validate_status(status: object) -> dict[str, object]:
@@ -722,33 +800,14 @@ def _public_status_summary(
     }
 
 
-def _require_worker_count(*, workers: int) -> None:
-    if workers < 1 or workers > 4:
-        raise PersonaProseReviewError("workers must be between 1 and 4")
-
-
 def _require_budget_purpose(*, budget_purpose: BudgetPurpose) -> None:
     if budget_purpose not in {DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE}:
         raise PersonaProseReviewError("Unsupported budget purpose")
 
 
-def _require_h90_private_inputs(*, paths: ReviewPaths) -> None:
-    for path, label in (
-        (paths.original, "H90 original v4 parquet"),
-        (paths.candidate, "H90 candidate parquet"),
-        (paths.triage, "H90 triage JSON"),
-        (_h90_report_path(candidate=paths.candidate), "H90 report JSON"),
-    ):
-        _require_private_file(path=path, label=label)
-
-
-def _require_private_file(*, path: Path, label: str) -> None:
-    try:
-        mode = path.stat().st_mode
-    except OSError as exc:
-        raise PersonaProseReviewError(f"{label} is missing or unreadable") from exc
-    if mode & 0o077:
-        raise PersonaProseReviewError(f"{label} must be private (mode 0600)")
+def _require_worker_count(*, workers: int) -> None:
+    if workers < 1 or workers > 4:
+        raise PersonaProseReviewError("workers must be between 1 and 4")
 
 
 def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
@@ -802,65 +861,6 @@ def _load_triage_personas(path: Path) -> dict[str, dict[str, object]]:
             raise PersonaProseReviewError("Triage persona entries are malformed")
         parsed[persona_id] = entry
     return parsed
-
-
-def _load_h90_report(*, candidate: Path) -> dict[str, object]:
-    report_path = _h90_report_path(candidate=candidate)
-    document = json.loads(report_path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict):
-        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
-    candidate_sha256 = _h90_report_candidate_sha256(candidate=candidate)
-    changed_hashes = document.get("changed_persona_id_sha256")
-    if not isinstance(changed_hashes, list) or not all(
-        _is_sha256(value) for value in changed_hashes
-    ):
-        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
-    if len(changed_hashes) != H90_CHANGED_ROWS or len(set(changed_hashes)) != len(
-        changed_hashes
-    ):
-        raise PersonaProseReviewError("H90 v5 report must contain exactly 506 IDs")
-    changed_rows = document.get("changed_rows")
-    if changed_rows is not None and changed_rows != H90_CHANGED_ROWS:
-        raise PersonaProseReviewError("H90 v5 report changed row count mismatch")
-    return {
-        "candidate_sha256": candidate_sha256,
-        "changed_persona_id_sha256": sorted(changed_hashes),
-    }
-
-
-def _h90_report_path(*, candidate: Path) -> Path:
-    return candidate.with_suffix(".json")
-
-
-def _h90_report_candidate_sha256(*, candidate: Path) -> str:
-    report_path = _h90_report_path(candidate=candidate)
-    document = json.loads(report_path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict):
-        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
-    for key in (
-        "candidate_sha256",
-        "candidate_v5_sha256",
-        "candidate_h90_v5_sha256",
-        "output_sha256",
-        "parquet_sha256",
-    ):
-        value = document.get(key)
-        if isinstance(value, str):
-            if not _is_sha256(value):
-                raise PersonaProseReviewError(
-                    "H90 v5 report candidate SHA-256 malformed"
-                )
-            actual = sha256_file(candidate)
-            if value != actual:
-                raise PersonaProseReviewError(
-                    "H90 v5 report candidate SHA-256 mismatch"
-                )
-            return value
-    raise PersonaProseReviewError("H90 v5 report lacks candidate SHA-256")
-
-
-def _is_sha256(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _require_columns(*, frame: pl.DataFrame, columns: set[str], label: str) -> None:
@@ -1011,48 +1011,6 @@ def select_review_rows(*, inputs: ReviewInputs) -> Selection:
     )
 
 
-def _validate_h90_inputs(*, inputs: ReviewInputs) -> None:
-    if inputs.h90_report is None:
-        raise PersonaProseReviewError("H90 v5 report is required")
-    report_hashes = _h90_report_hashes(report=inputs.h90_report)
-    selected_hashes = sorted(
-        sha256_text(persona_id)
-        for persona_id, entry in inputs.triage_personas.items()
-        if entry.get("classification") == TRIAGE_CLASSIFICATION
-    )
-    if selected_hashes != report_hashes:
-        raise PersonaProseReviewError("H90 v5 triage IDs do not match report")
-    actual_hashes: list[str] = []
-    for persona_id, original in sorted(inputs.original_rows.items()):
-        candidate = inputs.candidate_rows.get(persona_id)
-        if candidate is None:
-            raise PersonaProseReviewError("H90 v5 candidate is missing a v4 row")
-        changed_fields = _actual_changed_fields(original=original, candidate=candidate)
-        if not changed_fields:
-            continue
-        if changed_fields != H90_CHANGED_FIELDS:
-            raise PersonaProseReviewError("H90 v5 candidate changed non-H90 fields")
-        if (
-            candidate.get("education_source_code") != "H90"
-            or candidate.get("education_level") != "not_stated"
-        ):
-            raise PersonaProseReviewError("H90 v5 candidate has invalid H90 values")
-        actual_hashes.append(sha256_text(persona_id))
-    if set(inputs.candidate_rows) != set(inputs.original_rows):
-        raise PersonaProseReviewError("H90 v5 candidate row IDs do not match v4")
-    if sorted(actual_hashes) != report_hashes:
-        raise PersonaProseReviewError(
-            "H90 v5 candidate changed IDs do not match report"
-        )
-
-
-def _h90_report_hashes(*, report: dict[str, object]) -> list[str]:
-    hashes = report.get("changed_persona_id_sha256")
-    if not isinstance(hashes, list) or not all(_is_sha256(value) for value in hashes):
-        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
-    return sorted(str(value) for value in hashes)
-
-
 def _has_privacy_risk(*, row: ReviewRow) -> bool:
     changed_fields = _actual_changed_fields(
         original=row.original_row, candidate=row.candidate_row
@@ -1102,6 +1060,48 @@ def _changed_facts(
         if old != new:
             facts[field] = {"old": old, "new": new}
     return facts
+
+
+def _validate_h90_inputs(*, inputs: ReviewInputs) -> None:
+    if inputs.h90_report is None:
+        raise PersonaProseReviewError("H90 v5 report is required")
+    report_hashes = _h90_report_hashes(report=inputs.h90_report)
+    selected_hashes = sorted(
+        sha256_text(persona_id)
+        for persona_id, entry in inputs.triage_personas.items()
+        if entry.get("classification") == TRIAGE_CLASSIFICATION
+    )
+    if selected_hashes != report_hashes:
+        raise PersonaProseReviewError("H90 v5 triage IDs do not match report")
+    actual_hashes: list[str] = []
+    for persona_id, original in sorted(inputs.original_rows.items()):
+        candidate = inputs.candidate_rows.get(persona_id)
+        if candidate is None:
+            raise PersonaProseReviewError("H90 v5 candidate is missing a v4 row")
+        changed_fields = _actual_changed_fields(original=original, candidate=candidate)
+        if not changed_fields:
+            continue
+        if changed_fields != H90_CHANGED_FIELDS:
+            raise PersonaProseReviewError("H90 v5 candidate changed non-H90 fields")
+        if (
+            candidate.get("education_source_code") != "H90"
+            or candidate.get("education_level") != "not_stated"
+        ):
+            raise PersonaProseReviewError("H90 v5 candidate has invalid H90 values")
+        actual_hashes.append(sha256_text(persona_id))
+    if set(inputs.candidate_rows) != set(inputs.original_rows):
+        raise PersonaProseReviewError("H90 v5 candidate row IDs do not match v4")
+    if sorted(actual_hashes) != report_hashes:
+        raise PersonaProseReviewError(
+            "H90 v5 candidate changed IDs do not match report"
+        )
+
+
+def _h90_report_hashes(*, report: dict[str, object]) -> list[str]:
+    hashes = report.get("changed_persona_id_sha256")
+    if not isinstance(hashes, list) or not all(_is_sha256(value) for value in hashes):
+        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
+    return sorted(str(value) for value in hashes)
 
 
 def _run_one_review(
