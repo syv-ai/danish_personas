@@ -59,121 +59,6 @@ def test_completes_real_like_duplicate_fields_preserving_rows_and_prose() -> Non
         assert change["bank_version"] == report["bank_version"]
 
 
-def test_completion_is_idempotent_and_independent_of_row_order() -> None:
-    """Seed from persona ID and field, not from row position."""
-    frame = _three_case_frame()
-
-    completed, report = complete_generated_lists(frame)
-    repeated, repeated_report = complete_generated_lists(completed)
-    reordered_completed, _ = complete_generated_lists(frame.reverse())
-
-    assert repeated.to_dicts() == completed.to_dicts()
-    assert repeated_report["changes"] == []
-    assert repeated_report["prose_review"] == []
-    assert len(report["changes"]) == 5
-    assert _lists_by_persona(reordered_completed) == _lists_by_persona(completed)
-
-
-def test_repairs_hobby_format_without_treating_eller_as_defect() -> None:
-    """Repair objective hobby-format failures without marital-disjunction rules."""
-    frame = pl.DataFrame(
-        [
-            _row(
-                "p-format",
-                skills_and_expertise=[
-                    "analyse eller tal",
-                    "analyse",
-                    "formidling",
-                ],
-                hobbies_and_interests=["Løb", "musik.", "gåture "],
-            )
-        ]
-    )
-
-    completed, report = complete_generated_lists(frame)
-
-    assert completed["skills_and_expertise"][0].to_list() == [
-        "analyse eller tal",
-        "analyse",
-        "formidling",
-    ]
-    assert completed["hobbies_and_interests"][0].to_list() == [
-        "løb",
-        "musik",
-        "gåture ",
-    ]
-    assert [(item["persona_id"], item["field"]) for item in report["changes"]] == [
-        ("p-format", "hobbies_and_interests")
-    ]
-
-
-def test_unique_punctuated_whitespace_disjunctive_lists_stay_unchanged() -> None:
-    """Leave unique list text untouched when objective list checks pass."""
-    frame = pl.DataFrame(
-        [
-            _row(
-                "p-untouched",
-                skills_and_expertise=[
-                    "analyse.",
-                    "tal eller data",
-                    " samarbejde ",
-                ],
-                hobbies_and_interests=[
-                    "musik eller radio",
-                    "gåture ",
-                    "brætspil…",
-                ],
-            )
-        ]
-    )
-
-    completed, report = complete_generated_lists(frame)
-
-    assert completed.to_dicts() == frame.to_dicts()
-    assert report["changes"] == []
-    assert report["prose_review"] == []
-
-
-def test_rejects_invalid_ids_list_types_and_sizes() -> None:
-    """Fail closed for structures that are not safe synthetic-list repairs."""
-    duplicate_ids = pl.DataFrame([_row("p-1"), _row("p-1")])
-    non_string_id = pl.DataFrame([_row("")])
-    non_list = pl.DataFrame([_row("p-1", skills_and_expertise="analyse")], strict=False)
-    undersized = pl.DataFrame(
-        [_row("p-1", skills_and_expertise=["analyse", "formidling"])]
-    )
-
-    for invalid_frame in (
-        duplicate_ids,
-        non_string_id,
-        non_list,
-        undersized,
-    ):
-        with pytest.raises(ValueError):
-            complete_generated_lists(invalid_frame)
-
-
-def _row(
-    persona_id: str,
-    *,
-    skills_and_expertise: list[str] | str | None = None,
-    hobbies_and_interests: list[str] | None = None,
-) -> dict[str, object]:
-    return {
-        "persona_id": persona_id,
-        "status": "candidate",
-        "sex": "female",
-        "origin_country_da": "Danmark",
-        "persona": f"Uændret prose for {persona_id}.",
-        "skills_and_expertise": skills_and_expertise
-        if skills_and_expertise is not None
-        else ["analyse", "formidling", "samarbejde"],
-        "hobbies_and_interests": hobbies_and_interests
-        if hobbies_and_interests is not None
-        else ["musik", "læsning", "gåture"],
-    }
-
-
 def _three_case_frame() -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -206,6 +91,42 @@ def _three_case_frame() -> pl.DataFrame:
     )
 
 
+def _row(
+    persona_id: str,
+    *,
+    skills_and_expertise: list[str] | str | None = None,
+    hobbies_and_interests: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "persona_id": persona_id,
+        "status": "candidate",
+        "sex": "female",
+        "origin_country_da": "Danmark",
+        "persona": f"Uændret prose for {persona_id}.",
+        "skills_and_expertise": skills_and_expertise
+        if skills_and_expertise is not None
+        else ["analyse", "formidling", "samarbejde"],
+        "hobbies_and_interests": hobbies_and_interests
+        if hobbies_and_interests is not None
+        else ["musik", "læsning", "gåture"],
+    }
+
+
+def test_completion_is_idempotent_and_independent_of_row_order() -> None:
+    """Seed from persona ID and field, not from row position."""
+    frame = _three_case_frame()
+
+    completed, report = complete_generated_lists(frame)
+    repeated, repeated_report = complete_generated_lists(completed)
+    reordered_completed, _ = complete_generated_lists(frame.reverse())
+
+    assert repeated.to_dicts() == completed.to_dicts()
+    assert repeated_report["changes"] == []
+    assert repeated_report["prose_review"] == []
+    assert len(report["changes"]) == 5
+    assert _lists_by_persona(reordered_completed) == _lists_by_persona(completed)
+
+
 def _lists_by_persona(frame: pl.DataFrame) -> dict[str, tuple[list[str], list[str]]]:
     return {
         str(row["persona_id"]): (
@@ -214,3 +135,65 @@ def _lists_by_persona(frame: pl.DataFrame) -> dict[str, tuple[list[str], list[st
         )
         for row in frame.to_dicts()
     }
+
+
+def test_rejects_invalid_ids_list_types_and_sizes() -> None:
+    """Fail closed for structures that are not safe synthetic-list repairs."""
+    duplicate_ids = pl.DataFrame([_row("p-1"), _row("p-1")])
+    non_string_id = pl.DataFrame([_row("")])
+    non_list = pl.DataFrame([_row("p-1", skills_and_expertise="analyse")], strict=False)
+    undersized = pl.DataFrame(
+        [_row("p-1", skills_and_expertise=["analyse", "formidling"])]
+    )
+
+    for invalid_frame in (duplicate_ids, non_string_id, non_list, undersized):
+        with pytest.raises(ValueError):
+            complete_generated_lists(invalid_frame)
+
+
+def test_repairs_hobby_format_without_treating_eller_as_defect() -> None:
+    """Repair objective hobby-format failures without marital-disjunction rules."""
+    frame = pl.DataFrame(
+        [
+            _row(
+                "p-format",
+                skills_and_expertise=["analyse eller tal", "analyse", "formidling"],
+                hobbies_and_interests=["Løb", "musik.", "gåture "],
+            )
+        ]
+    )
+
+    completed, report = complete_generated_lists(frame)
+
+    assert completed["skills_and_expertise"][0].to_list() == [
+        "analyse eller tal",
+        "analyse",
+        "formidling",
+    ]
+    assert completed["hobbies_and_interests"][0].to_list() == [
+        "løb",
+        "musik",
+        "gåture ",
+    ]
+    assert [(item["persona_id"], item["field"]) for item in report["changes"]] == [
+        ("p-format", "hobbies_and_interests")
+    ]
+
+
+def test_unique_punctuated_whitespace_disjunctive_lists_stay_unchanged() -> None:
+    """Leave unique list text untouched when objective list checks pass."""
+    frame = pl.DataFrame(
+        [
+            _row(
+                "p-untouched",
+                skills_and_expertise=["analyse.", "tal eller data", " samarbejde "],
+                hobbies_and_interests=["musik eller radio", "gåture ", "brætspil…"],
+            )
+        ]
+    )
+
+    completed, report = complete_generated_lists(frame)
+
+    assert completed.to_dicts() == frame.to_dicts()
+    assert report["changes"] == []
+    assert report["prose_review"] == []

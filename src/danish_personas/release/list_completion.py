@@ -155,45 +155,6 @@ def complete_generated_lists(
     return pl.DataFrame(rows, schema=frame.schema), report
 
 
-def _validate_required_columns(*, frame: pl.DataFrame) -> None:
-    required = {"persona_id", *_LIST_FIELDS}
-    missing = required - set(frame.columns)
-    if missing:
-        raise ValueError(f"Missing fields for list completion: {sorted(missing)}")
-
-
-def _validate_persona_ids(*, frame: pl.DataFrame) -> None:
-    persona_ids = frame.get_column("persona_id").to_list()
-    invalid_ids = (
-        not isinstance(persona_id, str) or not persona_id.strip()
-        for persona_id in persona_ids
-    )
-    if any(invalid_ids):
-        raise ValueError("Persona IDs must be non-empty strings")
-    if len(set(persona_ids)) != len(persona_ids):
-        raise ValueError("Persona IDs must be unique")
-
-
-def _read_persona_id(*, row: dict[str, object]) -> str:
-    persona_id = row["persona_id"]
-    if not isinstance(persona_id, str):
-        raise ValueError("Persona IDs must be non-empty strings")
-    return persona_id
-
-
-def _read_list(
-    *, row: dict[str, object], field: ListCompletionField, persona_id: str
-) -> list[str]:
-    values = row[field]
-    if not isinstance(values, list):
-        raise ValueError(f"{field} for {persona_id} must be a list")
-    if not 3 <= len(values) <= 6:
-        raise ValueError(f"{field} for {persona_id} must contain 3 to 6 items")
-    if any(not isinstance(value, str) for value in values):
-        raise ValueError(f"{field} for {persona_id} must contain string items")
-    return values.copy()
-
-
 def _complete_list(
     *, persona_id: str, field: ListCompletionField, values: list[str]
 ) -> list[str]:
@@ -223,6 +184,16 @@ def _fails_objective_generated_check(
     )
 
 
+def _fails_hobby_format(*, value: str) -> bool:
+    return bool(
+        value and (value != value.lower() or value[-1] in _HOBBY_PUNCTUATION_SUFFIX)
+    )
+
+
+def _item_key(*, value: str) -> str:
+    return value.casefold()
+
+
 def _retained_items(*, field: ListCompletionField, values: list[str]) -> list[str]:
     retained: list[str] = []
     seen: set[str] = set()
@@ -242,6 +213,12 @@ def _retained_items(*, field: ListCompletionField, values: list[str]) -> list[st
         retained.append(retained_value)
         seen.add(key)
     return retained
+
+
+def _repair_hobby_item(*, value: str) -> str:
+    if not _fails_hobby_format(value=value):
+        return value
+    return value.lower().rstrip(_HOBBY_PUNCTUATION_SUFFIX)
 
 
 def _synthetic_additions(
@@ -266,17 +243,40 @@ def _seed_for(*, persona_id: str, field: ListCompletionField) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="big")
 
 
-def _repair_hobby_item(*, value: str) -> str:
-    if not _fails_hobby_format(value=value):
-        return value
-    return value.lower().rstrip(_HOBBY_PUNCTUATION_SUFFIX)
+def _read_list(
+    *, row: dict[str, object], field: ListCompletionField, persona_id: str
+) -> list[str]:
+    values = row[field]
+    if not isinstance(values, list):
+        raise ValueError(f"{field} for {persona_id} must be a list")
+    if not 3 <= len(values) <= 6:
+        raise ValueError(f"{field} for {persona_id} must contain 3 to 6 items")
+    if any(not isinstance(value, str) for value in values):
+        raise ValueError(f"{field} for {persona_id} must contain string items")
+    return values.copy()
 
 
-def _fails_hobby_format(*, value: str) -> bool:
-    return bool(
-        value and (value != value.lower() or value[-1] in _HOBBY_PUNCTUATION_SUFFIX)
+def _read_persona_id(*, row: dict[str, object]) -> str:
+    persona_id = row["persona_id"]
+    if not isinstance(persona_id, str):
+        raise ValueError("Persona IDs must be non-empty strings")
+    return persona_id
+
+
+def _validate_persona_ids(*, frame: pl.DataFrame) -> None:
+    persona_ids = frame.get_column("persona_id").to_list()
+    invalid_ids = (
+        not isinstance(persona_id, str) or not persona_id.strip()
+        for persona_id in persona_ids
     )
+    if any(invalid_ids):
+        raise ValueError("Persona IDs must be non-empty strings")
+    if len(set(persona_ids)) != len(persona_ids):
+        raise ValueError("Persona IDs must be unique")
 
 
-def _item_key(*, value: str) -> str:
-    return value.casefold()
+def _validate_required_columns(*, frame: pl.DataFrame) -> None:
+    required = {"persona_id", *_LIST_FIELDS}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"Missing fields for list completion: {sorted(missing)}")

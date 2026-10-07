@@ -152,23 +152,6 @@ class ProxyBudget:
                 "Budget ledger pins do not match current configuration"
             )
 
-    def _refresh_old_ledger_pin(self) -> None:
-        try:
-            _, _, contents = _read_ledger(USER_BUDGET_PATH)
-        except (
-            OSError,
-            ValueError,
-            KeyError,
-            TypeError,
-            InvalidOperation,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-        ) as exc:
-            raise ProxyBudgetError(
-                "Original capped proxy budget ledger is missing or incomplete"
-            ) from exc
-        self.pins["old_ledger_sha256"] = hashlib.sha256(contents).hexdigest()
-
     def _check_registry(self) -> None:
         try:
             document = json.loads(self.registry_path.read_text(encoding="utf-8"))
@@ -221,6 +204,23 @@ class ProxyBudget:
             raise ProxyBudgetError(
                 "Model registry is missing, changed, or unbounded"
             ) from exc
+
+    def _refresh_old_ledger_pin(self) -> None:
+        try:
+            _, _, contents = _read_ledger(USER_BUDGET_PATH)
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            InvalidOperation,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ProxyBudgetError(
+                "Original capped proxy budget ledger is missing or incomplete"
+            ) from exc
+        self.pins["old_ledger_sha256"] = hashlib.sha256(contents).hexdigest()
 
     def _load(self) -> tuple[dict[str, JSONValue], list[dict[str, JSONValue]]]:
         try:
@@ -358,6 +358,25 @@ class ProxyBudgetError(RuntimeError):
     """Raised when the durable proxy budget cannot safely authorise a request."""
 
 
+def _canonical_json(value: JSONValue) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _fsync_directory(path: Path) -> None:
+    if IS_WINDOWS:
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _locked_path(path: Path, function: Callable[[], Result]) -> Result:
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,12 +402,6 @@ def _locked_path(path: Path, function: Callable[[], Result]) -> Result:
             else:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-
-
-def _canonical_json(value: JSONValue) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
 
 
 def _read_ledger(
@@ -500,16 +513,3 @@ def _validate_usage(
         or len(response_hash) != 64
     ):
         raise ValueError("invalid usage fields")
-
-
-def _fsync_directory(path: Path) -> None:
-    if IS_WINDOWS:
-        return
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)

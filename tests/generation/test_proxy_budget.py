@@ -53,27 +53,6 @@ def _budget(tmp_path: Path, *, cap: str = "1") -> ProxyBudget:
     )
 
 
-def _uncapped_budget(
-    tmp_path: Path,
-    *,
-    model: str = "gpt-6-luna",
-    campaign: str = "campaign-1",
-    prompt_hash: str = "b" * 64,
-    request_overhead_bytes: int = 4096,
-) -> ProxyBudget:
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored-uncapped.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json", model=model),
-        campaign=campaign,
-        source_hash="a" * 64,
-        prompt_hash=prompt_hash,
-        schema_hash="c" * 64,
-        model=model,
-        request_overhead_bytes=request_overhead_bytes,
-        uncapped=True,
-    )
-
-
 def _registry(path: Path, *, price: str = "0.1", model: str = "gpt-6-luna") -> Path:
     path.write_text(
         json.dumps(
@@ -240,15 +219,41 @@ def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:
         budget.reserve_attempt("attempt-2", {"x": 1})
 
 
-def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
-    """Only an existing lowercase SHA-256 digest may be recorded."""
-    budget = _budget(tmp_path)
-    budget.reserve_attempt("attempt-1", {"x": 1})
-    for digest in ("A" * 64, "d" * 63, "not-a-digest"):
-        with pytest.raises(ProxyBudgetError, match="lowercase hex digest"):
-            budget.record_usage(
-                "attempt-1", input_tokens=1, output_tokens=1, response_sha256=digest
-            )
+def test_uncapped_rejects_model_and_manifest_changes(tmp_path: Path) -> None:
+    """Fail closed when uncapped model or campaign pins change."""
+    _budget(tmp_path)
+    _uncapped_budget(tmp_path)
+
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _uncapped_budget(tmp_path, model="different-model")
+    with pytest.raises(ProxyBudgetError, match="pins do not match"):
+        _uncapped_budget(tmp_path, prompt_hash="f" * 64)
+
+    with proxy_budget.USER_BUDGET_PATH.open("a", encoding="utf-8") as old_ledger:
+        old_ledger.write("\n")
+    with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
+        _uncapped_budget(tmp_path)
+
+
+def _uncapped_budget(
+    tmp_path: Path,
+    *,
+    model: str = "gpt-6-luna",
+    campaign: str = "campaign-1",
+    prompt_hash: str = "b" * 64,
+    request_overhead_bytes: int = 4096,
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-uncapped.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json", model=model),
+        campaign=campaign,
+        source_hash="a" * 64,
+        prompt_hash=prompt_hash,
+        schema_hash="c" * 64,
+        model=model,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+    )
 
 
 def test_uncapped_requires_existing_complete_capped_ledger(tmp_path: Path) -> None:
@@ -326,17 +331,12 @@ def test_uncapped_restart_keeps_reservations_and_usage_idempotent(
     assert len(uncapped_records) == 3
 
 
-def test_uncapped_rejects_model_and_manifest_changes(tmp_path: Path) -> None:
-    """Fail closed when uncapped model or campaign pins change."""
-    _budget(tmp_path)
-    _uncapped_budget(tmp_path)
-
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _uncapped_budget(tmp_path, model="different-model")
-    with pytest.raises(ProxyBudgetError, match="pins do not match"):
-        _uncapped_budget(tmp_path, prompt_hash="f" * 64)
-
-    with proxy_budget.USER_BUDGET_PATH.open("a", encoding="utf-8") as old_ledger:
-        old_ledger.write("\n")
-    with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
-        _uncapped_budget(tmp_path)
+def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
+    """Only an existing lowercase SHA-256 digest may be recorded."""
+    budget = _budget(tmp_path)
+    budget.reserve_attempt("attempt-1", {"x": 1})
+    for digest in ("A" * 64, "d" * 63, "not-a-digest"):
+        with pytest.raises(ProxyBudgetError, match="lowercase hex digest"):
+            budget.record_usage(
+                "attempt-1", input_tokens=1, output_tokens=1, response_sha256=digest
+            )
