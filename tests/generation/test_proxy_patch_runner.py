@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+import danish_personas.generation.proxy_budget as proxy_budget
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_patch import ProsePatchResponse
 from danish_personas.generation.proxy_budget import (
@@ -23,6 +24,12 @@ from danish_personas.generation.proxy_patch_runner import (
     ProxyPatchProposal,
     run_proxy_patch,
 )
+
+
+@pytest.fixture(autouse=True)
+def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep mock reservations out of the user's real cumulative budget ledger."""
+    monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
 
 
 def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
@@ -135,6 +142,30 @@ def _budget(tmp_path: Path) -> ProxyBudget:
     )
 
 
+def _candidate_row(
+    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    candidate = dict(_row() if row is None else row)
+    candidate.update(
+        {field: pair["new"] for field, pair in facts.items() if field in candidate}
+    )
+    return candidate
+
+
+def _row() -> dict[str, Any]:
+    return {
+        "persona_id": "private-id",
+        "record_id": "private-id",
+        "source_sex": "private-sex",
+        "municipality": "private municipality",
+        "origin_country_da": "private origin",
+        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "marital_status": "single",
+        "skills_and_expertise": ["planlægning"] * 3,
+        "hobbies_and_interests": ["cykling"] * 3,
+    }
+
+
 def _config(**overrides: object) -> GenerationConfig:
     values: dict[str, object] = {
         "base_url": "http://127.0.0.1:18080/v1",
@@ -153,30 +184,6 @@ def _config(**overrides: object) -> GenerationConfig:
     }
     values.update(overrides)
     return GenerationConfig.model_validate(values)
-
-
-def _row() -> dict[str, Any]:
-    return {
-        "persona_id": "private-id",
-        "record_id": "private-id",
-        "source_sex": "private-sex",
-        "municipality": "private municipality",
-        "origin_country_da": "private origin",
-        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
-        "marital_status": "single",
-        "skills_and_expertise": ["planlægning"] * 3,
-        "hobbies_and_interests": ["cykling"] * 3,
-    }
-
-
-def _candidate_row(
-    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    candidate = dict(_row() if row is None else row)
-    candidate.update(
-        {field: pair["new"] for field, pair in facts.items() if field in candidate}
-    )
-    return candidate
 
 
 def _transport(
@@ -242,58 +249,6 @@ def test_real_schema_fact_fields_are_the_only_candidate_delta_sent(
     assert "candidate_row" not in requests[0].content.decode()
 
 
-@pytest.mark.parametrize(
-    ("prompt", "gender", "partner_gender"),
-    [
-        ("Use the term queer only as a private test.", "woman", None),
-        ("Ret kun ændringen.", "transkønnet", None),
-        ("Ret kun ændringen.", "woman", "transkønnet"),
-    ],
-)
-def test_rejects_sensitive_or_unsupported_outbound_text_before_network(
-    tmp_path: Path, prompt: str, gender: str, partner_gender: str | None
-) -> None:
-    """Preflight the prompt and synthetic-gender fields before transport."""
-    facts = {"marital_status": {"old": "single", "new": "married"}}
-    requests: list[httpx.Request] = []
-    with pytest.raises(ProxyPatchError):
-        run_proxy_patch(
-            row=_row(),
-            candidate_row=_candidate_row(facts),
-            changed_facts=facts,
-            gender=gender,
-            partner_gender=partner_gender,
-            prompt=prompt,
-            config=_config(),
-            budget=_budget(tmp_path),
-            checkpoint_path=tmp_path / "provisional.json",
-            transport=_transport("{}", requests),
-        )
-    assert not requests
-
-
-def test_rejects_candidate_row_mismatch_before_network(tmp_path: Path) -> None:
-    """Reject wrong persona bindings and fact deltas before network I/O."""
-    facts = {"marital_status": {"old": "single", "new": "married"}}
-    candidate = _candidate_row(facts)
-    candidate["persona_id"] = "another-id"
-    requests: list[httpx.Request] = []
-    with pytest.raises(ProxyPatchError):
-        run_proxy_patch(
-            row=_row(),
-            candidate_row=candidate,
-            changed_facts=facts,
-            gender="woman",
-            partner_gender=None,
-            prompt="Ret kun den nødvendige lokale formulering.",
-            config=_config(),
-            budget=_budget(tmp_path),
-            checkpoint_path=tmp_path / "provisional.json",
-            transport=_transport("{}", requests),
-        )
-    assert not requests
-
-
 def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
     tmp_path: Path,
 ) -> None:
@@ -351,6 +306,30 @@ def _run(
         checkpoint_path=tmp_path / "provisional.json",
         transport=transport,
     )
+
+
+def test_rejects_candidate_row_mismatch_before_network(tmp_path: Path) -> None:
+    """Reject wrong persona bindings and fact deltas before network I/O."""
+    facts: dict[str, dict[str, object]] = {
+        "marital_status": {"old": "single", "new": "married"}
+    }
+    candidate = _candidate_row(facts)
+    candidate["persona_id"] = "another-id"
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyPatchError):
+        run_proxy_patch(
+            row=_row(),
+            candidate_row=candidate,
+            changed_facts=facts,
+            gender="woman",
+            partner_gender=None,
+            prompt="Ret kun den nødvendige lokale formulering.",
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "provisional.json",
+            transport=_transport("{}", requests),
+        )
+    assert not requests
 
 
 def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
@@ -456,6 +435,38 @@ def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> No
                 }
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("prompt", "gender", "partner_gender"),
+    [
+        ("Use the term queer only as a private test.", "woman", None),
+        ("Ret kun ændringen.", "transkønnet", None),
+        ("Ret kun ændringen.", "woman", "transkønnet"),
+    ],
+)
+def test_rejects_sensitive_or_unsupported_outbound_text_before_network(
+    tmp_path: Path, prompt: str, gender: str, partner_gender: str | None
+) -> None:
+    """Preflight the prompt and synthetic-gender fields before transport."""
+    facts: dict[str, dict[str, object]] = {
+        "marital_status": {"old": "single", "new": "married"}
+    }
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyPatchError):
+        run_proxy_patch(
+            row=_row(),
+            candidate_row=_candidate_row(facts),
+            changed_facts=facts,
+            gender=gender,
+            partner_gender=partner_gender,
+            prompt=prompt,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "provisional.json",
+            transport=_transport("{}", requests),
+        )
+    assert not requests
 
 
 def test_rejects_shared_checkpoint_directory_without_changing_its_mode(

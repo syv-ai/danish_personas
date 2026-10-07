@@ -347,6 +347,14 @@ def _validated_input(
     partner_gender: str | None,
     prompt: str,
 ) -> tuple[str, dict[str, object]]:
+    """Return only reviewed, row-bound fields for a provisional request.
+
+    Returns:
+        The original prose and minimal provider payload.
+
+    Raises:
+        ProxyPatchError: If the inputs are inconsistent or privacy-unsafe.
+    """
     if not prompt.strip() or len(prompt) > 8_000:
         raise ProxyPatchError("Prompt must be non-empty and at most 8,000 characters")
     if not isinstance(row.get("persona_id"), str) or row.get(
@@ -358,6 +366,30 @@ def _validated_input(
         raise ProxyPatchError("Persona text is missing or outside the supported range")
     if candidate_row.get("persona") != old_text:
         raise ProxyPatchError("Candidate persona text must match the original")
+    _check_changed_facts(row, candidate_row, changed_facts)
+    _check_gender_values(gender, partner_gender)
+    outbound_text = [old_text, prompt, *_fact_text(changed_facts)]
+    outbound_text.extend(value for value in (gender, partner_gender) if value)
+    if any(_contains_sensitive_text(value) for value in outbound_text):
+        raise ProxyPatchError("Outbound text contains a sensitive-identity term")
+    payload: dict[str, object] = {"persona": old_text, "changed_facts": changed_facts}
+    if gender is not None and gender != "unknown":
+        payload["gender"] = gender
+    if partner_gender is not None:
+        payload["partner_gender"] = partner_gender
+    return old_text, payload
+
+
+def _check_changed_facts(
+    row: dict[str, Any],
+    candidate_row: dict[str, Any],
+    changed_facts: dict[str, dict[str, object]],
+) -> None:
+    """Require each reported old/new value to match the source and candidate.
+
+    Raises:
+        ProxyPatchError: If a fact is unsupported, inconsistent, or unsafe.
+    """
     if not changed_facts or set(changed_facts) - _ALLOWED_FACTS:
         raise ProxyPatchError("Changed facts contain fields outside the allowlist")
     for field, pair in changed_facts.items():
@@ -371,52 +403,6 @@ def _validated_input(
             raise ProxyPatchError(f"Changed fact {field!r} must actually change")
         if any(not _safe_fact_value(value) for value in pair.values()):
             raise ProxyPatchError(f"Changed fact {field!r} contains an unsafe value")
-    if gender is not None and (
-        not isinstance(gender, str) or gender not in _GENDER_VALUES
-    ):
-        raise ProxyPatchError("Gender is outside the supported synthetic enum")
-    if partner_gender is not None and (
-        not isinstance(partner_gender, str)
-        or partner_gender not in _PARTNER_GENDER_VALUES
-    ):
-        raise ProxyPatchError("Partner gender is outside the supported synthetic enum")
-    outbound_text = [old_text, prompt, *_fact_text(changed_facts)]
-    if gender is not None:
-        outbound_text.append(gender)
-    if partner_gender is not None:
-        outbound_text.append(partner_gender)
-    if any(_contains_sensitive_text(value) for value in outbound_text):
-        raise ProxyPatchError("Outbound text contains a sensitive-identity term")
-    if gender == "unknown":
-        gender = None
-    payload: dict[str, object] = {"persona": old_text, "changed_facts": changed_facts}
-    if gender is not None:
-        payload["gender"] = gender
-    if partner_gender is not None:
-        payload["partner_gender"] = partner_gender
-    return old_text, payload
-
-
-def _fact_text(facts: dict[str, dict[str, object]]) -> list[str]:
-    return [
-        text
-        for pair in facts.values()
-        for value in pair.values()
-        for text in _value_text(value)
-    ]
-
-
-def _value_text(value: object) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return value
-    return []
-
-
-def _contains_sensitive_text(value: str) -> bool:
-    normalised = re.sub(r"[_-]+", " ", value)
-    return _SENSITIVE_TEXT.search(normalised) is not None
 
 
 def _safe_fact_value(value: object) -> bool:
@@ -434,3 +420,42 @@ def _safe_fact_value(value: object) -> bool:
             for item in value
         )
     return False
+
+
+def _check_gender_values(gender: str | None, partner_gender: str | None) -> None:
+    """Limit optional identity hints to approved synthetic categorical values.
+
+    Raises:
+        ProxyPatchError: If a gender value is outside the allowed categories.
+    """
+    if gender is not None and (
+        not isinstance(gender, str) or gender not in _GENDER_VALUES
+    ):
+        raise ProxyPatchError("Gender is outside the supported synthetic enum")
+    if partner_gender is not None and (
+        not isinstance(partner_gender, str)
+        or partner_gender not in _PARTNER_GENDER_VALUES
+    ):
+        raise ProxyPatchError("Partner gender is outside the supported synthetic enum")
+
+
+def _contains_sensitive_text(value: str) -> bool:
+    normalised = re.sub(r"[_-]+", " ", value)
+    return _SENSITIVE_TEXT.search(normalised) is not None
+
+
+def _fact_text(facts: dict[str, dict[str, object]]) -> list[str]:
+    return [
+        text
+        for pair in facts.values()
+        for value in pair.values()
+        for text in _value_text(value)
+    ]
+
+
+def _value_text(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    return []

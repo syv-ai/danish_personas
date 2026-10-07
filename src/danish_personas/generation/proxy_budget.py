@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
 import sys
 from collections.abc import Callable
 from decimal import Decimal
@@ -240,9 +240,10 @@ class ProxyBudget:
         """
         if input_tokens < 0 or output_tokens < 0:
             raise ProxyBudgetError("Observed token counts must be non-negative")
-        if not isinstance(response_sha256, str) or re.fullmatch(
-            r"[0-9a-f]{64}", response_sha256
-        ) is None:
+        if (
+            not isinstance(response_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", response_sha256) is None
+        ):
             raise ProxyBudgetError("Response SHA-256 must be a lowercase hex digest")
 
         def operation() -> None:

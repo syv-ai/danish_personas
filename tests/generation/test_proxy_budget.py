@@ -18,11 +18,23 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
 
 
-def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
-    """Count pinned historical charges against the campaign's internal cap."""
-    budget = _budget(tmp_path, cap="0.065")
+def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
+    """Caller-provided paths cannot create a fresh campaign budget."""
+    budget = _budget(tmp_path, cap="0.15")
+    budget.reserve_attempt("attempt-1", {"x": 1})
+    second = ProxyBudget(
+        ledger_path=tmp_path / "different-ledger.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-1",
+        source_hash="a" * 64,
+        prompt_hash="b" * 64,
+        schema_hash="c" * 64,
+        cap_usd=Decimal("0.15"),
+    )
+    assert second.path == budget.path == proxy_budget.USER_BUDGET_PATH
     with pytest.raises(ProxyBudgetError, match="cap exhausted"):
-        budget.reserve_attempt("attempt-1", {"x": 1})
+        second.reserve_attempt("attempt-2", {"x": 1})
+    assert not (tmp_path / "different-ledger.jsonl").exists()
 
 
 def _budget(tmp_path: Path, *, cap: str = "1") -> ProxyBudget:
@@ -55,6 +67,39 @@ def _registry(path: Path, *, price: str = "0.1", model: str = "gpt-6-luna") -> P
         encoding="utf-8",
     )
     return path
+
+
+def test_changed_campaign_pins_fail_closed(tmp_path: Path) -> None:
+    """A shared ledger cannot be reopened under changed source or prompt pins."""
+    _budget(tmp_path)
+    changed_pins = (
+        ("source_hash", "e" * 64),
+        ("prompt_hash", "f" * 64),
+        ("schema_hash", "0" * 64),
+    )
+    for field, value in changed_pins:
+        pins = {
+            "campaign": "campaign-1",
+            "source_hash": "a" * 64,
+            "prompt_hash": "b" * 64,
+            "schema_hash": "c" * 64,
+        }
+        pins[field] = value
+        with pytest.raises(ProxyBudgetError, match="pins do not match"):
+            ProxyBudget(
+                registry_path=_registry(tmp_path / "models-store.json"),
+                campaign=pins["campaign"],
+                source_hash=pins["source_hash"],
+                prompt_hash=pins["prompt_hash"],
+                schema_hash=pins["schema_hash"],
+            )
+
+
+def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
+    """Count pinned historical charges against the campaign's internal cap."""
+    budget = _budget(tmp_path, cap="0.065")
+    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
+        budget.reserve_attempt("attempt-1", {"x": 1})
 
 
 @pytest.mark.parametrize(
@@ -128,10 +173,7 @@ def test_reservation_is_durable_conservative_and_usage_does_not_refund(
     assert (tmp_path / "budget.jsonl").stat().st_mode & 0o777 == 0o600
 
     budget.record_usage(
-        "attempt-1",
-        input_tokens=3,
-        output_tokens=5,
-        response_sha256="d" * 64,
+        "attempt-1", input_tokens=3, output_tokens=5, response_sha256="d" * 64
     )
     assert budget.reserve_attempt("attempt-2", {"content": "fødselsdag"}) == reserved
     ledger_text = (tmp_path / "budget.jsonl").read_text(encoding="utf-8")
@@ -163,45 +205,14 @@ def test_restart_keeps_prior_reservations_and_rejects_unknown_usage(
         restarted.reserve_attempt("attempt-1", {"x": 1})
 
 
-def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
-    """Caller-provided paths cannot create a fresh campaign budget."""
-    budget = _budget(tmp_path, cap="0.13")
+def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:
+    """Reject an incomplete trailing record rather than authorising a request."""
+    budget = _budget(tmp_path)
     budget.reserve_attempt("attempt-1", {"x": 1})
-    second = ProxyBudget(
-        ledger_path=tmp_path / "different-ledger.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json"),
-        campaign="campaign-1",
-        source_hash="a" * 64,
-        prompt_hash="b" * 64,
-        schema_hash="c" * 64,
-        cap_usd=Decimal("0.13"),
-    )
-    assert second.path == budget.path == proxy_budget.USER_BUDGET_PATH
-    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
-        second.reserve_attempt("attempt-2", {"x": 1})
-    assert not (tmp_path / "different-ledger.jsonl").exists()
-
-
-def test_changed_campaign_pins_fail_closed(tmp_path: Path) -> None:
-    """A shared ledger cannot be reopened under changed source or prompt pins."""
-    _budget(tmp_path)
-    changed_pins = (
-        ("source_hash", "e" * 64),
-        ("prompt_hash", "f" * 64),
-        ("schema_hash", "0" * 64),
-    )
-    for field, value in changed_pins:
-        pins = {
-            "campaign": "campaign-1",
-            "source_hash": "a" * 64,
-            "prompt_hash": "b" * 64,
-            "schema_hash": "c" * 64,
-        }
-        pins[field] = value
-        with pytest.raises(ProxyBudgetError, match="pins do not match"):
-            ProxyBudget(
-                registry_path=_registry(tmp_path / "models-store.json"), **pins
-            )
+    with (tmp_path / "budget.jsonl").open("a", encoding="utf-8") as ledger:
+        ledger.write('{"type":"reservation"')
+    with pytest.raises(ProxyBudgetError, match="malformed or truncated"):
+        budget.reserve_attempt("attempt-2", {"x": 1})
 
 
 def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
@@ -211,18 +222,5 @@ def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
     for digest in ("A" * 64, "d" * 63, "not-a-digest"):
         with pytest.raises(ProxyBudgetError, match="lowercase hex digest"):
             budget.record_usage(
-                "attempt-1",
-                input_tokens=1,
-                output_tokens=1,
-                response_sha256=digest,
+                "attempt-1", input_tokens=1, output_tokens=1, response_sha256=digest
             )
-
-
-def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:
-    """Reject an incomplete trailing record rather than authorising a request."""
-    budget = _budget(tmp_path)
-    budget.reserve_attempt("attempt-1", {"x": 1})
-    with (tmp_path / "budget.jsonl").open("a", encoding="utf-8") as ledger:
-        ledger.write('{"type":"reservation"')
-    with pytest.raises(ProxyBudgetError, match="malformed or truncated"):
-        budget.reserve_attempt("attempt-2", {"x": 1})
