@@ -29,7 +29,11 @@ class LegalProseProposal:
 
     @property
     def abstained(self) -> bool:
-        """Whether no prose edit was proposed."""
+        """Whether no prose edit was proposed.
+
+        Returns:
+            True when this proposal contains no edited prose.
+        """
         return self.proposed_text is None
 
 
@@ -47,6 +51,9 @@ def propose_legal_prose_repair(
     The function edits only one complete standalone ``Civilstand`` or
     ``Personen er`` sentence. It never infers an individual legal state from a
     merged source category whose detail is absent.
+
+    Returns:
+        A validated prose edit or an explicit fail-closed abstention.
     """
     reason = _validate_inputs(
         old_marital_status=old_marital_status,
@@ -61,28 +68,14 @@ def propose_legal_prose_repair(
 
     if _ALTERNATE_PRONOUN.search(old_persona_text):
         return _abstain("persona text contains alternate pronouns")
-    matches = list(_CLAUSE.finditer(old_persona_text))
-    if new_legal_status_detail is None:
-        # Missing detail is the merged source category, not evidence of either
-        # state. Neutralise only a clause explicitly known to be outdated.
-        if old_legal_status_detail not in {"married", "separated"}:
-            return _abstain("old legal detail is not known")
-        if len(matches) != 1:
-            return _abstain("expected exactly one standalone legal clause")
-        match = matches[0]
-        if match.group("legal") != _danish(old_legal_status_detail):
-            return _abstain("standalone legal clause does not match old source")
-        replacement = "Civilstand: gift eller separeret."
-    else:
-        if old_legal_status_detail == new_legal_status_detail:
-            return _abstain("legal detail did not change")
-        if len(matches) != 1:
-            return _abstain("expected exactly one standalone legal clause")
-        match = matches[0]
-        if match.group("legal") != _danish(old_legal_status_detail):
-            return _abstain("standalone legal clause does not match old source")
-        replacement = _render_clause(match, _danish(new_legal_status_detail))
-
+    clause = _replacement_for_clause(
+        text=old_persona_text,
+        old_detail=old_legal_status_detail,
+        new_detail=new_legal_status_detail,
+    )
+    if isinstance(clause, str):
+        return _abstain(clause)
+    match, replacement = clause
     proposed = (
         old_persona_text[: match.start()]
         + replacement
@@ -99,6 +92,30 @@ def propose_legal_prose_repair(
     return LegalProseProposal(proposed, evidence, None)
 
 
+def _replacement_for_clause(
+    *, text: str, old_detail: str, new_detail: str | None
+) -> tuple[re.Match[str], str] | str:
+    """Validate the sole legal clause and return its replacement.
+
+    Returns:
+        A matched clause and replacement text, or an abstention reason.
+    """
+    matches = list(_CLAUSE.finditer(text))
+    if len(matches) != 1:
+        return "expected exactly one standalone legal clause"
+    match = matches[0]
+    if match.group("legal") != _danish(old_detail):
+        return "standalone legal clause does not match old source"
+
+    if new_detail is None:
+        # Missing detail is not evidence of either state; retain only a neutral
+        # description of the two possible legal states.
+        return match, "Civilstand: gift eller separeret."
+    if old_detail == new_detail:
+        return "legal detail did not change"
+    return match, _render_clause(match, _danish(new_detail))
+
+
 def _validate_inputs(
     *,
     old_marital_status: str,
@@ -108,7 +125,11 @@ def _validate_inputs(
     relationship: str,
     text: str,
 ) -> str | None:
-    """Return a reason for inconsistent or unsafe source and prose inputs."""
+    """Return a reason for inconsistent or unsafe source and prose inputs.
+
+    Returns:
+        An explanation when inputs are unsafe, otherwise None.
+    """
     if not isinstance(text, str) or not 300 <= len(text) <= 900:
         return "persona prose must contain 300–900 characters"
     if (
@@ -128,17 +149,29 @@ def _validate_inputs(
 
 
 def _danish(detail: str) -> str:
-    """Map a canonical detail to its exact Danish clause word."""
+    """Map a canonical detail to its exact Danish clause word.
+
+    Returns:
+        The Danish word corresponding to the canonical legal detail.
+    """
     return {"married": "gift", "separated": "separeret"}[detail]
 
 
 def _render_clause(match: re.Match[str], word: str) -> str:
-    """Keep the matched clause form while changing only its legal word."""
+    """Keep the matched clause form while changing only its legal word.
+
+    Returns:
+        The replacement sentence with the original clause style.
+    """
     if match.group("label"):
         return f"Civilstand: {word}."
     return f"Personen er {word}."
 
 
 def _abstain(reason: str) -> LegalProseProposal:
-    """Create an explicit no-edit outcome."""
+    """Create an explicit no-edit outcome.
+
+    Returns:
+        A proposal that records the supplied abstention reason.
+    """
     return LegalProseProposal(None, None, reason)
