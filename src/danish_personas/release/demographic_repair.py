@@ -416,8 +416,8 @@ def _changed_positions(
     *, before: pl.DataFrame, after: pl.DataFrame, columns: list[str]
 ) -> list[int]:
     changed = (
-        before.select(columns).to_struct().to_series()
-        != after.select(columns).to_struct().to_series()
+        before.select(columns).to_struct()
+        != after.select(columns).to_struct()
     )
     return [index for index, value in enumerate(changed) if value]
 
