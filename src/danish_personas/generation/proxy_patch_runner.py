@@ -34,11 +34,16 @@ _ALLOWED_FACTS = frozenset(
 )
 _SENSITIVE_TEXT = re.compile(
     r"\b(?:sexual\s+orientation|seksuel\s+orientering|seksual\s+orientation|"
-    r"homoseksuel|biseksuel|transkønnet|transseksuel|interkønnet|"
-    r"transgender|partner_transgender|variation\s+in\s+sex\s+characteristics|"
-    r"intersex|partner_sexual_orientation|sexuality)\b",
+    r"homoseksuel|homosexual|biseksuel|bisexual|heteroseksuel|heterosexual|"
+    r"lesbisk|lesbian|queer|transkønnet|"
+    r"transseksuel|interkønnet|transgender|partner\s+transgender|"
+    r"variation\s+in\s+sex\s+characteristics|intersex|"
+    r"partner\s+sexual\s+orientation|sexuality)\b",
     re.IGNORECASE,
 )
+_GENDER_VALUES = frozenset({"man", "woman", "nonbinary", "unknown"})
+_PARTNER_GENDER_VALUES = frozenset({"man", "woman", "nonbinary"})
+_MAX_FACT_VALUE_LENGTH = 120
 
 
 def _build_binding(
@@ -143,7 +148,7 @@ def _request_patch(
         request_id,
         input_tokens=response.prompt_tokens,
         output_tokens=response.completion_tokens,
-        response=response.raw_response_sha256,
+        response_sha256=response.raw_response_sha256,
     )
     return response
 
@@ -194,6 +199,7 @@ class ProxyPatchProposal:
 def run_proxy_patch(
     *,
     row: dict[str, Any],
+    candidate_row: dict[str, Any],
     changed_facts: dict[str, dict[str, object]],
     gender: str | None,
     partner_gender: str | None,
@@ -206,7 +212,7 @@ def run_proxy_patch(
     """Return a provisional patch, never modifying the input row or dataset."""
     _validate_config(config)
     old_text, payload = _validated_input(
-        row, changed_facts, gender, partner_gender, prompt
+        row, candidate_row, changed_facts, gender, partner_gender, prompt
     )
     schema = ProsePatchResponse.provider_json_schema()
     binding = _build_binding(row, old_text, payload, prompt, schema, budget)
@@ -236,9 +242,10 @@ def _resume_checkpoint(
         recomputed = apply_patches(old_text, {"patches": parsed_evidence})
     except ProsePatchError as exc:
         raise ProxyPatchError("Provisional checkpoint evidence is invalid") from exc
-    actual_fraction = sum(len(item["old_excerpt"]) for item in parsed_evidence) / len(
-        old_text
-    )
+    actual_fraction = sum(
+        max(len(item["old_excerpt"]), len(item["new_excerpt"]))
+        for item in parsed_evidence
+    ) / len(old_text)
     if (
         proposed != recomputed
         or not isinstance(fraction, (int, float))
@@ -286,7 +293,9 @@ def _save_proposal(
     except ProsePatchError as exc:
         raise ProxyPatchError("Provider patch failed local validation") from exc
     parsed = ProsePatchResponse.model_validate_json(response.content)
-    fraction = sum(len(patch.old_excerpt) for patch in parsed.patches) / len(old_text)
+    fraction = sum(
+        max(len(patch.old_excerpt), len(patch.new_excerpt)) for patch in parsed.patches
+    ) / len(old_text)
     evidence = tuple(
         {"old_excerpt": patch.old_excerpt, "new_excerpt": patch.new_excerpt}
         for patch in parsed.patches
@@ -332,31 +341,82 @@ def _validate_config(config: GenerationConfig) -> None:
 
 def _validated_input(
     row: dict[str, Any],
+    candidate_row: dict[str, Any],
     changed_facts: dict[str, dict[str, object]],
     gender: str | None,
     partner_gender: str | None,
     prompt: str,
 ) -> tuple[str, dict[str, object]]:
-    if not prompt.strip():
-        raise ProxyPatchError("Prompt must not be empty")
+    if not prompt.strip() or len(prompt) > 8_000:
+        raise ProxyPatchError("Prompt must be non-empty and at most 8,000 characters")
+    if not isinstance(row.get("persona_id"), str) or row.get(
+        "persona_id"
+    ) != candidate_row.get("persona_id"):
+        raise ProxyPatchError("Candidate row must belong to the same persona")
     old_text = row.get("persona")
     if not isinstance(old_text, str) or not 300 <= len(old_text) <= 900:
         raise ProxyPatchError("Persona text is missing or outside the supported range")
-    if _SENSITIVE_TEXT.search(old_text):
-        raise ProxyPatchError("Persona text contains a sensitive-identity term")
+    if candidate_row.get("persona") != old_text:
+        raise ProxyPatchError("Candidate persona text must match the original")
     if not changed_facts or set(changed_facts) - _ALLOWED_FACTS:
         raise ProxyPatchError("Changed facts contain fields outside the allowlist")
     for field, pair in changed_facts.items():
+        if field not in row or field not in candidate_row:
+            raise ProxyPatchError(f"Changed fact {field!r} is missing from a row")
         if not isinstance(pair, dict) or set(pair) != {"old", "new"}:
             raise ProxyPatchError(f"Changed fact {field!r} must contain old and new")
+        if pair["old"] != row[field] or pair["new"] != candidate_row[field]:
+            raise ProxyPatchError(f"Changed fact {field!r} does not match the rows")
+        if pair["old"] == pair["new"]:
+            raise ProxyPatchError(f"Changed fact {field!r} must actually change")
         if any(not _safe_fact_value(value) for value in pair.values()):
             raise ProxyPatchError(f"Changed fact {field!r} contains an unsafe value")
+    if gender is not None and (
+        not isinstance(gender, str) or gender not in _GENDER_VALUES
+    ):
+        raise ProxyPatchError("Gender is outside the supported synthetic enum")
+    if partner_gender is not None and (
+        not isinstance(partner_gender, str)
+        or partner_gender not in _PARTNER_GENDER_VALUES
+    ):
+        raise ProxyPatchError("Partner gender is outside the supported synthetic enum")
+    outbound_text = [old_text, prompt, *_fact_text(changed_facts)]
+    if gender is not None:
+        outbound_text.append(gender)
+    if partner_gender is not None:
+        outbound_text.append(partner_gender)
+    if any(_contains_sensitive_text(value) for value in outbound_text):
+        raise ProxyPatchError("Outbound text contains a sensitive-identity term")
+    if gender == "unknown":
+        gender = None
     payload: dict[str, object] = {"persona": old_text, "changed_facts": changed_facts}
     if gender is not None:
         payload["gender"] = gender
     if partner_gender is not None:
         payload["partner_gender"] = partner_gender
     return old_text, payload
+
+
+def _fact_text(facts: dict[str, dict[str, object]]) -> list[str]:
+    return [
+        text
+        for pair in facts.values()
+        for value in pair.values()
+        for text in _value_text(value)
+    ]
+
+
+def _value_text(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    return []
+
+
+def _contains_sensitive_text(value: str) -> bool:
+    normalised = re.sub(r"[_-]+", " ", value)
+    return _SENSITIVE_TEXT.search(normalised) is not None
 
 
 def _safe_fact_value(value: object) -> bool:
@@ -367,5 +427,10 @@ def _safe_fact_value(value: object) -> bool:
     if isinstance(value, int):
         return abs(value) <= 150
     if isinstance(value, str):
-        return len(value) <= 120 and _SENSITIVE_TEXT.search(value) is None
+        return len(value) <= _MAX_FACT_VALUE_LENGTH
+    if isinstance(value, list):
+        return len(value) <= 20 and all(
+            isinstance(item, str) and len(item) <= _MAX_FACT_VALUE_LENGTH
+            for item in value
+        )
     return False
