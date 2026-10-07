@@ -30,6 +30,11 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         "USER_EDUCATION_REVIEW_BUDGET_PATH",
         tmp_path / "education-review.jsonl",
     )
+    monkeypatch.setattr(
+        proxy_budget,
+        "USER_EDUCATION_VERIFICATION_BUDGET_PATH",
+        tmp_path / "education-verification.jsonl",
+    )
 
 
 def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
@@ -123,35 +128,60 @@ def test_explicit_uncapped_purposes_use_independent_ledgers(tmp_path: Path) -> N
     )
     education = _education_review_budget(tmp_path, request_overhead_bytes=1_001_000_000)
     education_reserved = education.reserve_attempt("education-attempt-1", {"x": 1})
+    education_verify = _education_verification_budget(
+        tmp_path, request_overhead_bytes=1_001_000_000
+    )
+    education_verify_reserved = education_verify.reserve_attempt(
+        "education-verify-attempt-1", {"x": 1}
+    )
 
     assert reserved > Decimal("100")
     assert education_reserved > Decimal("100")
+    assert education_verify_reserved > Decimal("100")
     assert proxy_budget.USER_BUDGET_PATH.read_bytes() == old_bytes
     assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes() == v4_bytes
     assert not (tmp_path / "ignored-patch-verification.jsonl").exists()
     assert not (tmp_path / "ignored-education-review.jsonl").exists()
+    assert not (tmp_path / "ignored-education-verification.jsonl").exists()
     patch_lines = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
         encoding="utf-8"
     ).splitlines()
     education_lines = proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH.read_text(
         encoding="utf-8"
     ).splitlines()
+    education_verify_lines = (
+        proxy_budget.USER_EDUCATION_VERIFICATION_BUDGET_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    )
     patch_header = json.loads(patch_lines[0])
     education_header = json.loads(education_lines[0])
+    education_verify_header = json.loads(education_verify_lines[0])
     assert patch_header["uncapped"] is True
     assert patch_header["uncapped_purpose"] == "patch_verification"
     assert education_header["uncapped"] is True
     assert education_header["uncapped_purpose"] == "h90_v5"
     assert education_header["campaign"] == "campaign-education"
     assert education_header["source_hash"] == "d" * 64
+    assert education_verify_header["uncapped"] is True
+    assert education_verify_header["uncapped_purpose"] == "h90_v5_verification"
+    assert education_verify_header["campaign"] == "campaign-education-verify"
+    assert education_verify_header["source_hash"] == "0" * 64
     assert patch_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
     assert (
         education_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
     )
+    assert education_verify_header["old_ledger_sha256"] == hashlib.sha256(
+        old_bytes
+    ).hexdigest()
     patch_mode = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.stat().st_mode
     education_mode = proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH.stat().st_mode
+    education_verify_mode = (
+        proxy_budget.USER_EDUCATION_VERIFICATION_BUDGET_PATH.stat().st_mode
+    )
     assert patch_mode & 0o777 == 0o600
     assert education_mode & 0o777 == 0o600
+    assert education_verify_mode & 0o777 == 0o600
 
 
 def _education_review_budget(
@@ -167,6 +197,22 @@ def _education_review_budget(
         request_overhead_bytes=request_overhead_bytes,
         uncapped=True,
         uncapped_purpose="h90_v5",
+    )
+
+
+def _education_verification_budget(
+    tmp_path: Path, *, request_overhead_bytes: int = 4096
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-education-verification.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-education-verify",
+        source_hash="0" * 64,
+        prompt_hash="1" * 64,
+        schema_hash="2" * 64,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+        uncapped_purpose="h90_v5_verification",
     )
 
 

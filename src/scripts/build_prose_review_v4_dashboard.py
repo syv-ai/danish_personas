@@ -52,6 +52,7 @@ DEFAULT_MANIFEST = DEFAULT_OUTPUT_DIR / "manifest.json"
 DEFAULT_OUTPUT = DEFAULT_OUTPUT_DIR / "prose-review-v4-dashboard.html"
 DEFAULT_LIMIT = 50
 CAMPAIGN = "persona-prose-review-v4"
+H90_CAMPAIGN = "persona-prose-review-h90-v5"
 ID_FIELD = "persona_id"
 PERSONA_FIELD = "persona"
 _CHECKPOINT_VERSION = 1
@@ -265,6 +266,7 @@ def _checkpoint_binding(
     prompt: str,
     manifest: dict[str, JSONValue],
     payload: dict[str, object],
+    campaign: str = CAMPAIGN,
 ) -> dict[str, str | int]:
     schema = ProseReviewResponse.provider_json_schema()
     binding: dict[str, str | int] = {
@@ -275,7 +277,7 @@ def _checkpoint_binding(
         "changed_facts_sha256": sha256_text(canonical_json(changed_facts)),
         "prompt_sha256": sha256_text(prompt),
         "schema_sha256": sha256_text(canonical_json(schema)),
-        "campaign_sha256": sha256_text(CAMPAIGN),
+        "campaign_sha256": sha256_text(campaign),
         "model_sha256": sha256_text(MODEL),
         "base_url_sha256": sha256_text(BASE_URL),
         "source_pin_sha256": sha256_text(canonical_json(manifest)),
@@ -408,6 +410,7 @@ def _verify_checkpoint_decision(
     candidate: dict[str, JSONValue],
     prompt: str,
     manifest: dict[str, JSONValue],
+    campaign: str = CAMPAIGN,
 ) -> ReviewDecision:
     changed_facts = _changed_facts_mapping(original=original, candidate=candidate)
     if not changed_facts:
@@ -436,6 +439,7 @@ def _verify_checkpoint_decision(
         prompt=prompt,
         manifest=manifest,
         payload=payload,
+        campaign=campaign,
     )
     legacy_provisional = _checkpoint_uses_legacy_contextless_binding(
         checkpoint=checkpoint,
@@ -655,10 +659,16 @@ def _status_int(*, status: dict[str, JSONValue], key: str) -> int:
 
 
 def _verify_manifest_sources(
-    *, manifest: dict[str, JSONValue], paths: DashboardPaths
+    *,
+    manifest: dict[str, JSONValue],
+    paths: DashboardPaths,
+    expected_campaign: str = CAMPAIGN,
+    candidate_key: str = "candidate_v4",
 ) -> str:
-    if manifest.get("version") != 1 or manifest.get("campaign") != CAMPAIGN:
-        raise ProseReviewV4DashboardError("manifest.json is not the v4 review campaign")
+    if manifest.get("version") != 1 or manifest.get("campaign") != expected_campaign:
+        raise ProseReviewV4DashboardError(
+            "manifest.json is not the expected review campaign"
+        )
     if manifest.get("model") != MODEL or manifest.get("base_url") != BASE_URL:
         raise ProseReviewV4DashboardError("manifest.json model or base URL changed")
     if manifest.get("allowed_facts") != sorted(_ALLOWED_FACTS):
@@ -667,8 +677,16 @@ def _verify_manifest_sources(
     expected_schema = sha256_text(
         canonical_json(ProseReviewResponse.provider_json_schema())
     )
-    _verify_input_hash(inputs=inputs, key="original", path=paths.original)
-    _verify_input_hash(inputs=inputs, key="candidate_v4", path=paths.candidate)
+    original_key = "original" if candidate_key == "candidate_v4" else "original_v4"
+    _verify_input_hash(inputs=inputs, key=original_key, path=paths.original)
+    _verify_input_hash(inputs=inputs, key=candidate_key, path=paths.candidate)
+    if candidate_key == "candidate_h90_v5":
+        _verify_input_hash(
+            inputs=inputs,
+            key="h90_report",
+            path=_h90_report_path(candidate=paths.candidate),
+        )
+        _verify_h90_report_candidate(candidate=paths.candidate)
     _verify_input_hash(inputs=inputs, key="triage", path=paths.triage)
     _verify_input_hash(inputs=inputs, key="prompt", path=paths.prompt)
     _verify_input_hash(inputs=inputs, key="registry", path=paths.registry)
@@ -689,6 +707,37 @@ def _manifest_inputs(*, manifest: dict[str, JSONValue]) -> dict[str, str]:
         if isinstance(key, str) and isinstance(value, str):
             parsed[key] = value
     return parsed
+
+
+def _h90_report_path(*, candidate: Path) -> Path:
+    return candidate.with_suffix(".report.json")
+
+
+def _verify_h90_report_candidate(*, candidate: Path) -> None:
+    try:
+        document = json.loads(
+            _h90_report_path(candidate=candidate).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProseReviewV4DashboardError("H90 report JSON is not readable") from exc
+    if not isinstance(document, dict):
+        raise ProseReviewV4DashboardError("H90 report JSON must be an object")
+    for key in (
+        "candidate_sha256",
+        "candidate_v5_sha256",
+        "candidate_h90_v5_sha256",
+        "output_sha256",
+        "parquet_sha256",
+    ):
+        value = document.get(key)
+        if not isinstance(value, str):
+            continue
+        if _HASH_RE.fullmatch(value) is None:
+            raise ProseReviewV4DashboardError("H90 report candidate SHA-256 malformed")
+        if value != sha256_file(candidate):
+            raise ProseReviewV4DashboardError("H90 report candidate SHA-256 mismatch")
+        return
+    raise ProseReviewV4DashboardError("H90 report lacks candidate SHA-256")
 
 
 def _verify_input_hash(*, inputs: dict[str, str], key: str, path: Path) -> None:

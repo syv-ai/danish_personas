@@ -22,6 +22,7 @@ from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
     BASE_URL,
+    EDUCATION_VERIFICATION_PURPOSE,
     MODEL,
     PATCH_VERIFICATION_PURPOSE,
     ProxyBudget,
@@ -73,10 +74,22 @@ from scripts.build_prose_review_v4_dashboard import (
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_ROOT = Path("/tmp/danish-personas-audit")
+DEFAULT_H90_CANDIDATE = DEFAULT_ROOT / "attribute-candidate-v5-h90-PROVISIONAL.parquet"
+DEFAULT_H90_TRIAGE = DEFAULT_ROOT / "prose-triage-h90-v5.json"
+DEFAULT_H90_FIRST_PASS_PROMPT = Path("config/persona-review-h90-da.md")
+DEFAULT_H90_FIRST_PASS_DIR = DEFAULT_ROOT / "persona-review-h90-v5"
+DEFAULT_H90_FIRST_PASS_STATUS = DEFAULT_H90_FIRST_PASS_DIR / "status.json"
+DEFAULT_H90_FIRST_PASS_MANIFEST = DEFAULT_H90_FIRST_PASS_DIR / "manifest.json"
 DEFAULT_VERIFY_PROMPT = Path("config/persona-verify-da.md")
 DEFAULT_OUTPUT_DIR = DEFAULT_ROOT / "persona-verify-v4"
+DEFAULT_H90_OUTPUT_DIR = DEFAULT_ROOT / "persona-verify-h90-v5"
 DEFAULT_FIRST_PASS_MANIFEST = DEFAULT_FIRST_PASS_DIR / "manifest.json"
 CAMPAIGN = "persona-patch-verify-v4"
+H90_CAMPAIGN = "persona-patch-verify-h90-v5"
+DEFAULT_FIRST_PASS_CAMPAIGN = "persona-prose-review-v4"
+H90_FIRST_PASS_CAMPAIGN = "persona-prose-review-h90-v5"
+DEFAULT_BUDGET_PURPOSE = "v4"
+H90_BUDGET_PURPOSE = "h90_v5"
 STATUS_VERSION = 1
 MANIFEST_VERSION = 1
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -92,6 +105,7 @@ FOLLOW_STALL_SECONDS = 90.0 * 60.0
 
 JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+BudgetPurpose: t.TypeAlias = t.Literal["v4", "h90_v5"]
 
 
 @dataclass(frozen=True)
@@ -116,6 +130,7 @@ class VerifyPaths:
     first_manifest: Path
     first_checkpoint_root: Path
     output_dir: Path
+    budget_purpose: BudgetPurpose = DEFAULT_BUDGET_PURPOSE
 
 
 @dataclass(frozen=True)
@@ -203,6 +218,12 @@ VerifyFutureMap: t.TypeAlias = dict[futures.Future[VerifyAttemptResult], VerifyR
 @click.option(
     "--workers", type=click.IntRange(min=1, max=4), default=1, show_default=True
 )
+@click.option(
+    "--budget-purpose",
+    type=click.Choice([DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE]),
+    default=DEFAULT_BUDGET_PURPOSE,
+    show_default=True,
+)
 @click.option("--run", "execute", is_flag=True, default=False)
 @click.option(
     "--follow-first-pass",
@@ -223,15 +244,33 @@ def main(
     output_dir: Path,
     max_rows: int | None,
     workers: int,
+    budget_purpose: BudgetPurpose,
     execute: bool,
     follow_first_pass: bool,
 ) -> None:
-    """Run or dry-run the private v4 patch-verification campaign.
+    """Run or dry-run a private patch-verification campaign.
 
     Raises:
         click.ClickException: If source, checkpoint, resume, or proxy state is unsafe.
     """
     configure_cli_logging()
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        if original == DEFAULT_ORIGINAL:
+            original = DEFAULT_CANDIDATE
+        if candidate == DEFAULT_CANDIDATE:
+            candidate = DEFAULT_H90_CANDIDATE
+        if triage == DEFAULT_TRIAGE:
+            triage = DEFAULT_H90_TRIAGE
+        if first_prompt == DEFAULT_FIRST_PASS_PROMPT:
+            first_prompt = DEFAULT_H90_FIRST_PASS_PROMPT
+        if first_status == DEFAULT_FIRST_PASS_STATUS:
+            first_status = DEFAULT_H90_FIRST_PASS_STATUS
+        if first_manifest == DEFAULT_FIRST_PASS_MANIFEST:
+            first_manifest = DEFAULT_H90_FIRST_PASS_MANIFEST
+        if first_checkpoint_root == DEFAULT_FIRST_PASS_DIR:
+            first_checkpoint_root = DEFAULT_H90_FIRST_PASS_DIR
+        if output_dir == DEFAULT_OUTPUT_DIR:
+            output_dir = DEFAULT_H90_OUTPUT_DIR
     paths = VerifyPaths(
         original=original,
         candidate=candidate,
@@ -243,6 +282,7 @@ def main(
         first_manifest=first_manifest,
         first_checkpoint_root=first_checkpoint_root,
         output_dir=output_dir,
+        budget_purpose=budget_purpose,
     )
     try:
         if follow_first_pass:
@@ -299,6 +339,8 @@ def follow_patch_verification_campaign(
         PatchVerificationCampaignError: If follow mode cannot safely continue.
     """
     _require_worker_count(workers=workers)
+    _require_budget_purpose(budget_purpose=paths.budget_purpose)
+    _require_h90_private_inputs(paths=paths)
     if not execute:
         raise PatchVerificationCampaignError("--follow-first-pass requires --run")
     if poll_seconds <= 0 or stall_seconds <= 0:
@@ -406,6 +448,42 @@ def _require_worker_count(*, workers: int) -> None:
         raise PatchVerificationCampaignError("workers must be between one and four")
 
 
+def _require_budget_purpose(*, budget_purpose: BudgetPurpose) -> None:
+    if budget_purpose not in {DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE}:
+        raise PatchVerificationCampaignError("Unsupported budget purpose")
+
+
+def _verification_campaign(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return H90_CAMPAIGN
+    return CAMPAIGN
+
+
+def _first_pass_campaign(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return H90_FIRST_PASS_CAMPAIGN
+    return DEFAULT_FIRST_PASS_CAMPAIGN
+
+
+def _candidate_manifest_key(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return "candidate_h90_v5"
+    return "candidate_v4"
+
+
+def _require_h90_private_inputs(*, paths: VerifyPaths) -> None:
+    if paths.budget_purpose != H90_BUDGET_PURPOSE:
+        return
+    for path, label in (
+        (paths.original, "H90 original v4 parquet"),
+        (paths.candidate, "H90 candidate parquet"),
+        (paths.triage, "H90 triage JSON"),
+        (paths.candidate.with_suffix(".report.json"), "H90 report JSON"),
+    ):
+        if not path.is_file() or path.stat().st_mode & 0o077:
+            raise PatchVerificationCampaignError(f"{label} must be private (0600)")
+
+
 def _run_loaded_patch_verification_campaign(
     *,
     paths: VerifyPaths,
@@ -423,6 +501,7 @@ def _run_loaded_patch_verification_campaign(
             unchanged_consistent=loaded.unchanged_consistent,
             max_rows=max_rows,
             workers=workers,
+            campaign=_verification_campaign(paths=paths),
         )
 
     _prepare_private_output(paths.output_dir)
@@ -446,7 +525,11 @@ def _run_loaded_patch_verification_campaign(
     if not pending:
         _write_status(path=status_path, status=status)
         return _public_status_summary(
-            status=status, status_path=status_path, max_rows=max_rows, workers=workers
+            status=status,
+            status_path=status_path,
+            max_rows=max_rows,
+            workers=workers,
+            campaign=_verification_campaign(paths=paths),
         )
 
     config = _generation_config(prompt_path=paths.verify_prompt)
@@ -466,7 +549,11 @@ def _run_loaded_patch_verification_campaign(
     finally:
         _write_status(path=status_path, status=status)
     summary = _public_status_summary(
-        status=status, status_path=status_path, max_rows=max_rows, workers=workers
+        status=status,
+        status_path=status_path,
+        max_rows=max_rows,
+        workers=workers,
+        campaign=_verification_campaign(paths=paths),
     )
     if max_rows is None and summary["pending"] != 0:
         raise PatchVerificationCampaignError(
@@ -482,11 +569,12 @@ def _dry_run_summary(
     unchanged_consistent: int,
     max_rows: int | None,
     workers: int,
+    campaign: str,
 ) -> dict[str, object]:
     would_process = len(rows) if max_rows is None else min(max_rows, len(rows))
     return {
         "dry_run": True,
-        "campaign": CAMPAIGN,
+        "campaign": campaign,
         "available": len(rows),
         "would_process": would_process,
         "accepted": 0,
@@ -798,24 +886,32 @@ def _proxy_budget(
     inputs = manifest["inputs"]
     if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
         raise PatchVerificationCampaignError("Manifest schema hash is malformed")
+    uncapped_purpose = PATCH_VERIFICATION_PURPOSE
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        uncapped_purpose = EDUCATION_VERIFICATION_PURPOSE
     return ProxyBudget(
         registry_path=paths.registry,
-        campaign=CAMPAIGN,
+        campaign=_verification_campaign(paths=paths),
         source_hash=sha256_text(canonical_json(manifest)),
         prompt_hash=sha256_text(prompt),
         schema_hash=inputs["schema"],
         uncapped=True,
-        uncapped_purpose=PATCH_VERIFICATION_PURPOSE,
+        uncapped_purpose=uncapped_purpose,
     )
 
 
 def _public_status_summary(
-    *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
+    *,
+    status: dict[str, object],
+    status_path: Path,
+    max_rows: int | None,
+    workers: int,
+    campaign: str,
 ) -> dict[str, object]:
     status["pending"] = _pending_count(status=status)
     return {
         "dry_run": False,
-        "campaign": CAMPAIGN,
+        "campaign": campaign,
         "status_path": str(status_path),
         "available": status["available"],
         "accepted": status["accepted"],
@@ -851,12 +947,14 @@ def _verification_manifest(
     schema_hash = sha256_text(
         canonical_json(ProsePatchSecondReview.provider_json_schema())
     )
-    return {
+    candidate_key = _candidate_manifest_key(paths=paths)
+    original_key = "original" if candidate_key == "candidate_v4" else "original_v4"
+    manifest: dict[str, JSONValue] = {
         "version": MANIFEST_VERSION,
-        "campaign": CAMPAIGN,
+        "campaign": _verification_campaign(paths=paths),
         "inputs": {
-            "original": sha256_file(paths.original),
-            "candidate_v4": sha256_file(paths.candidate),
+            original_key: sha256_file(paths.original),
+            candidate_key: sha256_file(paths.candidate),
             "triage": sha256_file(paths.triage),
             "first_pass_manifest": sha256_file(paths.first_manifest),
             "first_pass_manifest_content": sha256_text(canonical_json(loaded.manifest)),
@@ -873,6 +971,13 @@ def _verification_manifest(
         "allowed_facts": sorted(_ALLOWED_FACTS),
         "provisional_notice": PROVISIONAL_NOTICE,
     }
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        inputs = manifest["inputs"]
+        if not isinstance(inputs, dict):
+            raise PatchVerificationCampaignError("Manifest inputs are malformed")
+        inputs["h90_report"] = sha256_file(paths.candidate.with_suffix(".report.json"))
+        manifest["budget_purpose"] = paths.budget_purpose
+    return manifest
 
 
 def _verify_processed_hashes_are_available(
@@ -935,7 +1040,10 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
     )
     _verify_status_manifest(status=first_status, manifest=first_manifest)
     first_prompt = _verify_manifest_sources(
-        manifest=first_manifest, paths=dashboard_paths
+        manifest=first_manifest,
+        paths=dashboard_paths,
+        expected_campaign=_first_pass_campaign(paths=paths),
+        candidate_key=_candidate_manifest_key(paths=paths),
     )
     hashes = _first_status_hashes(status=first_status)
     _verify_status_counts(status=first_status, hashes=hashes)
@@ -962,6 +1070,7 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
             candidate=candidate,
             prompt=first_prompt,
             manifest=first_manifest,
+            campaign=_first_pass_campaign(paths=paths),
         )
         decisions.append(decision)
         if decision.disposition != "patched":
@@ -1037,6 +1146,8 @@ def run_patch_verification_campaign(
         Machine-readable progress summary without raw persona IDs or prose.
     """
     _require_worker_count(workers=workers)
+    _require_budget_purpose(budget_purpose=paths.budget_purpose)
+    _require_h90_private_inputs(paths=paths)
     loaded = load_first_pass(paths=paths)
     return _run_loaded_patch_verification_campaign(
         paths=paths,

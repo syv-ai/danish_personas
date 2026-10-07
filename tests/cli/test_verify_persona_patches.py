@@ -62,6 +62,65 @@ def test_dry_run_revalidates_first_pass_without_provider_or_outputs(
     assert not paths.output_dir.exists()
 
 
+def test_h90_dry_run_requires_h90_first_pass_manifest(tmp_path: Path) -> None:
+    """The H90 verifier refuses v4 first-pass manifests and accepts H90 pins."""
+    h90_paths = _write_fixture(
+        tmp_path / "h90", budget_purpose=verify.H90_BUDGET_PURPOSE
+    )
+    v4_paths = _write_fixture(tmp_path / "v4")
+
+    h90_summary = verify.run_patch_verification_campaign(
+        paths=h90_paths,
+        execute=False,
+        max_rows=None,
+        workers=1,
+        verify_runner=_unused_runner,
+    )
+
+    assert h90_summary["dry_run"] is True
+    assert h90_summary["campaign"] == verify.H90_CAMPAIGN
+    assert h90_summary["available"] == 1
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="campaign"):
+        verify.run_patch_verification_campaign(
+            paths=verify.VerifyPaths(
+                original=h90_paths.original,
+                candidate=h90_paths.candidate,
+                triage=h90_paths.triage,
+                first_prompt=h90_paths.first_prompt,
+                verify_prompt=h90_paths.verify_prompt,
+                registry=h90_paths.registry,
+                first_status=v4_paths.first_status,
+                first_manifest=v4_paths.first_manifest,
+                first_checkpoint_root=v4_paths.first_checkpoint_root,
+                output_dir=h90_paths.output_dir,
+                budget_purpose=verify.H90_BUDGET_PURPOSE,
+            ),
+            execute=False,
+            max_rows=None,
+            workers=1,
+            verify_runner=_unused_runner,
+        )
+
+
+def test_h90_private_inputs_fail_closed_before_provider(tmp_path: Path) -> None:
+    """H90 verification refuses shared source files before provider access."""
+    paths = _write_fixture(tmp_path, budget_purpose=verify.H90_BUDGET_PURPOSE)
+    paths.candidate.chmod(0o644)
+
+    with pytest.raises(verify.PatchVerificationCampaignError, match="private"):
+        verify.run_patch_verification_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            verify_runner=_unused_runner,
+        )
+
+
+def _unused_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+    raise AssertionError("provider runner must not be called")
+
+
 def _verification_result(*, accepted: bool) -> ProsePatchVerificationResult:
     return ProsePatchVerificationResult(
         accepted=accepted,
@@ -81,9 +140,18 @@ class FixturePaths(verify.VerifyPaths):
     """Typed alias for synthetic verification paths."""
 
 
-def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> FixturePaths:
+def _write_fixture(
+    tmp_path: Path,
+    *,
+    include_growth_row: bool = False,
+    budget_purpose: verify.BudgetPurpose = verify.DEFAULT_BUDGET_PURPOSE,
+) -> FixturePaths:
     root = tmp_path / "private"
     first_dir = root / "persona-review-v4"
+    output_dir = root / "persona-verify-v4"
+    if budget_purpose == verify.H90_BUDGET_PURPOSE:
+        first_dir = root / "persona-review-h90-v5"
+        output_dir = root / "persona-verify-h90-v5"
     checkpoints = first_dir / "checkpoints"
     checkpoints.mkdir(parents=True, mode=0o700)
     original = root / "original.parquet"
@@ -109,7 +177,20 @@ def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> Fixtu
         candidates.append(candidate_row)
     pl.DataFrame(rows).write_parquet(original)
     pl.DataFrame(candidates).write_parquet(candidate)
+    if budget_purpose == verify.H90_BUDGET_PURPOSE:
+        candidate.with_suffix(".report.json").write_text(
+            json.dumps({"candidate_h90_v5_sha256": sha256_file(candidate)}) + "\n",
+            encoding="utf-8",
+        )
     triage.write_text('{"personas": {}, "counts": {}}\n', encoding="utf-8")
+    if budget_purpose == verify.H90_BUDGET_PURPOSE:
+        for private_path in (
+            original,
+            candidate,
+            triage,
+            candidate.with_suffix(".report.json"),
+        ):
+            private_path.chmod(0o600)
     first_prompt.write_text("Gennemgå kun tilladte ændringer.\n", encoding="utf-8")
     verify_prompt.write_text("Kontrollér patchen konservativt.\n", encoding="utf-8")
     registry.write_text('{"models": []}\n', encoding="utf-8")
@@ -124,7 +205,8 @@ def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> Fixtu
         first_status=first_dir / "status.json",
         first_manifest=first_dir / "manifest.json",
         first_checkpoint_root=first_dir,
-        output_dir=root / "persona-verify-v4",
+        output_dir=output_dir,
+        budget_purpose=budget_purpose,
     )
     manifest = _first_manifest(paths=paths)
     _write_json(paths.first_manifest, manifest)
@@ -145,19 +227,35 @@ def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> Fixtu
 
 
 def _first_manifest(*, paths: FixturePaths) -> dict[str, dashboard.JSONValue]:
+    inputs: dict[str, dashboard.JSONValue] = {
+        "triage": sha256_file(paths.triage),
+        "prompt": sha256_file(paths.first_prompt),
+        "registry": sha256_file(paths.registry),
+        "schema": sha256_text(
+            canonical_json(dashboard.ProseReviewResponse.provider_json_schema())
+        ),
+    }
+    campaign = dashboard.CAMPAIGN
+    if paths.budget_purpose == verify.H90_BUDGET_PURPOSE:
+        campaign = dashboard.H90_CAMPAIGN
+        inputs.update(
+            {
+                "original_v4": sha256_file(paths.original),
+                "candidate_h90_v5": sha256_file(paths.candidate),
+                "h90_report": sha256_file(paths.candidate.with_suffix(".report.json")),
+            }
+        )
+    else:
+        inputs.update(
+            {
+                "original": sha256_file(paths.original),
+                "candidate_v4": sha256_file(paths.candidate),
+            }
+        )
     return {
         "version": 1,
-        "campaign": dashboard.CAMPAIGN,
-        "inputs": {
-            "original": sha256_file(paths.original),
-            "candidate_v4": sha256_file(paths.candidate),
-            "triage": sha256_file(paths.triage),
-            "prompt": sha256_file(paths.first_prompt),
-            "registry": sha256_file(paths.registry),
-            "schema": sha256_text(
-                canonical_json(dashboard.ProseReviewResponse.provider_json_schema())
-            ),
-        },
+        "campaign": campaign,
+        "inputs": inputs,
         "model": dashboard.MODEL,
         "base_url": dashboard.BASE_URL,
         "allowed_facts": sorted(dashboard._ALLOWED_FACTS),
@@ -204,6 +302,7 @@ def _write_first_checkpoint(
         prompt=prompt,
         manifest=manifest,
         payload=payload,
+        campaign=str(manifest["campaign"]),
     )
     response = _first_response(disposition=disposition, changed_facts=changed_facts)
     result = validate_prose_review(
@@ -609,6 +708,73 @@ def test_run_processes_only_patched_and_resumes_as_first_pass_grows(
     assert "checkpoint" not in json.dumps(first_manifest)
     assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
     assert ((paths.output_dir / "status.json").stat().st_mode & 0o777) == 0o600
+
+
+def test_h90_run_uses_dedicated_purpose_without_v4_contamination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H90 verification writes separate status and ledger bindings only."""
+    v4_paths = _write_fixture(tmp_path / "v4")
+    h90_paths = _write_fixture(
+        tmp_path / "h90", budget_purpose=verify.H90_BUDGET_PURPOSE
+    )
+    budget_kwargs: list[dict[str, object]] = []
+    checkpoint_paths: list[Path] = []
+
+    class FakeBudget:
+        def __init__(self, **kwargs: object) -> None:
+            budget_kwargs.append(kwargs)
+
+    def fake_runner(
+        *,
+        row: dict[str, object],
+        candidate_row: dict[str, object],
+        changed_facts: dict[str, dict[str, object]],
+        proposed_text: str,
+        patches: list[dict[str, str]],
+        first_checkpoint_sha256: str,
+        prompt: str,
+        config: GenerationConfig,
+        budget: object,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+    ) -> ProsePatchVerificationResult:
+        del (
+            row,
+            candidate_row,
+            changed_facts,
+            proposed_text,
+            patches,
+            first_checkpoint_sha256,
+            prompt,
+            config,
+            budget,
+            transport,
+        )
+        checkpoint_paths.append(checkpoint_path)
+        return _verification_result(accepted=True)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+
+    summary = verify.run_patch_verification_campaign(
+        paths=h90_paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        verify_runner=fake_runner,
+    )
+
+    manifest = json.loads((h90_paths.output_dir / "manifest.json").read_text())
+    assert summary["campaign"] == verify.H90_CAMPAIGN
+    assert summary["processed"] == 1
+    assert manifest["campaign"] == verify.H90_CAMPAIGN
+    assert manifest["first_pass_campaign"] == verify.H90_FIRST_PASS_CAMPAIGN
+    assert manifest["budget_purpose"] == verify.H90_BUDGET_PURPOSE
+    assert "candidate_h90_v5" in manifest["inputs"]
+    assert "candidate_v4" not in manifest["inputs"]
+    assert budget_kwargs[-1]["uncapped_purpose"] == "h90_v5_verification"
+    assert checkpoint_paths[0].is_relative_to(h90_paths.output_dir / "checkpoints")
+    assert not v4_paths.output_dir.exists()
 
 
 def test_stale_first_pass_checkpoint_fails_before_provider(
