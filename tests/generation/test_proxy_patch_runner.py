@@ -45,9 +45,12 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     pytest.MonkeyPatch().setattr(budget, "reserve_attempt", reserve)
     result = run_proxy_patch(
         row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
         changed_facts={"marital_status": {"old": "single", "new": "married"}},
-        gender="kvinde",
-        partner_gender="mand",
+        gender="woman",
+        partner_gender="man",
         prompt="Ret kun den nødvendige lokale formulering.",
         config=_config(),
         budget=budget,
@@ -60,14 +63,17 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     assert user_payload == {
         "persona": old,
         "changed_facts": {"marital_status": {"old": "single", "new": "married"}},
-        "gender": "kvinde",
-        "partner_gender": "mand",
+        "gender": "woman",
+        "partner_gender": "man",
     }
     assert all(
         secret not in requests[0].content.decode()
         for secret in ["private-id", "private-sex", "municipality", "origin_country_da"]
     )
     assert result.persona_text == old.replace("Før ændring", "Efter ændring")
+    assert result.changed_fraction == max(
+        len("Før ændring"), len("Efter ændring")
+    ) / len(old)
     assert result.persona_text[len("Efter ændring") :] == old[len("Før ændring") :]
     assert (tmp_path / "provisional.json").stat().st_mode & 0o777 == 0o600
 
@@ -76,9 +82,12 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
 
     restarted = run_proxy_patch(
         row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
         changed_facts={"marital_status": {"old": "single", "new": "married"}},
-        gender="kvinde",
-        partner_gender="mand",
+        gender="woman",
+        partner_gender="man",
         prompt="Ret kun den nødvendige lokale formulering.",
         config=_config(),
         budget=budget,
@@ -148,14 +157,26 @@ def _config(**overrides: object) -> GenerationConfig:
 
 def _row() -> dict[str, Any]:
     return {
+        "persona_id": "private-id",
         "record_id": "private-id",
         "source_sex": "private-sex",
         "municipality": "private municipality",
         "origin_country_da": "private origin",
         "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "marital_status": "single",
         "skills_and_expertise": ["planlægning"] * 3,
         "hobbies_and_interests": ["cykling"] * 3,
     }
+
+
+def _candidate_row(
+    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    candidate = dict(_row() if row is None else row)
+    candidate.update(
+        {field: pair["new"] for field, pair in facts.items() if field in candidate}
+    )
+    return candidate
 
 
 def _transport(
@@ -177,6 +198,100 @@ def _transport(
         )
 
     return httpx.MockTransport(respond)
+
+
+def test_real_schema_fact_fields_are_the_only_candidate_delta_sent(
+    tmp_path: Path,
+) -> None:
+    """Send validated prose and allowlisted list-field deltas, never whole rows."""
+    source = _row()
+    candidate = dict(source)
+    candidate["skills_and_expertise"] = ["analyse"] * 3
+    candidate["hobbies_and_interests"] = ["vandring"] * 3
+    facts = {
+        "skills_and_expertise": {
+            "old": source["skills_and_expertise"],
+            "new": candidate["skills_and_expertise"],
+        },
+        "hobbies_and_interests": {
+            "old": source["hobbies_and_interests"],
+            "new": candidate["hobbies_and_interests"],
+        },
+    }
+    raw = json.dumps(
+        {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
+    )
+    requests: list[httpx.Request] = []
+    run_proxy_patch(
+        row=source,
+        candidate_row=candidate,
+        changed_facts=facts,
+        gender="unknown",
+        partner_gender=None,
+        prompt="Ret kun den nødvendige lokale formulering.",
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "provisional.json",
+        transport=_transport(raw, requests),
+    )
+    body = json.loads(requests[0].content)
+    payload = json.loads(body["messages"][1]["content"])
+    assert payload["changed_facts"] == facts
+    assert "gender" not in payload
+    assert "persona_id" not in requests[0].content.decode()
+    assert "candidate_row" not in requests[0].content.decode()
+
+
+@pytest.mark.parametrize(
+    ("prompt", "gender", "partner_gender"),
+    [
+        ("Use the term queer only as a private test.", "woman", None),
+        ("Ret kun ændringen.", "transkønnet", None),
+        ("Ret kun ændringen.", "woman", "transkønnet"),
+    ],
+)
+def test_rejects_sensitive_or_unsupported_outbound_text_before_network(
+    tmp_path: Path, prompt: str, gender: str, partner_gender: str | None
+) -> None:
+    """Preflight the prompt and synthetic-gender fields before transport."""
+    facts = {"marital_status": {"old": "single", "new": "married"}}
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyPatchError):
+        run_proxy_patch(
+            row=_row(),
+            candidate_row=_candidate_row(facts),
+            changed_facts=facts,
+            gender=gender,
+            partner_gender=partner_gender,
+            prompt=prompt,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "provisional.json",
+            transport=_transport("{}", requests),
+        )
+    assert not requests
+
+
+def test_rejects_candidate_row_mismatch_before_network(tmp_path: Path) -> None:
+    """Reject wrong persona bindings and fact deltas before network I/O."""
+    facts = {"marital_status": {"old": "single", "new": "married"}}
+    candidate = _candidate_row(facts)
+    candidate["persona_id"] = "another-id"
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyPatchError):
+        run_proxy_patch(
+            row=_row(),
+            candidate_row=candidate,
+            changed_facts=facts,
+            gender="woman",
+            partner_gender=None,
+            prompt="Ret kun den nødvendige lokale formulering.",
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "provisional.json",
+            transport=_transport("{}", requests),
+        )
+    assert not requests
 
 
 def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
@@ -214,15 +329,22 @@ def _run(
     Returns:
         The provisional patch proposal.
     """
+    source = _row() if row is None else row
+    facts = (
+        {"marital_status": {"old": "single", "new": "married"}}
+        if changed_facts is None
+        else changed_facts
+    )
+    candidate = dict(source)
+    candidate.update(
+        {field: pair["new"] for field, pair in facts.items() if field in source}
+    )
     return run_proxy_patch(
-        row=_row() if row is None else row,
-        changed_facts=(
-            {"marital_status": {"old": "single", "new": "married"}}
-            if changed_facts is None
-            else changed_facts
-        ),
-        gender="kvinde",
-        partner_gender="mand",
+        row=source,
+        candidate_row=candidate,
+        changed_facts=facts,
+        gender="woman",
+        partner_gender="man",
         prompt="Ret kun den nødvendige lokale formulering.",
         config=_config() if config is None else config,
         budget=_budget(tmp_path),
@@ -291,6 +413,9 @@ def test_rejects_oversized_actual_http_body_before_network(tmp_path: Path) -> No
     with pytest.raises((ProxyPatchError, ProxyBudgetError)):
         run_proxy_patch(
             row=_row(),
+            candidate_row=_candidate_row(
+                {"marital_status": {"old": "single", "new": "married"}}
+            ),
             changed_facts={"marital_status": {"old": "single", "new": "married"}},
             gender=None,
             partner_gender=None,
@@ -310,8 +435,12 @@ def test_rejects_oversized_actual_http_body_before_network(tmp_path: Path) -> No
         "seksual orientation",
         "homoseksuel",
         "biseksuel",
+        "heteroseksuel",
+        "lesbisk",
+        "queer",
         "transkønnet",
         "interkønnet",
+        "sexual_orientation",
     ],
 )
 def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> None:
@@ -320,7 +449,12 @@ def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> No
         _run(
             tmp_path,
             httpx.MockTransport(lambda _: httpx.Response(500)),
-            changed_facts={"job_title": {"old": "ordinary", "new": identity_term}},
+            changed_facts={
+                "skills_and_expertise": {
+                    "old": ["planlægning"] * 3,
+                    "new": [identity_term],
+                }
+            },
         )
 
 
@@ -334,6 +468,9 @@ def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
     with pytest.raises(ProxyPatchError, match="must be private"):
         run_proxy_patch(
             row=_row(),
+            candidate_row=_candidate_row(
+                {"marital_status": {"old": "single", "new": "married"}}
+            ),
             changed_facts={"marital_status": {"old": "single", "new": "married"}},
             gender=None,
             partner_gender=None,
