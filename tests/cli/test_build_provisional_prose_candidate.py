@@ -16,7 +16,12 @@ from danish_personas.generation.proxy_patch_verifier import run_proxy_patch_veri
 from danish_personas.io import canonical_json, sha256_text
 from scripts import build_provisional_prose_candidate as candidate
 from scripts import verify_persona_patches as verify
-from tests.cli.test_verify_persona_patches import FixturePaths, _write_fixture
+from tests.cli.test_verify_persona_patches import (
+    FixturePaths,
+    _write_first_checkpoint,
+    _write_first_status,
+    _write_fixture,
+)
 
 
 class _FakeBudget:
@@ -114,10 +119,50 @@ def test_dry_run_and_write_revalidate_accepted_checkpoint_without_provider(
     )
 
 
+def test_growing_first_pass_preserves_second_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second-pass available may lag behind newer first-pass patches."""
+    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
+    paths = _write_fixture(tmp_path, include_growth_row=True)
+    _write_second_campaign(paths=paths, accepted=True)
+    _advance_first_pass_growth(paths=paths)
+
+    dry_run = _build(
+        paths=paths,
+        output=tmp_path / "candidate.parquet",
+        publication_v1=tmp_path / "publication-v1.parquet",
+        write_output=False,
+    )
+
+    assert dry_run["accepted_patch_count"] == 1
+    assert dry_run["first_patched_count"] == 2
+    assert dry_run["second_snapshot_available"] == 1
+    assert dry_run["new_unverified_since_second_snapshot"] == 1
+    assert dry_run["pending_count"] == 1
+    assert dry_run["unresolved_count"] == 3
+    assert dry_run["unresolved_total"] == 3
+    assert dry_run["first_pass_counts"] == {
+        "needs_manual_review": 1,
+        "patched": 2,
+        "unchanged_consistent": 1,
+    }
+    assert dry_run["second_pass_counts"] == {
+        "accepted": 1,
+        "failed": 0,
+        "needs_manual_review": 1,
+        "pending": 1,
+        "rejected": 0,
+        "unchanged_consistent": 1,
+    }
+    assert "first_manifest_content_sha256" in dry_run["source_hashes"]
+    assert "second_manifest_sha256" in dry_run["source_hashes"]
+
+
 def test_duplicate_second_status_and_stale_checkpoint_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Status IDs and second-pass checkpoint digests must remain immutable."""
+    """Status IDs, counts, and checkpoint digests remain immutable."""
     monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
     duplicate_paths = _write_fixture(tmp_path / "duplicate")
     _write_second_campaign(paths=duplicate_paths, accepted=True)
@@ -129,6 +174,53 @@ def test_duplicate_second_status_and_stale_checkpoint_fail_closed(
         _build(
             paths=duplicate_paths,
             output=tmp_path / "duplicate.parquet",
+            publication_v1=tmp_path / "publication-v1.parquet",
+            write_output=False,
+        )
+
+    stale_available_paths = _write_fixture(tmp_path / "stale-available")
+    _write_second_campaign(paths=stale_available_paths, accepted=True)
+    status = json.loads(
+        stale_available_paths.output_dir.joinpath("status.json").read_text()
+    )
+    status["available"] = 2
+    status["pending"] = 1
+    _write_json(stale_available_paths.output_dir / "status.json", status)
+
+    with pytest.raises(Exception, match="available count"):
+        _build(
+            paths=stale_available_paths,
+            output=tmp_path / "stale-available.parquet",
+            publication_v1=tmp_path / "publication-v1.parquet",
+            write_output=False,
+        )
+
+    overprocessed_paths = _write_fixture(tmp_path / "overprocessed")
+    _write_second_campaign(paths=overprocessed_paths, accepted=True)
+    status = json.loads(
+        overprocessed_paths.output_dir.joinpath("status.json").read_text()
+    )
+    status["available"] = 0
+    status["pending"] = 0
+    _write_json(overprocessed_paths.output_dir / "status.json", status)
+
+    with pytest.raises(Exception, match="processed count exceeds available"):
+        _build(
+            paths=overprocessed_paths,
+            output=tmp_path / "overprocessed.parquet",
+            publication_v1=tmp_path / "publication-v1.parquet",
+            write_output=False,
+        )
+
+    missing_paths = _write_fixture(tmp_path / "missing")
+    _write_second_campaign(paths=missing_paths, accepted=True)
+    checkpoint = next(missing_paths.output_dir.glob("checkpoints/*/*.json"))
+    checkpoint.unlink()
+
+    with pytest.raises(Exception, match="checkpoint is missing"):
+        _build(
+            paths=missing_paths,
+            output=tmp_path / "missing.parquet",
             publication_v1=tmp_path / "publication-v1.parquet",
             write_output=False,
         )
@@ -166,6 +258,18 @@ def test_write_refuses_existing_candidate_and_publication_guard(tmp_path: Path) 
         _build_missing_sources(
             output=output, publication_v1=publication_v1, write_output=True
         )
+
+
+def _advance_first_pass_growth(*, paths: FixturePaths) -> None:
+    manifest = json.loads(paths.first_manifest.read_text(encoding="utf-8"))
+    _write_first_checkpoint(
+        paths=paths, manifest=manifest, persona_id="growth-row", disposition="patched"
+    )
+    _write_first_status(
+        paths=paths,
+        manifest=manifest,
+        persona_ids=("patched-row", "manual-row", "unchanged-row", "growth-row"),
+    )
 
 
 def _build(
