@@ -44,14 +44,9 @@ def test_overlay_is_deterministic_and_separate_from_input() -> None:
 def test_unsupported_ages_are_unknown_on_every_axis() -> None:
     """The estimates do not support children or adults aged 65 and over."""
     frame = pl.DataFrame(
-        {
-            "persona_id": ["young", "older", "missing"],
-            "age": [15, 65, None],
-        }
+        {"persona_id": ["young", "older", "missing"], "age": [15, 65, None]}
     )
-    overlay, provenance = generate_lgbt_overlay(
-        frame, config=LgbtOverlayConfig()
-    )
+    overlay, provenance = generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
 
     for column in overlay.columns[1:]:
         assert overlay[column].to_list() == ["unknown", "unknown", "unknown"]
@@ -83,9 +78,9 @@ def test_100k_marginals_follow_published_rates_without_subtypes() -> None:
     ) / count
     assert 0.012 < gender_identity_total < 0.016
     assert 0.008 < characteristics["yes"] / count < 0.012
-    assert 0.015 < (
-        characteristics["yes"] + characteristics["uncertain"]
-    ) / count < 0.019
+    assert (
+        0.015 < (characteristics["yes"] + characteristics["uncertain"]) / count < 0.019
+    )
     assert set(overlay["trans_or_nonbinary_identity"].unique().to_list()) <= {
         "yes",
         "no",

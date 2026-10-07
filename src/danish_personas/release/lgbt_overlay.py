@@ -32,7 +32,12 @@ class LgbtOverlayConfig:
     scenario: Literal["low", "high"] = "low"
 
     def __post_init__(self) -> None:
-        """Reject unsupported or invalid overlay settings."""
+        """Reject unsupported or invalid overlay settings.
+
+        Raises:
+            ValueError:
+                If the version, seed, or scenario is invalid.
+        """
         if self.version != OVERLAY_SCHEMA_VERSION:
             raise ValueError(f"Unsupported LGBT overlay version: {self.version}")
         if self.seed < 0:
@@ -104,10 +109,7 @@ def generate_lgbt_overlay(
         )
         sex_characteristics.append(
             _range_label(
-                characteristics_draw,
-                low=0.01,
-                high=0.017,
-                scenario=config.scenario,
+                characteristics_draw, low=0.01, high=0.017, scenario=config.scenario
             )
         )
 
@@ -171,7 +173,11 @@ def _draw(identifier: str, axis: str, config: LgbtOverlayConfig) -> float:
 def _range_label(
     draw: float, *, low: float, high: float, scenario: Literal["low", "high"]
 ) -> str:
-    """Encode lower estimates as definite and upper-only prevalence as uncertain."""
+    """Encode lower estimates as definite and upper-only as uncertain.
+
+    Returns:
+        A broad synthetic scenario label.
+    """
     if draw < low:
         return "yes"
     if scenario == "high" and draw < high:
@@ -180,6 +186,10 @@ def _range_label(
 
 
 def _counts(values: list[str]) -> dict[str, int]:
-    """Count broad labels without retaining row-level information."""
+    """Count broad labels without retaining row-level information.
+
+    Returns:
+        Counts of labels present in the input.
+    """
     labels = ("yes", "no", "uncertain", "unknown", "minority", "not_minority")
     return {label: values.count(label) for label in labels if label in values}
