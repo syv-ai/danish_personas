@@ -15,7 +15,7 @@ class ProsePatch(StrictModel):
     """One bounded replacement in existing prose."""
 
     old_excerpt: str = Field(min_length=1, max_length=120)
-    new_excerpt: str = Field(min_length=1, max_length=140)
+    new_excerpt: str = Field(min_length=1, max_length=120)
 
 
 class ProsePatchResponse(StrictModel):
@@ -205,6 +205,8 @@ def _validate_spans(old_text: str, spans: list[tuple[int, int, ProsePatch]]) -> 
     spans.sort(key=lambda span: span[0])
     if any(current[0] < previous[1] for previous, current in zip(spans, spans[1:])):
         raise ProsePatchError("Overlapping patches are not allowed")
-    changed_length = sum(end - start for start, end, _ in spans)
+    changed_length = sum(
+        max(end - start, len(patch.new_excerpt)) for start, end, patch in spans
+    )
     if changed_length > 120 or changed_length > len(old_text) * 0.2:
         raise ProsePatchError("Changed text exceeds the patch budget")
