@@ -155,7 +155,7 @@ def apply_legal_status_sampling(
             "old_legal_status_detail": detail,
             "new_legal_status_detail": new_detail,
             "current_relationship_status": relationship,
-            "reason": "missing_or_invalid_source_G_fine_detail",
+            "reason": "missing_or_invalid_generated_detail_for_source_G",
         }
 
     detail_dtype = frame.schema["legal_status_detail"]
@@ -196,15 +196,34 @@ def apply_legal_status_sampling(
 sample_legal_status_detail = apply_legal_status_sampling
 
 
-def _validate_seed(*, seed: int) -> None:
-    if not isinstance(seed, int) or seed < 0:
-        raise ValueError("Legal-status sampling seed must be a non-negative integer")
+def _counts(*, values: list[object]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        label = _count_label(value=value)
+        counts[label] = counts.get(label, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _count_label(*, value: object) -> str:
+    if value is None:
+        return "<null>"
+    if value == "":
+        return "<empty>"
+    return str(value)
 
 
 def _identifier(*, value: object) -> str:
     if value is None or not str(value):
         raise ValueError("Persona IDs must be non-empty")
     return str(value)
+
+
+def _legal_status_detail(*, value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"Malformed legal_status_detail: {value!r}")
+    return value
 
 
 def _marital_status(*, value: object, identifier: str) -> str:
@@ -216,30 +235,11 @@ def _marital_status(*, value: object, identifier: str) -> str:
 def _relationship(
     *, value: object, identifier: str
 ) -> t.Literal["partnered", "not_partnered"]:
-    if value == "partnered" or value == "not_partnered":
-        return value
+    if value == "partnered":
+        return "partnered"
+    if value == "not_partnered":
+        return "not_partnered"
     raise ValueError(f"Invalid current_relationship_status for {identifier}: {value!r}")
-
-
-def _legal_status_detail(*, value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"Malformed legal_status_detail: {value!r}")
-    return value
-
-
-def _validate_existing_detail(
-    *,
-    identifier: str,
-    detail: str,
-    relationship: t.Literal["partnered", "not_partnered"],
-) -> None:
-    if detail == "married" and relationship == "not_partnered":
-        raise ValueError(
-            "Existing legal_status_detail='married' contradicts "
-            f"current_relationship_status='not_partnered': {identifier}"
-        )
 
 
 def _synthetic_detail(
@@ -261,17 +261,19 @@ def _partnered_draw(*, identifier: str, seed: int) -> float:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") / 2**64
 
 
-def _counts(*, values: list[object]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for value in values:
-        label = _count_label(value=value)
-        counts[label] = counts.get(label, 0) + 1
-    return dict(sorted(counts.items()))
+def _validate_existing_detail(
+    *,
+    identifier: str,
+    detail: str,
+    relationship: t.Literal["partnered", "not_partnered"],
+) -> None:
+    if detail == "married" and relationship == "not_partnered":
+        raise ValueError(
+            "Existing legal_status_detail='married' contradicts "
+            f"current_relationship_status='not_partnered': {identifier}"
+        )
 
 
-def _count_label(*, value: object) -> str:
-    if value is None:
-        return "<null>"
-    if value == "":
-        return "<empty>"
-    return str(value)
+def _validate_seed(*, seed: int) -> None:
+    if not isinstance(seed, int) or seed < 0:
+        raise ValueError("Legal-status sampling seed must be a non-negative integer")
