@@ -313,7 +313,10 @@ def _first_manifest(*, paths: FixturePaths) -> dict[str, dashboard.JSONValue]:
 
 
 def _write_first_status(
-    *, paths: FixturePaths, manifest: dict[str, object], persona_ids: tuple[str, ...]
+    *,
+    paths: FixturePaths,
+    manifest: dict[str, dashboard.JSONValue],
+    persona_ids: tuple[str, ...],
 ) -> None:
     dispositions = {
         "patched-row": "patched",
@@ -321,8 +324,10 @@ def _write_first_status(
         "unchanged-row": "unchanged_consistent",
         "growth-row": "patched",
     }
-    processed = [sha256_text(persona_id) for persona_id in persona_ids]
-    status = {
+    processed: list[dashboard.JSONValue] = [
+        sha256_text(persona_id) for persona_id in persona_ids
+    ]
+    status: dict[str, dashboard.JSONValue] = {
         "version": 1,
         "manifest": manifest,
         "reviewable": len(persona_ids),
@@ -382,7 +387,7 @@ def _write_first_checkpoint(
         original_text=original_text,
         changed_facts=changed_facts,
         response=response,
-        verified_context={},
+        verified_context=None,
     )
     persona_hash = sha256_text(persona_id)
     checkpoint_path = paths.first_checkpoint_root / "checkpoints" / persona_hash[:2]
