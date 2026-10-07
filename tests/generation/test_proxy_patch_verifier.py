@@ -282,7 +282,9 @@ def test_adds_verified_null_detail_context(
     row = _row()
     row["marital_status"] = "divorced"
     row["legal_status_detail"] = "separated"
-    facts = {"legal_status_detail": {"old": "separated", "new": None}}
+    facts: dict[str, dict[str, object]] = {
+        "legal_status_detail": {"old": "separated", "new": None}
+    }
     candidate = dict(row)
     candidate["legal_status_detail"] = None
     requests: list[httpx.Request] = []
