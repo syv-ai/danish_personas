@@ -136,6 +136,13 @@ def test_provider_schema_omits_field_length_constraints() -> None:
     schema = ProsePatchResponse.provider_json_schema()
     assert schema["required"] == ["patches"]
     assert schema["additionalProperties"] is False
-    item = schema["properties"]["patches"]["items"]
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    patches = properties["patches"]
+    assert isinstance(patches, dict)
+    item = patches["items"]
+    assert isinstance(item, dict)
     assert item["required"] == ["old_excerpt", "new_excerpt"]
-    assert item["properties"]["old_excerpt"] == {"type": "string"}
+    item_properties = item["properties"]
+    assert isinstance(item_properties, dict)
+    assert item_properties["old_excerpt"] == {"type": "string"}
