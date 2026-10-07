@@ -42,17 +42,6 @@ def test_actual_field_reasons_and_marker_only_persona_are_supported() -> None:
     }
 
 
-def _persona_result(result: object, persona_id: str) -> dict[str, object]:
-    """Narrow the triage result to one typed persona record."""
-    assert isinstance(result, dict)
-    personas = result.get("personas")
-    assert isinstance(personas, dict)
-    persona = personas.get(persona_id)
-    assert isinstance(persona, dict)
-    assert all(isinstance(key, str) for key in persona)
-    return {key: value for key, value in persona.items() if isinstance(key, str)}
-
-
 def _frame(**updates: list[object]) -> pl.DataFrame:
     values: dict[str, list[object]] = {
         "persona_id": ["p1", "p2"],
@@ -64,6 +53,21 @@ def _frame(**updates: list[object]) -> pl.DataFrame:
     }
     values.update(updates)
     return pl.DataFrame(values)
+
+
+def _persona_result(result: object, persona_id: str) -> dict[str, object]:
+    """Narrow the triage result to one typed persona record.
+
+    Returns:
+        The validated persona triage record.
+    """
+    assert isinstance(result, dict)
+    personas = result.get("personas")
+    assert isinstance(personas, dict)
+    persona = personas.get(persona_id)
+    assert isinstance(persona, dict)
+    assert all(isinstance(key, str) for key in persona)
+    return {key: value for key, value in persona.items() if isinstance(key, str)}
 
 
 def test_arbitrary_extra_ledger_id_fails_closed() -> None:

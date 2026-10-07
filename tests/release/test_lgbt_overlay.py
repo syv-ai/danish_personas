@@ -74,6 +74,28 @@ def test_sex_characteristics_remain_separate() -> None:
     assert counts["variation_in_sex_characteristics"]
 
 
+def _mapping(value: object) -> dict[str, object]:
+    """Narrow provenance objects to string-keyed mappings for assertions.
+
+    Returns:
+        The validated mapping.
+    """
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _strings(value: object) -> list[str]:
+    """Narrow provenance arrays to strings for assertions.
+
+    Returns:
+        The validated list of strings.
+    """
+    assert isinstance(value, list)
+    assert all(isinstance(item, str) for item in value)
+    return [item for item in value if isinstance(item, str)]
+
+
 def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
     """Large stable samples reproduce each SHILD chart rate by sex."""
     count = 100_000
@@ -119,24 +141,14 @@ def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
     assert sources["sample_size"] == 17929
 
 
-def _mapping(value: object) -> dict[str, object]:
-    """Narrow provenance objects to string-keyed mappings for assertions."""
-    assert isinstance(value, dict)
-    assert all(isinstance(key, str) for key in value)
-    return {key: item for key, item in value.items() if isinstance(key, str)}
-
-
 def _string(value: object) -> str:
-    """Narrow a provenance value to a string for assertions."""
+    """Narrow a provenance value to a string for assertions.
+
+    Returns:
+        The validated string.
+    """
     assert isinstance(value, str)
     return value
-
-
-def _strings(value: object) -> list[str]:
-    """Narrow provenance arrays to strings for assertions."""
-    assert isinstance(value, list)
-    assert all(isinstance(item, str) for item in value)
-    return [item for item in value if isinstance(item, str)]
 
 
 def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:

@@ -30,19 +30,6 @@ _STATUS_CODES = {
 }
 
 
-class _StageReport(TypedDict):
-    """Diagnostics emitted for one source-backed repair stage."""
-
-    name: str
-    changed_persona_ids: list[object]
-    changed_count: int
-    infeasible_strata: int
-    diagnostics: NotRequired[dict[str, object]]
-    after_source_support: NotRequired[str]
-    blocker: NotRequired[str]
-    diagnostic: NotRequired[str]
-
-
 class _BlockingInfeasibility(TypedDict):
     """One repair blocker, without row-level source keys."""
 
@@ -56,6 +43,19 @@ class _DistributionDiagnostic(TypedDict):
     stage: str
     changed_count: int
     infeasible_strata: int
+
+
+class _StageReport(TypedDict):
+    """Diagnostics emitted for one source-backed repair stage."""
+
+    name: str
+    changed_persona_ids: list[object]
+    changed_count: int
+    infeasible_strata: int
+    diagnostics: NotRequired[dict[str, object]]
+    after_source_support: NotRequired[str]
+    blocker: NotRequired[str]
+    diagnostic: NotRequired[str]
 
 
 class _RepairReport(TypedDict):

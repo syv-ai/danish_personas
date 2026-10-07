@@ -190,6 +190,25 @@ class RepairError(RuntimeError):
     """Raised when a repair cannot proceed safely."""
 
 
+def _require_cost_cap(cost_cap_usd: float | None) -> float:
+    """Return a validated cost cap while enforcing the $100 hard limit.
+
+    Returns:
+        The positive, finite USD cap.
+
+    Raises:
+        RepairError: If the cap is absent, non-finite, or exceeds $100.
+    """
+    if (
+        cost_cap_usd is None
+        or not math.isfinite(cost_cap_usd)
+        or cost_cap_usd <= 0
+        or cost_cap_usd > 100
+    ):
+        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
+    return cost_cap_usd
+
+
 def _run_locked(
     *,
     rows: list[dict[str, t.Any]],
@@ -565,18 +584,6 @@ def _verify_response(
         or response.total_tokens != response.prompt_tokens + response.completion_tokens
     ):
         raise RepairError("Provider response usage exceeds the reserved token bounds")
-
-
-def _require_cost_cap(cost_cap_usd: float | None) -> float:
-    """Return a validated cost cap while enforcing the $100 hard limit."""
-    if (
-        cost_cap_usd is None
-        or not math.isfinite(cost_cap_usd)
-        or cost_cap_usd <= 0
-        or cost_cap_usd > 100
-    ):
-        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
-    return cost_cap_usd
 
 
 def _validate_inputs(
