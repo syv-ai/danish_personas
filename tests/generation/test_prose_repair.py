@@ -8,8 +8,10 @@ import os
 from hashlib import sha256
 from pathlib import Path
 
+import httpx
 import pytest
 
+from danish_personas.generation.client import OpenAIClient
 from danish_personas.generation.models import GenerationConfig, LLMResponse
 from danish_personas.generation.prose_repair import RepairError, run_prose_repair
 
@@ -119,6 +121,68 @@ def _run(
     }
     defaults.update(kwargs)
     return run_prose_repair(**defaults)  # type: ignore[arg-type]
+
+
+def test_real_client_mock_reserves_before_network(
+    tmp_path: Path, config: GenerationConfig
+) -> None:
+    """Exercise the actual HTTP client with an offline transport and hard cap."""
+    network_requests: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        network_requests.append(request.content)
+        return httpx.Response(
+            status_code=200,
+            json={
+                "id": "offline-response",
+                "model": "local-model",
+                "choices": [
+                    {"message": {"content": json.dumps({"persona": "d" * 300})}}
+                ],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 100,
+                    "total_tokens": 112,
+                },
+            },
+        )
+
+    row = {
+        "id": "private-id",
+        "age": 30,
+        "gender": "nonbinary",
+        "partner_gender": "woman",
+        "sexual_orientation": "secret-orientation-sentinel",
+        "transgender": "secret-trans-sentinel",
+    }
+    client = OpenAIClient(config=config, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RepairError, match="Cost cap"):
+            _run(
+                tmp_path / "rejected",
+                config,
+                client,
+                rows=[row],
+                changed_fields={"private-id": ["gender"]},
+                cost_cap_usd=0.000001,
+            )
+        assert network_requests == []
+        repaired = _run(
+            tmp_path / "accepted",
+            config,
+            client,
+            rows=[row],
+            changed_fields={"private-id": ["gender"]},
+            cost_cap_usd=1.0,
+        )
+    finally:
+        client.close()
+    assert repaired[0]["persona"] == "d" * 300
+    assert len(network_requests) == 1
+    assert b"secret-orientation-sentinel" not in network_requests[0]
+    assert b"secret-trans-sentinel" not in network_requests[0]
+    assert b"nonbinary" in network_requests[0]
+    assert b"woman" in network_requests[0]
 
 
 def test_schema_prose_repair_payload_allowlist_and_resume(
