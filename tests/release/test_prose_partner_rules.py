@@ -1,11 +1,17 @@
 """Offline contracts for conservative partner-gender prose proposals."""
 
 from danish_personas.release.prose_partner_rules import (
+    PartnerProseProposal,
     propose_partner_gender_prose_repair,
 )
 
 
 def _text(clause: str = "Personen har en mandlig partner.") -> str:
+    """Build a sufficiently long persona around a configurable clause.
+
+    Returns:
+        Persona text containing the supplied clause.
+    """
     return (
         f"{clause}\n"
         + "Personaen har et roligt hverdagsliv og sætter pris på gode samtaler, "
@@ -18,8 +24,19 @@ def _text(clause: str = "Personen har en mandlig partner.") -> str:
     )
 
 
-def _propose(text: str, *, old: str = "male", new: str = "nonbinary",
-             old_gender: str = "woman", new_gender: str = "woman"):
+def _propose(
+    text: str,
+    *,
+    old: str = "male",
+    new: str = "nonbinary",
+    old_gender: str = "woman",
+    new_gender: str = "woman",
+) -> PartnerProseProposal:
+    """Propose a repair using the test's default unchanged self gender.
+
+    Returns:
+        The repair proposal or fail-closed abstention.
+    """
     return propose_partner_gender_prose_repair(
         old_partner_gender=old,
         new_partner_gender=new,
@@ -30,6 +47,7 @@ def _propose(text: str, *, old: str = "male", new: str = "nonbinary",
 
 
 def test_neutralises_only_exact_standalone_clause_and_returns_evidence() -> None:
+    """Neutralise the eligible clause and retain source-change evidence."""
     text = _text()
     result = _propose(text)
 
@@ -42,13 +60,17 @@ def test_neutralises_only_exact_standalone_clause_and_returns_evidence() -> None
 
 
 def test_accepts_female_to_man_source_change() -> None:
-    result = _propose(_text("Personen har en kvindelig partner."), old="female", new="man")
+    """Allow the other binary source spelling to change to man."""
+    result = _propose(
+        _text("Personen har en kvindelig partner."), old="female", new="man"
+    )
 
     assert result.proposed_text is not None
     assert "Personen har en partner." in result.proposed_text
 
 
 def test_abstains_for_narrative_or_multiple_partner_mentions() -> None:
+    """Abstain when prose is not exactly one standalone partner clause."""
     for text in (
         _text("Personen har en mandlig partner, som hun holder af."),
         _text() + " Partneren støtter Personen.",
@@ -60,13 +82,13 @@ def test_abstains_for_narrative_or_multiple_partner_mentions() -> None:
 
 
 def test_abstains_for_pronouns_and_self_gender_changes() -> None:
+    """Abstain for pronouns or a change to the persona's own gender."""
     assert _propose(_text() + " Hun læser ofte.").abstained
-    assert _propose(
-        _text(), old_gender="woman", new_gender="nonbinary"
-    ).abstained
+    assert _propose(_text(), old_gender="woman", new_gender="nonbinary").abstained
 
 
 def test_abstains_for_source_mismatch_invalid_or_unchanged_inputs() -> None:
+    """Abstain when source values are invalid, unchanged, or mismatched."""
     assert _propose(_text("Personen har en kvindelig partner.")).abstained
     assert _propose(_text(), old="nonbinary").abstained
     assert _propose(_text(), old="male", new="man").abstained
@@ -75,6 +97,7 @@ def test_abstains_for_source_mismatch_invalid_or_unchanged_inputs() -> None:
 
 
 def test_safe_neutralisation_is_idempotent() -> None:
+    """A previously neutralised clause does not produce another edit."""
     first = _propose(_text())
     assert first.proposed_text is not None
     assert _propose(first.proposed_text).abstained
