@@ -77,6 +77,91 @@ def test_repairs_are_deterministic_idempotent_and_keep_every_record() -> None:
     assert repaired["hobbies_and_interests"][0].to_list() == ["musik", "musik", "natur"]
 
 
+def test_duplicate_lists_are_deduplicated_only_when_valid() -> None:
+    """Deduplicate in place only when three or more distinct items remain."""
+    mapping = load_job_title_mapping()
+    frame = pl.DataFrame(
+        [
+            _row(
+                "repairable",
+                skills_and_expertise=[
+                    "planlægning",
+                    "samarbejde",
+                    "Planlægning",
+                    "analyse",
+                ],
+                hobbies_and_interests=["musik", "natur", "MUSIK!", "læsning"],
+                persona="Uændret prose.",
+            ),
+            _row(
+                "undersized",
+                skills_and_expertise=["planlægning", "samarbejde", "PLANLÆGNING"],
+            ),
+        ]
+    )
+
+    repaired, report = repair_generated_attributes(frame, mapping)
+
+    assert repaired["persona_id"].to_list() == ["repairable", "undersized"]
+    assert repaired["persona"].to_list() == frame["persona"].to_list()
+    assert repaired["skills_and_expertise"][0].to_list() == [
+        "planlægning",
+        "samarbejde",
+        "analyse",
+    ]
+    assert repaired["hobbies_and_interests"][0].to_list() == [
+        "musik",
+        "natur",
+        "læsning",
+    ]
+    assert repaired["skills_and_expertise"][1].to_list() == [
+        "planlægning",
+        "samarbejde",
+        "PLANLÆGNING",
+    ]
+    assert report["changed"]["repairable"] == [
+        "hobbies_and_interests",
+        "legal_status_detail",
+        "partner_gender",
+        "skills_and_expertise",
+    ]
+    assert report["prose_regeneration"]["repairable"] == report["changed"][
+        "repairable"
+    ]
+    assert "skills_and_expertise" in report["unresolved"]["undersized"]
+    assert repaired["persona_id"].to_list() == frame["persona_id"].to_list()
+
+
+def test_missing_or_invalid_legal_detail_is_not_inferred() -> None:
+    """Ambiguous source status remains unchanged and receives an actionable reason."""
+    mapping = load_job_title_mapping()
+    frame = pl.DataFrame(
+        [
+            _row(
+                "missing",
+                marital_status="married_or_separated",
+                legal_status_detail=None,
+            ),
+            _row(
+                "invalid",
+                marital_status="married_or_separated",
+                legal_status_detail="unknown",
+            ),
+        ]
+    )
+
+    repaired, report = repair_generated_attributes(frame, mapping)
+
+    assert repaired["persona_id"].to_list() == ["missing", "invalid"]
+    assert repaired["legal_status_detail"].to_list() == [None, "unknown"]
+    for persona_id in ("missing", "invalid"):
+        reasons = report["unresolved"][persona_id]
+        assert any(
+            "marital status cannot determine married versus separated" in reason
+            for reason in reasons
+        )
+
+
 def test_allowed_title_retained_and_missing_or_unlisted_title_is_stable() -> None:
     """Choose only a reviewed title for eligible employee rows."""
     mapping = load_job_title_mapping()
