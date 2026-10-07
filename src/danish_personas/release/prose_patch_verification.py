@@ -24,10 +24,19 @@ VerificationReason: t.TypeAlias = t.Literal[
     "unsafe_field",
     "invalid_quote_evidence",
 ]
+FactEvidenceStatus: t.TypeAlias = t.Literal[
+    "corrected", "already_consistent", "not_stated", "needs_manual_review"
+]
 FactScalar: t.TypeAlias = str | int | float | bool | None
 FactValue: t.TypeAlias = FactScalar | list[FactScalar]
 
 _VERDICTS: tuple[str, ...] = ("accept", "reject", "needs_manual_review")
+_STATUSES: tuple[str, ...] = (
+    "corrected",
+    "already_consistent",
+    "not_stated",
+    "needs_manual_review",
+)
 _REASONS: tuple[str, ...] = (
     "unrelated_content_change",
     "fact_mismatch",
@@ -39,6 +48,21 @@ _REASONS: tuple[str, ...] = (
     "patch_budget",
     "unsafe_field",
     "invalid_quote_evidence",
+)
+_ALLOWED_CHANGED_FACT_FIELDS = frozenset(
+    {
+        "marital_status",
+        "legal_status_detail",
+        "education_level",
+        "labour_market_status",
+        "detailed_status",
+        "job_function",
+        "job_title",
+        "current_relationship_status",
+        "hobbies_and_interests",
+        "skills_and_expertise",
+        "age",
+    }
 )
 _FORBIDDEN_CHANGED_FACT_FIELDS = frozenset(
     {
@@ -74,21 +98,20 @@ class ProsePatchExcerpt(StrictModel):
 
 
 class ProsePatchFactEvidence(StrictModel):
-    """Exact quote evidence for one changed structured fact."""
+    """Exact quote evidence and status for one changed structured fact."""
 
     field: str = Field(min_length=1, max_length=_MAX_FIELD_LENGTH)
-    original_quote: str | None = Field(default=None, max_length=_MAX_QUOTE_LENGTH)
-    proposed_quote: str | None = Field(default=None, max_length=_MAX_QUOTE_LENGTH)
+    status: FactEvidenceStatus
+    original_quote: str | None = Field(max_length=_MAX_QUOTE_LENGTH)
+    proposed_quote: str | None = Field(max_length=_MAX_QUOTE_LENGTH)
 
 
 class ProsePatchSecondReview(StrictModel):
     """Second AI reviewer verdict, validated again before use."""
 
     verdict: VerificationVerdict
-    reasons: list[VerificationReason] = Field(default_factory=list, max_length=10)
-    fact_evidence: list[ProsePatchFactEvidence] = Field(
-        default_factory=list, max_length=_MAX_FACTS
-    )
+    reasons: list[VerificationReason] = Field(max_length=10)
+    fact_evidence: list[ProsePatchFactEvidence] = Field(max_length=_MAX_FACTS)
 
     @staticmethod
     def provider_json_schema() -> dict[str, object]:
@@ -112,10 +135,16 @@ class ProsePatchSecondReview(StrictModel):
                         "type": "object",
                         "properties": {
                             "field": {"type": "string"},
+                            "status": {"type": "string", "enum": list(_STATUSES)},
                             "original_quote": {"type": ["string", "null"]},
                             "proposed_quote": {"type": ["string", "null"]},
                         },
-                        "required": ["field", "original_quote", "proposed_quote"],
+                        "required": [
+                            "field",
+                            "status",
+                            "original_quote",
+                            "proposed_quote",
+                        ],
                         "additionalProperties": False,
                     },
                 },
@@ -180,7 +209,8 @@ def verify_prose_patch_proposal(
 
     The function is offline and performs no provider, ledger, file-system, or CLI
     activity. A returned acceptance is only provisional: a later privacy, source,
-    and semantic release gate is still required.
+    and semantic release gate is still required. Quote evidence only proves local
+    patch mechanics, never semantic or privacy safety.
 
     Args:
         original_text:
@@ -218,6 +248,7 @@ def verify_prose_patch_proposal(
         original_text=original_text,
         proposed_text=proposed_text,
         changed_facts=facts,
+        patches=parsed_patches,
         evidence=review.fact_evidence,
     )
     accepted = _accepts_review(review=review, changed_facts=facts, evidence=evidence)
@@ -246,11 +277,20 @@ def _accepts_review(
     if review.reasons:
         raise ProsePatchVerificationError("Accepted verdicts must not include reasons")
     evidence_by_field = {item.field: item for item in evidence}
-    if set(evidence_by_field) != set(changed_facts):
+    if len(evidence_by_field) != len(evidence) or set(evidence_by_field) != set(
+        changed_facts
+    ):
         raise ProsePatchVerificationError("Accepted verdict lacks per-fact evidence")
-    if any(item.proposed_quote is None for item in evidence_by_field.values()):
+    statuses = [item.status for item in evidence_by_field.values()]
+    if "needs_manual_review" in statuses:
         raise ProsePatchVerificationError(
-            "Accepted verdict lacks proposed quote evidence"
+            "Accepted verdict cannot require manual review"
+        )
+    if all(status == "not_stated" for status in statuses):
+        raise ProsePatchVerificationError("Accepted verdict leaves all facts unstated")
+    if "corrected" not in statuses:
+        raise ProsePatchVerificationError(
+            "Accepted verdict must include corrected fact evidence"
         )
     return True
 
@@ -320,6 +360,10 @@ def _validate_changed_facts(
             raise ProsePatchVerificationError("Changed facts contain a forbidden field")
         if field.endswith("_id") or field.endswith("_sidecar"):
             raise ProsePatchVerificationError("Changed facts contain a forbidden field")
+        if field not in _ALLOWED_CHANGED_FACT_FIELDS:
+            raise ProsePatchVerificationError(
+                "Changed facts contain an unsupported field"
+            )
         if not isinstance(pair, c.Mapping) or set(pair) != {"old", "new"}:
             raise ProsePatchVerificationError(
                 "Each changed fact must contain old and new"
@@ -352,6 +396,7 @@ def _validate_quote_evidence(
     original_text: str,
     proposed_text: str,
     changed_facts: dict[str, dict[str, object]],
+    patches: list[ProsePatchExcerpt],
     evidence: list[ProsePatchFactEvidence],
 ) -> tuple[ProsePatchFactEvidence, ...]:
     seen: set[str] = set()
@@ -364,16 +409,101 @@ def _validate_quote_evidence(
             raise ProsePatchVerificationError(
                 "Fact evidence references an unknown field"
             )
-        if item.original_quote is None and item.proposed_quote is None:
-            raise ProsePatchVerificationError("Fact evidence must include a quote")
-        if item.original_quote == "" or item.proposed_quote == "":
-            raise ProsePatchVerificationError("Fact evidence quote must be non-empty")
-        if item.original_quote is not None and item.original_quote not in original_text:
-            raise ProsePatchVerificationError("Original quote evidence is not exact")
-        if item.proposed_quote is not None and item.proposed_quote not in proposed_text:
-            raise ProsePatchVerificationError("Proposed quote evidence is not exact")
+        _validate_evidence_status_quotes(
+            item=item,
+            original_text=original_text,
+            proposed_text=proposed_text,
+            patches=patches,
+        )
         validated.append(item)
     return tuple(validated)
+
+
+def _validate_evidence_status_quotes(
+    *,
+    item: ProsePatchFactEvidence,
+    original_text: str,
+    proposed_text: str,
+    patches: list[ProsePatchExcerpt],
+) -> None:
+    if item.status == "not_stated":
+        if item.original_quote is not None or item.proposed_quote is not None:
+            raise ProsePatchVerificationError("Unstated facts must not include quotes")
+        return
+    if item.status == "needs_manual_review":
+        _validate_optional_exact_quotes(
+            original_quote=item.original_quote,
+            proposed_quote=item.proposed_quote,
+            original_text=original_text,
+            proposed_text=proposed_text,
+        )
+        return
+    original_quote = _required_quote(quote=item.original_quote, label="Original")
+    proposed_quote = _required_quote(quote=item.proposed_quote, label="Proposed")
+    _validate_exact_quote(quote=original_quote, text=original_text, label="Original")
+    _validate_exact_quote(quote=proposed_quote, text=proposed_text, label="Proposed")
+    if item.status == "corrected":
+        if original_quote == proposed_quote:
+            raise ProsePatchVerificationError("Corrected evidence quotes must differ")
+        if not _quotes_show_patch_vicinity(
+            original_quote=original_quote,
+            proposed_quote=proposed_quote,
+            patches=patches,
+        ):
+            raise ProsePatchVerificationError(
+                "Corrected evidence must quote the patch vicinity"
+            )
+        return
+    if original_quote != proposed_quote:
+        raise ProsePatchVerificationError(
+            "Already-consistent evidence quotes must be unchanged"
+        )
+
+
+def _validate_optional_exact_quotes(
+    *,
+    original_quote: str | None,
+    proposed_quote: str | None,
+    original_text: str,
+    proposed_text: str,
+) -> None:
+    if original_quote == "" or proposed_quote == "":
+        raise ProsePatchVerificationError("Fact evidence quote must be non-empty")
+    if original_quote is not None:
+        _validate_exact_quote(
+            quote=original_quote, text=original_text, label="Original"
+        )
+    if proposed_quote is not None:
+        _validate_exact_quote(
+            quote=proposed_quote, text=proposed_text, label="Proposed"
+        )
+
+
+def _required_quote(*, quote: str | None, label: str) -> str:
+    if quote is None:
+        raise ProsePatchVerificationError(f"{label} quote evidence is required")
+    if quote == "":
+        raise ProsePatchVerificationError("Fact evidence quote must be non-empty")
+    return quote
+
+
+def _validate_exact_quote(*, quote: str, text: str, label: str) -> None:
+    if quote not in text:
+        raise ProsePatchVerificationError(f"{label} quote evidence is not exact")
+
+
+def _quotes_show_patch_vicinity(
+    *, original_quote: str, proposed_quote: str, patches: list[ProsePatchExcerpt]
+) -> bool:
+    return any(
+        _quote_overlaps_excerpt(quote=original_quote, excerpt=patch.old_excerpt)
+        and _quote_overlaps_excerpt(quote=proposed_quote, excerpt=patch.new_excerpt)
+        for patch in patches
+    )
+
+
+def _quote_overlaps_excerpt(*, quote: str, excerpt: str) -> bool:
+    return quote in excerpt or excerpt in quote
 
 
 def _verify_reapplied_text(

@@ -29,6 +29,7 @@ def test_accepts_provisional_second_pass_with_exact_patch_evidence() -> None:
             "fact_evidence": [
                 {
                     "field": "marital_status",
+                    "status": "corrected",
                     "original_quote": "Hun er ugift",
                     "proposed_quote": "Hun er gift",
                 }
@@ -43,6 +44,45 @@ def test_accepts_provisional_second_pass_with_exact_patch_evidence() -> None:
     assert result.changed_characters == len("Hun er ugift")
     assert result.patch_count == 1
     assert result.original_checkpoint_sha256 == _SHA
+    assert result.fact_evidence[0].status == "corrected"
+
+
+def test_accepts_minimal_patch_with_unstated_changed_fact() -> None:
+    """Real proposals can correct one fact while another is absent from prose."""
+    original = _persona_text("Hun er ugift og arbejder med lokale arrangementer.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    result = verify_prose_patch_proposal(
+        original_text=original,
+        changed_facts={
+            "marital_status": {"old": "ugift", "new": "gift"},
+            "job_title": {"old": "projektkoordinator", "new": "bibliotekar"},
+        },
+        proposed_text=proposed,
+        patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+        second_review={
+            "verdict": "accept",
+            "reasons": [],
+            "fact_evidence": [
+                {
+                    "field": "marital_status",
+                    "status": "corrected",
+                    "original_quote": "Hun er ugift",
+                    "proposed_quote": "Hun er gift",
+                },
+                {
+                    "field": "job_title",
+                    "status": "not_stated",
+                    "original_quote": None,
+                    "proposed_quote": None,
+                },
+            ],
+        },
+        original_checkpoint_sha256=_SHA,
+    )
+
+    assert result.accepted is True
+    assert [item.status for item in result.fact_evidence] == ["corrected", "not_stated"]
 
 
 def _persona_text(sentence: str) -> str:
@@ -66,6 +106,22 @@ def test_provider_schema_uses_basic_proxy_compatible_keywords() -> None:
         "enum": ["accept", "reject", "needs_manual_review"],
     }
     assert "fact_mismatch" in properties["reasons"]["items"]["enum"]
+    fact_items = properties["fact_evidence"]["items"]
+    assert fact_items["required"] == [
+        "field",
+        "status",
+        "original_quote",
+        "proposed_quote",
+    ]
+    assert fact_items["properties"]["status"] == {
+        "type": "string",
+        "enum": [
+            "corrected",
+            "already_consistent",
+            "not_stated",
+            "needs_manual_review",
+        ],
+    }
 
 
 def test_rejection_verdict_is_bounded_and_not_accepted() -> None:
@@ -84,6 +140,7 @@ def test_rejection_verdict_is_bounded_and_not_accepted() -> None:
             "fact_evidence": [
                 {
                     "field": "marital_status",
+                    "status": "corrected",
                     "original_quote": "Hun er ugift",
                     "proposed_quote": "Hun er gift",
                 }
@@ -113,6 +170,153 @@ def test_rejects_accept_verdict_without_per_fact_evidence() -> None:
         )
 
 
+def test_rejects_accept_verdict_with_manual_fact_evidence() -> None:
+    """Accepted verdicts cannot include a manual-review fact status."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    with pytest.raises(ProsePatchVerificationError, match="manual review"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={"marital_status": {"old": "ugift", "new": "gift"}},
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "accept",
+                "reasons": [],
+                "fact_evidence": [
+                    {
+                        "field": "marital_status",
+                        "status": "needs_manual_review",
+                        "original_quote": None,
+                        "proposed_quote": None,
+                    }
+                ],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
+def test_rejects_accept_verdict_when_all_facts_are_unstated() -> None:
+    """Unstated facts are provisional notes, not acceptance evidence alone."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    with pytest.raises(ProsePatchVerificationError, match="all facts unstated"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={
+                "marital_status": {"old": "ugift", "new": "gift"},
+                "job_title": {"old": "projektkoordinator", "new": "bibliotekar"},
+            },
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "accept",
+                "reasons": [],
+                "fact_evidence": [
+                    {
+                        "field": "marital_status",
+                        "status": "not_stated",
+                        "original_quote": None,
+                        "proposed_quote": None,
+                    },
+                    {
+                        "field": "job_title",
+                        "status": "not_stated",
+                        "original_quote": None,
+                        "proposed_quote": None,
+                    },
+                ],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
+def test_rejects_wrong_status_for_changed_patch_quotes() -> None:
+    """Already-consistent evidence must not cover changed patch text."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    with pytest.raises(ProsePatchVerificationError, match="must be unchanged"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={"marital_status": {"old": "ugift", "new": "gift"}},
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "accept",
+                "reasons": [],
+                "fact_evidence": [
+                    {
+                        "field": "marital_status",
+                        "status": "already_consistent",
+                        "original_quote": "Hun er ugift",
+                        "proposed_quote": "Hun er gift",
+                    }
+                ],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
+def test_rejects_non_exact_corrected_quote() -> None:
+    """Corrected quotes must be exact snippets from each prose version."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    with pytest.raises(ProsePatchVerificationError, match="Proposed quote"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={"marital_status": {"old": "ugift", "new": "gift"}},
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "accept",
+                "reasons": [],
+                "fact_evidence": [
+                    {
+                        "field": "marital_status",
+                        "status": "corrected",
+                        "original_quote": "Hun er ugift",
+                        "proposed_quote": "Hun er skilt",
+                    }
+                ],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["status", "original_quote", "proposed_quote"]
+)
+def test_rejects_missing_fact_evidence_fields(missing_field: str) -> None:
+    """The strict review schema requires explicit per-fact evidence fields."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+    fact_evidence = {
+        "field": "marital_status",
+        "status": "corrected",
+        "original_quote": "Hun er ugift",
+        "proposed_quote": "Hun er gift",
+    }
+    fact_evidence.pop(missing_field)
+
+    with pytest.raises(ProsePatchVerificationError, match="Invalid second-pass"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={"marital_status": {"old": "ugift", "new": "gift"}},
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "accept",
+                "reasons": [],
+                "fact_evidence": [fact_evidence],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
 def test_rejects_forged_proposed_text_with_extra_edits() -> None:
     """The proposed prose must equal reapplying only the exact patches."""
     original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
@@ -130,6 +334,7 @@ def test_rejects_forged_proposed_text_with_extra_edits() -> None:
                 "fact_evidence": [
                     {
                         "field": "marital_status",
+                        "status": "corrected",
                         "original_quote": "Hun er ugift",
                         "proposed_quote": "Hun er gift",
                     }
@@ -156,6 +361,26 @@ def test_rejects_sidecar_and_forbidden_identity_fact_fields(field: str) -> None:
             second_review={
                 "verdict": "reject",
                 "reasons": ["privacy"],
+                "fact_evidence": [],
+            },
+            original_checkpoint_sha256=_SHA,
+        )
+
+
+def test_rejects_unsupported_fact_fields() -> None:
+    """Only the reviewed prose-patch fact allowlist can be verified."""
+    original = _persona_text("Hun er ugift og bruger aftenerne på at læse.")
+    proposed = original.replace("Hun er ugift", "Hun er gift")
+
+    with pytest.raises(ProsePatchVerificationError, match="unsupported field"):
+        verify_prose_patch_proposal(
+            original_text=original,
+            changed_facts={"religion": {"old": "old", "new": "new"}},
+            proposed_text=proposed,
+            patches=[{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
+            second_review={
+                "verdict": "reject",
+                "reasons": ["unsupported_claim"],
                 "fact_evidence": [],
             },
             original_checkpoint_sha256=_SHA,
