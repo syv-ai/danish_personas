@@ -257,7 +257,7 @@ def _existing_partner_gender(value: object) -> str | None:
     if value is None:
         return None
     mapping = {"male": "man", "female": "woman", "man": "man", "woman": "woman"}
-    if value not in mapping:
+    if not isinstance(value, str) or value not in mapping:
         raise ValueError("Existing partner gender must be male, female, or null")
     return mapping[value]
 
