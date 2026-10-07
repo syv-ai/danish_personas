@@ -102,6 +102,23 @@ def _digest(value: object) -> str:
     return sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _append_ledger_line(path: Path, value: object) -> None:
+    """Append and durably sync one ledger record before any request proceeds."""
+    serialised = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    data = (serialised + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        written = os.write(descriptor, data)
+        if written != len(data):
+            raise OSError("Incomplete repair ledger append")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (
@@ -310,8 +327,8 @@ def _run_locked(
         cost_cap_usd=cost_cap_usd,
     )
     binding_hash = _digest(binding)
-    ledger_path = output_dir / "ledger.json"
-    ledger, reserved = _load_ledger(
+    ledger_path = output_dir / "ledger.jsonl"
+    reserved = _load_ledger(
         path=ledger_path,
         binding=binding,
         identifiers=identifiers,
@@ -330,14 +347,12 @@ def _run_locked(
                 schema=schema,
                 binding_hash=binding_hash,
                 output_dir=output_dir,
-                ledger=ledger,
                 ledger_path=ledger_path,
                 reserved=reserved,
                 cost_cap_usd=cost_cap_usd,
                 client=client,
             )
         )
-        reserved[0] = sum(item["usd"] for item in ledger["reservations"])
     return completed
 
 
@@ -370,6 +385,14 @@ def _make_binding(
         "sidecar_sha256": sidecar_sha256,
         "max_tokens": config.max_tokens,
         "cost_cap_usd": cost_cap_usd,
+        "base_url": config.base_url,
+        "api_key_env": config.api_key_env,
+        "maximum_http_attempts": config.maximum_http_attempts,
+        "usd_per_eur": USD_PER_EUR,
+        "input_eur_per_million": INPUT_EUR_PER_MILLION,
+        "output_eur_per_million": OUTPUT_EUR_PER_MILLION,
+        "enable_thinking": config.enable_thinking,
+        "reasoning_effort": config.reasoning_effort,
     }
 
 
@@ -379,47 +402,69 @@ def _load_ledger(
     binding: dict[str, object],
     identifiers: list[str],
     cost_cap_usd: float | None,
-) -> tuple[dict[str, t.Any], list[float]]:
+) -> list[float]:
     """Load and fail closed on inconsistent durable request reservations.
 
     Returns:
-        The validated ledger and its existing reserved cost.
+        The cumulative reserved USD cost in a mutable single-item list.
 
     Raises:
         RepairError: If the ledger is malformed, stale, or over budget.
     """
-    if path.exists():
-        try:
-            ledger = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as error:
-            raise RepairError("Stale or malformed repair ledger") from error
-        if not isinstance(ledger, dict) or ledger.get("binding") != binding:
-            raise RepairError("Stale or malformed repair ledger")
-        reservations = ledger.get("reservations")
-        if not isinstance(reservations, list):
-            raise RepairError("Stale or malformed repair ledger")
-    else:
-        ledger = {"binding": binding, "reservations": []}
-        _atomic_json(path, ledger)
-        reservations = ledger["reservations"]
+    identifiers_set = set(identifiers)
     try:
-        costs = [
-            float(item["usd"])
-            for item in reservations
-            if isinstance(item, dict)
-            and item.get("id") in identifiers
-            and isinstance(item.get("usd"), (int, float))
-            and math.isfinite(float(item["usd"]))
-            and float(item["usd"]) > 0
-        ]
-    except (TypeError, ValueError, OverflowError) as error:
-        raise RepairError("Malformed repair ledger reservation") from error
-    if len(costs) != len(reservations):
-        raise RepairError("Malformed repair ledger reservation")
-    reserved = sum(costs)
-    if not math.isfinite(reserved) or reserved > cost_cap_usd:
-        raise RepairError("Existing reservations exceed the configured cap")
-    return ledger, [reserved]
+        if not path.exists():
+            _append_ledger_line(
+                path,
+                {
+                    "type": "header",
+                    "binding": binding,
+                    "binding_sha256": _digest(binding),
+                },
+            )
+        lines = path.read_bytes().splitlines(keepends=True)
+        if not lines or any(not line.endswith(b"\n") for line in lines):
+            raise RepairError("Stale or malformed repair ledger")
+        header = json.loads(lines[0])
+        if (
+            not isinstance(header, dict)
+            or set(header) != {"type", "binding", "binding_sha256"}
+            or header.get("type") != "header"
+            or header.get("binding") != binding
+            or header.get("binding_sha256") != _digest(binding)
+        ):
+            raise RepairError("Stale or malformed repair ledger")
+        reserved_total = 0.0
+        for line in lines[1:]:
+            record = json.loads(line)
+            if (
+                not isinstance(record, dict)
+                or set(record) != {"type", "id", "usd"}
+                or record.get("type") != "reservation"
+                or not isinstance(record.get("id"), str)
+                or record["id"] not in identifiers_set
+                or isinstance(record.get("usd"), bool)
+                or not isinstance(record.get("usd"), (int, float))
+            ):
+                raise RepairError("Malformed repair ledger reservation")
+            usd = float(record["usd"])
+            if not math.isfinite(usd) or usd <= 0:
+                raise RepairError("Malformed repair ledger reservation")
+            reserved_total += usd
+            if not math.isfinite(reserved_total) or reserved_total > cost_cap_usd:
+                raise RepairError("Existing reservations exceed the configured cap")
+    except RepairError:
+        raise
+    except (
+        json.JSONDecodeError,
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        OverflowError,
+    ) as error:
+        raise RepairError("Stale or malformed repair ledger") from error
+    os.chmod(path, 0o600)
+    return [reserved_total]
 
 
 def _repair_row(
@@ -433,7 +478,6 @@ def _repair_row(
     schema: dict[str, object],
     binding_hash: str,
     output_dir: Path,
-    ledger: dict[str, t.Any],
     ledger_path: Path,
     reserved: list[float],
     cost_cap_usd: float | None,
@@ -459,8 +503,10 @@ def _repair_row(
     def reserve(_attempt_number: int) -> None:
         if reserved[0] + per_attempt_usd > cost_cap_usd:
             raise RepairError("Cost cap would be exceeded before network request")
-        ledger["reservations"].append({"id": identifier, "usd": per_attempt_usd})
-        _atomic_json(ledger_path, ledger)
+        _append_ledger_line(
+            ledger_path,
+            {"type": "reservation", "id": identifier, "usd": per_attempt_usd},
+        )
         reserved[0] += per_attempt_usd
 
     response = client.complete(
