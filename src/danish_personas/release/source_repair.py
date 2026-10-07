@@ -79,6 +79,8 @@ def _education_pool_code() -> pl.Expr:
         .then(pl.lit("H20-H35"))
         .when(code_number.is_between(40, 80))
         .then(pl.lit("H40-H80"))
+        .when(code_number == 90)
+        .then(pl.lit("H90"))
         .otherwise(pl.lit(None, dtype=pl.String))
     )
 
@@ -186,10 +188,9 @@ def assess_release_support(
                 results[name] = _missing_column_result(frame=frame, missing=missing)
                 continue
             source = source.with_columns(
-                pl.col("age_key")
-                .cast(pl.String)
-                .str.replace(r"\+$", "")
-                .cast(pl.Int16, strict=False)
+                pl.when(pl.col("age_key") == "71-")
+                .then(pl.lit(71, dtype=pl.Int16))
+                .otherwise(pl.col("age_key").cast(pl.Int16, strict=False))
                 .alias("_age_key")
             )
             source_keys = [

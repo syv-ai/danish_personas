@@ -93,8 +93,8 @@ def test_assessment_maps_pooled_release_values_to_source_support(
     )
     ras202 = pl.DataFrame(
         {
-            "age_band": ["30-34", "71+"],
-            "age_key": ["30", "71"],
+            "age_band": ["30-34", "67+"],
+            "age_key": ["30", "71-"],
             "sex": ["female", "female"],
             "labour_market_status": ["employed", "employed"],
             "detailed_status_code": ["A", "A"],
@@ -109,7 +109,7 @@ def test_assessment_maps_pooled_release_values_to_source_support(
             ras209.head(1).with_columns(
                 pl.lit("25-29").alias("age_band"),
                 pl.lit("H20").alias("education_source_code"),
-                pl.lit(0).alias("count"),
+                pl.lit(0, dtype=pl.Int64).alias("count"),
             ),
             ras209.head(1).with_columns(
                 pl.lit("20-24").alias("age_band"), pl.lit(True).alias("suppressed")
@@ -140,10 +140,10 @@ def test_assessment_maps_pooled_release_values_to_source_support(
         }
     )
     result = assess_release_support(frame=frame, bundle_dir=tmp_path)
-    assert result["folk1a"]["supported_rows"] == 1
-    assert result["folk1a"]["unsupported_rows"] == 7
-    assert result["ras209"]["supported_rows"] == 3
-    assert result["ras209"]["unsupported_rows"] == 5
-    assert result["ras202"]["supported_rows"] == 3
-    assert result["ras202"]["unsupported_rows"] == 5
+    assert result["folk1a"]["supported_rows"] == 4
+    assert result["folk1a"]["unsupported_rows"] == 4
+    assert result["ras209"]["supported_rows"] == 5
+    assert result["ras209"]["unsupported_rows"] == 3
+    assert result["ras202"]["supported_rows"] == 6
+    assert result["ras202"]["unsupported_rows"] == 2
     assert all(source["missing_keys"] == [] for source in result.values())
