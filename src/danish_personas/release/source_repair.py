@@ -11,84 +11,6 @@ from pathlib import Path
 import polars as pl
 
 
-def _missing_column_result(
-    *, frame: pl.DataFrame, missing: set[str]
-) -> dict[str, object]:
-    """Build a privacy-safe result when the release schema is incomplete.
-
-    Returns:
-        An assessment result without row-level keys.
-    """
-    return {
-        "supported_rows": 0,
-        "unsupported_rows": frame.height,
-        "missing_columns": sorted(missing),
-        "missing_keys": [],
-    }
-
-
-def _ras209_age_band(age: pl.Expr) -> pl.Expr:
-    """Map exact release ages to the original RAS209 age subbands.
-
-    Returns:
-        An expression yielding the source age subband.
-    """
-    return (
-        pl.when(age < 20)
-        .then(pl.lit("16-19"))
-        .when(age < 25)
-        .then(pl.lit("20-24"))
-        .when(age < 30)
-        .then(pl.lit("25-29"))
-        .when(age < 35)
-        .then(pl.lit("30-34"))
-        .when(age < 40)
-        .then(pl.lit("35-39"))
-        .when(age < 45)
-        .then(pl.lit("40-44"))
-        .when(age < 50)
-        .then(pl.lit("45-49"))
-        .when(age < 55)
-        .then(pl.lit("50-54"))
-        .when(age < 60)
-        .then(pl.lit("55-59"))
-        .when(age < 65)
-        .then(pl.lit("60-64"))
-        .when(age < 67)
-        .then(pl.lit("65-66"))
-        .otherwise(pl.lit("67-"))
-    )
-
-
-def _education_pool_code() -> pl.Expr:
-    """Convert an unpooled RAS209 H-code to the release pooling label.
-
-    Returns:
-        An expression yielding the pooled release education code.
-    """
-    code_number = (
-        pl.col("education_source_code")
-        .cast(pl.String)
-        .str.extract(r"^H(\d+)$", 1)
-        .cast(pl.Int16, strict=False)
-    )
-    return (
-        pl.when(code_number == 10)
-        .then(pl.lit("H10"))
-        .when(code_number.is_between(20, 35))
-        .then(pl.lit("H20-H35"))
-        .when(code_number.is_between(40, 80))
-        .then(pl.lit("H40-H80"))
-        .when(code_number == 90)
-        .then(pl.lit("H90"))
-        .otherwise(pl.lit(None, dtype=pl.String))
-    )
-
-
-class InfeasibleRepairError(ValueError):
-    """Raised when release strata cannot be reconciled to disclosed source support."""
-
-
 def assess_release_support(
     *, frame: pl.DataFrame, bundle_dir: Path
 ) -> dict[str, object]:
@@ -231,6 +153,86 @@ def assess_release_support(
     return results
 
 
+def _education_pool_code() -> pl.Expr:
+    """Convert an unpooled RAS209 H-code to the release pooling label.
+
+    Returns:
+        An expression yielding the pooled release education code.
+    """
+    code_number = (
+        pl.col("education_source_code")
+        .cast(pl.String)
+        .str.extract(r"^H(\d+)$", 1)
+        .cast(pl.Int16, strict=False)
+    )
+    return (
+        pl.when(code_number == 10)
+        .then(pl.lit("H10"))
+        .when(code_number.is_between(20, 35))
+        .then(pl.lit("H20-H35"))
+        .when(code_number.is_between(40, 80))
+        .then(pl.lit("H40-H80"))
+        .when(code_number == 90)
+        .then(pl.lit("H90"))
+        .otherwise(pl.lit(None, dtype=pl.String))
+    )
+
+
+def _missing_column_result(
+    *, frame: pl.DataFrame, missing: set[str]
+) -> dict[str, object]:
+    """Build a privacy-safe result when the release schema is incomplete.
+
+    Returns:
+        An assessment result without row-level keys.
+    """
+    return {
+        "supported_rows": 0,
+        "unsupported_rows": frame.height,
+        "missing_columns": sorted(missing),
+        "missing_keys": [],
+    }
+
+
+def _ras209_age_band(age: pl.Expr) -> pl.Expr:
+    """Map exact release ages to the original RAS209 age subbands.
+
+    Returns:
+        An expression yielding the source age subband.
+    """
+    return (
+        pl.when(age < 20)
+        .then(pl.lit("16-19"))
+        .when(age < 25)
+        .then(pl.lit("20-24"))
+        .when(age < 30)
+        .then(pl.lit("25-29"))
+        .when(age < 35)
+        .then(pl.lit("30-34"))
+        .when(age < 40)
+        .then(pl.lit("35-39"))
+        .when(age < 45)
+        .then(pl.lit("40-44"))
+        .when(age < 50)
+        .then(pl.lit("45-49"))
+        .when(age < 55)
+        .then(pl.lit("50-54"))
+        .when(age < 60)
+        .then(pl.lit("55-59"))
+        .when(age < 65)
+        .then(pl.lit("60-64"))
+        .when(age < 67)
+        .then(pl.lit("65-66"))
+        .otherwise(pl.lit("67-"))
+    )
+
+
+def _require_columns(frame: pl.DataFrame, columns: list[str]) -> None:
+    missing = set(columns).difference(frame.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+
 def repair_from_source(
     *,
     frame: pl.DataFrame,
@@ -327,14 +329,40 @@ def repair_from_source(
     }
 
 
-def _require_columns(frame: pl.DataFrame, columns: list[str]) -> None:
-    missing = set(columns).difference(frame.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
+class InfeasibleRepairError(ValueError):
+    """Raised when release strata cannot be reconciled to disclosed source support."""
 
 
-def _normalise_group(key: object) -> tuple[object, ...]:
-    return key if isinstance(key, tuple) else (key,)
+def _apply_updates(
+    *,
+    frame: pl.DataFrame,
+    categories: list[str],
+    updates: dict[int, tuple[object, ...]],
+) -> pl.DataFrame:
+    if not updates:
+        return frame.clone()
+    update_frame = pl.DataFrame(
+        {
+            "_repair_row": list(updates),
+            **{
+                column: [updates[row][index] for row in updates]
+                for index, column in enumerate(categories)
+            },
+        }
+    )
+    indexed = frame.with_row_index("_repair_row").join(
+        update_frame,
+        on="_repair_row",
+        how="left",
+        suffix="_replacement",
+        maintain_order="left",
+    )
+    return indexed.with_columns(
+        [
+            pl.coalesce(pl.col(f"{column}_replacement"), pl.col(column)).alias(column)
+            for column in categories
+        ]
+    ).drop(["_repair_row", *[f"{column}_replacement" for column in categories]])
 
 
 def _apportion(
@@ -369,33 +397,5 @@ def _group_expression(strata: list[str], key: tuple[object, ...]) -> pl.Expr:
     return expression
 
 
-def _apply_updates(
-    *,
-    frame: pl.DataFrame,
-    categories: list[str],
-    updates: dict[int, tuple[object, ...]],
-) -> pl.DataFrame:
-    if not updates:
-        return frame.clone()
-    update_frame = pl.DataFrame(
-        {
-            "_repair_row": list(updates),
-            **{
-                column: [updates[row][index] for row in updates]
-                for index, column in enumerate(categories)
-            },
-        }
-    )
-    indexed = frame.with_row_index("_repair_row").join(
-        update_frame,
-        on="_repair_row",
-        how="left",
-        suffix="_replacement",
-        maintain_order="left",
-    )
-    return indexed.with_columns(
-        [
-            pl.coalesce(pl.col(f"{column}_replacement"), pl.col(column)).alias(column)
-            for column in categories
-        ]
-    ).drop(["_repair_row", *[f"{column}_replacement" for column in categories]])
+def _normalise_group(key: object) -> tuple[object, ...]:
+    return key if isinstance(key, tuple) else (key,)

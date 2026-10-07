@@ -136,32 +136,8 @@ def _collect_diffs(
     return rows, diffs
 
 
-def _validate_ledger(
-    changed_reasons: Mapping[str, Sequence[str]], diff_ids: set[str]
-) -> set[str]:
-    for persona_id, tags in changed_reasons.items():
-        if (
-            isinstance(tags, (str, bytes))
-            or not tags
-            or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
-        ):
-            raise ValueError(
-                f"Changed reasons must be non-empty string sequences: {persona_id}"
-            )
-    marker_only_ids = {
-        persona_id
-        for persona_id, tags in changed_reasons.items()
-        if persona_id not in diff_ids
-        and any(tag in _UNSAFE_REASON_TAGS for tag in tags)
-    }
-    extra_ids = set(changed_reasons) - diff_ids - marker_only_ids
-    missing_ids = diff_ids - set(changed_reasons)
-    if missing_ids or extra_ids:
-        raise ValueError(
-            "Changed-reason ledger does not match frame diff "
-            f"(missing={sorted(missing_ids)}, extra={sorted(extra_ids)})"
-        )
-    return marker_only_ids
+def _is_prose_field(field: str) -> bool:
+    return field in _PROSE_FIELDS or "persona_text" in field or "prose" in field
 
 
 def _is_safe_change(
@@ -206,10 +182,6 @@ def _field_is_equivalent(
     return False
 
 
-def _is_prose_field(field: str) -> bool:
-    return field in _PROSE_FIELDS or "persona_text" in field or "prose" in field
-
-
 def _lexical_identity(value: str) -> str:
     """Normalise case and trailing punctuation without altering word identity.
 
@@ -228,3 +200,31 @@ def _normalised_list(value: object) -> set[str] | None:
     if not normalised or "" in normalised:
         return None
     return normalised
+
+
+def _validate_ledger(
+    changed_reasons: Mapping[str, Sequence[str]], diff_ids: set[str]
+) -> set[str]:
+    for persona_id, tags in changed_reasons.items():
+        if (
+            isinstance(tags, (str, bytes))
+            or not tags
+            or any(not isinstance(tag, str) or not tag.strip() for tag in tags)
+        ):
+            raise ValueError(
+                f"Changed reasons must be non-empty string sequences: {persona_id}"
+            )
+    marker_only_ids = {
+        persona_id
+        for persona_id, tags in changed_reasons.items()
+        if persona_id not in diff_ids
+        and any(tag in _UNSAFE_REASON_TAGS for tag in tags)
+    }
+    extra_ids = set(changed_reasons) - diff_ids - marker_only_ids
+    missing_ids = diff_ids - set(changed_reasons)
+    if missing_ids or extra_ids:
+        raise ValueError(
+            "Changed-reason ledger does not match frame diff "
+            f"(missing={sorted(missing_ids)}, extra={sorted(extra_ids)})"
+        )
+    return marker_only_ids

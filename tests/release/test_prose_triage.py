@@ -6,19 +6,6 @@ import pytest
 from danish_personas.release.prose_triage import triage_prose_changes
 
 
-def _frame(**updates: list[object]) -> pl.DataFrame:
-    values: dict[str, list[object]] = {
-        "persona_id": ["p1", "p2"],
-        "origin_country_code": ["DK", "SE"],
-        "job_title": ["sygeplejerske", "lærer"],
-        "hobbies_and_interests": [["læsning", "musik"], ["have", "løb"]],
-        "marital_status": ["single", "married"],
-        "persona_text": ["Tekst 1", "Tekst 2"],
-    }
-    values.update(updates)
-    return pl.DataFrame(values)
-
-
 def test_actual_field_reasons_and_marker_only_persona_are_supported() -> None:
     """Accept actual changed-field reasons and recognised marker-only IDs."""
     original = _frame()
@@ -55,6 +42,35 @@ def test_actual_field_reasons_and_marker_only_persona_are_supported() -> None:
     }
 
 
+def _frame(**updates: list[object]) -> pl.DataFrame:
+    values: dict[str, list[object]] = {
+        "persona_id": ["p1", "p2"],
+        "origin_country_code": ["DK", "SE"],
+        "job_title": ["sygeplejerske", "lærer"],
+        "hobbies_and_interests": [["læsning", "musik"], ["have", "løb"]],
+        "marital_status": ["single", "married"],
+        "persona_text": ["Tekst 1", "Tekst 2"],
+    }
+    values.update(updates)
+    return pl.DataFrame(values)
+
+
+def test_arbitrary_extra_ledger_id_fails_closed() -> None:
+    """Reject extra ledger IDs without a recognised unsafe marker."""
+    with pytest.raises(ValueError, match="does not match frame diff"):
+        triage_prose_changes(_frame(), _frame(), {"p1": ["unrecognised_marker"]})
+
+
+def test_changed_persona_text_fails_closed() -> None:
+    """Reject any attempt to modify the original persona prose."""
+    with pytest.raises(ValueError, match="Persona prose must not change"):
+        triage_prose_changes(
+            _frame(),
+            _frame(persona_text=["Revideret tekst", "Tekst 2"]),
+            {"p1": ["persona_text"]},
+        )
+
+
 def test_lexical_identity_preserves_internal_punctuation_and_words() -> None:
     """Preserve internal punctuation and distinct lexical identities."""
     original = _frame()
@@ -80,19 +96,3 @@ def test_reason_id_mismatch_fails_closed() -> None:
             _frame(job_title=["Sygeplejerske", "lærer"]),
             {"p2": ["job_title"]},
         )
-
-
-def test_changed_persona_text_fails_closed() -> None:
-    """Reject any attempt to modify the original persona prose."""
-    with pytest.raises(ValueError, match="Persona prose must not change"):
-        triage_prose_changes(
-            _frame(),
-            _frame(persona_text=["Revideret tekst", "Tekst 2"]),
-            {"p1": ["persona_text"]},
-        )
-
-
-def test_arbitrary_extra_ledger_id_fails_closed() -> None:
-    """Reject extra ledger IDs without a recognised unsafe marker."""
-    with pytest.raises(ValueError, match="does not match frame diff"):
-        triage_prose_changes(_frame(), _frame(), {"p1": ["unrecognised_marker"]})

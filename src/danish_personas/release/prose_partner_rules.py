@@ -89,34 +89,13 @@ def propose_partner_gender_prose_repair(
     )
 
 
-def _input_abstention_reason(
-    *,
-    old_partner: str | None,
-    new_partner: str | None,
-    old_gender: str,
-    new_gender: str,
-    old_persona_text: str,
-) -> str | None:
-    """Return why supplied source values or text cannot support a repair.
+def _abstain(reason: str) -> PartnerProseProposal:
+    """Create an abstention with its fail-closed reason.
 
     Returns:
-        An abstention reason, or ``None`` when the inputs are eligible for
-        prose inspection.
+        A proposal containing no text or evidence and the supplied reason.
     """
-    if old_partner not in {"man", "woman"}:
-        return "old partner gender is not a known binary value"
-    if new_partner not in {"man", "woman", "nonbinary"}:
-        return "new partner gender is invalid"
-    valid_genders = {"man", "woman", "nonbinary"}
-    if old_gender not in valid_genders or new_gender not in valid_genders:
-        return "self gender is invalid"
-    if old_gender != new_gender:
-        return "self-gender change requires prose review"
-    if old_partner == new_partner:
-        return "partner gender did not change"
-    if not isinstance(old_persona_text, str):
-        return "persona text is not a string"
-    return None
+    return PartnerProseProposal(None, None, reason)
 
 
 def _eligible_partner_clause(
@@ -148,6 +127,36 @@ def _eligible_partner_clause(
     return match, None
 
 
+def _input_abstention_reason(
+    *,
+    old_partner: str | None,
+    new_partner: str | None,
+    old_gender: str,
+    new_gender: str,
+    old_persona_text: str,
+) -> str | None:
+    """Return why supplied source values or text cannot support a repair.
+
+    Returns:
+        An abstention reason, or ``None`` when the inputs are eligible for
+        prose inspection.
+    """
+    if old_partner not in {"man", "woman"}:
+        return "old partner gender is not a known binary value"
+    if new_partner not in {"man", "woman", "nonbinary"}:
+        return "new partner gender is invalid"
+    valid_genders = {"man", "woman", "nonbinary"}
+    if old_gender not in valid_genders or new_gender not in valid_genders:
+        return "self gender is invalid"
+    if old_gender != new_gender:
+        return "self-gender change requires prose review"
+    if old_partner == new_partner:
+        return "partner gender did not change"
+    if not isinstance(old_persona_text, str):
+        return "persona text is not a string"
+    return None
+
+
 def _normalise_partner_gender(value: str) -> str | None:
     """Map supported source spellings to Danish gender labels.
 
@@ -155,12 +164,3 @@ def _normalise_partner_gender(value: str) -> str | None:
         The canonical label when the value is supported; otherwise the input.
     """
     return {"male": "man", "female": "woman"}.get(value, value)
-
-
-def _abstain(reason: str) -> PartnerProseProposal:
-    """Create an abstention with its fail-closed reason.
-
-    Returns:
-        A proposal containing no text or evidence and the supplied reason.
-    """
-    return PartnerProseProposal(None, None, reason)

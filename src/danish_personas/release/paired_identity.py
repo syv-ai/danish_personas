@@ -134,36 +134,6 @@ def generate_paired_identity(
     }
 
 
-def _orientation_map(
-    *, frame: pl.DataFrame, orientation_overlay: pl.DataFrame, persona_id_column: str
-) -> dict[str, str]:
-    required = {
-        persona_id_column,
-        "age",
-        "sex",
-        "current_relationship_status",
-        "partner_gender",
-    }
-    missing = required.difference(frame.columns)
-    if missing:
-        raise ValueError(f"Missing paired identity input columns: {sorted(missing)}")
-    overlay_required = {persona_id_column, "sexual_orientation_identity"}
-    if overlay_required.difference(orientation_overlay.columns):
-        raise ValueError(
-            "Orientation overlay requires ID and sexual_orientation_identity"
-        )
-    orientations: dict[str, str] = {}
-    rows = orientation_overlay.select(
-        persona_id_column, "sexual_orientation_identity"
-    ).iter_rows()
-    for raw_id, raw_orientation in rows:
-        identifier = _identifier(raw_id)
-        if identifier in orientations:
-            raise ValueError("Orientation overlay IDs must be unique")
-        orientations[identifier] = _normalise_orientation(raw_orientation)
-    return orientations
-
-
 def _build_record(
     *,
     row: dict[str, object],
@@ -223,21 +193,6 @@ def _build_record(
     }, changed
 
 
-def _gender(
-    *, identifier: str, sex: str, supported: bool, seed: int
-) -> tuple[str, str]:
-    if not supported:
-        return "unknown", "unknown"
-    draw = _draw(identifier=identifier, domain="self_gender", seed=seed)
-    if draw < 0.0005:
-        return "man", "true"
-    if draw < 0.001:
-        return "woman", "true"
-    if draw < 0.0054:
-        return "nonbinary", "unknown"
-    return ("man" if sex == "male" else "woman"), "false"
-
-
 def _assign_partner_gender(
     *,
     identifier: str,
@@ -288,6 +243,25 @@ def _weighted_gender(
     return options[-1]
 
 
+def _draw(*, identifier: str, domain: str, seed: int) -> float:
+    payload = json.dumps(
+        ["paired-identity-v1", seed, domain, identifier],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode()
+    integer = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return integer / 2**64
+
+
+def _existing_partner_gender(value: object) -> str | None:
+    if value is None:
+        return None
+    mapping = {"male": "man", "female": "woman", "man": "man", "woman": "woman"}
+    if value not in mapping:
+        raise ValueError("Existing partner gender must be male, female, or null")
+    return mapping[value]
+
+
 def _partner_orientation(
     *, identifier: str, partner_gender: str, self_gender: str, seed: int
 ) -> str:
@@ -319,13 +293,6 @@ def _partner_orientation(
     )
 
 
-def _partner_transgender(*, identifier: str, partner_gender: str, seed: int) -> str:
-    if partner_gender == "nonbinary":
-        return "unknown"
-    draw = _draw(identifier=identifier, domain="partner_transgender", seed=seed)
-    return "true" if draw < 0.001 else "false"
-
-
 def _weighted_label(
     *, identifier: str, domain: str, seed: int, options: list[tuple[str, float]]
 ) -> str:
@@ -339,14 +306,62 @@ def _weighted_label(
     return options[-1][0]
 
 
-def _draw(*, identifier: str, domain: str, seed: int) -> float:
-    payload = json.dumps(
-        ["paired-identity-v1", seed, domain, identifier],
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode()
-    integer = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
-    return integer / 2**64
+def _partner_transgender(*, identifier: str, partner_gender: str, seed: int) -> str:
+    if partner_gender == "nonbinary":
+        return "unknown"
+    draw = _draw(identifier=identifier, domain="partner_transgender", seed=seed)
+    return "true" if draw < 0.001 else "false"
+
+
+def _gender(
+    *, identifier: str, sex: str, supported: bool, seed: int
+) -> tuple[str, str]:
+    if not supported:
+        return "unknown", "unknown"
+    draw = _draw(identifier=identifier, domain="self_gender", seed=seed)
+    if draw < 0.0005:
+        return "man", "true"
+    if draw < 0.001:
+        return "woman", "true"
+    if draw < 0.0054:
+        return "nonbinary", "unknown"
+    return ("man" if sex == "male" else "woman"), "false"
+
+
+def _identifier(value: object) -> str:
+    if value is None or not str(value):
+        raise ValueError("Persona IDs must be non-empty")
+    return str(value)
+
+
+def _orientation_map(
+    *, frame: pl.DataFrame, orientation_overlay: pl.DataFrame, persona_id_column: str
+) -> dict[str, str]:
+    required = {
+        persona_id_column,
+        "age",
+        "sex",
+        "current_relationship_status",
+        "partner_gender",
+    }
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(f"Missing paired identity input columns: {sorted(missing)}")
+    overlay_required = {persona_id_column, "sexual_orientation_identity"}
+    if overlay_required.difference(orientation_overlay.columns):
+        raise ValueError(
+            "Orientation overlay requires ID and sexual_orientation_identity"
+        )
+    orientations: dict[str, str] = {}
+    rows = orientation_overlay.select(
+        persona_id_column, "sexual_orientation_identity"
+    ).iter_rows()
+    for raw_id, raw_orientation in rows:
+        identifier = _identifier(raw_id)
+        if identifier in orientations:
+            raise ValueError("Orientation overlay IDs must be unique")
+        orientations[identifier] = _normalise_orientation(raw_orientation)
+    return orientations
 
 
 def _normalise_orientation(value: object) -> str:
@@ -365,18 +380,3 @@ def _normalise_orientation(value: object) -> str:
     if not isinstance(value, str) or value not in aliases:
         raise ValueError(f"Unsupported orientation category: {value!r}")
     return aliases[value]
-
-
-def _existing_partner_gender(value: object) -> str | None:
-    if value is None:
-        return None
-    mapping = {"male": "man", "female": "woman", "man": "man", "woman": "woman"}
-    if value not in mapping:
-        raise ValueError("Existing partner gender must be male, female, or null")
-    return mapping[value]
-
-
-def _identifier(value: object) -> str:
-    if value is None or not str(value):
-        raise ValueError("Persona IDs must be non-empty")
-    return str(value)

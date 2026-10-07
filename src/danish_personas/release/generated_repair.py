@@ -90,6 +90,65 @@ def repair_generated_attributes(
     return pl.DataFrame(rows, schema=frame.schema), report
 
 
+def _check_residual_legal_status(*, row: dict[str, object], pending: list[str]) -> None:
+    """Flag invalid legal-status combinations after all deterministic repairs."""
+    marital = row["marital_status"]
+    detail = row["legal_status_detail"]
+    if marital == "married_or_separated" and detail not in {"married", "separated"}:
+        reason = (
+            "legal_status_detail: missing or invalid for married_or_separated; "
+            "marital status cannot determine married versus separated"
+        )
+        if reason not in pending:
+            pending.append(reason)
+    elif marital != "married_or_separated" and detail is not None:
+        pending.append("legal_status_detail: must be null outside married_or_separated")
+    elif detail == "married" and row["current_relationship_status"] != "partnered":
+        pending.append("legal_status_detail: married requires partnered relationship")
+
+
+def _repair_lists(
+    *, row: dict[str, object], fields: list[str], pending: list[str]
+) -> None:
+    """Normalise interests and remove duplicates only when the schema remains valid."""
+    for field in ("skills_and_expertise", "hobbies_and_interests"):
+        values = row[field]
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            pending.append(field)
+            continue
+        cleaned = (
+            [value.strip().rstrip(".!?;:,… ").lower() for value in values]
+            if field == "hobbies_and_interests"
+            else values
+        )
+        unique: list[str] = []
+        seen: set[str] = set()
+        for value in cleaned:
+            key = value.strip().rstrip(".!?;:,… ").casefold()
+            if key not in seen:
+                unique.append(value)
+                seen.add(key)
+
+        # Generation schema requires 3–6 non-empty string items. Do not drop
+        # duplicates if doing so would leave too few items.
+        valid = 3 <= len(unique) <= 6 and all(
+            isinstance(value, str) and value.strip() for value in unique
+        )
+        if not valid:
+            if cleaned != values:
+                row[field] = cleaned
+                fields.append(field)
+            pending.append(field)
+            continue
+        if unique != values:
+            row[field] = unique
+            fields.append(field)
+        if len({value.casefold() for value in unique}) != len(unique):
+            pending.append(field)
+
+
 def _repair_relationship(
     *, row: dict[str, object], fields: list[str], pending: list[str]
 ) -> None:
@@ -156,62 +215,3 @@ def _repair_title(
     ).digest()
     row["job_title"] = allowed[int.from_bytes(draw[:8], "big") % len(allowed)]
     fields.append("job_title")
-
-
-def _repair_lists(
-    *, row: dict[str, object], fields: list[str], pending: list[str]
-) -> None:
-    """Normalise interests and remove duplicates only when the schema remains valid."""
-    for field in ("skills_and_expertise", "hobbies_and_interests"):
-        values = row[field]
-        if not isinstance(values, list) or any(
-            not isinstance(value, str) or not value.strip() for value in values
-        ):
-            pending.append(field)
-            continue
-        cleaned = (
-            [value.strip().rstrip(".!?;:,… ").lower() for value in values]
-            if field == "hobbies_and_interests"
-            else values
-        )
-        unique: list[str] = []
-        seen: set[str] = set()
-        for value in cleaned:
-            key = value.strip().rstrip(".!?;:,… ").casefold()
-            if key not in seen:
-                unique.append(value)
-                seen.add(key)
-
-        # Generation schema requires 3–6 non-empty string items. Do not drop
-        # duplicates if doing so would leave too few items.
-        valid = 3 <= len(unique) <= 6 and all(
-            isinstance(value, str) and value.strip() for value in unique
-        )
-        if not valid:
-            if cleaned != values:
-                row[field] = cleaned
-                fields.append(field)
-            pending.append(field)
-            continue
-        if unique != values:
-            row[field] = unique
-            fields.append(field)
-        if len({value.casefold() for value in unique}) != len(unique):
-            pending.append(field)
-
-
-def _check_residual_legal_status(*, row: dict[str, object], pending: list[str]) -> None:
-    """Flag invalid legal-status combinations after all deterministic repairs."""
-    marital = row["marital_status"]
-    detail = row["legal_status_detail"]
-    if marital == "married_or_separated" and detail not in {"married", "separated"}:
-        reason = (
-            "legal_status_detail: missing or invalid for married_or_separated; "
-            "marital status cannot determine married versus separated"
-        )
-        if reason not in pending:
-            pending.append(reason)
-    elif marital != "married_or_separated" and detail is not None:
-        pending.append("legal_status_detail: must be null outside married_or_separated")
-    elif detail == "married" and row["current_relationship_status"] != "partnered":
-        pending.append("legal_status_detail: married requires partnered relationship")

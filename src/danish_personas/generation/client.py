@@ -205,6 +205,10 @@ class OpenAIClient:
         return self._requests_made
 
 
+class RequestBudgetExceeded(RuntimeError):
+    """Raised before a request would exceed the configured smoke budget."""
+
+
 def _record_attempt(
     *,
     attempt_number: int,
@@ -216,10 +220,6 @@ def _record_attempt(
         per_call(attempt_number)
     if client_wide is not None:
         client_wide(attempt_number)
-
-
-class RequestBudgetExceeded(RuntimeError):
-    """Raised before a request would exceed the configured smoke budget."""
 
 
 def _retry_delay(

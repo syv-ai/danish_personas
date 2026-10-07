@@ -198,6 +198,33 @@ def generate_lgbt_overlay(
     return overlay, aggregate
 
 
+def _counts(values: list[str]) -> dict[str, int]:
+    """Count broad labels without retaining row-level information.
+
+    Returns:
+        Counts of labels present in the input.
+    """
+    labels = (
+        "yes",
+        "no",
+        "uncertain",
+        "unknown",
+        "heterosexual",
+        "homosexual",
+        "bisexual",
+        "asexual",
+        "other",
+    )
+    return {label: values.count(label) for label in labels if label in values}
+
+
+def _draw(identifier: str, axis: str, config: LgbtOverlayConfig) -> float:
+    """Return a stable, axis-independent uniform draw for one persona."""
+    material = f"lgbt-overlay:{config.version}:{config.seed}:{axis}:{identifier}"
+    digest = hashlib.sha256(material.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big") / 2**64
+
+
 def _orientation_label(draw: float, sex: object) -> str:
     """Sample a chart category from the sex-specific cumulative rates.
 
@@ -228,13 +255,6 @@ def _orientation_label(draw: float, sex: object) -> str:
     return "heterosexual"
 
 
-def _draw(identifier: str, axis: str, config: LgbtOverlayConfig) -> float:
-    """Return a stable, axis-independent uniform draw for one persona."""
-    material = f"lgbt-overlay:{config.version}:{config.seed}:{axis}:{identifier}"
-    digest = hashlib.sha256(material.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], byteorder="big") / 2**64
-
-
 def _range_label(
     draw: float, *, low: float, high: float, scenario: Literal["low", "high"]
 ) -> str:
@@ -248,23 +268,3 @@ def _range_label(
     if scenario == "high" and draw < high:
         return "uncertain"
     return "no"
-
-
-def _counts(values: list[str]) -> dict[str, int]:
-    """Count broad labels without retaining row-level information.
-
-    Returns:
-        Counts of labels present in the input.
-    """
-    labels = (
-        "yes",
-        "no",
-        "uncertain",
-        "unknown",
-        "heterosexual",
-        "homosexual",
-        "bisexual",
-        "asexual",
-        "other",
-    )
-    return {label: values.count(label) for label in labels if label in values}

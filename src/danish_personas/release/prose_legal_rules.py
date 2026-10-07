@@ -92,6 +92,15 @@ def propose_legal_prose_repair(
     return LegalProseProposal(proposed, evidence, None)
 
 
+def _abstain(reason: str) -> LegalProseProposal:
+    """Create an explicit no-edit outcome.
+
+    Returns:
+        A proposal that records the supplied abstention reason.
+    """
+    return LegalProseProposal(None, None, reason)
+
+
 def _replacement_for_clause(
     *, text: str, old_detail: str, new_detail: str | None
 ) -> tuple[re.Match[str], str] | str:
@@ -114,6 +123,26 @@ def _replacement_for_clause(
     if old_detail == new_detail:
         return "legal detail did not change"
     return match, _render_clause(match, _danish(new_detail))
+
+
+def _danish(detail: str) -> str:
+    """Map a canonical detail to its exact Danish clause word.
+
+    Returns:
+        The Danish word corresponding to the canonical legal detail.
+    """
+    return {"married": "gift", "separated": "separeret"}[detail]
+
+
+def _render_clause(match: re.Match[str], word: str) -> str:
+    """Keep the matched clause form while changing only its legal word.
+
+    Returns:
+        The replacement sentence with the original clause style.
+    """
+    if match.group("label"):
+        return f"Civilstand: {word}."
+    return f"Personen er {word}."
 
 
 def _validate_inputs(
@@ -146,32 +175,3 @@ def _validate_inputs(
     if new_detail == "married" and relationship != "partnered":
         return "married legal detail conflicts with relationship status"
     return None
-
-
-def _danish(detail: str) -> str:
-    """Map a canonical detail to its exact Danish clause word.
-
-    Returns:
-        The Danish word corresponding to the canonical legal detail.
-    """
-    return {"married": "gift", "separated": "separeret"}[detail]
-
-
-def _render_clause(match: re.Match[str], word: str) -> str:
-    """Keep the matched clause form while changing only its legal word.
-
-    Returns:
-        The replacement sentence with the original clause style.
-    """
-    if match.group("label"):
-        return f"Civilstand: {word}."
-    return f"Personen er {word}."
-
-
-def _abstain(reason: str) -> LegalProseProposal:
-    """Create an explicit no-edit outcome.
-
-    Returns:
-        A proposal that records the supplied abstention reason.
-    """
-    return LegalProseProposal(None, None, reason)

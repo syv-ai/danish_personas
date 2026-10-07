@@ -9,6 +9,17 @@ from danish_personas.release.lgbt_overlay import (
 )
 
 
+def test_invalid_config_and_duplicate_ids_fail_closed() -> None:
+    """Unsupported schema versions and ambiguous identifiers are rejected."""
+    with pytest.raises(ValueError, match="Unsupported LGBT overlay version"):
+        LgbtOverlayConfig(version=1)
+    frame = pl.DataFrame(
+        {"persona_id": ["same", "same"], "age": [20, 30], "sex": ["male", "female"]}
+    )
+    with pytest.raises(ValueError, match="unique"):
+        generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
+
+
 def test_overlay_is_deterministic_and_separate_from_input() -> None:
     """Generation is repeatable and preserves the supplied source frame."""
     frame = pl.DataFrame(
@@ -41,27 +52,26 @@ def test_overlay_is_deterministic_and_separate_from_input() -> None:
     assert provenance["overlay_schema_version"] == 3
 
 
-def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:
-    """Orientation is unsupported outside 18–64 and for unstratified sex values."""
+def test_sex_characteristics_remain_separate() -> None:
+    """Gender status is not sampled independently of the paired gender model."""
     frame = pl.DataFrame(
         {
-            "persona_id": ["young", "older", "missing", "unknown-sex"],
-            "age": [17, 65, None, 30],
-            "sex": ["male", "female", "male", "unknown"],
+            "persona_id": [f"p-{index}" for index in range(1000)],
+            "age": [35] * 1000,
+            "sex": ["female"] * 1000,
         }
     )
     overlay, provenance = generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
-
-    assert overlay["sexual_orientation_identity"].to_list() == [
-        "unknown",
-        "unknown",
-        "unknown",
-        "unknown",
-    ]
-    assert provenance["supported_age_range"] == [18, 64]
-    assert provenance["supported_age_count"] == 1
-    assert provenance["unknown_age_count"] == 3
-    assert provenance["orientation_supported_count"] == 0
+    counts = provenance["marginal_counts"]
+    assert "trans_or_nonbinary_identity" not in overlay.columns
+    assert set(overlay["variation_in_sex_characteristics"].unique().to_list()) <= {
+        "yes",
+        "no",
+        "uncertain",
+    }
+    limitations = " ".join(provenance["limitations"])
+    assert "joint distributions are unsupported" in limitations
+    assert counts["variation_in_sex_characteristics"]
 
 
 def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
@@ -106,34 +116,24 @@ def test_sex_specific_orientation_marginals_match_chart_rates() -> None:
     assert provenance["sources"]["sample_size"] == 17929
 
 
-def test_sex_characteristics_remain_separate() -> None:
-    """Gender status is not sampled independently of the paired gender model."""
+def test_unsupported_ages_and_sexes_are_unknown_on_orientation_axis() -> None:
+    """Orientation is unsupported outside 18–64 and for unstratified sex values."""
     frame = pl.DataFrame(
         {
-            "persona_id": [f"p-{index}" for index in range(1000)],
-            "age": [35] * 1000,
-            "sex": ["female"] * 1000,
+            "persona_id": ["young", "older", "missing", "unknown-sex"],
+            "age": [17, 65, None, 30],
+            "sex": ["male", "female", "male", "unknown"],
         }
     )
     overlay, provenance = generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
-    counts = provenance["marginal_counts"]
-    assert "trans_or_nonbinary_identity" not in overlay.columns
-    assert set(overlay["variation_in_sex_characteristics"].unique().to_list()) <= {
-        "yes",
-        "no",
-        "uncertain",
-    }
-    limitations = " ".join(provenance["limitations"])
-    assert "joint distributions are unsupported" in limitations
-    assert counts["variation_in_sex_characteristics"]
 
-
-def test_invalid_config_and_duplicate_ids_fail_closed() -> None:
-    """Unsupported schema versions and ambiguous identifiers are rejected."""
-    with pytest.raises(ValueError, match="Unsupported LGBT overlay version"):
-        LgbtOverlayConfig(version=1)
-    frame = pl.DataFrame(
-        {"persona_id": ["same", "same"], "age": [20, 30], "sex": ["male", "female"]}
-    )
-    with pytest.raises(ValueError, match="unique"):
-        generate_lgbt_overlay(frame, config=LgbtOverlayConfig())
+    assert overlay["sexual_orientation_identity"].to_list() == [
+        "unknown",
+        "unknown",
+        "unknown",
+        "unknown",
+    ]
+    assert provenance["supported_age_range"] == [18, 64]
+    assert provenance["supported_age_count"] == 1
+    assert provenance["unknown_age_count"] == 3
+    assert provenance["orientation_supported_count"] == 0

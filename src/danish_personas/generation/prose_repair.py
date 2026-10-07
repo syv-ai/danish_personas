@@ -83,10 +83,6 @@ OUTPUT_USD_PER_MILLION = 0.60
 PRICING_SOURCE = "https://docs.mistral.ai/inference/pricing"
 
 
-class RepairError(RuntimeError):
-    """Raised when a repair cannot proceed safely."""
-
-
 class _RepairClient(t.Protocol):
     def complete(
         self,
@@ -97,50 +93,6 @@ class _RepairClient(t.Protocol):
         json_schema: dict[str, object],
         record_request: t.Callable[[int], None],
     ) -> LLMResponse: ...
-
-
-def _digest(value: object) -> str:
-    return sha256(canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _append_ledger_line(path: Path, value: object) -> None:
-    """Append and durably sync one ledger record before any request proceeds.
-
-    Raises:
-        OSError: If the record cannot be completely appended and synced.
-    """
-    serialised = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    data = (serialised + "\n").encode()
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.fchmod(descriptor, 0o600)
-        written = os.write(descriptor, data)
-        if written != len(data):
-            raise OSError("Incomplete repair ledger append")
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _atomic_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = (
-        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-    ).encode()
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 def run_prose_repair(
@@ -217,79 +169,6 @@ def run_prose_repair(
         lock_stream.close()
 
 
-def _validate_inputs(
-    *,
-    rows: list[dict[str, t.Any]],
-    changed_fields: dict[str, set[str] | list[str]],
-    id_field: str,
-    prompt: str,
-    model: str,
-    config: GenerationConfig,
-    input_manifest_sha256: str,
-    sidecar_sha256: str,
-    cost_cap_usd: float | None,
-) -> list[str]:
-    """Validate request bounds and its row/change-set binding.
-
-    Returns:
-        Validated identifiers in input order.
-
-    Raises:
-        RepairError: If any bound or input metadata is invalid.
-    """
-    if (
-        cost_cap_usd is None
-        or not math.isfinite(cost_cap_usd)
-        or cost_cap_usd <= 0
-        or cost_cap_usd > 100
-    ):
-        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
-    if model != "mistral-small-2603" or config.model != "mistral-small-2603":
-        raise RepairError("Repair model must be mistral-small-2603")
-    if config.base_url != "https://api.mistral.ai/v1":
-        raise RepairError("Repair base URL must be the official Mistral API")
-    if config.api_key_env != "MISTRAL_API_KEY":
-        raise RepairError("Repair API key environment must be MISTRAL_API_KEY")
-    if config.max_tokens != 800:
-        raise RepairError("Repair max_tokens must be 800")
-    if not input_manifest_sha256 or not sidecar_sha256:
-        raise RepairError("Input manifest and schema sidecar hashes are required")
-    return _validate_row_metadata(
-        rows=rows, changed_fields=changed_fields, id_field=id_field
-    )
-
-
-def _validate_row_metadata(
-    *,
-    rows: list[dict[str, t.Any]],
-    changed_fields: dict[str, set[str] | list[str]],
-    id_field: str,
-) -> list[str]:
-    """Validate unique row IDs and changed-field reason metadata.
-
-    Returns:
-        Validated row identifiers in input order.
-
-    Raises:
-        RepairError: If row identifiers or changed-field metadata are invalid.
-    """
-    identifiers = [row.get(id_field) for row in rows]
-    if any(
-        not isinstance(identifier, str) or not identifier for identifier in identifiers
-    ):
-        raise RepairError("Every input row requires a non-empty string ID")
-    if len(set(identifiers)) != len(identifiers):
-        raise RepairError("Duplicate input IDs are not allowed")
-    if set(changed_fields) - set(identifiers):
-        raise RepairError("Changed-field set references an unknown ID")
-    for values in changed_fields.values():
-        if not values or any(
-            not isinstance(value, str) or not value for value in values
-        ):
-            raise RepairError("Changed-field metadata must contain field names")
-    return identifiers
-
-
 def _acquire_lock(*, lock_stream: t.TextIO) -> None:
     """Acquire the exclusive, non-blocking repair lock.
 
@@ -304,6 +183,10 @@ def _acquire_lock(*, lock_stream: t.TextIO) -> None:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError) as error:
         raise RepairError("Another repair execution holds the output lock") from error
+
+
+class RepairError(RuntimeError):
+    """Raised when a repair cannot proceed safely."""
 
 
 def _run_locked(
@@ -363,45 +246,8 @@ def _run_locked(
     return completed
 
 
-def _make_binding(
-    *,
-    rows: list[dict[str, t.Any]],
-    changed_fields: dict[str, set[str] | list[str]],
-    prompt: str,
-    model: str,
-    config: GenerationConfig,
-    input_manifest_sha256: str,
-    sidecar_sha256: str,
-    schema: dict[str, object],
-    cost_cap_usd: float | None,
-) -> dict[str, object]:
-    """Bind durable repair state to all inputs that can affect output.
-
-    Returns:
-        The canonical binding data.
-    """
-    return {
-        "input_manifest_sha256": input_manifest_sha256,
-        "response_schema_sha256": _digest(schema),
-        "rows_sha256": _digest(rows),
-        "changed_fields_sha256": _digest(
-            {key: sorted(value) for key, value in changed_fields.items()}
-        ),
-        "prompt_sha256": sha256(prompt.encode()).hexdigest(),
-        "model": model,
-        "sidecar_sha256": sidecar_sha256,
-        "max_tokens": config.max_tokens,
-        "cost_cap_usd": cost_cap_usd,
-        "base_url": config.base_url,
-        "api_key_env": config.api_key_env,
-        "maximum_http_attempts": config.maximum_http_attempts,
-        "pricing_currency": PRICING_CURRENCY,
-        "input_usd_per_million": INPUT_USD_PER_MILLION,
-        "output_usd_per_million": OUTPUT_USD_PER_MILLION,
-        "pricing_source": PRICING_SOURCE,
-        "enable_thinking": config.enable_thinking,
-        "reasoning_effort": config.reasoning_effort,
-    }
+def _digest(value: object) -> str:
+    return sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _load_ledger(
@@ -473,6 +319,68 @@ def _load_ledger(
         raise RepairError("Stale or malformed repair ledger") from error
     os.chmod(path, 0o600)
     return [reserved_total]
+
+
+def _append_ledger_line(path: Path, value: object) -> None:
+    """Append and durably sync one ledger record before any request proceeds.
+
+    Raises:
+        OSError: If the record cannot be completely appended and synced.
+    """
+    serialised = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    data = (serialised + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        written = os.write(descriptor, data)
+        if written != len(data):
+            raise OSError("Incomplete repair ledger append")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _make_binding(
+    *,
+    rows: list[dict[str, t.Any]],
+    changed_fields: dict[str, set[str] | list[str]],
+    prompt: str,
+    model: str,
+    config: GenerationConfig,
+    input_manifest_sha256: str,
+    sidecar_sha256: str,
+    schema: dict[str, object],
+    cost_cap_usd: float | None,
+) -> dict[str, object]:
+    """Bind durable repair state to all inputs that can affect output.
+
+    Returns:
+        The canonical binding data.
+    """
+    return {
+        "input_manifest_sha256": input_manifest_sha256,
+        "response_schema_sha256": _digest(schema),
+        "rows_sha256": _digest(rows),
+        "changed_fields_sha256": _digest(
+            {key: sorted(value) for key, value in changed_fields.items()}
+        ),
+        "prompt_sha256": sha256(prompt.encode()).hexdigest(),
+        "model": model,
+        "sidecar_sha256": sidecar_sha256,
+        "max_tokens": config.max_tokens,
+        "cost_cap_usd": cost_cap_usd,
+        "base_url": config.base_url,
+        "api_key_env": config.api_key_env,
+        "maximum_http_attempts": config.maximum_http_attempts,
+        "pricing_currency": PRICING_CURRENCY,
+        "input_usd_per_million": INPUT_USD_PER_MILLION,
+        "output_usd_per_million": OUTPUT_USD_PER_MILLION,
+        "pricing_source": PRICING_SOURCE,
+        "enable_thinking": config.enable_thinking,
+        "reasoning_effort": config.reasoning_effort,
+    }
 
 
 def _repair_row(
@@ -550,6 +458,51 @@ def _repair_row(
     return {**row, **output}
 
 
+def _atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode()
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _attempt_cost(*, input_token_bound: int, max_tokens: int | None) -> float:
+    """Estimate a per-attempt USD reservation using conservative token bounds.
+
+    Returns:
+        The estimated cost in USD.
+    """
+    assert max_tokens is not None
+    return (
+        input_token_bound * INPUT_USD_PER_MILLION + max_tokens * OUTPUT_USD_PER_MILLION
+    ) / 1_000_000
+
+
+def _input_token_bound(
+    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
+) -> int:
+    """Conservatively bound request input from its encoded body size.
+
+    Returns:
+        The maximum estimated input token count.
+    """
+    body_bytes = len(
+        (prompt + canonical_json(payload) + canonical_json(schema)).encode()
+    )
+    return body_bytes + 512
+
+
 def _load_checkpoint(
     *, path: Path, binding_hash: str, row_hash: str
 ) -> dict[str, str] | None:
@@ -594,32 +547,6 @@ def _make_payload(*, row: dict[str, t.Any]) -> dict[str, object]:
     return payload
 
 
-def _input_token_bound(
-    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
-) -> int:
-    """Conservatively bound request input from its encoded body size.
-
-    Returns:
-        The maximum estimated input token count.
-    """
-    body_bytes = len(
-        (prompt + canonical_json(payload) + canonical_json(schema)).encode()
-    )
-    return body_bytes + 512
-
-
-def _attempt_cost(*, input_token_bound: int, max_tokens: int | None) -> float:
-    """Estimate a per-attempt USD reservation using conservative token bounds.
-
-    Returns:
-        The estimated cost in USD.
-    """
-    assert max_tokens is not None
-    return (
-        input_token_bound * INPUT_USD_PER_MILLION + max_tokens * OUTPUT_USD_PER_MILLION
-    ) / 1_000_000
-
-
 def _verify_response(
     *, response: LLMResponse, model: str, input_token_bound: int, max_tokens: int | None
 ) -> None:
@@ -637,3 +564,76 @@ def _verify_response(
         or response.total_tokens != response.prompt_tokens + response.completion_tokens
     ):
         raise RepairError("Provider response usage exceeds the reserved token bounds")
+
+
+def _validate_inputs(
+    *,
+    rows: list[dict[str, t.Any]],
+    changed_fields: dict[str, set[str] | list[str]],
+    id_field: str,
+    prompt: str,
+    model: str,
+    config: GenerationConfig,
+    input_manifest_sha256: str,
+    sidecar_sha256: str,
+    cost_cap_usd: float | None,
+) -> list[str]:
+    """Validate request bounds and its row/change-set binding.
+
+    Returns:
+        Validated identifiers in input order.
+
+    Raises:
+        RepairError: If any bound or input metadata is invalid.
+    """
+    if (
+        cost_cap_usd is None
+        or not math.isfinite(cost_cap_usd)
+        or cost_cap_usd <= 0
+        or cost_cap_usd > 100
+    ):
+        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
+    if model != "mistral-small-2603" or config.model != "mistral-small-2603":
+        raise RepairError("Repair model must be mistral-small-2603")
+    if config.base_url != "https://api.mistral.ai/v1":
+        raise RepairError("Repair base URL must be the official Mistral API")
+    if config.api_key_env != "MISTRAL_API_KEY":
+        raise RepairError("Repair API key environment must be MISTRAL_API_KEY")
+    if config.max_tokens != 800:
+        raise RepairError("Repair max_tokens must be 800")
+    if not input_manifest_sha256 or not sidecar_sha256:
+        raise RepairError("Input manifest and schema sidecar hashes are required")
+    return _validate_row_metadata(
+        rows=rows, changed_fields=changed_fields, id_field=id_field
+    )
+
+
+def _validate_row_metadata(
+    *,
+    rows: list[dict[str, t.Any]],
+    changed_fields: dict[str, set[str] | list[str]],
+    id_field: str,
+) -> list[str]:
+    """Validate unique row IDs and changed-field reason metadata.
+
+    Returns:
+        Validated row identifiers in input order.
+
+    Raises:
+        RepairError: If row identifiers or changed-field metadata are invalid.
+    """
+    identifiers = [row.get(id_field) for row in rows]
+    if any(
+        not isinstance(identifier, str) or not identifier for identifier in identifiers
+    ):
+        raise RepairError("Every input row requires a non-empty string ID")
+    if len(set(identifiers)) != len(identifiers):
+        raise RepairError("Duplicate input IDs are not allowed")
+    if set(changed_fields) - set(identifiers):
+        raise RepairError("Changed-field set references an unknown ID")
+    for values in changed_fields.values():
+        if not values or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            raise RepairError("Changed-field metadata must contain field names")
+    return identifiers

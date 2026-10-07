@@ -37,36 +37,6 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
     assert persisted == [1]
 
 
-def test_per_call_reservation_precedes_network_and_global_record() -> None:
-    """A rejected reservation cannot produce a request or global attempt."""
-    global_attempts: list[int] = []
-    network_attempts: list[int] = []
-
-    def handler(_: httpx.Request) -> httpx.Response:
-        network_attempts.append(1)
-        return httpx.Response(status_code=200)
-
-    def reject(_attempt: int) -> None:
-        raise RuntimeError("Cost cap exhausted")
-
-    client = OpenAIClient(
-        config=_config(),
-        transport=httpx.MockTransport(handler=handler),
-        record_request=global_attempts.append,
-    )
-    with pytest.raises(RuntimeError, match="Cost cap exhausted"):
-        client.complete(
-            system_prompt="Svar på dansk.",
-            user_payload={"input": "test"},
-            schema_name="probe",
-            json_schema={"type": "object"},
-            record_request=reject,
-        )
-    client.close()
-    assert network_attempts == []
-    assert global_attempts == []
-
-
 def _config() -> GenerationConfig:
     return GenerationConfig(
         base_url="http://test/v1",
@@ -232,3 +202,33 @@ def test_client_uses_rate_limit_backoff(
     client.close()
     assert len(sleeps) == 1
     assert sleeps[0] >= minimum_delay
+
+
+def test_per_call_reservation_precedes_network_and_global_record() -> None:
+    """A rejected reservation cannot produce a request or global attempt."""
+    global_attempts: list[int] = []
+    network_attempts: list[int] = []
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        network_attempts.append(1)
+        return httpx.Response(status_code=200)
+
+    def reject(_attempt: int) -> None:
+        raise RuntimeError("Cost cap exhausted")
+
+    client = OpenAIClient(
+        config=_config(),
+        transport=httpx.MockTransport(handler=handler),
+        record_request=global_attempts.append,
+    )
+    with pytest.raises(RuntimeError, match="Cost cap exhausted"):
+        client.complete(
+            system_prompt="Svar på dansk.",
+            user_payload={"input": "test"},
+            schema_name="probe",
+            json_schema={"type": "object"},
+            record_request=reject,
+        )
+    client.close()
+    assert network_attempts == []
+    assert global_attempts == []

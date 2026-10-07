@@ -29,6 +29,12 @@ _STATUS_CODES = {
 }
 
 
+def _valid_status_code(row: dict[str, object]) -> bool:
+    return row["detailed_status_code"] in _STATUS_CODES.get(
+        row["labour_market_status"], set()
+    )
+
+
 def repair_demographics(
     frame: pl.DataFrame, bundle_dir: Path
 ) -> tuple[pl.DataFrame, dict[str, object]]:
@@ -149,6 +155,87 @@ def repair_demographics(
     return current, report
 
 
+def _block(
+    *,
+    report: dict[str, object],
+    item: dict[str, object],
+    name: str,
+    reason: str,
+    count: int = 1,
+) -> None:
+    item.update(infeasible_strata=count, blocker=reason)
+    report["blocking_infeasibility"].append({"stage": name, "count": count})
+    report["stages"].append(item)
+
+
+def _changed_positions(
+    *, before: pl.DataFrame, after: pl.DataFrame, columns: list[str]
+) -> list[int]:
+    changed = before.select(columns).to_struct() != after.select(columns).to_struct()
+    return [index for index, value in enumerate(changed) if value]
+
+
+def _finish_atomic(
+    *,
+    original: pl.DataFrame,
+    current: pl.DataFrame,
+    report: dict[str, object],
+    bundle_dir: Path,
+) -> pl.DataFrame:
+    """Validate invariants and roll back all stages when any blocker exists.
+
+    Returns:
+        The original frame on any blocker, otherwise the repaired frame.
+    """
+    if current.height != original.height or (
+        "persona_id" in original.columns
+        and current["persona_id"].to_list() != original["persona_id"].to_list()
+    ):
+        report["blocking_infeasibility"].append(
+            {"stage": "frame_integrity", "count": 1}
+        )
+    if report["blocking_infeasibility"]:
+        final = original
+    else:
+        final = current
+    support_paths = [
+        bundle_dir / "normalized" / filename
+        for filename in (
+            "folk1a_base_unpooled.parquet",
+            "ras209_joint_unpooled.parquet",
+            "ras202_detail_unpooled.parquet",
+        )
+    ]
+    report["after_source_support"] = (
+        assess_release_support(frame=final, bundle_dir=bundle_dir)
+        if all(path.is_file() for path in support_paths)
+        else {"available": False, "reason": "one or more source files unavailable"}
+    )
+    report["distribution_diagnostics"] = [
+        {
+            "stage": item["name"],
+            "changed_count": item["changed_count"],
+            "infeasible_strata": item["infeasible_strata"],
+        }
+        for item in report["stages"]
+    ]
+    return final
+
+
+def _missing_stage(*, report: dict[str, object], name: str) -> None:
+    _block(
+        report=report,
+        item={
+            "name": name,
+            "changed_persona_ids": [],
+            "changed_count": 0,
+            "infeasible_strata": 0,
+        },
+        name=name,
+        reason="detailed status code and label columns unavailable",
+    )
+
+
 def _repair_detail(
     *,
     current: pl.DataFrame,
@@ -256,6 +343,19 @@ def _compute_detail_repair(
     return repaired, positions, diagnostics
 
 
+def _source_age_key() -> pl.Expr:
+    """Convert the RAS202 top-code to the numeric release-row key.
+
+    Returns:
+        Expression yielding the numeric key.
+    """
+    return (
+        pl.when(pl.col("age_key") == "71-")
+        .then(pl.lit(71, dtype=pl.Int16))
+        .otherwise(pl.col("age_key").cast(pl.Int16, strict=False))
+    )
+
+
 def _update_detail_dependants(
     *,
     before: pl.DataFrame,
@@ -303,66 +403,6 @@ def _update_detail_dependants(
             titles[index] = None
         repaired = repaired.with_columns(pl.Series("job_title", titles))
     return repaired
-
-
-def _job_function_source_rows(
-    *, bundle_dir: Path, sexes: set[str]
-) -> dict[str, list[tuple[str, str, int]]]:
-    """Load positive source-backed job-function rows for requested sexes.
-
-    Returns:
-        Positive-count code, label, and count rows keyed by sex.
-
-    Raises:
-        ValueError: If source rows are missing or incompatible.
-    """
-    source_path = bundle_dir / "normalized" / "job_function_sex_marginal.parquet"
-    if not source_path.is_file():
-        raise ValueError("job-function source marginal is unavailable")
-    source = pl.read_parquet(source_path)
-    required = {"job_function_code", "job_function", "sex", "count"}
-    if not required.issubset(source.columns):
-        raise ValueError("job-function source marginal has incompatible columns")
-    source = source.filter(pl.col("count") > 0)
-    result: dict[str, list[tuple[str, str, int]]] = {}
-    for sex in sexes:
-        rows = (
-            source.filter(pl.col("sex") == sex)
-            .select("job_function_code", "job_function", "count")
-            .to_dicts()
-        )
-        if not rows or any(
-            not row["job_function_code"] or not row["job_function"] for row in rows
-        ):
-            raise ValueError(f"no compatible job-function source rows for {sex}")
-        result[sex] = [
-            (str(row["job_function_code"]), str(row["job_function"]), int(row["count"]))
-            for row in rows
-        ]
-    return result
-
-
-def _weighted_job_function(
-    *, persona_id: object, rows: list[tuple[str, str, int]]
-) -> tuple[str, str]:
-    """Select one function by a stable persona hash and source count weights.
-
-    Returns:
-        Source-backed job-function code and label.
-
-    Raises:
-        ValueError: If source counts cannot support a weighted selection.
-    """
-    total = sum(count for _, _, count in rows)
-    if total <= 0:
-        raise ValueError("job-function source marginal has no positive counts")
-    digest = hashlib.sha256(str(persona_id).encode()).digest()
-    draw = int.from_bytes(digest[:8], "big") % total
-    for code, label, count in rows:
-        if draw < count:
-            return code, label
-        draw -= count
-    raise ValueError("job-function weighted source selection failed")
 
 
 def _adjust_job_functions(
@@ -448,70 +488,64 @@ def _adjust_job_functions(
     return repaired.with_columns(updates)
 
 
-def _finish_atomic(
-    *,
-    original: pl.DataFrame,
-    current: pl.DataFrame,
-    report: dict[str, object],
-    bundle_dir: Path,
-) -> pl.DataFrame:
-    """Validate invariants and roll back all stages when any blocker exists.
+def _job_function_source_rows(
+    *, bundle_dir: Path, sexes: set[str]
+) -> dict[str, list[tuple[str, str, int]]]:
+    """Load positive source-backed job-function rows for requested sexes.
 
     Returns:
-        The original frame on any blocker, otherwise the repaired frame.
+        Positive-count code, label, and count rows keyed by sex.
+
+    Raises:
+        ValueError: If source rows are missing or incompatible.
     """
-    if current.height != original.height or (
-        "persona_id" in original.columns
-        and current["persona_id"].to_list() != original["persona_id"].to_list()
-    ):
-        report["blocking_infeasibility"].append(
-            {"stage": "frame_integrity", "count": 1}
+    source_path = bundle_dir / "normalized" / "job_function_sex_marginal.parquet"
+    if not source_path.is_file():
+        raise ValueError("job-function source marginal is unavailable")
+    source = pl.read_parquet(source_path)
+    required = {"job_function_code", "job_function", "sex", "count"}
+    if not required.issubset(source.columns):
+        raise ValueError("job-function source marginal has incompatible columns")
+    source = source.filter(pl.col("count") > 0)
+    result: dict[str, list[tuple[str, str, int]]] = {}
+    for sex in sexes:
+        rows = (
+            source.filter(pl.col("sex") == sex)
+            .select("job_function_code", "job_function", "count")
+            .to_dicts()
         )
-    if report["blocking_infeasibility"]:
-        final = original
-    else:
-        final = current
-    support_paths = [
-        bundle_dir / "normalized" / filename
-        for filename in (
-            "folk1a_base_unpooled.parquet",
-            "ras209_joint_unpooled.parquet",
-            "ras202_detail_unpooled.parquet",
-        )
-    ]
-    report["after_source_support"] = (
-        assess_release_support(frame=final, bundle_dir=bundle_dir)
-        if all(path.is_file() for path in support_paths)
-        else {"available": False, "reason": "one or more source files unavailable"}
-    )
-    report["distribution_diagnostics"] = [
-        {
-            "stage": item["name"],
-            "changed_count": item["changed_count"],
-            "infeasible_strata": item["infeasible_strata"],
-        }
-        for item in report["stages"]
-    ]
-    return final
+        if not rows or any(
+            not row["job_function_code"] or not row["job_function"] for row in rows
+        ):
+            raise ValueError(f"no compatible job-function source rows for {sex}")
+        result[sex] = [
+            (str(row["job_function_code"]), str(row["job_function"]), int(row["count"]))
+            for row in rows
+        ]
+    return result
 
 
-def _source_age_key() -> pl.Expr:
-    """Convert the RAS202 top-code to the numeric release-row key.
+def _weighted_job_function(
+    *, persona_id: object, rows: list[tuple[str, str, int]]
+) -> tuple[str, str]:
+    """Select one function by a stable persona hash and source count weights.
 
     Returns:
-        Expression yielding the numeric key.
+        Source-backed job-function code and label.
+
+    Raises:
+        ValueError: If source counts cannot support a weighted selection.
     """
-    return (
-        pl.when(pl.col("age_key") == "71-")
-        .then(pl.lit(71, dtype=pl.Int16))
-        .otherwise(pl.col("age_key").cast(pl.Int16, strict=False))
-    )
-
-
-def _valid_status_code(row: dict[str, object]) -> bool:
-    return row["detailed_status_code"] in _STATUS_CODES.get(
-        row["labour_market_status"], set()
-    )
+    total = sum(count for _, _, count in rows)
+    if total <= 0:
+        raise ValueError("job-function source marginal has no positive counts")
+    digest = hashlib.sha256(str(persona_id).encode()).digest()
+    draw = int.from_bytes(digest[:8], "big") % total
+    for code, label, count in rows:
+        if draw < count:
+            return code, label
+        draw -= count
+    raise ValueError("job-function weighted source selection failed")
 
 
 def _validate_labels(*, source: pl.DataFrame, repaired: pl.DataFrame) -> None:
@@ -527,37 +561,3 @@ def _validate_labels(*, source: pl.DataFrame, repaired: pl.DataFrame) -> None:
     checked = repaired.join(expected, on="detailed_status_code", how="left")
     if checked.filter(pl.col("detailed_status") != pl.col("_expected_label")).height:
         raise ValueError("detailed status label does not match its code")
-
-
-def _changed_positions(
-    *, before: pl.DataFrame, after: pl.DataFrame, columns: list[str]
-) -> list[int]:
-    changed = before.select(columns).to_struct() != after.select(columns).to_struct()
-    return [index for index, value in enumerate(changed) if value]
-
-
-def _block(
-    *,
-    report: dict[str, object],
-    item: dict[str, object],
-    name: str,
-    reason: str,
-    count: int = 1,
-) -> None:
-    item.update(infeasible_strata=count, blocker=reason)
-    report["blocking_infeasibility"].append({"stage": name, "count": count})
-    report["stages"].append(item)
-
-
-def _missing_stage(*, report: dict[str, object], name: str) -> None:
-    _block(
-        report=report,
-        item={
-            "name": name,
-            "changed_persona_ids": [],
-            "changed_count": 0,
-            "infeasible_strata": 0,
-        },
-        name=name,
-        reason="detailed status code and label columns unavailable",
-    )
