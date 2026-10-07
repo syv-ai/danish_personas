@@ -26,38 +26,95 @@ PERSONA = (
 )
 
 
-def test_429_failure_is_pending_not_resolved(
+def test_500_retry_then_success_counts_one_logical_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Transient provider failures stop the run without marking the row resolved."""
+    """Transient server failures are retried within the same logical row."""
     paths = _write_inputs(tmp_path)
+    calls = 0
+    sleeps: list[float] = []
 
     class FakeBudget:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-    def failing_runner(**_kwargs: object) -> ProseReviewResult:
-        request = httpx.Request("POST", "https://example.test")
-        response = httpx.Response(429, request=request)
-        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+    def flaky_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            request = httpx.Request("POST", "https://example.test")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError(
+                "server error", request=request, response=response
+            )
+        return _result("patched")
 
     monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
-    with pytest.raises(review.PersonaProseReviewError, match="stopped"):
-        review.run_review_campaign(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_candidate_sha256=sha256_file(paths.candidate),
-            review_runner=failing_runner,
-        )
+    monkeypatch.setattr(review.time, "sleep", sleeps.append)
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=flaky_runner,
+    )
 
     status = json.loads((paths.output_dir / "status.json").read_text())
-    assert status["failed"] == 1
-    assert status["processed"] == 0
-    assert status["pending"] == 1
-    assert status["processed_persona_hashes"] == []
+    assert calls == 2
+    assert sleeps == [1.0]
+    assert summary["attempted"] == 1
+    assert status["attempted"] == 1
+    assert status["transient_retries"] == 1
+    assert status["failed"] == 0
+    assert status["processed"] == 1
+    assert status["pending"] == 0
+
+
+def test_429_retry_after_then_success_uses_header_delay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry-After controls the bounded delay for transient rate limits."""
+    paths = _write_inputs(tmp_path)
+    calls = 0
+    sleeps: list[float] = []
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def rate_limited_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            request = httpx.Request("POST", "https://example.test")
+            response = httpx.Response(
+                429, headers={"Retry-After": "7"}, request=request
+            )
+            raise httpx.HTTPStatusError(
+                "rate limited", request=request, response=response
+            )
+        return _result("unchanged_consistent")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(review.time, "sleep", sleeps.append)
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=rate_limited_runner,
+    )
+
+    assert calls == 2
+    assert sleeps == [7.0]
+    assert summary["attempted"] == 1
+    assert summary["transient_retries"] == 1
+    assert summary["processed"] == 1
+    assert summary["pending"] == 0
 
 
 def _write_inputs(
@@ -262,27 +319,29 @@ def test_dry_run_selects_triage_rows_from_real_allowed_differences(
     assert not paths.output_dir.exists()
 
 
-def test_fatal_first_result_does_not_invoke_later_pending_rows(
+def test_repeated_500_stops_without_invoking_later_pending_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fatal failures cancel rows that were not already running."""
+    """Exhausted transient retries stop without queueing further rows."""
     paths = _write_inputs(
         tmp_path, include_second_reviewable=True, extra_reviewable_count=2
     )
     calls = 0
+    sleeps: list[float] = []
 
     class FakeBudget:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-    def failing_first_runner(**_kwargs: object) -> ProseReviewResult:
+    def repeatedly_failing_runner(**_kwargs: object) -> ProseReviewResult:
         nonlocal calls
         calls += 1
         request = httpx.Request("POST", "https://example.test")
-        response = httpx.Response(429, request=request)
-        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+        response = httpx.Response(500, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
 
     monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(review.time, "sleep", sleeps.append)
     with pytest.raises(review.PersonaProseReviewError, match="stopped"):
         review.run_review_campaign(
             paths=paths,
@@ -291,15 +350,58 @@ def test_fatal_first_result_does_not_invoke_later_pending_rows(
             workers=1,
             expected_original_sha256=sha256_file(paths.original),
             expected_candidate_sha256=sha256_file(paths.candidate),
-            review_runner=failing_first_runner,
+            review_runner=repeatedly_failing_runner,
+        )
+
+    status = json.loads((paths.output_dir / "status.json").read_text())
+    assert calls == 5
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+    assert status["failed"] == 1
+    assert status["attempted"] == 1
+    assert status["transient_retries"] == 4
+    assert status["processed"] == 0
+    assert status["pending"] == 4
+    assert status["processed_persona_hashes"] == []
+
+
+def test_unsafe_error_stops_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Privacy, ledger, checkpoint, and protocol failures remain hard stops."""
+    paths = _write_inputs(tmp_path)
+    calls = 0
+    sleeps: list[float] = []
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def unsafe_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal calls
+        calls += 1
+        raise review.ProxyReviewError("checkpoint state is unsafe")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(review.time, "sleep", sleeps.append)
+    with pytest.raises(review.PersonaProseReviewError, match="stopped"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=unsafe_runner,
         )
 
     status = json.loads((paths.output_dir / "status.json").read_text())
     assert calls == 1
+    assert sleeps == []
     assert status["failed"] == 1
     assert status["attempted"] == 1
+    assert status["transient_retries"] == 0
     assert status["processed"] == 0
-    assert status["pending"] == 4
+    assert status["pending"] == 1
     assert status["processed_persona_hashes"] == []
 
 
