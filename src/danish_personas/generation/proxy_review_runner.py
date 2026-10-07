@@ -26,10 +26,6 @@ _CHECKPOINT_VERSION = 1
 _SCHEMA_NAME = "prose_review"
 
 
-class ProxyReviewError(ValueError):
-    """Raised when a proxy review cannot safely be completed."""
-
-
 def run_proxy_review(
     *,
     row: dict[str, t.Any],
@@ -114,6 +110,10 @@ def run_proxy_review(
     return result
 
 
+class ProxyReviewError(ValueError):
+    """Raised when a proxy review cannot safely be completed."""
+
+
 def _build_binding(
     *,
     row: dict[str, t.Any],
@@ -156,6 +156,28 @@ def _build_binding(
         "base_url_sha256": _sha(BASE_URL.encode("utf-8")),
         "source_pin_sha256": str(source_pin) if isinstance(source_pin, str) else "",
     }
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _prepare_checkpoint_parent(parent: Path) -> None:
+    missing: list[Path] = []
+    current = parent
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+    if parent.stat().st_mode & 0o077:
+        raise ProxyReviewError("Checkpoint directory must be private (mode 0700)")
 
 
 def _request_review(
@@ -210,6 +232,44 @@ def _request_review(
     return response
 
 
+class _BoundedTransport(httpx.BaseTransport):
+    """Reject a request whose actual body exceeds its durable reservation."""
+
+    def __init__(self, transport: httpx.BaseTransport, limit: int) -> None:
+        self.transport = transport
+        self.limit = limit
+
+    def close(self) -> None:
+        self.transport.close()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if len(request.content) > self.limit:
+            raise ProxyReviewError("Constructed HTTP body exceeds reserved input bound")
+        return self.transport.handle_request(request)
+
+
+def _request_body(
+    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": _SCHEMA_NAME, "strict": True, "schema": schema},
+        },
+        "reasoning_effort": "none",
+    }
+
+
+def _request_id(*, binding: dict[str, str | int]) -> str:
+    binding_hash = _sha(_canonical(binding))[:16]
+    return f"review-{binding_hash}-{uuid.uuid4().hex}"
+
+
 def _resume_checkpoint(
     *,
     path: Path,
@@ -241,57 +301,6 @@ def _resume_checkpoint(
     return result
 
 
-def _save_checkpoint(
-    *, path: Path, binding: dict[str, str | int], result: ProseReviewResult
-) -> None:
-    document: dict[str, object] = {
-        **binding,
-        "disposition": result.disposition,
-        "changed_fraction": result.changed_fraction,
-        "proposed_text_sha256": _sha(result.proposed_text.encode("utf-8")),
-        "patches": [
-            {"old_excerpt": patch.old_excerpt, "new_excerpt": patch.new_excerpt}
-            for patch in result.patches
-        ],
-        "unchanged_evidence": [
-            {"field": item.field, "kind": item.kind, "quote": item.quote}
-            for item in result.unchanged_evidence
-        ],
-        "manual_review_reason": result.manual_review_reason,
-        "unchanged_consistent_note": result.unchanged_consistent_note,
-    }
-    document["checkpoint_sha256"] = _sha(_canonical(document))
-    _write_checkpoint(path, document)
-
-
-def _verify_checkpoint_result(
-    *, checkpoint: dict[str, object], result: ProseReviewResult
-) -> None:
-    if (
-        checkpoint.get("disposition") != result.disposition
-        or checkpoint.get("changed_fraction") != result.changed_fraction
-        or checkpoint.get("proposed_text_sha256")
-        != _sha(result.proposed_text.encode("utf-8"))
-        or checkpoint.get("manual_review_reason") != result.manual_review_reason
-        or checkpoint.get("unchanged_consistent_note")
-        != result.unchanged_consistent_note
-    ):
-        raise ProxyReviewError("Review checkpoint does not match its decision")
-
-
-def _checkpoint_response(checkpoint: dict[str, object]) -> dict[str, object]:
-    patches = checkpoint.get("patches")
-    evidence = checkpoint.get("unchanged_evidence")
-    if not isinstance(patches, list) or not isinstance(evidence, list):
-        raise ProxyReviewError("Review checkpoint is malformed")
-    return {
-        "disposition": checkpoint.get("disposition"),
-        "patches": patches,
-        "unchanged_evidence": evidence,
-        "manual_review_reason": checkpoint.get("manual_review_reason"),
-    }
-
-
 def _checkpoint_keys() -> set[str]:
     return {
         "checkpoint_version",
@@ -316,59 +325,17 @@ def _checkpoint_keys() -> set[str]:
     }
 
 
-def _request_id(*, binding: dict[str, str | int]) -> str:
-    binding_hash = _sha(_canonical(binding))[:16]
-    return f"review-{binding_hash}-{uuid.uuid4().hex}"
-
-
-def _request_body(
-    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
-) -> dict[str, object]:
+def _checkpoint_response(checkpoint: dict[str, object]) -> dict[str, object]:
+    patches = checkpoint.get("patches")
+    evidence = checkpoint.get("unchanged_evidence")
+    if not isinstance(patches, list) or not isinstance(evidence, list):
+        raise ProxyReviewError("Review checkpoint is malformed")
     return {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": _SCHEMA_NAME, "strict": True, "schema": schema},
-        },
-        "reasoning_effort": "none",
+        "disposition": checkpoint.get("disposition"),
+        "patches": patches,
+        "unchanged_evidence": evidence,
+        "manual_review_reason": checkpoint.get("manual_review_reason"),
     }
-
-
-class _BoundedTransport(httpx.BaseTransport):
-    """Reject a request whose actual body exceeds its durable reservation."""
-
-    def __init__(self, transport: httpx.BaseTransport, limit: int) -> None:
-        self.transport = transport
-        self.limit = limit
-
-    def close(self) -> None:
-        self.transport.close()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        if len(request.content) > self.limit:
-            raise ProxyReviewError("Constructed HTTP body exceeds reserved input bound")
-        return self.transport.handle_request(request)
-
-
-def _prepare_checkpoint_parent(parent: Path) -> None:
-    missing: list[Path] = []
-    current = parent
-    while not current.exists():
-        missing.append(current)
-        current = current.parent
-    for directory in reversed(missing):
-        directory.mkdir(mode=0o700)
-    if parent.stat().st_mode & 0o077:
-        raise ProxyReviewError("Checkpoint directory must be private (mode 0700)")
-
-
-def _require_private_checkpoint(path: Path) -> None:
-    if path.stat().st_mode & 0o777 != 0o600:
-        raise ProxyReviewError("Review checkpoint must be private (mode 0600)")
 
 
 def _read_checkpoint(path: Path) -> dict[str, object]:
@@ -379,6 +346,49 @@ def _read_checkpoint(path: Path) -> dict[str, object]:
         return t.cast(dict[str, object], value)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ProxyReviewError("Review checkpoint is unreadable") from exc
+
+
+def _require_private_checkpoint(path: Path) -> None:
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ProxyReviewError("Review checkpoint must be private (mode 0600)")
+
+
+def _verify_checkpoint_result(
+    *, checkpoint: dict[str, object], result: ProseReviewResult
+) -> None:
+    if (
+        checkpoint.get("disposition") != result.disposition
+        or checkpoint.get("changed_fraction") != result.changed_fraction
+        or checkpoint.get("proposed_text_sha256")
+        != _sha(result.proposed_text.encode("utf-8"))
+        or checkpoint.get("manual_review_reason") != result.manual_review_reason
+        or checkpoint.get("unchanged_consistent_note")
+        != result.unchanged_consistent_note
+    ):
+        raise ProxyReviewError("Review checkpoint does not match its decision")
+
+
+def _save_checkpoint(
+    *, path: Path, binding: dict[str, str | int], result: ProseReviewResult
+) -> None:
+    document: dict[str, object] = {
+        **binding,
+        "disposition": result.disposition,
+        "changed_fraction": result.changed_fraction,
+        "proposed_text_sha256": _sha(result.proposed_text.encode("utf-8")),
+        "patches": [
+            {"old_excerpt": patch.old_excerpt, "new_excerpt": patch.new_excerpt}
+            for patch in result.patches
+        ],
+        "unchanged_evidence": [
+            {"field": item.field, "kind": item.kind, "quote": item.quote}
+            for item in result.unchanged_evidence
+        ],
+        "manual_review_reason": result.manual_review_reason,
+        "unchanged_consistent_note": result.unchanged_consistent_note,
+    }
+    document["checkpoint_sha256"] = _sha(_canonical(document))
+    _write_checkpoint(path, document)
 
 
 def _write_checkpoint(path: Path, value: dict[str, object]) -> None:
@@ -395,16 +405,6 @@ def _write_checkpoint(path: Path, value: dict[str, object]) -> None:
         os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-
-def _sha(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 __all__ = ["ProxyReviewError", "run_proxy_review"]

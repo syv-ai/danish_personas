@@ -127,225 +127,6 @@ def test_all_dispositions_checkpoint_privately_and_resume_without_network(
     assert restarted == result
 
 
-def test_reserves_before_network_and_omits_private_row_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reserve durably before I/O while sending only the minimal review payload."""
-    events: list[str] = []
-    requests: list[httpx.Request] = []
-    budget = _budget(tmp_path)
-    original_reserve = budget.reserve_attempt
-
-    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
-        events.append("reserved")
-        return original_reserve(request_id, request)
-
-    monkeypatch.setattr(budget, "reserve_attempt", reserve)
-    run_proxy_review(
-        row=_row(),
-        candidate_row=_candidate_row(
-            {"marital_status": {"old": "single", "new": "married"}}
-        ),
-        changed_facts={"marital_status": {"old": "single", "new": "married"}},
-        prompt=_PROMPT,
-        config=_config(),
-        budget=budget,
-        checkpoint_path=tmp_path / "review.json",
-        transport=_transport(
-            json.dumps(
-                {
-                    "disposition": "needs_manual_review",
-                    "patches": [],
-                    "unchanged_evidence": [],
-                    "manual_review_reason": "ambiguous",
-                }
-            ),
-            requests,
-            events,
-        ),
-    )
-
-    assert events[:2] == ["reserved", "network"]
-    assert "private-sex" not in requests[0].content.decode()
-    assert "candidate_row" not in requests[0].content.decode()
-
-
-def test_records_usage_before_semantic_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Record token usage for a successful HTTP response before quarantining it."""
-    events: list[str] = []
-    budget = _budget(tmp_path)
-    original_usage = budget.record_usage
-    original_validate = review_runner.validate_prose_review
-
-    def record_usage(
-        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
-    ) -> None:
-        events.append("usage")
-        original_usage(
-            request_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            response_sha256=response_sha256,
-        )
-
-    def validate_with_event(
-        *,
-        original_text: str,
-        changed_facts: Mapping[str, Mapping[str, object]],
-        response: str | Mapping[str, object],
-    ) -> object:
-        events.append("validate")
-        return original_validate(
-            original_text=original_text, changed_facts=changed_facts, response=response
-        )
-
-    monkeypatch.setattr(budget, "record_usage", record_usage)
-    monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
-
-    with pytest.raises(ProseReviewError):
-        _run(tmp_path, _transport("not json", []), budget=budget)
-
-    assert events == ["usage", "validate"]
-    assert not (tmp_path / "review.json").exists()
-
-
-def test_failed_http_retry_gets_unique_reservations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Never reuse a failed attempt's durable request ID on caller retry."""
-    budget = _budget(tmp_path)
-    original_reserve = budget.reserve_attempt
-    request_ids: list[str] = []
-
-    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
-        request_ids.append(request_id)
-        return original_reserve(request_id, request)
-
-    def fail(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("local proxy unavailable", request=request)
-
-    monkeypatch.setattr(budget, "reserve_attempt", reserve)
-    for _ in range(2):
-        with pytest.raises(httpx.ConnectError):
-            _run(tmp_path, httpx.MockTransport(fail), budget=budget)
-
-    assert len(request_ids) == 2
-    assert len(set(request_ids)) == 2
-    assert not (tmp_path / "review.json").exists()
-
-
-def test_rejects_stale_checkpoint_inputs(tmp_path: Path) -> None:
-    """Refuse to resume a decision bound to different verified inputs."""
-    _run(
-        tmp_path,
-        _transport(
-            json.dumps(
-                {
-                    "disposition": "needs_manual_review",
-                    "patches": [],
-                    "unchanged_evidence": [],
-                    "manual_review_reason": "ambiguous",
-                }
-            ),
-            [],
-        ),
-    )
-
-    with pytest.raises(ProxyReviewError, match="changed"):
-        run_proxy_review(
-            row=_row(),
-            candidate_row=_candidate_row({"age": {"old": 41, "new": 42}}),
-            changed_facts={"age": {"old": 41, "new": 42}},
-            prompt=_PROMPT,
-            config=_config(),
-            budget=_budget(tmp_path),
-            checkpoint_path=tmp_path / "review.json",
-            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
-        )
-
-
-def test_revalidates_checkpoint_patch_snippets(tmp_path: Path) -> None:
-    """A valid checksum cannot make forged patch evidence acceptable."""
-    _run(
-        tmp_path,
-        _transport(
-            json.dumps(
-                {
-                    "disposition": "patched",
-                    "patches": [
-                        {"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}
-                    ],
-                    "unchanged_evidence": [],
-                    "manual_review_reason": None,
-                }
-            ),
-            [],
-        ),
-    )
-    checkpoint_path = tmp_path / "review.json"
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["patches"] = [
-        {"old_excerpt": "not present", "new_excerpt": "Efter ændring"}
-    ]
-    unsigned = {
-        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
-    }
-    checkpoint["checkpoint_sha256"] = hashlib.sha256(
-        json.dumps(
-            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
-    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
-    checkpoint_path.chmod(0o600)
-
-    with pytest.raises(ProxyReviewError):
-        _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)))
-
-
-def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None:
-    """Reuse the patch runner's outbound sensitive-identity guard."""
-    requests: list[httpx.Request] = []
-    with pytest.raises(ProxyReviewError):
-        _run(
-            tmp_path,
-            _transport("{}", requests),
-            changed_facts={
-                "skills_and_expertise": {
-                    "old": ["planlægning"] * 3,
-                    "new": ["seksuel orientering"],
-                }
-            },
-        )
-    assert not requests
-
-
-def _run(
-    tmp_path: Path,
-    transport: httpx.BaseTransport,
-    *,
-    changed_facts: dict[str, dict[str, object]] | None = None,
-    budget: ProxyBudget | None = None,
-) -> object:
-    source = _row()
-    facts = (
-        {"marital_status": {"old": "single", "new": "married"}}
-        if changed_facts is None
-        else changed_facts
-    )
-    return run_proxy_review(
-        row=source,
-        candidate_row=_candidate_row(facts, row=source),
-        changed_facts=facts,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path) if budget is None else budget,
-        checkpoint_path=tmp_path / "review.json",
-        transport=transport,
-    )
-
-
 def _budget(tmp_path: Path) -> ProxyBudget:
     registry = tmp_path / "models.json"
     registry.write_text(
@@ -446,3 +227,222 @@ def _transport(
         )
 
     return httpx.MockTransport(respond)
+
+
+def test_failed_http_retry_gets_unique_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never reuse a failed attempt's durable request ID on caller retry."""
+    budget = _budget(tmp_path)
+    original_reserve = budget.reserve_attempt
+    request_ids: list[str] = []
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        request_ids.append(request_id)
+        return original_reserve(request_id, request)
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("local proxy unavailable", request=request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    for _ in range(2):
+        with pytest.raises(httpx.ConnectError):
+            _run(tmp_path, httpx.MockTransport(fail), budget=budget)
+
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 2
+    assert not (tmp_path / "review.json").exists()
+
+
+def _run(
+    tmp_path: Path,
+    transport: httpx.BaseTransport,
+    *,
+    changed_facts: dict[str, dict[str, object]] | None = None,
+    budget: ProxyBudget | None = None,
+) -> object:
+    source = _row()
+    facts = (
+        {"marital_status": {"old": "single", "new": "married"}}
+        if changed_facts is None
+        else changed_facts
+    )
+    return run_proxy_review(
+        row=source,
+        candidate_row=_candidate_row(facts, row=source),
+        changed_facts=facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path) if budget is None else budget,
+        checkpoint_path=tmp_path / "review.json",
+        transport=transport,
+    )
+
+
+def test_records_usage_before_semantic_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record token usage for a successful HTTP response before quarantining it."""
+    events: list[str] = []
+    budget = _budget(tmp_path)
+    original_usage = budget.record_usage
+    original_validate = review_runner.validate_prose_review
+
+    def record_usage(
+        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
+    ) -> None:
+        events.append("usage")
+        original_usage(
+            request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_sha256=response_sha256,
+        )
+
+    def validate_with_event(
+        *,
+        original_text: str,
+        changed_facts: Mapping[str, Mapping[str, object]],
+        response: str | Mapping[str, object],
+    ) -> object:
+        events.append("validate")
+        return original_validate(
+            original_text=original_text, changed_facts=changed_facts, response=response
+        )
+
+    monkeypatch.setattr(budget, "record_usage", record_usage)
+    monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
+
+    with pytest.raises(ProseReviewError):
+        _run(tmp_path, _transport("not json", []), budget=budget)
+
+    assert events == ["usage", "validate"]
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None:
+    """Reuse the patch runner's outbound sensitive-identity guard."""
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyReviewError):
+        _run(
+            tmp_path,
+            _transport("{}", requests),
+            changed_facts={
+                "skills_and_expertise": {
+                    "old": ["planlægning"] * 3,
+                    "new": ["seksuel orientering"],
+                }
+            },
+        )
+    assert not requests
+
+
+def test_rejects_stale_checkpoint_inputs(tmp_path: Path) -> None:
+    """Refuse to resume a decision bound to different verified inputs."""
+    _run(
+        tmp_path,
+        _transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            [],
+        ),
+    )
+
+    with pytest.raises(ProxyReviewError, match="changed"):
+        run_proxy_review(
+            row=_row(),
+            candidate_row=_candidate_row({"age": {"old": 41, "new": 42}}),
+            changed_facts={"age": {"old": 41, "new": 42}},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "review.json",
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+
+
+def test_reserves_before_network_and_omits_private_row_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reserve durably before I/O while sending only the minimal review payload."""
+    events: list[str] = []
+    requests: list[httpx.Request] = []
+    budget = _budget(tmp_path)
+    original_reserve = budget.reserve_attempt
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        events.append("reserved")
+        return original_reserve(request_id, request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    run_proxy_review(
+        row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
+        changed_facts={"marital_status": {"old": "single", "new": "married"}},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            requests,
+            events,
+        ),
+    )
+
+    assert events[:2] == ["reserved", "network"]
+    assert "private-sex" not in requests[0].content.decode()
+    assert "candidate_row" not in requests[0].content.decode()
+
+
+def test_revalidates_checkpoint_patch_snippets(tmp_path: Path) -> None:
+    """A valid checksum cannot make forged patch evidence acceptable."""
+    _run(
+        tmp_path,
+        _transport(
+            json.dumps(
+                {
+                    "disposition": "patched",
+                    "patches": [
+                        {"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}
+                    ],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": None,
+                }
+            ),
+            [],
+        ),
+    )
+    checkpoint_path = tmp_path / "review.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["patches"] = [
+        {"old_excerpt": "not present", "new_excerpt": "Efter ændring"}
+    ]
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    with pytest.raises(ProxyReviewError):
+        _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)))

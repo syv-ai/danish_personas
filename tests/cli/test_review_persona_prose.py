@@ -26,202 +26,6 @@ PERSONA = (
 )
 
 
-def test_dry_run_selects_triage_rows_from_real_allowed_differences(
-    tmp_path: Path,
-) -> None:
-    """Dry-run labels no-change and privacy rows without provider or output I/O."""
-    paths = _write_inputs(tmp_path)
-    called = False
-
-    def fake_runner(**_kwargs: object) -> ProseReviewResult:
-        nonlocal called
-        called = True
-        return _result("patched")
-
-    summary = review.run_review_campaign(
-        paths=paths,
-        execute=False,
-        max_rows=None,
-        workers=2,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_candidate_sha256=sha256_file(paths.candidate),
-        review_runner=fake_runner,
-    )
-
-    assert called is False
-    assert summary["dry_run"] is True
-    assert summary["total_triage_selected"] == 3
-    assert summary["reviewable"] == 1
-    assert summary["would_process"] == 1
-    assert summary["no_changed_fact"] == 1
-    assert summary["privacy_skipped"] == 1
-    assert not paths.output_dir.exists()
-
-
-def test_run_uses_uncapped_budget_and_resumes_without_duplicate_attempts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Pilot prefixes use the same manifest and skip processed hashes on resume."""
-    paths = _write_inputs(tmp_path, include_second_reviewable=True)
-    calls: list[dict[str, dict[str, object]]] = []
-    budget_kwargs: list[dict[str, object]] = []
-
-    class FakeBudget:
-        def __init__(self, **kwargs: object) -> None:
-            budget_kwargs.append(kwargs)
-
-    def fake_runner(
-        *,
-        row: dict[str, object],
-        candidate_row: dict[str, object],
-        changed_facts: dict[str, dict[str, object]],
-        prompt: str,
-        config: GenerationConfig,
-        budget: object,
-        checkpoint_path: Path,
-        transport: httpx.BaseTransport,
-    ) -> ProseReviewResult:
-        del row, candidate_row, prompt, budget, transport
-        calls.append(changed_facts)
-        assert config.max_tokens is None
-        assert config.maximum_http_attempts == 1
-        assert checkpoint_path.parent.parent == paths.output_dir / "checkpoints"
-        return _result("patched" if len(calls) == 1 else "unchanged_consistent")
-
-    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
-    expected_original = sha256_file(paths.original)
-    expected_candidate = sha256_file(paths.candidate)
-
-    first = review.run_review_campaign(
-        paths=paths,
-        execute=True,
-        max_rows=1,
-        workers=1,
-        expected_original_sha256=expected_original,
-        expected_candidate_sha256=expected_candidate,
-        review_runner=fake_runner,
-    )
-    manifest = json.loads((paths.output_dir / "manifest.json").read_text())
-    second = review.run_review_campaign(
-        paths=paths,
-        execute=True,
-        max_rows=None,
-        workers=1,
-        expected_original_sha256=expected_original,
-        expected_candidate_sha256=expected_candidate,
-        review_runner=fake_runner,
-    )
-
-    assert len(calls) == 2
-    assert calls[0] == {"age": {"old": 41, "new": 42}}
-    assert calls[1] == {"job_title": {"old": "analytiker", "new": "rådgiver"}}
-    assert first["pending"] == 1
-    assert second["pending"] == 0
-    assert second["patched"] == 1
-    assert second["unchanged_consistent"] == 1
-    assert budget_kwargs[-1]["uncapped"] is True
-    assert "max_rows" not in manifest
-    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
-    assert ((paths.output_dir / "status.json").stat().st_mode & 0o777) == 0o600
-
-    paths.prompt.write_text("Prompten er ændret.\n", encoding="utf-8")
-    with pytest.raises(review.PersonaProseReviewError, match="pins do not match"):
-        review.run_review_campaign(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=expected_original,
-            expected_candidate_sha256=expected_candidate,
-            review_runner=fake_runner,
-        )
-
-
-def test_delayed_runner_never_exceeds_worker_concurrency(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Bounded scheduling keeps delayed provider work within the worker limit."""
-    paths = _write_inputs(
-        tmp_path, include_second_reviewable=True, extra_reviewable_count=4
-    )
-    active = 0
-    max_active = 0
-    calls = 0
-    lock = threading.Lock()
-
-    class FakeBudget:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-    def delayed_runner(**_kwargs: object) -> ProseReviewResult:
-        nonlocal active, max_active, calls
-        with lock:
-            active += 1
-            max_active = max(max_active, active)
-            calls += 1
-        time.sleep(0.01)
-        with lock:
-            active -= 1
-        return _result("unchanged_consistent")
-
-    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
-    summary = review.run_review_campaign(
-        paths=paths,
-        execute=True,
-        max_rows=None,
-        workers=2,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_candidate_sha256=sha256_file(paths.candidate),
-        review_runner=delayed_runner,
-    )
-
-    assert calls == 6
-    assert max_active <= 2
-    assert summary["processed"] == 6
-    assert summary["pending"] == 0
-
-
-def test_fatal_first_result_does_not_invoke_later_pending_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Fatal failures cancel rows that were not already running."""
-    paths = _write_inputs(
-        tmp_path, include_second_reviewable=True, extra_reviewable_count=2
-    )
-    calls = 0
-
-    class FakeBudget:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-    def failing_first_runner(**_kwargs: object) -> ProseReviewResult:
-        nonlocal calls
-        calls += 1
-        request = httpx.Request("POST", "https://example.test")
-        response = httpx.Response(429, request=request)
-        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
-
-    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
-    with pytest.raises(review.PersonaProseReviewError, match="stopped"):
-        review.run_review_campaign(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_candidate_sha256=sha256_file(paths.candidate),
-            review_runner=failing_first_runner,
-        )
-
-    status = json.loads((paths.output_dir / "status.json").read_text())
-    assert calls == 1
-    assert status["failed"] == 1
-    assert status["attempted"] == 1
-    assert status["processed"] == 0
-    assert status["pending"] == 4
-    assert status["processed_persona_hashes"] == []
-
-
 def test_429_failure_is_pending_not_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -254,32 +58,6 @@ def test_429_failure_is_pending_not_resolved(
     assert status["processed"] == 0
     assert status["pending"] == 1
     assert status["processed_persona_hashes"] == []
-
-
-def test_source_hash_validation_fails_closed(tmp_path: Path) -> None:
-    """Changed original or v4 candidate sources are rejected before provider setup."""
-    paths = _write_inputs(tmp_path)
-
-    with pytest.raises(review.PersonaProseReviewError, match="original parquet"):
-        review.run_review_campaign(
-            paths=paths,
-            execute=False,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256="0" * 64,
-            expected_candidate_sha256=sha256_file(paths.candidate),
-            review_runner=lambda **_kwargs: _result("patched"),
-        )
-    with pytest.raises(review.PersonaProseReviewError, match="candidate parquet"):
-        review.run_review_campaign(
-            paths=paths,
-            execute=False,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_candidate_sha256="0" * 64,
-            review_runner=lambda **_kwargs: _result("patched"),
-        )
 
 
 def _write_inputs(
@@ -393,6 +171,50 @@ def _write_inputs(
     )
 
 
+def test_delayed_runner_never_exceeds_worker_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bounded scheduling keeps delayed provider work within the worker limit."""
+    paths = _write_inputs(
+        tmp_path, include_second_reviewable=True, extra_reviewable_count=4
+    )
+    active = 0
+    max_active = 0
+    calls = 0
+    lock = threading.Lock()
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def delayed_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal active, max_active, calls
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            calls += 1
+        time.sleep(0.01)
+        with lock:
+            active -= 1
+        return _result("unchanged_consistent")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=2,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=delayed_runner,
+    )
+
+    assert calls == 6
+    assert max_active <= 2
+    assert summary["processed"] == 6
+    assert summary["pending"] == 0
+
+
 def _result(
     disposition: t.Literal["patched", "unchanged_consistent", "needs_manual_review"],
 ) -> ProseReviewResult:
@@ -406,3 +228,181 @@ def _result(
         manual_review_reason=None,
         unchanged_consistent_note=None,
     )
+
+
+def test_dry_run_selects_triage_rows_from_real_allowed_differences(
+    tmp_path: Path,
+) -> None:
+    """Dry-run labels no-change and privacy rows without provider or output I/O."""
+    paths = _write_inputs(tmp_path)
+    called = False
+
+    def fake_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal called
+        called = True
+        return _result("patched")
+
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=False,
+        max_rows=None,
+        workers=2,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=fake_runner,
+    )
+
+    assert called is False
+    assert summary["dry_run"] is True
+    assert summary["total_triage_selected"] == 3
+    assert summary["reviewable"] == 1
+    assert summary["would_process"] == 1
+    assert summary["no_changed_fact"] == 1
+    assert summary["privacy_skipped"] == 1
+    assert not paths.output_dir.exists()
+
+
+def test_fatal_first_result_does_not_invoke_later_pending_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fatal failures cancel rows that were not already running."""
+    paths = _write_inputs(
+        tmp_path, include_second_reviewable=True, extra_reviewable_count=2
+    )
+    calls = 0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def failing_first_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "https://example.test")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    with pytest.raises(review.PersonaProseReviewError, match="stopped"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=failing_first_runner,
+        )
+
+    status = json.loads((paths.output_dir / "status.json").read_text())
+    assert calls == 1
+    assert status["failed"] == 1
+    assert status["attempted"] == 1
+    assert status["processed"] == 0
+    assert status["pending"] == 4
+    assert status["processed_persona_hashes"] == []
+
+
+def test_run_uses_uncapped_budget_and_resumes_without_duplicate_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pilot prefixes use the same manifest and skip processed hashes on resume."""
+    paths = _write_inputs(tmp_path, include_second_reviewable=True)
+    calls: list[dict[str, dict[str, object]]] = []
+    budget_kwargs: list[dict[str, object]] = []
+
+    class FakeBudget:
+        def __init__(self, **kwargs: object) -> None:
+            budget_kwargs.append(kwargs)
+
+    def fake_runner(
+        *,
+        row: dict[str, object],
+        candidate_row: dict[str, object],
+        changed_facts: dict[str, dict[str, object]],
+        prompt: str,
+        config: GenerationConfig,
+        budget: object,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+    ) -> ProseReviewResult:
+        del row, candidate_row, prompt, budget, transport
+        calls.append(changed_facts)
+        assert config.max_tokens is None
+        assert config.maximum_http_attempts == 1
+        assert checkpoint_path.parent.parent == paths.output_dir / "checkpoints"
+        return _result("patched" if len(calls) == 1 else "unchanged_consistent")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    expected_original = sha256_file(paths.original)
+    expected_candidate = sha256_file(paths.candidate)
+
+    first = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=1,
+        workers=1,
+        expected_original_sha256=expected_original,
+        expected_candidate_sha256=expected_candidate,
+        review_runner=fake_runner,
+    )
+    manifest = json.loads((paths.output_dir / "manifest.json").read_text())
+    second = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        expected_original_sha256=expected_original,
+        expected_candidate_sha256=expected_candidate,
+        review_runner=fake_runner,
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == {"age": {"old": 41, "new": 42}}
+    assert calls[1] == {"job_title": {"old": "analytiker", "new": "rådgiver"}}
+    assert first["pending"] == 1
+    assert second["pending"] == 0
+    assert second["patched"] == 1
+    assert second["unchanged_consistent"] == 1
+    assert budget_kwargs[-1]["uncapped"] is True
+    assert "max_rows" not in manifest
+    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
+    assert ((paths.output_dir / "status.json").stat().st_mode & 0o777) == 0o600
+
+    paths.prompt.write_text("Prompten er ændret.\n", encoding="utf-8")
+    with pytest.raises(review.PersonaProseReviewError, match="pins do not match"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=expected_original,
+            expected_candidate_sha256=expected_candidate,
+            review_runner=fake_runner,
+        )
+
+
+def test_source_hash_validation_fails_closed(tmp_path: Path) -> None:
+    """Changed original or v4 candidate sources are rejected before provider setup."""
+    paths = _write_inputs(tmp_path)
+
+    with pytest.raises(review.PersonaProseReviewError, match="original parquet"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256="0" * 64,
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=lambda **_kwargs: _result("patched"),
+        )
+    with pytest.raises(review.PersonaProseReviewError, match="candidate parquet"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256="0" * 64,
+            review_runner=lambda **_kwargs: _result("patched"),
+        )

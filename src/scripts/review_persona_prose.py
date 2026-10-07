@@ -85,6 +85,39 @@ JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 
+@dataclass(frozen=True)
+class ReviewInputs:
+    """Loaded prose review inputs keyed by private persona ID in memory only."""
+
+    original_rows: dict[str, dict[str, object]]
+    candidate_rows: dict[str, dict[str, object]]
+    triage_personas: dict[str, dict[str, object]]
+    prompt: str
+
+
+@dataclass(frozen=True)
+class ReviewPaths:
+    """Filesystem inputs and private output location."""
+
+    original: Path
+    candidate: Path
+    triage: Path
+    prompt: Path
+    output_dir: Path
+    registry: Path
+
+
+@dataclass(frozen=True)
+class ReviewRow:
+    """One row that may be resolved by the proxy review campaign."""
+
+    persona_id: str
+    persona_hash: str
+    original_row: dict[str, object]
+    candidate_row: dict[str, object]
+    changed_facts: dict[str, dict[str, object]]
+
+
 class ReviewRunner(t.Protocol):
     """Callable contract for the injectable proxy review runner."""
 
@@ -103,54 +136,7 @@ class ReviewRunner(t.Protocol):
         """Run or resume one prose review."""
 
 
-@dataclass(frozen=True)
-class ReviewPaths:
-    """Filesystem inputs and private output location."""
-
-    original: Path
-    candidate: Path
-    triage: Path
-    prompt: Path
-    output_dir: Path
-    registry: Path
-
-
-@dataclass(frozen=True)
-class ReviewInputs:
-    """Loaded prose review inputs keyed by private persona ID in memory only."""
-
-    original_rows: dict[str, dict[str, object]]
-    candidate_rows: dict[str, dict[str, object]]
-    triage_personas: dict[str, dict[str, object]]
-    prompt: str
-
-
-@dataclass(frozen=True)
-class ReviewRow:
-    """One row that may be resolved by the proxy review campaign."""
-
-    persona_id: str
-    persona_hash: str
-    original_row: dict[str, object]
-    candidate_row: dict[str, object]
-    changed_facts: dict[str, dict[str, object]]
-
-
 ReviewFutureMap: t.TypeAlias = dict[futures.Future[ProseReviewResult], ReviewRow]
-
-
-@dataclass(frozen=True)
-class Selection:
-    """Deterministic full-campaign selection and static skip counts."""
-
-    reviewable: list[ReviewRow]
-    total_triage_selected: int
-    no_changed_fact: int
-    privacy_skipped: int
-
-
-class PersonaProseReviewError(Exception):
-    """Raised when the prose review CLI must fail closed."""
 
 
 @click.command()
@@ -284,56 +270,8 @@ def run_review_campaign(
     return summary
 
 
-def load_review_inputs(*, paths: ReviewPaths) -> ReviewInputs:
-    """Load only the inputs needed to compute real allowlisted fact changes.
-
-    Returns:
-        Original rows, candidate rows, triage metadata, and prompt text.
-    """
-    original = pl.read_parquet(paths.original)
-    candidate = pl.read_parquet(paths.candidate)
-    _require_columns(
-        frame=original, columns={ID_FIELD, PERSONA_FIELD}, label="original"
-    )
-    _require_columns(
-        frame=candidate, columns={ID_FIELD, PERSONA_FIELD}, label="candidate"
-    )
-    return ReviewInputs(
-        original_rows=_rows_by_id(original, label="original"),
-        candidate_rows=_rows_by_id(candidate, label="candidate"),
-        triage_personas=_load_triage_personas(paths.triage),
-        prompt=paths.prompt.read_text(encoding="utf-8"),
-    )
-
-
-def select_review_rows(*, inputs: ReviewInputs) -> Selection:
-    """Select all triage review IDs and label rows with no allowed fact changes.
-
-    Returns:
-        Full-campaign selection and static skip counts.
-    """
-    reviewable: list[ReviewRow] = []
-    total = 0
-    no_changed_fact = 0
-    privacy_skipped = 0
-    for persona_id, entry in sorted(inputs.triage_personas.items()):
-        if entry.get("classification") != TRIAGE_CLASSIFICATION:
-            continue
-        total += 1
-        row = _selected_row(persona_id=persona_id, inputs=inputs)
-        if row is None:
-            no_changed_fact += 1
-            continue
-        if _has_privacy_risk(row=row):
-            privacy_skipped += 1
-            continue
-        reviewable.append(row)
-    return Selection(
-        reviewable=reviewable,
-        total_triage_selected=total,
-        no_changed_fact=no_changed_fact,
-        privacy_skipped=privacy_skipped,
-    )
+class PersonaProseReviewError(Exception):
+    """Raised when the prose review CLI must fail closed."""
 
 
 def _base_manifest(
@@ -367,6 +305,383 @@ def _base_manifest(
         "triage_classification": TRIAGE_CLASSIFICATION,
         "allowed_facts": sorted(_ALLOWED_FACTS),
     }
+
+
+def _generation_config(*, prompt_path: Path) -> GenerationConfig:
+    return GenerationConfig(
+        base_url=BASE_URL,
+        model=MODEL,
+        api_key_env=None,
+        timeout_seconds=120.0,
+        maximum_http_attempts=1,
+        maximum_total_requests=1,
+        retry_backoff_seconds=0.0,
+        maximum_rows_per_shard=1,
+        max_tokens=None,
+        enable_thinking=None,
+        reasoning_effort="none",
+        prompt=prompt_path,
+        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
+    )
+
+
+def _validate_status(status: object) -> dict[str, object]:
+    if not isinstance(status, dict):
+        raise PersonaProseReviewError("status.json must be an object")
+    for key in (
+        "total_triage_selected",
+        "reviewable",
+        "no_changed_fact",
+        "privacy_skipped",
+        "patched",
+        "unchanged_consistent",
+        "needs_manual_review",
+        "failed",
+        "attempted",
+        "processed",
+        "pending",
+    ):
+        _status_int(status, key)
+    _status_hashes(status)
+    return status
+
+
+def _status_hashes(status: dict[str, object]) -> list[str]:
+    value = status.get("processed_persona_hashes")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise PersonaProseReviewError("status.json processed hashes are invalid")
+    if len(value) != len(set(value)):
+        raise PersonaProseReviewError("status.json contains duplicate processed rows")
+    return list(value)
+
+
+def _status_int(status: dict[str, object], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise PersonaProseReviewError("status.json progress counters are invalid")
+    return value
+
+
+def _write_status(*, path: Path, status: dict[str, object]) -> None:
+    _write_json(path=path, value=t.cast(dict[str, JSONValue], status))
+
+
+def _write_json(*, path: Path, value: dict[str, JSONValue]) -> None:
+    content = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _prepare_private_output(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(output_dir, 0o700)
+    if output_dir.stat().st_mode & 0o077:
+        raise PersonaProseReviewError("Output directory must be private (mode 0700)")
+
+
+def _process_pending(
+    *,
+    rows: list[ReviewRow],
+    status: dict[str, object],
+    status_path: Path,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    workers: int,
+    review_runner: ReviewRunner,
+) -> None:
+    row_iter = iter(rows)
+    future_map: ReviewFutureMap = {}
+    stop_exc: Exception | None = None
+    executor = futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        _submit_review_futures(
+            row_iter=row_iter,
+            future_map=future_map,
+            executor=executor,
+            limit=workers,
+            output_dir=output_dir,
+            prompt=prompt,
+            config=config,
+            budget=budget,
+            review_runner=review_runner,
+        )
+        while future_map:
+            done, _ = futures.wait(future_map, return_when=futures.FIRST_COMPLETED)
+            future = next(iter(done))
+            row = future_map.pop(future)
+            if future.cancelled():
+                continue
+            completed_exc = _record_completed_review_future(
+                future=future, row=row, status=status, status_path=status_path
+            )
+            if completed_exc is not None:
+                if stop_exc is None:
+                    stop_exc = completed_exc
+                _cancel_not_started(future_map=future_map)
+                continue
+            if stop_exc is None and not _has_completed_future(future_map=future_map):
+                _submit_review_futures(
+                    row_iter=row_iter,
+                    future_map=future_map,
+                    executor=executor,
+                    limit=workers,
+                    output_dir=output_dir,
+                    prompt=prompt,
+                    config=config,
+                    budget=budget,
+                    review_runner=review_runner,
+                )
+    finally:
+        if stop_exc is not None:
+            _cancel_not_started(future_map=future_map)
+        executor.shutdown(wait=stop_exc is None, cancel_futures=stop_exc is not None)
+    if stop_exc is not None:
+        raise PersonaProseReviewError(
+            "Prose review stopped before all rows were resolved"
+        ) from stop_exc
+
+
+def _cancel_not_started(*, future_map: ReviewFutureMap) -> None:
+    for future in future_map:
+        future.cancel()
+
+
+def _has_completed_future(*, future_map: ReviewFutureMap) -> bool:
+    return any(future.done() for future in future_map)
+
+
+def _record_completed_review_future(
+    *,
+    future: futures.Future[ProseReviewResult],
+    row: ReviewRow,
+    status: dict[str, object],
+    status_path: Path,
+) -> Exception | None:
+    status["attempted"] = _status_int(status, "attempted") + 1
+    try:
+        result = future.result()
+    except Exception as exc:
+        status["failed"] = _status_int(status, "failed") + 1
+        status["pending"] = _pending_count(status=status)
+        _write_status(path=status_path, status=status)
+        if _must_stop(exc):
+            return exc
+        LOGGER.warning("Persona prose review failed for one selected row")
+        return None
+    _record_result(status=status, row=row, result=result)
+    _write_status(path=status_path, status=status)
+    return None
+
+
+def _must_stop(exc: Exception) -> bool:
+    if isinstance(exc, (ProxyBudgetError, ProxyReviewError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 500, 502, 503, 504}
+    return False
+
+
+def _pending_count(*, status: dict[str, object]) -> int:
+    return max(0, _status_int(status, "reviewable") - _status_int(status, "processed"))
+
+
+def _record_result(
+    *, status: dict[str, object], row: ReviewRow, result: ProseReviewResult
+) -> None:
+    if result.disposition not in {
+        "patched",
+        "unchanged_consistent",
+        "needs_manual_review",
+    }:
+        raise PersonaProseReviewError("Prose review returned an unknown disposition")
+    status[result.disposition] = _status_int(status, result.disposition) + 1
+    status["processed"] = _status_int(status, "processed") + 1
+    hashes = _status_hashes(status)
+    if row.persona_hash not in hashes:
+        hashes.append(row.persona_hash)
+    status["processed_persona_hashes"] = hashes
+    status["pending"] = _pending_count(status=status)
+
+
+def _submit_review_futures(
+    *,
+    row_iter: c.Iterator[ReviewRow],
+    future_map: ReviewFutureMap,
+    executor: futures.ThreadPoolExecutor,
+    limit: int,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    review_runner: ReviewRunner,
+) -> None:
+    while len(future_map) < limit:
+        try:
+            row = next(row_iter)
+        except StopIteration:
+            return
+        future_map[
+            executor.submit(
+                _run_one_review,
+                row=row,
+                output_dir=output_dir,
+                prompt=prompt,
+                config=config,
+                budget=budget,
+                review_runner=review_runner,
+            )
+        ] = row
+
+
+def _proxy_budget(
+    *, paths: ReviewPaths, prompt: str, manifest: dict[str, JSONValue]
+) -> ProxyBudget:
+    inputs = manifest["inputs"]
+    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
+        raise PersonaProseReviewError("Manifest schema hash is malformed")
+    return ProxyBudget(
+        registry_path=paths.registry,
+        campaign=CAMPAIGN,
+        source_hash=sha256_text(canonical_json(manifest)),
+        prompt_hash=sha256_text(prompt),
+        schema_hash=inputs["schema"],
+        uncapped=True,
+    )
+
+
+def _public_status_summary(
+    *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
+) -> dict[str, object]:
+    status["pending"] = _pending_count(status=status)
+    return {
+        "dry_run": False,
+        "campaign": CAMPAIGN,
+        "status_path": str(status_path),
+        "total_triage_selected": status["total_triage_selected"],
+        "reviewable": status["reviewable"],
+        "patched": status["patched"],
+        "unchanged_consistent": status["unchanged_consistent"],
+        "needs_manual_review": status["needs_manual_review"],
+        "privacy_skipped": status["privacy_skipped"],
+        "no_changed_fact": status["no_changed_fact"],
+        "failed": status["failed"],
+        "attempted": status["attempted"],
+        "processed": status["processed"],
+        "pending": status["pending"],
+        "max_rows": max_rows,
+        "workers": workers,
+    }
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if workers < 1 or workers > 4:
+        raise PersonaProseReviewError("workers must be between 1 and 4")
+
+
+def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
+    if path.exists():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing != manifest:
+            raise PersonaProseReviewError(
+                "manifest.json pins do not match current inputs"
+            )
+        if path.stat().st_mode & 0o777 != 0o600:
+            raise PersonaProseReviewError("manifest.json must be private (mode 0600)")
+        return
+    _write_json(path=path, value=manifest)
+
+
+def load_review_inputs(*, paths: ReviewPaths) -> ReviewInputs:
+    """Load only the inputs needed to compute real allowlisted fact changes.
+
+    Returns:
+        Original rows, candidate rows, triage metadata, and prompt text.
+    """
+    original = pl.read_parquet(paths.original)
+    candidate = pl.read_parquet(paths.candidate)
+    _require_columns(
+        frame=original, columns={ID_FIELD, PERSONA_FIELD}, label="original"
+    )
+    _require_columns(
+        frame=candidate, columns={ID_FIELD, PERSONA_FIELD}, label="candidate"
+    )
+    return ReviewInputs(
+        original_rows=_rows_by_id(original, label="original"),
+        candidate_rows=_rows_by_id(candidate, label="candidate"),
+        triage_personas=_load_triage_personas(paths.triage),
+        prompt=paths.prompt.read_text(encoding="utf-8"),
+    )
+
+
+def _load_triage_personas(path: Path) -> dict[str, dict[str, object]]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not {"personas", "counts"}.issubset(document):
+        raise PersonaProseReviewError("Triage JSON must contain personas and counts")
+    personas = document["personas"]
+    if not isinstance(personas, dict):
+        raise PersonaProseReviewError("Triage personas must be keyed by persona ID")
+    parsed: dict[str, dict[str, object]] = {}
+    for persona_id, entry in personas.items():
+        if not isinstance(persona_id, str) or not isinstance(entry, dict):
+            raise PersonaProseReviewError("Triage persona entries are malformed")
+        parsed[persona_id] = entry
+    return parsed
+
+
+def _require_columns(*, frame: pl.DataFrame, columns: set[str], label: str) -> None:
+    missing = columns - set(frame.columns)
+    if missing:
+        raise PersonaProseReviewError(
+            f"{label} parquet is missing required columns: {sorted(missing)}"
+        )
+
+
+def _rows_by_id(frame: pl.DataFrame, *, label: str) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    for row in frame.to_dicts():
+        persona_id = row.get(ID_FIELD)
+        if not isinstance(persona_id, str) or not persona_id:
+            raise PersonaProseReviewError(f"{label} row has a malformed persona_id")
+        if persona_id in rows:
+            raise PersonaProseReviewError(f"{label} contains duplicate persona_id")
+        rows[persona_id] = dict(row)
+    return rows
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Deterministic full-campaign selection and static skip counts."""
+
+    reviewable: list[ReviewRow]
+    total_triage_selected: int
+    no_changed_fact: int
+    privacy_skipped: int
 
 
 def _campaign_manifest(
@@ -435,177 +750,6 @@ def _load_or_create_status(
     return status
 
 
-def _process_pending(
-    *,
-    rows: list[ReviewRow],
-    status: dict[str, object],
-    status_path: Path,
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    workers: int,
-    review_runner: ReviewRunner,
-) -> None:
-    row_iter = iter(rows)
-    future_map: ReviewFutureMap = {}
-    stop_exc: Exception | None = None
-    executor = futures.ThreadPoolExecutor(max_workers=workers)
-    try:
-        _submit_review_futures(
-            row_iter=row_iter,
-            future_map=future_map,
-            executor=executor,
-            limit=workers,
-            output_dir=output_dir,
-            prompt=prompt,
-            config=config,
-            budget=budget,
-            review_runner=review_runner,
-        )
-        while future_map:
-            done, _ = futures.wait(future_map, return_when=futures.FIRST_COMPLETED)
-            future = next(iter(done))
-            row = future_map.pop(future)
-            if future.cancelled():
-                continue
-            completed_exc = _record_completed_review_future(
-                future=future, row=row, status=status, status_path=status_path
-            )
-            if completed_exc is not None:
-                if stop_exc is None:
-                    stop_exc = completed_exc
-                _cancel_not_started(future_map=future_map)
-                continue
-            if stop_exc is None and not _has_completed_future(future_map=future_map):
-                _submit_review_futures(
-                    row_iter=row_iter,
-                    future_map=future_map,
-                    executor=executor,
-                    limit=workers,
-                    output_dir=output_dir,
-                    prompt=prompt,
-                    config=config,
-                    budget=budget,
-                    review_runner=review_runner,
-                )
-    finally:
-        if stop_exc is not None:
-            _cancel_not_started(future_map=future_map)
-        executor.shutdown(wait=stop_exc is None, cancel_futures=stop_exc is not None)
-    if stop_exc is not None:
-        raise PersonaProseReviewError(
-            "Prose review stopped before all rows were resolved"
-        ) from stop_exc
-
-
-def _submit_review_futures(
-    *,
-    row_iter: c.Iterator[ReviewRow],
-    future_map: ReviewFutureMap,
-    executor: futures.ThreadPoolExecutor,
-    limit: int,
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    review_runner: ReviewRunner,
-) -> None:
-    while len(future_map) < limit:
-        try:
-            row = next(row_iter)
-        except StopIteration:
-            return
-        future_map[
-            executor.submit(
-                _run_one_review,
-                row=row,
-                output_dir=output_dir,
-                prompt=prompt,
-                config=config,
-                budget=budget,
-                review_runner=review_runner,
-            )
-        ] = row
-
-
-def _record_completed_review_future(
-    *,
-    future: futures.Future[ProseReviewResult],
-    row: ReviewRow,
-    status: dict[str, object],
-    status_path: Path,
-) -> Exception | None:
-    status["attempted"] = _status_int(status, "attempted") + 1
-    try:
-        result = future.result()
-    except Exception as exc:
-        status["failed"] = _status_int(status, "failed") + 1
-        status["pending"] = _pending_count(status=status)
-        _write_status(path=status_path, status=status)
-        if _must_stop(exc):
-            return exc
-        LOGGER.warning("Persona prose review failed for one selected row")
-        return None
-    _record_result(status=status, row=row, result=result)
-    _write_status(path=status_path, status=status)
-    return None
-
-
-def _cancel_not_started(*, future_map: ReviewFutureMap) -> None:
-    for future in future_map:
-        future.cancel()
-
-
-def _has_completed_future(*, future_map: ReviewFutureMap) -> bool:
-    return any(future.done() for future in future_map)
-
-
-def _run_one_review(
-    *,
-    row: ReviewRow,
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    review_runner: ReviewRunner,
-) -> ProseReviewResult:
-    transport = httpx.HTTPTransport()
-    try:
-        return review_runner(
-            row=row.original_row,
-            candidate_row=row.candidate_row,
-            changed_facts=row.changed_facts,
-            prompt=prompt,
-            config=config,
-            budget=budget,
-            checkpoint_path=_checkpoint_path(
-                output_dir=output_dir, persona_hash=row.persona_hash
-            ),
-            transport=transport,
-        )
-    finally:
-        transport.close()
-
-
-def _record_result(
-    *, status: dict[str, object], row: ReviewRow, result: ProseReviewResult
-) -> None:
-    if result.disposition not in {
-        "patched",
-        "unchanged_consistent",
-        "needs_manual_review",
-    }:
-        raise PersonaProseReviewError("Prose review returned an unknown disposition")
-    status[result.disposition] = _status_int(status, result.disposition) + 1
-    status["processed"] = _status_int(status, "processed") + 1
-    hashes = _status_hashes(status)
-    if row.persona_hash not in hashes:
-        hashes.append(row.persona_hash)
-    status["processed_persona_hashes"] = hashes
-    status["pending"] = _pending_count(status=status)
-
-
 def _pending_rows(
     *, selection: Selection, status: dict[str, object], max_rows: int | None
 ) -> list[ReviewRow]:
@@ -616,28 +760,54 @@ def _pending_rows(
     return pending
 
 
-def _public_status_summary(
-    *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
-) -> dict[str, object]:
-    status["pending"] = _pending_count(status=status)
-    return {
-        "dry_run": False,
-        "campaign": CAMPAIGN,
-        "status_path": str(status_path),
-        "total_triage_selected": status["total_triage_selected"],
-        "reviewable": status["reviewable"],
-        "patched": status["patched"],
-        "unchanged_consistent": status["unchanged_consistent"],
-        "needs_manual_review": status["needs_manual_review"],
-        "privacy_skipped": status["privacy_skipped"],
-        "no_changed_fact": status["no_changed_fact"],
-        "failed": status["failed"],
-        "attempted": status["attempted"],
-        "processed": status["processed"],
-        "pending": status["pending"],
-        "max_rows": max_rows,
-        "workers": workers,
-    }
+def select_review_rows(*, inputs: ReviewInputs) -> Selection:
+    """Select all triage review IDs and label rows with no allowed fact changes.
+
+    Returns:
+        Full-campaign selection and static skip counts.
+    """
+    reviewable: list[ReviewRow] = []
+    total = 0
+    no_changed_fact = 0
+    privacy_skipped = 0
+    for persona_id, entry in sorted(inputs.triage_personas.items()):
+        if entry.get("classification") != TRIAGE_CLASSIFICATION:
+            continue
+        total += 1
+        row = _selected_row(persona_id=persona_id, inputs=inputs)
+        if row is None:
+            no_changed_fact += 1
+            continue
+        if _has_privacy_risk(row=row):
+            privacy_skipped += 1
+            continue
+        reviewable.append(row)
+    return Selection(
+        reviewable=reviewable,
+        total_triage_selected=total,
+        no_changed_fact=no_changed_fact,
+        privacy_skipped=privacy_skipped,
+    )
+
+
+def _has_privacy_risk(*, row: ReviewRow) -> bool:
+    changed_fields = _actual_changed_fields(
+        original=row.original_row, candidate=row.candidate_row
+    )
+    if changed_fields & RESTRICTED_FIELDS:
+        return True
+    text_values = [
+        str(value) for pair in row.changed_facts.values() for value in pair.values()
+    ]
+    text_values.append(str(row.original_row.get(PERSONA_FIELD, "")))
+    return any(SENSITIVE_TEXT.search(value) is not None for value in text_values)
+
+
+def _actual_changed_fields(
+    *, original: dict[str, object], candidate: dict[str, object]
+) -> set[str]:
+    fields = (set(original) & set(candidate)) - {PERSONA_FIELD}
+    return {field for field in fields if original[field] != candidate[field]}
 
 
 def _selected_row(*, persona_id: str, inputs: ReviewInputs) -> ReviewRow | None:
@@ -671,205 +841,35 @@ def _changed_facts(
     return facts
 
 
-def _has_privacy_risk(*, row: ReviewRow) -> bool:
-    changed_fields = _actual_changed_fields(
-        original=row.original_row, candidate=row.candidate_row
-    )
-    if changed_fields & RESTRICTED_FIELDS:
-        return True
-    text_values = [
-        str(value) for pair in row.changed_facts.values() for value in pair.values()
-    ]
-    text_values.append(str(row.original_row.get(PERSONA_FIELD, "")))
-    return any(SENSITIVE_TEXT.search(value) is not None for value in text_values)
-
-
-def _actual_changed_fields(
-    *, original: dict[str, object], candidate: dict[str, object]
-) -> set[str]:
-    fields = (set(original) & set(candidate)) - {PERSONA_FIELD}
-    return {field for field in fields if original[field] != candidate[field]}
-
-
-def _generation_config(*, prompt_path: Path) -> GenerationConfig:
-    return GenerationConfig(
-        base_url=BASE_URL,
-        model=MODEL,
-        api_key_env=None,
-        timeout_seconds=120.0,
-        maximum_http_attempts=1,
-        maximum_total_requests=1,
-        retry_backoff_seconds=0.0,
-        maximum_rows_per_shard=1,
-        max_tokens=None,
-        enable_thinking=None,
-        reasoning_effort="none",
-        prompt=prompt_path,
-        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
-    )
-
-
-def _proxy_budget(
-    *, paths: ReviewPaths, prompt: str, manifest: dict[str, JSONValue]
-) -> ProxyBudget:
-    inputs = manifest["inputs"]
-    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
-        raise PersonaProseReviewError("Manifest schema hash is malformed")
-    return ProxyBudget(
-        registry_path=paths.registry,
-        campaign=CAMPAIGN,
-        source_hash=sha256_text(canonical_json(manifest)),
-        prompt_hash=sha256_text(prompt),
-        schema_hash=inputs["schema"],
-        uncapped=True,
-    )
-
-
-def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
-    if path.exists():
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing != manifest:
-            raise PersonaProseReviewError(
-                "manifest.json pins do not match current inputs"
-            )
-        if path.stat().st_mode & 0o777 != 0o600:
-            raise PersonaProseReviewError("manifest.json must be private (mode 0600)")
-        return
-    _write_json(path=path, value=manifest)
-
-
-def _write_status(*, path: Path, status: dict[str, object]) -> None:
-    _write_json(path=path, value=t.cast(dict[str, JSONValue], status))
-
-
-def _write_json(*, path: Path, value: dict[str, JSONValue]) -> None:
-    content = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
+def _run_one_review(
+    *,
+    row: ReviewRow,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    review_runner: ReviewRunner,
+) -> ProseReviewResult:
+    transport = httpx.HTTPTransport()
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-        _fsync_directory(path.parent)
+        return review_runner(
+            row=row.original_row,
+            candidate_row=row.candidate_row,
+            changed_facts=row.changed_facts,
+            prompt=prompt,
+            config=config,
+            budget=budget,
+            checkpoint_path=_checkpoint_path(
+                output_dir=output_dir, persona_hash=row.persona_hash
+            ),
+            transport=transport,
+        )
     finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _prepare_private_output(output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(output_dir, 0o700)
-    if output_dir.stat().st_mode & 0o077:
-        raise PersonaProseReviewError("Output directory must be private (mode 0700)")
+        transport.close()
 
 
 def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
     return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
-
-
-def _load_triage_personas(path: Path) -> dict[str, dict[str, object]]:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or not {"personas", "counts"}.issubset(document):
-        raise PersonaProseReviewError("Triage JSON must contain personas and counts")
-    personas = document["personas"]
-    if not isinstance(personas, dict):
-        raise PersonaProseReviewError("Triage personas must be keyed by persona ID")
-    parsed: dict[str, dict[str, object]] = {}
-    for persona_id, entry in personas.items():
-        if not isinstance(persona_id, str) or not isinstance(entry, dict):
-            raise PersonaProseReviewError("Triage persona entries are malformed")
-        parsed[persona_id] = entry
-    return parsed
-
-
-def _rows_by_id(frame: pl.DataFrame, *, label: str) -> dict[str, dict[str, object]]:
-    rows: dict[str, dict[str, object]] = {}
-    for row in frame.to_dicts():
-        persona_id = row.get(ID_FIELD)
-        if not isinstance(persona_id, str) or not persona_id:
-            raise PersonaProseReviewError(f"{label} row has a malformed persona_id")
-        if persona_id in rows:
-            raise PersonaProseReviewError(f"{label} contains duplicate persona_id")
-        rows[persona_id] = dict(row)
-    return rows
-
-
-def _require_columns(*, frame: pl.DataFrame, columns: set[str], label: str) -> None:
-    missing = columns - set(frame.columns)
-    if missing:
-        raise PersonaProseReviewError(
-            f"{label} parquet is missing required columns: {sorted(missing)}"
-        )
-
-
-def _validate_status(status: object) -> dict[str, object]:
-    if not isinstance(status, dict):
-        raise PersonaProseReviewError("status.json must be an object")
-    for key in (
-        "total_triage_selected",
-        "reviewable",
-        "no_changed_fact",
-        "privacy_skipped",
-        "patched",
-        "unchanged_consistent",
-        "needs_manual_review",
-        "failed",
-        "attempted",
-        "processed",
-        "pending",
-    ):
-        _status_int(status, key)
-    _status_hashes(status)
-    return status
-
-
-def _status_int(status: dict[str, object], key: str) -> int:
-    value = status.get(key)
-    if not isinstance(value, int) or value < 0:
-        raise PersonaProseReviewError("status.json progress counters are invalid")
-    return value
-
-
-def _status_hashes(status: dict[str, object]) -> list[str]:
-    value = status.get("processed_persona_hashes")
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise PersonaProseReviewError("status.json processed hashes are invalid")
-    if len(value) != len(set(value)):
-        raise PersonaProseReviewError("status.json contains duplicate processed rows")
-    return list(value)
-
-
-def _pending_count(*, status: dict[str, object]) -> int:
-    return max(0, _status_int(status, "reviewable") - _status_int(status, "processed"))
-
-
-def _require_worker_count(*, workers: int) -> None:
-    if workers < 1 or workers > 4:
-        raise PersonaProseReviewError("workers must be between 1 and 4")
-
-
-def _must_stop(exc: Exception) -> bool:
-    if isinstance(exc, (ProxyBudgetError, ProxyReviewError)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {429, 500, 502, 503, 504}
-    return False
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    directory_fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
 
 
 def _run_proxy_review_adapter(

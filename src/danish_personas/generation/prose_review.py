@@ -110,13 +110,58 @@ class ProseReviewResponse(StrictModel):
         }
 
 
-@dataclass(frozen=True)
-class ProseReviewEvidenceResult:
-    """Immutable accepted unchanged-consistent evidence."""
+def _parse_response(response: str | Mapping[str, object]) -> ProseReviewResponse:
+    try:
+        parsed = (
+            ProseReviewResponse.model_validate_json(response)
+            if isinstance(response, str)
+            else ProseReviewResponse.model_validate(response)
+        )
+    except ValidationError, ValueError, TypeError, json.JSONDecodeError:
+        raise ProseReviewError("Invalid prose-review response") from None
+    return parsed
 
-    field: str
-    kind: EvidenceKind
-    quote: str
+
+class ProseReviewError(ValueError):
+    """Raised when a prose-review response fails local validation."""
+
+
+def _validate_changed_facts(
+    changed_facts: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    if not changed_facts or len(changed_facts) > _MAX_FACTS:
+        raise ProseReviewError("Changed facts must be a non-empty bounded mapping")
+    facts: dict[str, dict[str, object]] = {}
+    for field, pair in changed_facts.items():
+        if not isinstance(field, str) or not 1 <= len(field) <= _MAX_FIELD_LENGTH:
+            raise ProseReviewError("Changed fact field is outside the local bounds")
+        if not isinstance(pair, Mapping) or set(pair) != {"old", "new"}:
+            raise ProseReviewError("Each changed fact must contain old and new")
+        old_value = pair["old"]
+        new_value = pair["new"]
+        if old_value == new_value:
+            raise ProseReviewError("Changed facts must actually change")
+        if not _safe_fact_value(old_value) or not _safe_fact_value(new_value):
+            raise ProseReviewError("Changed fact value is outside the local bounds")
+        facts[field] = {"old": old_value, "new": new_value}
+    return facts
+
+
+def _safe_fact_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) <= 150
+    if isinstance(value, str):
+        return len(value) <= _MAX_FACT_VALUE_LENGTH
+    if isinstance(value, list):
+        return len(value) <= _MAX_FACTS and all(
+            isinstance(item, str) and len(item) <= _MAX_FACT_VALUE_LENGTH
+            for item in value
+        )
+    return False
 
 
 @dataclass(frozen=True)
@@ -125,6 +170,21 @@ class ProseReviewPatchResult:
 
     old_excerpt: str
     new_excerpt: str
+
+
+def _changed_fraction(old_text: str, patches: list[ProsePatch]) -> float:
+    return sum(
+        max(len(patch.old_excerpt), len(patch.new_excerpt)) for patch in patches
+    ) / len(old_text)
+
+
+@dataclass(frozen=True)
+class ProseReviewEvidenceResult:
+    """Immutable accepted unchanged-consistent evidence."""
+
+    field: str
+    kind: EvidenceKind
+    quote: str
 
 
 @dataclass(frozen=True)
@@ -139,10 +199,6 @@ class ProseReviewResult:
     unchanged_evidence: tuple[ProseReviewEvidenceResult, ...]
     manual_review_reason: ManualReviewReason | None
     unchanged_consistent_note: str | None
-
-
-class ProseReviewError(ValueError):
-    """Raised when a prose-review response fails local validation."""
 
 
 def validate_prose_review(
@@ -176,6 +232,29 @@ def validate_prose_review(
             original_text=original_text, changed_facts=facts, review=review
         )
     return _validated_manual_review(original_text=original_text, review=review)
+
+
+def _validated_manual_review(
+    *, original_text: str, review: ProseReviewResponse
+) -> ProseReviewResult:
+    if review.disposition != "needs_manual_review":
+        raise ProseReviewError("Unknown prose-review disposition")
+    if review.patches:
+        raise ProseReviewError("Manual review must not include patches")
+    if review.unchanged_evidence:
+        raise ProseReviewError("Manual review must not include unchanged evidence")
+    if review.manual_review_reason is None:
+        raise ProseReviewError("Manual review requires a bounded reason")
+    return ProseReviewResult(
+        disposition="needs_manual_review",
+        original_text=original_text,
+        proposed_text=original_text,
+        changed_fraction=0.0,
+        patches=(),
+        unchanged_evidence=(),
+        manual_review_reason=review.manual_review_reason,
+        unchanged_consistent_note=None,
+    )
 
 
 def _validated_patched(
@@ -240,62 +319,6 @@ def _validated_unchanged(
     )
 
 
-def _validated_manual_review(
-    *, original_text: str, review: ProseReviewResponse
-) -> ProseReviewResult:
-    if review.disposition != "needs_manual_review":
-        raise ProseReviewError("Unknown prose-review disposition")
-    if review.patches:
-        raise ProseReviewError("Manual review must not include patches")
-    if review.unchanged_evidence:
-        raise ProseReviewError("Manual review must not include unchanged evidence")
-    if review.manual_review_reason is None:
-        raise ProseReviewError("Manual review requires a bounded reason")
-    return ProseReviewResult(
-        disposition="needs_manual_review",
-        original_text=original_text,
-        proposed_text=original_text,
-        changed_fraction=0.0,
-        patches=(),
-        unchanged_evidence=(),
-        manual_review_reason=review.manual_review_reason,
-        unchanged_consistent_note=None,
-    )
-
-
-def _parse_response(response: str | Mapping[str, object]) -> ProseReviewResponse:
-    try:
-        parsed = (
-            ProseReviewResponse.model_validate_json(response)
-            if isinstance(response, str)
-            else ProseReviewResponse.model_validate(response)
-        )
-    except ValidationError, ValueError, TypeError, json.JSONDecodeError:
-        raise ProseReviewError("Invalid prose-review response") from None
-    return parsed
-
-
-def _validate_changed_facts(
-    changed_facts: Mapping[str, Mapping[str, object]],
-) -> dict[str, dict[str, object]]:
-    if not changed_facts or len(changed_facts) > _MAX_FACTS:
-        raise ProseReviewError("Changed facts must be a non-empty bounded mapping")
-    facts: dict[str, dict[str, object]] = {}
-    for field, pair in changed_facts.items():
-        if not isinstance(field, str) or not 1 <= len(field) <= _MAX_FIELD_LENGTH:
-            raise ProseReviewError("Changed fact field is outside the local bounds")
-        if not isinstance(pair, Mapping) or set(pair) != {"old", "new"}:
-            raise ProseReviewError("Each changed fact must contain old and new")
-        old_value = pair["old"]
-        new_value = pair["new"]
-        if old_value == new_value:
-            raise ProseReviewError("Changed facts must actually change")
-        if not _safe_fact_value(old_value) or not _safe_fact_value(new_value):
-            raise ProseReviewError("Changed fact value is outside the local bounds")
-        facts[field] = {"old": old_value, "new": new_value}
-    return facts
-
-
 def _validate_unchanged_evidence(
     *,
     original_text: str,
@@ -333,29 +356,6 @@ def _quote_shows_new_value(*, quote: str, new_value: object) -> bool:
             for item in new_value
         )
     return False
-
-
-def _safe_fact_value(value: object) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return abs(value) <= 150
-    if isinstance(value, str):
-        return len(value) <= _MAX_FACT_VALUE_LENGTH
-    if isinstance(value, list):
-        return len(value) <= _MAX_FACTS and all(
-            isinstance(item, str) and len(item) <= _MAX_FACT_VALUE_LENGTH
-            for item in value
-        )
-    return False
-
-
-def _changed_fraction(old_text: str, patches: list[ProsePatch]) -> float:
-    return sum(
-        max(len(patch.old_excerpt), len(patch.new_excerpt)) for patch in patches
-    ) / len(old_text)
 
 
 __all__ = [
