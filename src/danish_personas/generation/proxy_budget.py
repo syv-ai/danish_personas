@@ -26,7 +26,12 @@ USER_UNCAPPED_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-uncapped.j
 USER_PATCH_VERIFICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
 )
+USER_EDUCATION_REVIEW_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-education-review.jsonl"
+)
 PATCH_VERIFICATION_PURPOSE = "patch_verification"
+EDUCATION_REVIEW_PURPOSE = "h90_v5"
+UNLIMITED_PURPOSES = frozenset({PATCH_VERIFICATION_PURPOSE, EDUCATION_REVIEW_PURPOSE})
 JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 )
@@ -80,6 +85,8 @@ class ProxyBudget:
         self.uncapped_purpose = uncapped_purpose
         if uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
             self.path = USER_PATCH_VERIFICATION_BUDGET_PATH
+        elif uncapped and uncapped_purpose == EDUCATION_REVIEW_PURPOSE:
+            self.path = USER_EDUCATION_REVIEW_BUDGET_PATH
         else:
             self.path = USER_UNCAPPED_BUDGET_PATH if uncapped else USER_BUDGET_PATH
         self.registry_path = Path(registry_path)
@@ -110,7 +117,7 @@ class ProxyBudget:
             or (not uncapped and not Decimal("0") < self.cap <= INTERNAL_CAP_USD)
             or (
                 uncapped_purpose is not None
-                and (not uncapped or uncapped_purpose != PATCH_VERIFICATION_PURPOSE)
+                and (not uncapped or uncapped_purpose not in UNLIMITED_PURPOSES)
             )
             or request_overhead_bytes < 0
             or not all((campaign, source_hash, prompt_hash, schema_hash))

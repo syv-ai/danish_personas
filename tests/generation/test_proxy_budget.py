@@ -25,6 +25,11 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         "USER_PATCH_VERIFICATION_BUDGET_PATH",
         tmp_path / "patch-verification.jsonl",
     )
+    monkeypatch.setattr(
+        proxy_budget,
+        "USER_EDUCATION_REVIEW_BUDGET_PATH",
+        tmp_path / "education-review.jsonl",
+    )
 
 
 def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
@@ -151,6 +156,22 @@ def _patch_verification_budget(
     )
 
 
+def _education_review_budget(
+    tmp_path: Path, *, request_overhead_bytes: int = 4096
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-education-review.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-education",
+        source_hash="d" * 64,
+        prompt_hash="e" * 64,
+        schema_hash="f" * 64,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+        uncapped_purpose="h90_v5",
+    )
+
+
 def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
     tmp_path: Path,
 ) -> None:
@@ -175,10 +196,8 @@ def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
     assert len(patch_records) == 3
 
 
-def test_patch_verification_uses_independent_ledger_without_touching_old_ledgers(
-    tmp_path: Path,
-) -> None:
-    """Patch verification reservations preserve capped and prose-review ledgers."""
+def test_explicit_uncapped_purposes_use_independent_ledgers(tmp_path: Path) -> None:
+    """Dedicated uncapped purposes preserve capped and v4 prose ledgers."""
     _budget(tmp_path)
     old_bytes = proxy_budget.USER_BUDGET_PATH.read_bytes()
     _uncapped_budget(tmp_path)
@@ -189,23 +208,37 @@ def test_patch_verification_uses_independent_ledger_without_touching_old_ledgers
     patch.record_usage(
         "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
     )
+    education = _education_review_budget(tmp_path, request_overhead_bytes=1_001_000_000)
+    education_reserved = education.reserve_attempt("education-attempt-1", {"x": 1})
 
     assert reserved > Decimal("100")
+    assert education_reserved > Decimal("100")
     assert proxy_budget.USER_BUDGET_PATH.read_bytes() == old_bytes
     assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes() == v4_bytes
     assert not (tmp_path / "ignored-patch-verification.jsonl").exists()
+    assert not (tmp_path / "ignored-education-review.jsonl").exists()
     patch_lines = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
         encoding="utf-8"
     ).splitlines()
+    education_lines = proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
     patch_header = json.loads(patch_lines[0])
+    education_header = json.loads(education_lines[0])
     assert patch_header["uncapped"] is True
     assert patch_header["uncapped_purpose"] == "patch_verification"
-    assert patch_header["source_hash"] == "a" * 64
-    assert patch_header["prompt_hash"] == "b" * 64
-    assert patch_header["schema_hash"] == "c" * 64
+    assert education_header["uncapped"] is True
+    assert education_header["uncapped_purpose"] == "h90_v5"
+    assert education_header["campaign"] == "campaign-education"
+    assert education_header["source_hash"] == "d" * 64
     assert patch_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
+    assert (
+        education_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
+    )
     patch_mode = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.stat().st_mode
+    education_mode = proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH.stat().st_mode
     assert patch_mode & 0o777 == 0o600
+    assert education_mode & 0o777 == 0o600
 
 
 def _uncapped_budget(

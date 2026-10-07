@@ -14,7 +14,7 @@ import pytest
 
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_review import ProseReviewResult
-from danish_personas.io import sha256_file
+from danish_personas.io import sha256_file, sha256_text
 from scripts import review_persona_prose as review
 
 PERSONA = (
@@ -197,6 +197,68 @@ def _write_inputs(
     )
 
 
+def _write_h90_inputs(
+    tmp_path: Path, *, omit_triage_id: bool = False
+) -> review.ReviewPaths:
+    original_rows: list[dict[str, object]] = []
+    candidate_rows: list[dict[str, object]] = []
+    personas: dict[str, dict[str, str]] = {}
+    changed_hashes: list[str] = []
+    for index in range(review.H90_CHANGED_ROWS):
+        persona_id = f"h90-row-{index:03d}"
+        original = {
+            "persona_id": persona_id,
+            "persona": PERSONA,
+            "age": 40,
+            "education_level": "higher_education",
+            "education_source_code": "H40",
+            "sexual_orientation": "not collected",
+        }
+        candidate = dict(original)
+        candidate["education_level"] = "not_stated"
+        candidate["education_source_code"] = "H90"
+        original_rows.append(original)
+        candidate_rows.append(candidate)
+        changed_hashes.append(sha256_text(persona_id))
+        if not omit_triage_id or index != 0:
+            personas[persona_id] = {"classification": review.TRIAGE_CLASSIFICATION}
+    original_path = tmp_path / "attribute-candidate-v4.parquet"
+    candidate_path = tmp_path / "attribute-candidate-v5-h90-PROVISIONAL.parquet"
+    pl.DataFrame(original_rows).write_parquet(original_path)
+    pl.DataFrame(candidate_rows).write_parquet(candidate_path)
+    report_path = candidate_path.with_suffix(".json")
+    report_path.write_text(
+        json.dumps(
+            {
+                "candidate_sha256": sha256_file(candidate_path),
+                "changed_rows": review.H90_CHANGED_ROWS,
+                "changed_persona_id_sha256": sorted(changed_hashes),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    triage = tmp_path / "h90-triage.json"
+    triage.write_text(
+        json.dumps({"personas": personas, "counts": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    prompt = tmp_path / "persona-review-h90-da.md"
+    prompt.write_text("Gennemgå kun H90-ændringen.\n", encoding="utf-8")
+    registry = tmp_path / "models-store.json"
+    registry.write_text("{}\n", encoding="utf-8")
+    for private_path in (original_path, candidate_path, report_path, triage):
+        private_path.chmod(0o600)
+    return review.ReviewPaths(
+        original=original_path,
+        candidate=candidate_path,
+        triage=triage,
+        prompt=prompt,
+        output_dir=tmp_path / "persona-review-h90-v5",
+        registry=registry,
+    )
+
+
 def test_500_retry_then_success_counts_one_logical_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,6 +379,95 @@ def test_dry_run_selects_triage_rows_from_real_allowed_differences(
     assert summary["no_changed_fact"] == 1
     assert summary["privacy_skipped"] == 1
     assert not paths.output_dir.exists()
+
+
+def test_h90_v5_run_uses_exact_report_ids_and_dedicated_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opt-in H90 purpose selects only the 506 report-bound rows."""
+    paths = _write_h90_inputs(tmp_path)
+    budget_kwargs: list[dict[str, object]] = []
+    calls: list[dict[str, dict[str, object]]] = []
+
+    class FakeBudget:
+        def __init__(self, **kwargs: object) -> None:
+            budget_kwargs.append(kwargs)
+
+    def fake_runner(
+        *,
+        row: dict[str, object],
+        candidate_row: dict[str, object],
+        changed_facts: dict[str, dict[str, object]],
+        prompt: str,
+        config: GenerationConfig,
+        budget: object,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+    ) -> ProseReviewResult:
+        del row, candidate_row, prompt, config, budget, checkpoint_path, transport
+        calls.append(changed_facts)
+        return _result("unchanged_consistent")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=1,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=fake_runner,
+        budget_purpose=review.H90_BUDGET_PURPOSE,
+    )
+
+    manifest = json.loads((paths.output_dir / "manifest.json").read_text())
+    assert summary["campaign"] == review.H90_CAMPAIGN
+    assert summary["reviewable"] == review.H90_CHANGED_ROWS
+    assert summary["pending"] == review.H90_CHANGED_ROWS - 1
+    assert calls == [
+        {"education_level": {"old": "higher_education", "new": "not_stated"}}
+    ]
+    assert budget_kwargs[-1]["uncapped"] is True
+    assert budget_kwargs[-1]["uncapped_purpose"] == review.H90_BUDGET_PURPOSE
+    assert budget_kwargs[-1]["campaign"] == review.H90_CAMPAIGN
+    assert manifest["budget_purpose"] == review.H90_BUDGET_PURPOSE
+    assert "candidate_h90_v5" in manifest["inputs"]
+    assert "candidate_v4" not in manifest["inputs"]
+
+
+def test_h90_v5_fails_when_triage_ids_do_not_match_report(tmp_path: Path) -> None:
+    """The H90 purpose refuses to review fewer than the report's 506 IDs."""
+    paths = _write_h90_inputs(tmp_path, omit_triage_id=True)
+
+    with pytest.raises(review.PersonaProseReviewError, match="triage IDs"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=lambda **_kwargs: _result("patched"),
+            budget_purpose=review.H90_BUDGET_PURPOSE,
+        )
+
+
+def test_h90_v5_fails_when_private_inputs_are_public(tmp_path: Path) -> None:
+    """The H90 purpose requires the private triage/report parquet files."""
+    paths = _write_h90_inputs(tmp_path)
+    paths.triage.chmod(0o644)
+
+    with pytest.raises(review.PersonaProseReviewError, match="private"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=lambda **_kwargs: _result("patched"),
+            budget_purpose=review.H90_BUDGET_PURPOSE,
+        )
 
 
 def test_repeated_500_stops_without_invoking_later_pending_rows(
