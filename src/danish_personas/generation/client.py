@@ -69,6 +69,7 @@ class OpenAIClient:
         user_payload: dict[str, object],
         schema_name: str,
         json_schema: dict[str, object],
+        record_request: c.Callable[[int], None] | None = None,
     ) -> LLMResponse:
         """Return one schema-constrained chat completion.
 
@@ -114,6 +115,8 @@ class OpenAIClient:
                 next_request = self._requests_made + 1
                 if self._record_request is not None:
                     self._record_request(next_request)
+                if record_request is not None:
+                    record_request(next_request)
                 self._requests_made = next_request
                 response = self._client.post("chat/completions", json=body)
                 response.raise_for_status()
