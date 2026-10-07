@@ -171,9 +171,10 @@ def test_explicit_uncapped_purposes_use_independent_ledgers(tmp_path: Path) -> N
     assert (
         education_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
     )
-    assert education_verify_header["old_ledger_sha256"] == hashlib.sha256(
-        old_bytes
-    ).hexdigest()
+    assert (
+        education_verify_header["old_ledger_sha256"]
+        == hashlib.sha256(old_bytes).hexdigest()
+    )
     patch_mode = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.stat().st_mode
     education_mode = proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH.stat().st_mode
     education_verify_mode = (

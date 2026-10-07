@@ -698,6 +698,10 @@ def _verify_manifest_sources(
         raise ProseReviewV4DashboardError("Prompt file is not readable") from exc
 
 
+def _h90_report_path(*, candidate: Path) -> Path:
+    return candidate.with_suffix(".report.json")
+
+
 def _manifest_inputs(*, manifest: dict[str, JSONValue]) -> dict[str, str]:
     inputs = manifest.get("inputs")
     if not isinstance(inputs, dict):
@@ -707,10 +711,6 @@ def _manifest_inputs(*, manifest: dict[str, JSONValue]) -> dict[str, str]:
         if isinstance(key, str) and isinstance(value, str):
             parsed[key] = value
     return parsed
-
-
-def _h90_report_path(*, candidate: Path) -> Path:
-    return candidate.with_suffix(".report.json")
 
 
 def _verify_h90_report_candidate(*, candidate: Path) -> None:

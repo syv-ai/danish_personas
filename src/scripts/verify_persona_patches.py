@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import typing as t
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import click
@@ -254,23 +254,6 @@ def main(
         click.ClickException: If source, checkpoint, resume, or proxy state is unsafe.
     """
     configure_cli_logging()
-    if budget_purpose == H90_BUDGET_PURPOSE:
-        if original == DEFAULT_ORIGINAL:
-            original = DEFAULT_CANDIDATE
-        if candidate == DEFAULT_CANDIDATE:
-            candidate = DEFAULT_H90_CANDIDATE
-        if triage == DEFAULT_TRIAGE:
-            triage = DEFAULT_H90_TRIAGE
-        if first_prompt == DEFAULT_FIRST_PASS_PROMPT:
-            first_prompt = DEFAULT_H90_FIRST_PASS_PROMPT
-        if first_status == DEFAULT_FIRST_PASS_STATUS:
-            first_status = DEFAULT_H90_FIRST_PASS_STATUS
-        if first_manifest == DEFAULT_FIRST_PASS_MANIFEST:
-            first_manifest = DEFAULT_H90_FIRST_PASS_MANIFEST
-        if first_checkpoint_root == DEFAULT_FIRST_PASS_DIR:
-            first_checkpoint_root = DEFAULT_H90_FIRST_PASS_DIR
-        if output_dir == DEFAULT_OUTPUT_DIR:
-            output_dir = DEFAULT_H90_OUTPUT_DIR
     paths = VerifyPaths(
         original=original,
         candidate=candidate,
@@ -284,6 +267,8 @@ def main(
         output_dir=output_dir,
         budget_purpose=budget_purpose,
     )
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        paths = _h90_default_paths(paths=paths)
     try:
         if follow_first_pass:
             summary = follow_patch_verification_campaign(
@@ -309,6 +294,51 @@ def main(
     ) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+
+
+def _h90_default_paths(*, paths: VerifyPaths) -> VerifyPaths:
+    """Use isolated H90 paths unless explicitly overridden.
+
+    Returns:
+        Paths with H90 defaults and any explicit overrides preserved.
+    """
+    return replace(
+        paths,
+        original=(
+            DEFAULT_CANDIDATE if paths.original == DEFAULT_ORIGINAL else paths.original
+        ),
+        candidate=(
+            DEFAULT_H90_CANDIDATE
+            if paths.candidate == DEFAULT_CANDIDATE
+            else paths.candidate
+        ),
+        triage=DEFAULT_H90_TRIAGE if paths.triage == DEFAULT_TRIAGE else paths.triage,
+        first_prompt=(
+            DEFAULT_H90_FIRST_PASS_PROMPT
+            if paths.first_prompt == DEFAULT_FIRST_PASS_PROMPT
+            else paths.first_prompt
+        ),
+        first_status=(
+            DEFAULT_H90_FIRST_PASS_STATUS
+            if paths.first_status == DEFAULT_FIRST_PASS_STATUS
+            else paths.first_status
+        ),
+        first_manifest=(
+            DEFAULT_H90_FIRST_PASS_MANIFEST
+            if paths.first_manifest == DEFAULT_FIRST_PASS_MANIFEST
+            else paths.first_manifest
+        ),
+        first_checkpoint_root=(
+            DEFAULT_H90_FIRST_PASS_DIR
+            if paths.first_checkpoint_root == DEFAULT_FIRST_PASS_DIR
+            else paths.first_checkpoint_root
+        ),
+        output_dir=(
+            DEFAULT_H90_OUTPUT_DIR
+            if paths.output_dir == DEFAULT_OUTPUT_DIR
+            else paths.output_dir
+        ),
+    )
 
 
 def follow_patch_verification_campaign(
@@ -443,32 +473,9 @@ def _has_second_pass_work(
     return processed < len(loaded.rows) or pending > 0
 
 
-def _require_worker_count(*, workers: int) -> None:
-    if workers < 1 or workers > 4:
-        raise PatchVerificationCampaignError("workers must be between one and four")
-
-
 def _require_budget_purpose(*, budget_purpose: BudgetPurpose) -> None:
     if budget_purpose not in {DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE}:
         raise PatchVerificationCampaignError("Unsupported budget purpose")
-
-
-def _verification_campaign(*, paths: VerifyPaths) -> str:
-    if paths.budget_purpose == H90_BUDGET_PURPOSE:
-        return H90_CAMPAIGN
-    return CAMPAIGN
-
-
-def _first_pass_campaign(*, paths: VerifyPaths) -> str:
-    if paths.budget_purpose == H90_BUDGET_PURPOSE:
-        return H90_FIRST_PASS_CAMPAIGN
-    return DEFAULT_FIRST_PASS_CAMPAIGN
-
-
-def _candidate_manifest_key(*, paths: VerifyPaths) -> str:
-    if paths.budget_purpose == H90_BUDGET_PURPOSE:
-        return "candidate_h90_v5"
-    return "candidate_v4"
 
 
 def _require_h90_private_inputs(*, paths: VerifyPaths) -> None:
@@ -482,6 +489,11 @@ def _require_h90_private_inputs(*, paths: VerifyPaths) -> None:
     ):
         if not path.is_file() or path.stat().st_mode & 0o077:
             raise PatchVerificationCampaignError(f"{label} must be private (0600)")
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if workers < 1 or workers > 4:
+        raise PatchVerificationCampaignError("workers must be between one and four")
 
 
 def _run_loaded_patch_verification_campaign(
@@ -900,6 +912,12 @@ def _proxy_budget(
     )
 
 
+def _verification_campaign(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return H90_CAMPAIGN
+    return CAMPAIGN
+
+
 def _public_status_summary(
     *,
     status: dict[str, object],
@@ -978,6 +996,12 @@ def _verification_manifest(
         inputs["h90_report"] = sha256_file(paths.candidate.with_suffix(".report.json"))
         manifest["budget_purpose"] = paths.budget_purpose
     return manifest
+
+
+def _candidate_manifest_key(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return "candidate_h90_v5"
+    return "candidate_v4"
 
 
 def _verify_processed_hashes_are_available(
@@ -1112,6 +1136,12 @@ def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
         first_pending=_first_status_int(status=first_status, key="pending"),
         first_failed=_first_status_int(status=first_status, key="failed"),
     )
+
+
+def _first_pass_campaign(*, paths: VerifyPaths) -> str:
+    if paths.budget_purpose == H90_BUDGET_PURPOSE:
+        return H90_FIRST_PASS_CAMPAIGN
+    return DEFAULT_FIRST_PASS_CAMPAIGN
 
 
 def _first_status_int(*, status: dict[str, JSONValue], key: str) -> int:
