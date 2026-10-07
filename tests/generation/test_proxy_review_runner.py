@@ -1,0 +1,448 @@
+"""Offline tests for the private local proxy review runner."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+import danish_personas.generation.proxy_budget as proxy_budget
+import danish_personas.generation.proxy_review_runner as review_runner
+from danish_personas.generation.models import GenerationConfig
+from danish_personas.generation.prose_review import (
+    ProseReviewError,
+    ProseReviewResponse,
+)
+from danish_personas.generation.proxy_budget import JSONValue, ProxyBudget
+from danish_personas.generation.proxy_review_runner import (
+    ProxyReviewError,
+    run_proxy_review,
+)
+
+_PROMPT = "Vurder om den oprindelige persona kræver en lokal ændring."
+
+
+@pytest.fixture(autouse=True)
+def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep mock reservations out of the user's real cumulative budget ledger."""
+    monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
+
+
+@pytest.mark.parametrize(
+    ("provider_content", "expected_disposition"),
+    [
+        (
+            {
+                "disposition": "patched",
+                "patches": [
+                    {"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}
+                ],
+                "unchanged_evidence": [],
+                "manual_review_reason": None,
+            },
+            "patched",
+        ),
+        (
+            {
+                "disposition": "unchanged_consistent",
+                "patches": [],
+                "unchanged_evidence": [
+                    {"field": "marital_status", "kind": "fact_not_stated", "quote": ""}
+                ],
+                "manual_review_reason": None,
+            },
+            "unchanged_consistent",
+        ),
+        (
+            {
+                "disposition": "needs_manual_review",
+                "patches": [],
+                "unchanged_evidence": [],
+                "manual_review_reason": "ambiguous",
+            },
+            "needs_manual_review",
+        ),
+    ],
+)
+def test_all_dispositions_checkpoint_privately_and_resume_without_network(
+    tmp_path: Path, provider_content: dict[str, object], expected_disposition: str
+) -> None:
+    """Persist exact bounded decisions, then revalidate them on restart."""
+    requests: list[httpx.Request] = []
+    result = run_proxy_review(
+        row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
+        changed_facts={"marital_status": {"old": "single", "new": "married"}},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(json.dumps(provider_content), requests),
+    )
+
+    assert result.disposition == expected_disposition
+    assert len(requests) == 1
+    request_body = json.loads(requests[0].content)
+    user_payload = json.loads(request_body["messages"][1]["content"])
+    assert set(user_payload) == {"persona", "changed_facts"}
+    assert "gender" not in user_payload
+    assert "partner_gender" not in user_payload
+    assert all(
+        secret not in requests[0].content.decode()
+        for secret in ["private-id", "municipality", "origin_country_da"]
+    )
+
+    checkpoint_path = tmp_path / "review.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_path.stat().st_mode & 0o777 == 0o600
+    assert tmp_path.stat().st_mode & 0o077 == 0
+    assert "persona" not in checkpoint
+    assert "proposed_text" not in checkpoint
+    assert "completion" not in checkpoint
+    assert checkpoint["disposition"] == expected_disposition
+
+    def must_not_send(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("a checkpoint restart must not make another request")
+
+    restarted = run_proxy_review(
+        row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
+        changed_facts={"marital_status": {"old": "single", "new": "married"}},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=checkpoint_path,
+        transport=httpx.MockTransport(must_not_send),
+    )
+    assert restarted == result
+
+
+def test_reserves_before_network_and_omits_private_row_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reserve durably before I/O while sending only the minimal review payload."""
+    events: list[str] = []
+    requests: list[httpx.Request] = []
+    budget = _budget(tmp_path)
+    original_reserve = budget.reserve_attempt
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        events.append("reserved")
+        return original_reserve(request_id, request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    run_proxy_review(
+        row=_row(),
+        candidate_row=_candidate_row(
+            {"marital_status": {"old": "single", "new": "married"}}
+        ),
+        changed_facts={"marital_status": {"old": "single", "new": "married"}},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            requests,
+            events,
+        ),
+    )
+
+    assert events[:2] == ["reserved", "network"]
+    assert "private-sex" not in requests[0].content.decode()
+    assert "candidate_row" not in requests[0].content.decode()
+
+
+def test_records_usage_before_semantic_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record token usage for a successful HTTP response before quarantining it."""
+    events: list[str] = []
+    budget = _budget(tmp_path)
+    original_usage = budget.record_usage
+    original_validate = review_runner.validate_prose_review
+
+    def record_usage(
+        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
+    ) -> None:
+        events.append("usage")
+        original_usage(
+            request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_sha256=response_sha256,
+        )
+
+    def validate_with_event(
+        *,
+        original_text: str,
+        changed_facts: Mapping[str, Mapping[str, object]],
+        response: str | Mapping[str, object],
+    ) -> object:
+        events.append("validate")
+        return original_validate(
+            original_text=original_text, changed_facts=changed_facts, response=response
+        )
+
+    monkeypatch.setattr(budget, "record_usage", record_usage)
+    monkeypatch.setattr(review_runner, "validate_prose_review", validate_with_event)
+
+    with pytest.raises(ProseReviewError):
+        _run(tmp_path, _transport("not json", []), budget=budget)
+
+    assert events == ["usage", "validate"]
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_failed_http_retry_gets_unique_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never reuse a failed attempt's durable request ID on caller retry."""
+    budget = _budget(tmp_path)
+    original_reserve = budget.reserve_attempt
+    request_ids: list[str] = []
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        request_ids.append(request_id)
+        return original_reserve(request_id, request)
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("local proxy unavailable", request=request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    for _ in range(2):
+        with pytest.raises(httpx.ConnectError):
+            _run(tmp_path, httpx.MockTransport(fail), budget=budget)
+
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 2
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_rejects_stale_checkpoint_inputs(tmp_path: Path) -> None:
+    """Refuse to resume a decision bound to different verified inputs."""
+    _run(
+        tmp_path,
+        _transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            [],
+        ),
+    )
+
+    with pytest.raises(ProxyReviewError, match="changed"):
+        run_proxy_review(
+            row=_row(),
+            candidate_row=_candidate_row({"age": {"old": 41, "new": 42}}),
+            changed_facts={"age": {"old": 41, "new": 42}},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "review.json",
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+
+
+def test_revalidates_checkpoint_patch_snippets(tmp_path: Path) -> None:
+    """A valid checksum cannot make forged patch evidence acceptable."""
+    _run(
+        tmp_path,
+        _transport(
+            json.dumps(
+                {
+                    "disposition": "patched",
+                    "patches": [
+                        {"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}
+                    ],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": None,
+                }
+            ),
+            [],
+        ),
+    )
+    checkpoint_path = tmp_path / "review.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["patches"] = [
+        {"old_excerpt": "not present", "new_excerpt": "Efter ændring"}
+    ]
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    with pytest.raises(ProxyReviewError):
+        _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)))
+
+
+def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None:
+    """Reuse the patch runner's outbound sensitive-identity guard."""
+    requests: list[httpx.Request] = []
+    with pytest.raises(ProxyReviewError):
+        _run(
+            tmp_path,
+            _transport("{}", requests),
+            changed_facts={
+                "skills_and_expertise": {
+                    "old": ["planlægning"] * 3,
+                    "new": ["seksuel orientering"],
+                }
+            },
+        )
+    assert not requests
+
+
+def _run(
+    tmp_path: Path,
+    transport: httpx.BaseTransport,
+    *,
+    changed_facts: dict[str, dict[str, object]] | None = None,
+    budget: ProxyBudget | None = None,
+) -> object:
+    source = _row()
+    facts = (
+        {"marital_status": {"old": "single", "new": "married"}}
+        if changed_facts is None
+        else changed_facts
+    )
+    return run_proxy_review(
+        row=source,
+        candidate_row=_candidate_row(facts, row=source),
+        changed_facts=facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path) if budget is None else budget,
+        checkpoint_path=tmp_path / "review.json",
+        transport=transport,
+    )
+
+
+def _budget(tmp_path: Path) -> ProxyBudget:
+    registry = tmp_path / "models.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "models": [
+                        {
+                            "id": "gpt-6-luna",
+                            "maxTokens": 128_000,
+                            "cost": {"input": "0.1", "output": "0.5"},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return ProxyBudget(
+        ledger_path=tmp_path / "budget.jsonl",
+        registry_path=registry,
+        campaign="synthetic-review-test",
+        source_hash="a" * 64,
+        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
+        schema_hash=hashlib.sha256(
+            json.dumps(
+                ProseReviewResponse.provider_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+        cap_usd=Decimal("1"),
+    )
+
+
+def _candidate_row(
+    facts: dict[str, dict[str, object]], row: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    candidate = dict(_row() if row is None else row)
+    candidate.update(
+        {field: pair["new"] for field, pair in facts.items() if field in candidate}
+    )
+    return candidate
+
+
+def _row() -> dict[str, Any]:
+    return {
+        "persona_id": "private-id",
+        "record_id": "private-id",
+        "source_sex": "private-sex",
+        "municipality": "private municipality",
+        "origin_country_da": "private origin",
+        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "marital_status": "single",
+        "age": 41,
+        "skills_and_expertise": ["planlægning"] * 3,
+        "hobbies_and_interests": ["cykling"] * 3,
+    }
+
+
+def _config(**overrides: object) -> GenerationConfig:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:18080/v1",
+        "model": "gpt-6-luna",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 1,
+        "maximum_total_requests": None,
+        "retry_backoff_seconds": 0.0,
+        "maximum_rows_per_shard": 1,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": "none",
+        "prompt": Path("prompt.md"),
+        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+    }
+    values.update(overrides)
+    return GenerationConfig.model_validate(values)
+
+
+def _transport(
+    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
+) -> httpx.MockTransport:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if events is not None:
+            events.append("network")
+        assert "max_tokens" not in json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "gpt-6-luna",
+                "choices": [{"message": {"content": response_content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    return httpx.MockTransport(respond)
