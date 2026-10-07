@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import random
-import re
 import typing as t
 
 import polars as pl
@@ -19,8 +18,7 @@ _LIST_FIELDS: tuple[ListCompletionField, ...] = (
     "skills_and_expertise",
     "hobbies_and_interests",
 )
-_DISJUNCTION_PATTERN = re.compile(r"\beller\b", flags=re.IGNORECASE)
-_PUNCTUATION_SUFFIX = ".!?;:,… "
+_HOBBY_PUNCTUATION_SUFFIX = ".!?;:,"
 _BANKS: dict[ListCompletionField, tuple[str, ...]] = {
     "skills_and_expertise": (
         "analyse",
@@ -96,10 +94,11 @@ def complete_generated_lists(
     """Complete invalid generated list fields without touching source fields or prose.
 
     The completion is deliberately conservative: it only inspects ``persona_id`` and
-    the two generated list fields, retains non-disjunctive existing items in order,
-    and fills any duplicate, non-canonical, or disjunctive list with neutral Danish
-    synthetic items from a versioned bank. It does not call a provider and does not
-    infer from demographic, geographic, origin, religion, or status columns.
+    the two generated list fields, leaves fields without objective generated-check
+    failures byte-equivalent, drops only invalid or duplicate items, and fills back to
+    the original size with neutral Danish synthetic items from a versioned bank. It
+    does not call a provider and does not infer from demographic, geographic, origin,
+    religion, or status columns.
 
     Args:
         frame:
@@ -190,21 +189,18 @@ def _read_list(
         raise ValueError(f"{field} for {persona_id} must be a list")
     if not 3 <= len(values) <= 6:
         raise ValueError(f"{field} for {persona_id} must contain 3 to 6 items")
-    if any(not isinstance(value, str) or not value.strip() for value in values):
-        raise ValueError(f"{field} for {persona_id} must contain non-empty strings")
-    if any(not _canonical_item(field=field, value=value) for value in values):
-        raise ValueError(f"{field} for {persona_id} must contain text items")
+    if any(not isinstance(value, str) for value in values):
+        raise ValueError(f"{field} for {persona_id} must contain string items")
     return values.copy()
 
 
 def _complete_list(
     *, persona_id: str, field: ListCompletionField, values: list[str]
 ) -> list[str]:
-    retained = _retained_items(field=field, values=values)
-    field_is_valid = retained == values and len(retained) == len(values)
-    if field_is_valid:
+    if not _fails_objective_generated_check(field=field, values=values):
         return values
 
+    retained = _retained_items(field=field, values=values)
     target_size = len(values)
     additions = _synthetic_additions(
         persona_id=persona_id,
@@ -215,15 +211,35 @@ def _complete_list(
     return [*retained, *additions]
 
 
+def _fails_objective_generated_check(
+    *, field: ListCompletionField, values: list[str]
+) -> bool:
+    if any(not value.strip() for value in values):
+        return True
+    if len({_item_key(value=value) for value in values}) != len(values):
+        return True
+    return field == "hobbies_and_interests" and any(
+        _fails_hobby_format(value=value) for value in values
+    )
+
+
 def _retained_items(*, field: ListCompletionField, values: list[str]) -> list[str]:
     retained: list[str] = []
     seen: set[str] = set()
     for value in values:
-        canonical = _canonical_item(field=field, value=value)
-        key = _item_key(value=canonical)
-        if key in seen or _is_disjunctive(value=canonical):
+        if not value.strip():
             continue
-        retained.append(canonical)
+        retained_value = (
+            _repair_hobby_item(value=value)
+            if field == "hobbies_and_interests"
+            else value
+        )
+        if not retained_value.strip():
+            continue
+        key = _item_key(value=retained_value)
+        if key in seen:
+            continue
+        retained.append(retained_value)
         seen.add(key)
     return retained
 
@@ -250,16 +266,17 @@ def _seed_for(*, persona_id: str, field: ListCompletionField) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="big")
 
 
-def _canonical_item(*, field: ListCompletionField, value: str) -> str:
-    canonical = " ".join(value.strip().rstrip(_PUNCTUATION_SUFFIX).split())
-    if field == "hobbies_and_interests":
-        return canonical.lower()
-    return canonical
+def _repair_hobby_item(*, value: str) -> str:
+    if not _fails_hobby_format(value=value):
+        return value
+    return value.lower().rstrip(_HOBBY_PUNCTUATION_SUFFIX)
+
+
+def _fails_hobby_format(*, value: str) -> bool:
+    return bool(
+        value and (value != value.lower() or value[-1] in _HOBBY_PUNCTUATION_SUFFIX)
+    )
 
 
 def _item_key(*, value: str) -> str:
     return value.casefold()
-
-
-def _is_disjunctive(*, value: str) -> bool:
-    return bool(_DISJUNCTION_PATTERN.search(value))
