@@ -146,3 +146,17 @@ def test_two_non_overlapping_patches_apply_from_original_offsets() -> None:
         len("omhyggelig") - len("grundig")
     )
     assert len(output) == len(TEXT) + expected_delta
+
+
+def test_rejects_insertion_budget_exploit_and_accepts_small_edits() -> None:
+    """Count inserted text towards the budget while allowing small replacements."""
+    original = "abcd efgh " + "x" * 380
+    assert len(original) == 390
+    with pytest.raises(ProsePatchError, match="budget"):
+        apply_patches(
+            original,
+            response(("abcd", "a" * 65), ("efgh", "b" * 65)),
+        )
+
+    result = apply_patches(TEXT, response(("rolig", "venlig"), ("nysgerrig", "åben")))
+    assert result.startswith("Maja er venlig og åben.")
