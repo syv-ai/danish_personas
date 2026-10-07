@@ -16,6 +16,7 @@ import httpx
 import polars as pl
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.prose_patch import ProsePatchResponse
 from danish_personas.generation.proxy_budget import (
@@ -103,44 +104,6 @@ PatchRunner: t.TypeAlias = t.Callable[
 ]
 
 
-def _optional_text(value: object) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    raise RepairSampleError("Identity sidecar values must be strings or null")
-
-
-class RepairSampleError(RuntimeError):
-    """Raised when the sample repair CLI must fail closed."""
-
-
-def _run_proxy_patch_adapter(
-    row: dict[str, t.Any],
-    candidate_row: dict[str, t.Any],
-    changed_facts: dict[str, dict[str, object]],
-    gender: str | None,
-    partner_gender: str | None,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    checkpoint_path: Path,
-    transport: httpx.BaseTransport,
-) -> ProxyPatchProposal:
-    return run_proxy_patch(
-        row=row,
-        candidate_row=candidate_row,
-        changed_facts=changed_facts,
-        gender=gender,
-        partner_gender=partner_gender,
-        prompt=prompt,
-        config=config,
-        budget=budget,
-        checkpoint_path=checkpoint_path,
-        transport=transport,
-    )
-
-
 @click.command()
 @click.option("--original", type=click.Path(path_type=Path), default=DEFAULT_ORIGINAL)
 @click.option("--candidate", type=click.Path(path_type=Path), default=DEFAULT_CANDIDATE)
@@ -166,7 +129,7 @@ def _run_proxy_patch_adapter(
 @click.option(
     "--cost-cap-usd", default=str(MAX_CAMPAIGN_USD), show_default=True, metavar="USD"
 )
-def repair_persona_sample(
+def main(
     original: Path,
     candidate: Path,
     identity_sidecar: Path,
@@ -329,6 +292,10 @@ def _load_or_create_status(
     }
     _write_status(path=status_path, status=status)
     return status
+
+
+class RepairSampleError(RuntimeError):
+    """Raised when the sample repair CLI must fail closed."""
 
 
 def _validate_status(status: dict[str, t.Any]) -> dict[str, t.Any]:
@@ -577,12 +544,6 @@ class EligibleRepair:
     partner_gender: str | None
 
 
-def _selection_key(repair: EligibleRepair) -> tuple[int, int, int, str]:
-    fields = set(repair.changed_facts)
-    priority = min(PRIORITY_FACTS.get(field, 99) for field in fields)
-    return (0 if len(fields) == 1 else 1, priority, len(fields), repair.persona_id)
-
-
 def _dry_run_summary(
     *, selected: list[EligibleRepair], manifest: dict[str, JSONValue]
 ) -> dict[str, object]:
@@ -747,5 +708,46 @@ def _changed_fields_are_supported(changed_fields: set[str]) -> bool:
     return True
 
 
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    raise RepairSampleError("Identity sidecar values must be strings or null")
+
+
+def _run_proxy_patch_adapter(
+    row: dict[str, t.Any],
+    candidate_row: dict[str, t.Any],
+    changed_facts: dict[str, dict[str, object]],
+    gender: str | None,
+    partner_gender: str | None,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    checkpoint_path: Path,
+    transport: httpx.BaseTransport,
+) -> ProxyPatchProposal:
+    return run_proxy_patch(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        gender=gender,
+        partner_gender=partner_gender,
+        prompt=prompt,
+        config=config,
+        budget=budget,
+        checkpoint_path=checkpoint_path,
+        transport=transport,
+    )
+
+
+def _selection_key(repair: EligibleRepair) -> tuple[int, int, int, str]:
+    fields = set(repair.changed_facts)
+    priority = min(PRIORITY_FACTS.get(field, 99) for field in fields)
+    return (0 if len(fields) == 1 else 1, priority, len(fields), repair.persona_id)
+
+
 if __name__ == "__main__":
-    repair_persona_sample()
+    load_repository_environment()
+    main()

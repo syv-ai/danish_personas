@@ -15,6 +15,7 @@ from pathlib import Path
 import polars as pl
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.prose_patch import (
     ProsePatchError,
     ProsePatchResponse,
@@ -30,7 +31,7 @@ DEFAULT_ORIGINAL = DEFAULT_ROOT / "data/train-00000-of-00001.parquet"
 DEFAULT_CANDIDATE = DEFAULT_ROOT / "attribute-candidate-v2.parquet"
 DEFAULT_PROPOSALS_DIR = DEFAULT_ROOT / "persona-repair-proposals"
 DEFAULT_STATUS = DEFAULT_PROPOSALS_DIR / "status.json"
-DEFAULT_OUTPUT = DEFAULT_ROOT / "prose-review-dashboard.html"
+DEFAULT_OUTPUT = DEFAULT_PROPOSALS_DIR / "prose-review-dashboard.html"
 DEFAULT_SAMPLE_LIMIT = 30
 ID_FIELD = "persona_id"
 PERSONA_FIELD = "persona"
@@ -41,35 +42,6 @@ JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 
-class ReviewDashboardError(RuntimeError):
-    """Raised when the dashboard cannot be built safely."""
-
-
-@dataclass(frozen=True)
-class DashboardPaths:
-    """Filesystem inputs for the offline prose review dashboard."""
-
-    original: Path = DEFAULT_ORIGINAL
-    candidate: Path = DEFAULT_CANDIDATE
-    status: Path = DEFAULT_STATUS
-    checkpoint_root: Path = DEFAULT_PROPOSALS_DIR
-    output: Path = DEFAULT_OUTPUT
-
-
-@dataclass(frozen=True)
-class ReviewProposal:
-    """One verified provisional prose repair for human review."""
-
-    persona_hash: str
-    short_id: str
-    changed_fields: tuple[str, ...]
-    changed_facts: tuple[tuple[str, str, str], ...]
-    changed_fraction: float
-    original_text: str
-    proposed_text: str
-    evidence: tuple[dict[str, str], ...]
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run the dashboard command-line interface.
 
@@ -78,7 +50,11 @@ def main(argv: list[str] | None = None) -> int:
             Command-line arguments. Defaults to ``sys.argv`` when omitted.
 
     Returns:
-        Process exit code.
+        Zero after a successful dashboard build.
+
+    Raises:
+        SystemExit:
+            If the offline dashboard cannot be verified or written.
     """
     configure_cli_logging()
     parser = _argument_parser()
@@ -98,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ReviewDashboardError as exc:
         LOGGER.error("Prose review dashboard failed: %s", exc)
-        return 1
+        raise SystemExit(1) from exc
     LOGGER.info(
         "Wrote %s with %s sampled proposals from %s verified proposals",
         summary["output"],
@@ -106,6 +82,35 @@ def main(argv: list[str] | None = None) -> int:
         summary["verified_proposals"],
     )
     return 0
+
+
+@dataclass(frozen=True)
+class DashboardPaths:
+    """Filesystem inputs for the offline prose review dashboard."""
+
+    original: Path = DEFAULT_ORIGINAL
+    candidate: Path = DEFAULT_CANDIDATE
+    status: Path = DEFAULT_STATUS
+    checkpoint_root: Path = DEFAULT_PROPOSALS_DIR
+    output: Path = DEFAULT_OUTPUT
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Build an offline HTML review dashboard for prose proposals."
+    )
+    parser.add_argument("--original", type=Path, default=DEFAULT_ORIGINAL)
+    parser.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
+    parser.add_argument("--status", type=Path, default=DEFAULT_STATUS)
+    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_PROPOSALS_DIR)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--expected-original-sha256",
+        default=None,
+        help="Optional extra SHA-256 pin for the original parquet baseline.",
+    )
+    parser.add_argument("--sample-limit", type=int, default=DEFAULT_SAMPLE_LIMIT)
+    return parser
 
 
 def build_prose_review_dashboard(
@@ -167,44 +172,368 @@ def build_prose_review_dashboard(
     }
 
 
-def select_dashboard_sample(
-    *, proposals: list[ReviewProposal], limit: int = DEFAULT_SAMPLE_LIMIT
-) -> list[ReviewProposal]:
-    """Return a deterministic stratified sample by changed field and patch size.
+class ReviewDashboardError(RuntimeError):
+    """Raised when the dashboard cannot be built safely."""
 
-    Args:
-        proposals:
-            Verified proposals available for review.
-        limit (optional):
-            Maximum selected rows. Defaults to 30.
 
-    Returns:
-        Deterministically ordered review rows.
-    """
-    buckets: dict[tuple[str, str], list[ReviewProposal]] = {}
-    for proposal in sorted(
-        proposals,
-        key=lambda item: (
-            item.changed_fields,
-            _fraction_bucket_index(item.changed_fraction),
-            item.short_id,
-        ),
-    ):
-        field_key = ",".join(proposal.changed_fields) or "unknown"
-        key = (field_key, _fraction_bucket(proposal.changed_fraction))
-        buckets.setdefault(key, []).append(proposal)
-    ordered_keys = sorted(
-        buckets, key=lambda item: (item[0], FRACTION_BUCKET_ORDER[item[1]])
+def _load_status(*, path: Path) -> dict[str, JSONValue]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ReviewDashboardError("status.json is missing") from exc
+    except json.JSONDecodeError as exc:
+        raise ReviewDashboardError("status.json is not valid JSON") from exc
+    if not isinstance(document, dict):
+        raise ReviewDashboardError("status.json must be a JSON object")
+    return document
+
+
+def _checkpoint_path(*, checkpoint_root: Path, persona_hash: str) -> Path | None:
+    candidates = (
+        checkpoint_root / f"{persona_hash}.json",
+        checkpoint_root / "checkpoints" / f"{persona_hash}.json",
+        checkpoint_root / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json",
     )
-    selected: list[ReviewProposal] = []
-    while len(selected) < limit and any(buckets.values()):
-        for key in ordered_keys:
-            bucket = buckets[key]
-            if bucket:
-                selected.append(bucket.pop(0))
-            if len(selected) >= limit:
-                break
-    return selected
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+@dataclass(frozen=True)
+class ReviewProposal:
+    """One verified provisional prose repair for human review."""
+
+    persona_hash: str
+    short_id: str
+    changed_fields: tuple[str, ...]
+    changed_facts: tuple[tuple[str, str, str], ...]
+    changed_fraction: float
+    original_text: str
+    proposed_text: str
+    evidence: tuple[dict[str, str], ...]
+
+
+def _load_verified_proposals(
+    *,
+    status: dict[str, JSONValue],
+    original_rows: dict[str, dict[str, JSONValue]],
+    candidate_rows: dict[str, dict[str, JSONValue]],
+    checkpoint_root: Path,
+) -> list[ReviewProposal]:
+    proposals: list[ReviewProposal] = []
+    expected_model = _status_model(status=status)
+    expected_prompt = _status_inputs(status=status).get("prompt")
+    for persona_id in t.cast(list[str], status["processed_persona_ids"]):
+        persona_hash = sha256_text(persona_id)
+        checkpoint_path = _checkpoint_path(
+            checkpoint_root=checkpoint_root, persona_hash=persona_hash
+        )
+        if checkpoint_path is None:
+            continue
+        proposal = _load_checkpoint_proposal(
+            checkpoint_path=checkpoint_path,
+            persona_id=persona_id,
+            persona_hash=persona_hash,
+            original_rows=original_rows,
+            candidate_rows=candidate_rows,
+            expected_model=expected_model,
+            expected_prompt_sha256=expected_prompt,
+        )
+        if proposal is not None:
+            proposals.append(proposal)
+    return proposals
+
+
+def _load_checkpoint_proposal(
+    *,
+    checkpoint_path: Path,
+    persona_id: str,
+    persona_hash: str,
+    original_rows: dict[str, dict[str, JSONValue]],
+    candidate_rows: dict[str, dict[str, JSONValue]],
+    expected_model: str | None,
+    expected_prompt_sha256: str | None,
+) -> ReviewProposal | None:
+    checkpoint = _load_checkpoint(path=checkpoint_path)
+    original = original_rows.get(persona_id)
+    candidate = candidate_rows.get(persona_id)
+    if original is None or candidate is None:
+        raise ReviewDashboardError("Checkpoint persona is missing from inputs")
+    original_text = _row_text(row=original, field=PERSONA_FIELD)
+    if candidate.get(PERSONA_FIELD) != original_text:
+        raise ReviewDashboardError("Candidate prose changed before review")
+    evidence = _checkpoint_evidence(checkpoint=checkpoint)
+    if not evidence:
+        return None
+    proposed = checkpoint.get("proposed_persona_text")
+    if not isinstance(proposed, str):
+        raise ReviewDashboardError("Checkpoint proposal text is malformed")
+    recomputed = _apply_checkpoint_evidence(text=original_text, evidence=evidence)
+    if recomputed != proposed:
+        raise ReviewDashboardError("Checkpoint proposal does not match evidence")
+    changed_facts = _changed_facts(original=original, candidate=candidate)
+    if not changed_facts:
+        raise ReviewDashboardError("Checkpoint has no changed facts to review")
+    _verify_checkpoint_binding(
+        checkpoint=checkpoint,
+        original=original,
+        candidate=candidate,
+        old_text=original_text,
+        changed_facts=changed_facts,
+        expected_model=expected_model,
+        expected_prompt_sha256=expected_prompt_sha256,
+    )
+    changed_fraction = _checkpoint_fraction(
+        checkpoint=checkpoint, old_text=original_text, evidence=evidence
+    )
+    fields = tuple(field for field, _, _ in changed_facts)
+    return ReviewProposal(
+        persona_hash=persona_hash,
+        short_id=persona_hash[:12],
+        changed_fields=fields,
+        changed_facts=changed_facts,
+        changed_fraction=changed_fraction,
+        original_text=original_text,
+        proposed_text=proposed,
+        evidence=evidence,
+    )
+
+
+def _apply_checkpoint_evidence(
+    *, text: str, evidence: tuple[dict[str, str], ...]
+) -> str:
+    try:
+        return apply_patches(text, {"patches": list(evidence)})
+    except ProsePatchError as exc:
+        raise ReviewDashboardError("Checkpoint evidence fails local patching") from exc
+
+
+def _changed_facts(
+    *, original: dict[str, JSONValue], candidate: dict[str, JSONValue]
+) -> tuple[tuple[str, str, str], ...]:
+    facts: list[tuple[str, str, str]] = []
+    for field in sorted((set(original) & set(candidate)) & _ALLOWED_FACTS):
+        old = original[field]
+        new = candidate[field]
+        if old != new:
+            facts.append((field, _display_value(old), _display_value(new)))
+    return tuple(facts)
+
+
+def _display_value(value: JSONValue) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool | int | float | str):
+        return str(value)
+    return canonical_json(value)
+
+
+def _checkpoint_evidence(
+    *, checkpoint: dict[str, JSONValue]
+) -> tuple[dict[str, str], ...]:
+    raw = checkpoint.get("evidence")
+    if not isinstance(raw, list):
+        raise ReviewDashboardError("Checkpoint evidence is malformed")
+    evidence: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ReviewDashboardError("Checkpoint evidence entries are malformed")
+        old = item.get("old_excerpt")
+        new = item.get("new_excerpt")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise ReviewDashboardError("Checkpoint evidence excerpts are malformed")
+        evidence.append({"old_excerpt": old, "new_excerpt": new})
+    return tuple(evidence)
+
+
+def _checkpoint_fraction(
+    *,
+    checkpoint: dict[str, JSONValue],
+    old_text: str,
+    evidence: tuple[dict[str, str], ...],
+) -> float:
+    recorded = checkpoint.get("changed_fraction")
+    if not isinstance(recorded, int | float):
+        raise ReviewDashboardError("Checkpoint changed fraction is malformed")
+    actual = sum(
+        max(len(item["old_excerpt"]), len(item["new_excerpt"])) for item in evidence
+    ) / len(old_text)
+    if abs(float(recorded) - actual) > 1e-12:
+        raise ReviewDashboardError("Checkpoint changed fraction is invalid")
+    return actual
+
+
+def _load_checkpoint(*, path: Path) -> dict[str, JSONValue]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ReviewDashboardError("Checkpoint JSON is invalid") from exc
+    if not isinstance(document, dict):
+        raise ReviewDashboardError("Checkpoint must be a JSON object")
+    digest = document.get("checkpoint_sha256")
+    unsigned = {
+        key: value for key, value in document.items() if key != "checkpoint_sha256"
+    }
+    if digest != sha256_text(canonical_json(unsigned)):
+        raise ReviewDashboardError("Checkpoint checksum is invalid")
+    return document
+
+
+def _row_text(*, row: dict[str, JSONValue], field: str) -> str:
+    value = row.get(field)
+    if not isinstance(value, str):
+        raise ReviewDashboardError(f"Row field {field} is not text")
+    return value
+
+
+def _verify_checkpoint_binding(
+    *,
+    checkpoint: dict[str, JSONValue],
+    original: dict[str, JSONValue],
+    candidate: dict[str, JSONValue],
+    old_text: str,
+    changed_facts: tuple[tuple[str, str, str], ...],
+    expected_model: str | None,
+    expected_prompt_sha256: str | None,
+) -> None:
+    payload = {
+        "persona": old_text,
+        "changed_facts": {
+            field: {"old": original[field], "new": candidate[field]}
+            for field, _, _ in changed_facts
+        },
+    }
+    expected = {
+        "source_sha256": sha256_text(old_text),
+        "row_sha256": sha256_text(canonical_json(original)),
+        "facts_sha256": sha256_text(canonical_json(payload)),
+        "schema_sha256": sha256_text(
+            canonical_json(ProsePatchResponse.provider_json_schema())
+        ),
+    }
+    for key, value in expected.items():
+        if checkpoint.get(key) != value:
+            raise ReviewDashboardError(f"Checkpoint binding mismatch: {key}")
+    prompt = checkpoint.get("prompt_sha256")
+    if not isinstance(prompt, str):
+        raise ReviewDashboardError("Checkpoint prompt binding is missing")
+    if expected_prompt_sha256 is not None and prompt != expected_prompt_sha256:
+        raise ReviewDashboardError("Checkpoint prompt binding mismatch")
+    model = checkpoint.get("model")
+    if not isinstance(model, str):
+        raise ReviewDashboardError("Checkpoint model binding is missing")
+    if expected_model is not None and model != expected_model:
+        raise ReviewDashboardError("Checkpoint model binding mismatch")
+
+
+def _status_inputs(*, status: dict[str, JSONValue]) -> dict[str, str]:
+    manifest = status.get("manifest")
+    if not isinstance(manifest, dict):
+        raise ReviewDashboardError("status.json manifest is missing")
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ReviewDashboardError("status.json input hashes are missing")
+    parsed: dict[str, str] = {}
+    for key, value in inputs.items():
+        if isinstance(key, str) and isinstance(value, str):
+            parsed[key] = value
+    return parsed
+
+
+def _status_model(*, status: dict[str, JSONValue]) -> str | None:
+    manifest = status.get("manifest")
+    if not isinstance(manifest, dict):
+        return None
+    model = manifest.get("model")
+    if model is None:
+        return None
+    if not isinstance(model, str):
+        raise ReviewDashboardError("status.json model binding is invalid")
+    return model
+
+
+def _require_terminal_status(*, status: dict[str, JSONValue]) -> None:
+    processed = _status_int(status=status, key="processed")
+    total = _status_int(status=status, key="total")
+    if processed != total:
+        raise ReviewDashboardError("Repair job is not terminal: processed != total")
+    ids = status.get("processed_persona_ids")
+    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+        raise ReviewDashboardError("status.json processed IDs are malformed")
+
+
+def _status_int(*, status: dict[str, JSONValue], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ReviewDashboardError(f"status.json {key} counter is invalid")
+    return value
+
+
+def _rows_by_id(*, path: Path, label: str) -> dict[str, dict[str, JSONValue]]:
+    frame = pl.read_parquet(path)
+    missing = {ID_FIELD, PERSONA_FIELD} - set(frame.columns)
+    if missing:
+        raise ReviewDashboardError(f"{label} parquet lacks required columns")
+    rows: dict[str, dict[str, JSONValue]] = {}
+    for row in frame.to_dicts():
+        persona_id = row.get(ID_FIELD)
+        persona = row.get(PERSONA_FIELD)
+        if not isinstance(persona_id, str) or not persona_id:
+            raise ReviewDashboardError(f"{label} parquet has an invalid persona ID")
+        if persona_id in rows:
+            raise ReviewDashboardError(f"{label} parquet has duplicate persona IDs")
+        if not isinstance(persona, str):
+            raise ReviewDashboardError(f"{label} parquet has invalid persona prose")
+        rows[persona_id] = t.cast(dict[str, JSONValue], row)
+    return rows
+
+
+def _verify_input_hashes(
+    *,
+    status: dict[str, JSONValue],
+    original: Path,
+    candidate: Path,
+    expected_original_sha256: str | None,
+) -> None:
+    inputs = _status_inputs(status=status)
+    original_sha = sha256_file(original)
+    if (
+        expected_original_sha256 is not None
+        and original_sha != expected_original_sha256
+    ):
+        raise ReviewDashboardError("Original parquet does not match the expected hash")
+    if inputs.get("original") != original_sha:
+        raise ReviewDashboardError("Original parquet does not match status.json")
+    candidate_sha = inputs.get("candidate")
+    if isinstance(candidate_sha, str) and candidate_sha != sha256_file(candidate):
+        raise ReviewDashboardError("Candidate parquet does not match status.json")
+    schema_sha = inputs.get("schema")
+    expected_schema = sha256_text(
+        canonical_json(ProsePatchResponse.provider_json_schema())
+    )
+    if isinstance(schema_sha, str) and schema_sha != expected_schema:
+        raise ReviewDashboardError("Patch schema does not match status.json")
+
+
+def _write_private_html(*, path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.parent.stat().st_mode & 0o077:
+        raise ReviewDashboardError("Dashboard output directory must be private")
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def render_dashboard(
@@ -344,178 +673,6 @@ mark { background: #fde68a; color: #111827; padding: 0.08rem 0.12rem; }
 """
 
 
-def _argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Build an offline HTML review dashboard for prose proposals."
-    )
-    parser.add_argument("--original", type=Path, default=DEFAULT_ORIGINAL)
-    parser.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
-    parser.add_argument("--status", type=Path, default=DEFAULT_STATUS)
-    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_PROPOSALS_DIR)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument(
-        "--expected-original-sha256",
-        default=None,
-        help="Optional extra SHA-256 pin for the original parquet baseline.",
-    )
-    parser.add_argument("--sample-limit", type=int, default=DEFAULT_SAMPLE_LIMIT)
-    return parser
-
-
-def _load_status(*, path: Path) -> dict[str, JSONValue]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ReviewDashboardError("status.json is missing") from exc
-    except json.JSONDecodeError as exc:
-        raise ReviewDashboardError("status.json is not valid JSON") from exc
-    if not isinstance(document, dict):
-        raise ReviewDashboardError("status.json must be a JSON object")
-    return document
-
-
-def _require_terminal_status(*, status: dict[str, JSONValue]) -> None:
-    processed = _status_int(status=status, key="processed")
-    total = _status_int(status=status, key="total")
-    if processed != total:
-        raise ReviewDashboardError("Repair job is not terminal: processed != total")
-    ids = status.get("processed_persona_ids")
-    if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
-        raise ReviewDashboardError("status.json processed IDs are malformed")
-
-
-def _verify_input_hashes(
-    *,
-    status: dict[str, JSONValue],
-    original: Path,
-    candidate: Path,
-    expected_original_sha256: str | None,
-) -> None:
-    inputs = _status_inputs(status=status)
-    original_sha = sha256_file(original)
-    if (
-        expected_original_sha256 is not None
-        and original_sha != expected_original_sha256
-    ):
-        raise ReviewDashboardError("Original parquet does not match the expected hash")
-    if inputs.get("original") != original_sha:
-        raise ReviewDashboardError("Original parquet does not match status.json")
-    candidate_sha = inputs.get("candidate")
-    if isinstance(candidate_sha, str) and candidate_sha != sha256_file(candidate):
-        raise ReviewDashboardError("Candidate parquet does not match status.json")
-    schema_sha = inputs.get("schema")
-    expected_schema = sha256_text(
-        canonical_json(ProsePatchResponse.provider_json_schema())
-    )
-    if isinstance(schema_sha, str) and schema_sha != expected_schema:
-        raise ReviewDashboardError("Patch schema does not match status.json")
-
-
-def _rows_by_id(*, path: Path, label: str) -> dict[str, dict[str, JSONValue]]:
-    frame = pl.read_parquet(path)
-    missing = {ID_FIELD, PERSONA_FIELD} - set(frame.columns)
-    if missing:
-        raise ReviewDashboardError(f"{label} parquet lacks required columns")
-    rows: dict[str, dict[str, JSONValue]] = {}
-    for row in frame.to_dicts():
-        persona_id = row.get(ID_FIELD)
-        persona = row.get(PERSONA_FIELD)
-        if not isinstance(persona_id, str) or not persona_id:
-            raise ReviewDashboardError(f"{label} parquet has an invalid persona ID")
-        if persona_id in rows:
-            raise ReviewDashboardError(f"{label} parquet has duplicate persona IDs")
-        if not isinstance(persona, str):
-            raise ReviewDashboardError(f"{label} parquet has invalid persona prose")
-        rows[persona_id] = t.cast(dict[str, JSONValue], row)
-    return rows
-
-
-def _load_verified_proposals(
-    *,
-    status: dict[str, JSONValue],
-    original_rows: dict[str, dict[str, JSONValue]],
-    candidate_rows: dict[str, dict[str, JSONValue]],
-    checkpoint_root: Path,
-) -> list[ReviewProposal]:
-    proposals: list[ReviewProposal] = []
-    expected_model = _status_model(status=status)
-    expected_prompt = _status_inputs(status=status).get("prompt")
-    for persona_id in t.cast(list[str], status["processed_persona_ids"]):
-        persona_hash = sha256_text(persona_id)
-        checkpoint_path = _checkpoint_path(
-            checkpoint_root=checkpoint_root, persona_hash=persona_hash
-        )
-        if checkpoint_path is None:
-            continue
-        proposal = _load_checkpoint_proposal(
-            checkpoint_path=checkpoint_path,
-            persona_id=persona_id,
-            persona_hash=persona_hash,
-            original_rows=original_rows,
-            candidate_rows=candidate_rows,
-            expected_model=expected_model,
-            expected_prompt_sha256=expected_prompt,
-        )
-        if proposal is not None:
-            proposals.append(proposal)
-    return proposals
-
-
-def _load_checkpoint_proposal(
-    *,
-    checkpoint_path: Path,
-    persona_id: str,
-    persona_hash: str,
-    original_rows: dict[str, dict[str, JSONValue]],
-    candidate_rows: dict[str, dict[str, JSONValue]],
-    expected_model: str | None,
-    expected_prompt_sha256: str | None,
-) -> ReviewProposal | None:
-    checkpoint = _load_checkpoint(path=checkpoint_path)
-    original = original_rows.get(persona_id)
-    candidate = candidate_rows.get(persona_id)
-    if original is None or candidate is None:
-        raise ReviewDashboardError("Checkpoint persona is missing from inputs")
-    original_text = _row_text(row=original, field=PERSONA_FIELD)
-    if candidate.get(PERSONA_FIELD) != original_text:
-        raise ReviewDashboardError("Candidate prose changed before review")
-    evidence = _checkpoint_evidence(checkpoint=checkpoint)
-    if not evidence:
-        return None
-    proposed = checkpoint.get("proposed_persona_text")
-    if not isinstance(proposed, str):
-        raise ReviewDashboardError("Checkpoint proposal text is malformed")
-    recomputed = _apply_checkpoint_evidence(text=original_text, evidence=evidence)
-    if recomputed != proposed:
-        raise ReviewDashboardError("Checkpoint proposal does not match evidence")
-    changed_facts = _changed_facts(original=original, candidate=candidate)
-    if not changed_facts:
-        raise ReviewDashboardError("Checkpoint has no changed facts to review")
-    _verify_checkpoint_binding(
-        checkpoint=checkpoint,
-        original=original,
-        candidate=candidate,
-        old_text=original_text,
-        changed_facts=changed_facts,
-        expected_model=expected_model,
-        expected_prompt_sha256=expected_prompt_sha256,
-    )
-    changed_fraction = _checkpoint_fraction(
-        checkpoint=checkpoint, old_text=original_text, evidence=evidence
-    )
-    fields = tuple(field for field, _, _ in changed_facts)
-    return ReviewProposal(
-        persona_hash=persona_hash,
-        short_id=persona_hash[:12],
-        changed_fields=fields,
-        changed_facts=changed_facts,
-        changed_fraction=changed_fraction,
-        original_text=original_text,
-        proposed_text=proposed,
-        evidence=evidence,
-    )
-
-
 def _render_proposal_card(*, index: int, proposal: ReviewProposal) -> str:
     original_spans, proposed_spans = _patch_spans(
         original_text=proposal.original_text, evidence=proposal.evidence
@@ -546,137 +703,17 @@ def _render_proposal_card(*, index: int, proposal: ReviewProposal) -> str:
 </article>"""
 
 
-def _render_fact(*, field: str, old: str, new: str) -> str:
-    return (
-        '<div class="fact"><strong>'
-        f"{html.escape(field)}</strong>: old "
-        f"<code>{html.escape(old)}</code> -> new "
-        f"<code>{html.escape(new)}</code></div>"
-    )
-
-
-def _load_checkpoint(*, path: Path) -> dict[str, JSONValue]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ReviewDashboardError("Checkpoint JSON is invalid") from exc
-    if not isinstance(document, dict):
-        raise ReviewDashboardError("Checkpoint must be a JSON object")
-    digest = document.get("checkpoint_sha256")
-    unsigned = {
-        key: value for key, value in document.items() if key != "checkpoint_sha256"
-    }
-    if digest != sha256_text(canonical_json(unsigned)):
-        raise ReviewDashboardError("Checkpoint checksum is invalid")
-    return document
-
-
-def _checkpoint_path(*, checkpoint_root: Path, persona_hash: str) -> Path | None:
-    candidates = (
-        checkpoint_root / f"{persona_hash}.json",
-        checkpoint_root / "checkpoints" / f"{persona_hash}.json",
-        checkpoint_root / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json",
-    )
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
-
-
-def _checkpoint_evidence(
-    *, checkpoint: dict[str, JSONValue]
-) -> tuple[dict[str, str], ...]:
-    raw = checkpoint.get("evidence")
-    if not isinstance(raw, list):
-        raise ReviewDashboardError("Checkpoint evidence is malformed")
-    evidence: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            raise ReviewDashboardError("Checkpoint evidence entries are malformed")
-        old = item.get("old_excerpt")
-        new = item.get("new_excerpt")
-        if not isinstance(old, str) or not isinstance(new, str):
-            raise ReviewDashboardError("Checkpoint evidence excerpts are malformed")
-        evidence.append({"old_excerpt": old, "new_excerpt": new})
-    return tuple(evidence)
-
-
-def _apply_checkpoint_evidence(
-    *, text: str, evidence: tuple[dict[str, str], ...]
-) -> str:
-    try:
-        return apply_patches(text, {"patches": list(evidence)})
-    except ProsePatchError as exc:
-        raise ReviewDashboardError("Checkpoint evidence fails local patching") from exc
-
-
-def _verify_checkpoint_binding(
-    *,
-    checkpoint: dict[str, JSONValue],
-    original: dict[str, JSONValue],
-    candidate: dict[str, JSONValue],
-    old_text: str,
-    changed_facts: tuple[tuple[str, str, str], ...],
-    expected_model: str | None,
-    expected_prompt_sha256: str | None,
-) -> None:
-    payload = {
-        "persona": old_text,
-        "changed_facts": {
-            field: {"old": original[field], "new": candidate[field]}
-            for field, _, _ in changed_facts
-        },
-    }
-    expected = {
-        "source_sha256": sha256_text(old_text),
-        "row_sha256": sha256_text(canonical_json(original)),
-        "facts_sha256": sha256_text(canonical_json(payload)),
-        "schema_sha256": sha256_text(
-            canonical_json(ProsePatchResponse.provider_json_schema())
-        ),
-    }
-    for key, value in expected.items():
-        if checkpoint.get(key) != value:
-            raise ReviewDashboardError(f"Checkpoint binding mismatch: {key}")
-    prompt = checkpoint.get("prompt_sha256")
-    if not isinstance(prompt, str):
-        raise ReviewDashboardError("Checkpoint prompt binding is missing")
-    if expected_prompt_sha256 is not None and prompt != expected_prompt_sha256:
-        raise ReviewDashboardError("Checkpoint prompt binding mismatch")
-    model = checkpoint.get("model")
-    if not isinstance(model, str):
-        raise ReviewDashboardError("Checkpoint model binding is missing")
-    if expected_model is not None and model != expected_model:
-        raise ReviewDashboardError("Checkpoint model binding mismatch")
-
-
-def _checkpoint_fraction(
-    *,
-    checkpoint: dict[str, JSONValue],
-    old_text: str,
-    evidence: tuple[dict[str, str], ...],
-) -> float:
-    recorded = checkpoint.get("changed_fraction")
-    if not isinstance(recorded, int | float):
-        raise ReviewDashboardError("Checkpoint changed fraction is malformed")
-    actual = sum(
-        max(len(item["old_excerpt"]), len(item["new_excerpt"])) for item in evidence
-    ) / len(old_text)
-    if abs(float(recorded) - actual) > 1e-12:
-        raise ReviewDashboardError("Checkpoint changed fraction is invalid")
-    return actual
-
-
-def _changed_facts(
-    *, original: dict[str, JSONValue], candidate: dict[str, JSONValue]
-) -> tuple[tuple[str, str, str], ...]:
-    facts: list[tuple[str, str, str]] = []
-    for field in sorted((set(original) & set(candidate)) & _ALLOWED_FACTS):
-        old = original[field]
-        new = candidate[field]
-        if old != new:
-            facts.append((field, _display_value(old), _display_value(new)))
-    return tuple(facts)
+def _highlight_text(*, text: str, spans: list[tuple[int, int]]) -> str:
+    parts: list[str] = []
+    position = 0
+    for start, end in spans:
+        parts.append(html.escape(text[position:start]))
+        parts.append("<mark>")
+        parts.append(html.escape(text[start:end]))
+        parts.append("</mark>")
+        position = end
+    parts.append(html.escape(text[position:]))
+    return "".join(parts)
 
 
 def _patch_spans(
@@ -706,84 +743,53 @@ def _patch_spans(
     return original_spans, proposed_spans
 
 
-def _highlight_text(*, text: str, spans: list[tuple[int, int]]) -> str:
-    parts: list[str] = []
-    position = 0
-    for start, end in spans:
-        parts.append(html.escape(text[position:start]))
-        parts.append("<mark>")
-        parts.append(html.escape(text[start:end]))
-        parts.append("</mark>")
-        position = end
-    parts.append(html.escape(text[position:]))
-    return "".join(parts)
-
-
-def _write_private_html(*, path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+def _render_fact(*, field: str, old: str, new: str) -> str:
+    return (
+        '<div class="fact"><strong>'
+        f"{html.escape(field)}</strong>: old "
+        f"<code>{html.escape(old)}</code> -> new "
+        f"<code>{html.escape(new)}</code></div>"
     )
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
-def _status_inputs(*, status: dict[str, JSONValue]) -> dict[str, str]:
-    manifest = status.get("manifest")
-    if not isinstance(manifest, dict):
-        raise ReviewDashboardError("status.json manifest is missing")
-    inputs = manifest.get("inputs")
-    if not isinstance(inputs, dict):
-        raise ReviewDashboardError("status.json input hashes are missing")
-    parsed: dict[str, str] = {}
-    for key, value in inputs.items():
-        if isinstance(key, str) and isinstance(value, str):
-            parsed[key] = value
-    return parsed
+def select_dashboard_sample(
+    *, proposals: list[ReviewProposal], limit: int = DEFAULT_SAMPLE_LIMIT
+) -> list[ReviewProposal]:
+    """Return a deterministic stratified sample by changed field and patch size.
 
+    Args:
+        proposals:
+            Verified proposals available for review.
+        limit (optional):
+            Maximum selected rows. Defaults to 30.
 
-def _status_model(*, status: dict[str, JSONValue]) -> str | None:
-    manifest = status.get("manifest")
-    if not isinstance(manifest, dict):
-        return None
-    model = manifest.get("model")
-    if model is None:
-        return None
-    if not isinstance(model, str):
-        raise ReviewDashboardError("status.json model binding is invalid")
-    return model
-
-
-def _status_int(*, status: dict[str, JSONValue], key: str) -> int:
-    value = status.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ReviewDashboardError(f"status.json {key} counter is invalid")
-    return value
-
-
-def _row_text(*, row: dict[str, JSONValue], field: str) -> str:
-    value = row.get(field)
-    if not isinstance(value, str):
-        raise ReviewDashboardError(f"Row field {field} is not text")
-    return value
-
-
-def _display_value(value: JSONValue) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool | int | float | str):
-        return str(value)
-    return canonical_json(value)
+    Returns:
+        Deterministically ordered review rows.
+    """
+    buckets: dict[tuple[str, str], list[ReviewProposal]] = {}
+    for proposal in sorted(
+        proposals,
+        key=lambda item: (
+            item.changed_fields,
+            _fraction_bucket_index(item.changed_fraction),
+            item.short_id,
+        ),
+    ):
+        field_key = ",".join(proposal.changed_fields) or "unknown"
+        key = (field_key, _fraction_bucket(proposal.changed_fraction))
+        buckets.setdefault(key, []).append(proposal)
+    ordered_keys = sorted(
+        buckets, key=lambda item: (item[0], FRACTION_BUCKET_ORDER[item[1]])
+    )
+    selected: list[ReviewProposal] = []
+    while len(selected) < limit and any(buckets.values()):
+        for key in ordered_keys:
+            bucket = buckets[key]
+            if bucket:
+                selected.append(bucket.pop(0))
+            if len(selected) >= limit:
+                break
+    return selected
 
 
 def _fraction_bucket(value: float) -> str:
@@ -798,4 +804,5 @@ def _fraction_bucket_index(value: float) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    load_repository_environment()
+    main()
