@@ -1,4 +1,4 @@
-"""Run the private v4 persona prose review campaign."""
+"""Run private persona prose review campaigns."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ from danish_personas.generation.prose_review import (
 )
 from danish_personas.generation.proxy_budget import (
     BASE_URL,
+    EDUCATION_REVIEW_PURPOSE,
     MODEL,
     ProxyBudget,
     ProxyBudgetError,
@@ -45,9 +46,12 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_ROOT = Path("/tmp/danish-personas-audit")
 DEFAULT_ORIGINAL = DEFAULT_ROOT / "data/train-00000-of-00001.parquet"
 DEFAULT_CANDIDATE = DEFAULT_ROOT / "attribute-candidate-v4.parquet"
+DEFAULT_H90_CANDIDATE = DEFAULT_ROOT / "attribute-candidate-v5-h90-PROVISIONAL.parquet"
 DEFAULT_TRIAGE = DEFAULT_ROOT / "prose-triage-v1.json"
 DEFAULT_PROMPT = Path("config/persona-review-da.md")
+DEFAULT_H90_PROMPT = Path("config/persona-review-h90-da.md")
 DEFAULT_OUTPUT_DIR = DEFAULT_ROOT / "persona-review-v4"
+DEFAULT_H90_OUTPUT_DIR = DEFAULT_ROOT / "persona-review-h90-v5"
 DEFAULT_REGISTRY = Path.home() / ".pi" / "agent" / "models-store.json"
 EXPECTED_ORIGINAL_SHA256 = (
     "c178e63d40046274bcc559bdd9322f32336656da980c1809f794d68449d6250f"
@@ -56,6 +60,11 @@ EXPECTED_CANDIDATE_SHA256 = (
     "8e7f770f8163b51134f2f9eb9e1dd74bfc247dbdf8287559065966de597ea8cf"
 )
 CAMPAIGN = "persona-prose-review-v4"
+H90_CAMPAIGN = "persona-prose-review-h90-v5"
+DEFAULT_BUDGET_PURPOSE = "v4"
+H90_BUDGET_PURPOSE = EDUCATION_REVIEW_PURPOSE
+H90_CHANGED_ROWS = 506
+H90_CHANGED_FIELDS = frozenset({"education_level", "education_source_code"})
 ID_FIELD = "persona_id"
 PERSONA_FIELD = "persona"
 TRIAGE_CLASSIFICATION = "needs_prose_review_or_regeneration"
@@ -91,6 +100,7 @@ SENSITIVE_TEXT = re.compile(
 
 JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+BudgetPurpose: t.TypeAlias = t.Literal["v4", "h90_v5"]
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,7 @@ class ReviewInputs:
     candidate_rows: dict[str, dict[str, object]]
     triage_personas: dict[str, dict[str, object]]
     prompt: str
+    h90_report: dict[str, object] | None
 
 
 @dataclass(frozen=True)
@@ -177,6 +188,12 @@ ReviewFutureMap: t.TypeAlias = dict[futures.Future[ReviewAttemptResult], ReviewR
 @click.option(
     "--workers", type=click.IntRange(min=1, max=4), default=1, show_default=True
 )
+@click.option(
+    "--budget-purpose",
+    type=click.Choice([DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE]),
+    default=DEFAULT_BUDGET_PURPOSE,
+    show_default=True,
+)
 @click.option("--run", "execute", is_flag=True, default=False)
 def main(
     original: Path,
@@ -187,14 +204,24 @@ def main(
     registry: Path,
     max_rows: int | None,
     workers: int,
+    budget_purpose: BudgetPurpose,
     execute: bool,
 ) -> None:
-    """Run or dry-run the private v4 persona prose review campaign.
+    """Run or dry-run a private persona prose review campaign.
 
     Raises:
         click.ClickException: If input, resume, budget, or proxy boundaries are unsafe.
     """
     configure_cli_logging()
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        if original == DEFAULT_ORIGINAL:
+            original = DEFAULT_CANDIDATE
+        if candidate == DEFAULT_CANDIDATE:
+            candidate = DEFAULT_H90_CANDIDATE
+        if prompt == DEFAULT_PROMPT:
+            prompt = DEFAULT_H90_PROMPT
+        if output_dir == DEFAULT_OUTPUT_DIR:
+            output_dir = DEFAULT_H90_OUTPUT_DIR
     paths = ReviewPaths(
         original=original,
         candidate=candidate,
@@ -204,14 +231,23 @@ def main(
         registry=registry,
     )
     try:
+        expected_original_sha256 = EXPECTED_ORIGINAL_SHA256
+        expected_candidate_sha256 = EXPECTED_CANDIDATE_SHA256
+        if budget_purpose == H90_BUDGET_PURPOSE:
+            _require_h90_private_inputs(paths=paths)
+            expected_original_sha256 = EXPECTED_CANDIDATE_SHA256
+            expected_candidate_sha256 = _h90_report_candidate_sha256(
+                candidate=paths.candidate
+            )
         summary = run_review_campaign(
             paths=paths,
             execute=execute,
             max_rows=max_rows,
             workers=workers,
-            expected_original_sha256=EXPECTED_ORIGINAL_SHA256,
-            expected_candidate_sha256=EXPECTED_CANDIDATE_SHA256,
+            expected_original_sha256=expected_original_sha256,
+            expected_candidate_sha256=expected_candidate_sha256,
             review_runner=_run_proxy_review_adapter,
+            budget_purpose=budget_purpose,
         )
     except (PersonaProseReviewError, ProxyBudgetError, ProxyReviewError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -227,8 +263,9 @@ def run_review_campaign(
     expected_original_sha256: str,
     expected_candidate_sha256: str,
     review_runner: ReviewRunner,
+    budget_purpose: BudgetPurpose = DEFAULT_BUDGET_PURPOSE,
 ) -> dict[str, object]:
-    """Run or dry-run the v4 prose review campaign.
+    """Run or dry-run a prose review campaign.
 
     Args:
         paths: Input and private output paths.
@@ -236,8 +273,10 @@ def run_review_campaign(
         max_rows: Optional prefix bound for pilot processing.
         workers: Worker count from one to four.
         expected_original_sha256: Required SHA-256 of the frozen baseline parquet.
-        expected_candidate_sha256: Required SHA-256 of the v4 candidate parquet.
+        expected_candidate_sha256: Required SHA-256 of the selected candidate parquet.
         review_runner: Injectable proxy review runner for offline tests.
+        budget_purpose: Explicit local ledger purpose. Defaults to the pinned v4
+            prose review campaign.
 
     Returns:
         Machine-readable progress summary without raw persona IDs or prose.
@@ -246,12 +285,21 @@ def run_review_campaign(
         PersonaProseReviewError: If source, resume, or worker inputs are unsafe.
     """
     _require_worker_count(workers=workers)
+    _require_budget_purpose(budget_purpose=budget_purpose)
+    h90_report = None
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        _require_h90_private_inputs(paths=paths)
+        h90_report = _load_h90_report(candidate=paths.candidate)
+        if h90_report["candidate_sha256"] != expected_candidate_sha256:
+            raise PersonaProseReviewError("H90 v5 report candidate SHA-256 mismatch")
     base_manifest = _base_manifest(
         paths=paths,
         expected_original_sha256=expected_original_sha256,
         expected_candidate_sha256=expected_candidate_sha256,
+        budget_purpose=budget_purpose,
+        h90_report=h90_report,
     )
-    loaded = load_review_inputs(paths=paths)
+    loaded = load_review_inputs(paths=paths, h90_report=h90_report)
     selection = select_review_rows(inputs=loaded)
     manifest = _campaign_manifest(base_manifest=base_manifest, selection=selection)
     if not execute:
@@ -272,7 +320,12 @@ def run_review_campaign(
         )
 
     config = _generation_config(prompt_path=paths.prompt)
-    budget = _proxy_budget(paths=paths, prompt=loaded.prompt, manifest=manifest)
+    budget = _proxy_budget(
+        paths=paths,
+        prompt=loaded.prompt,
+        manifest=manifest,
+        budget_purpose=budget_purpose,
+    )
     try:
         _process_pending(
             rows=pending,
@@ -300,28 +353,46 @@ class PersonaProseReviewError(Exception):
 
 
 def _base_manifest(
-    *, paths: ReviewPaths, expected_original_sha256: str, expected_candidate_sha256: str
+    *,
+    paths: ReviewPaths,
+    expected_original_sha256: str,
+    expected_candidate_sha256: str,
+    budget_purpose: BudgetPurpose,
+    h90_report: dict[str, object] | None,
 ) -> dict[str, JSONValue]:
     original_sha256 = sha256_file(paths.original)
     if original_sha256 != expected_original_sha256:
         raise PersonaProseReviewError("Frozen original parquet SHA-256 does not match")
     candidate_sha256 = sha256_file(paths.candidate)
     if candidate_sha256 != expected_candidate_sha256:
-        raise PersonaProseReviewError("v4 candidate parquet SHA-256 does not match")
+        raise PersonaProseReviewError("candidate parquet SHA-256 does not match")
     schema_hash = sha256_text(
         canonical_json(ProseReviewResponse.provider_json_schema())
     )
-    return {
+    inputs: dict[str, JSONValue] = {
+        "triage": sha256_file(paths.triage),
+        "prompt": sha256_file(paths.prompt),
+        "registry": sha256_file(paths.registry),
+        "schema": schema_hash,
+    }
+    campaign = CAMPAIGN
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        if h90_report is None:
+            raise PersonaProseReviewError("H90 v5 report is required")
+        campaign = H90_CAMPAIGN
+        inputs.update(
+            {
+                "original_v4": original_sha256,
+                "candidate_h90_v5": candidate_sha256,
+                "h90_report": sha256_file(_h90_report_path(candidate=paths.candidate)),
+            }
+        )
+    else:
+        inputs.update({"original": original_sha256, "candidate_v4": candidate_sha256})
+    manifest: dict[str, JSONValue] = {
         "version": MANIFEST_VERSION,
-        "campaign": CAMPAIGN,
-        "inputs": {
-            "original": original_sha256,
-            "candidate_v4": candidate_sha256,
-            "triage": sha256_file(paths.triage),
-            "prompt": sha256_file(paths.prompt),
-            "registry": sha256_file(paths.registry),
-            "schema": schema_hash,
-        },
+        "campaign": campaign,
+        "inputs": inputs,
         "model": MODEL,
         "base_url": BASE_URL,
         "reasoning_effort": "none",
@@ -330,6 +401,9 @@ def _base_manifest(
         "triage_classification": TRIAGE_CLASSIFICATION,
         "allowed_facts": sorted(_ALLOWED_FACTS),
     }
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        manifest["budget_purpose"] = budget_purpose
+    return manifest
 
 
 def _generation_config(*, prompt_path: Path) -> GenerationConfig:
@@ -598,18 +672,26 @@ def _submit_review_futures(
 
 
 def _proxy_budget(
-    *, paths: ReviewPaths, prompt: str, manifest: dict[str, JSONValue]
+    *,
+    paths: ReviewPaths,
+    prompt: str,
+    manifest: dict[str, JSONValue],
+    budget_purpose: BudgetPurpose,
 ) -> ProxyBudget:
     inputs = manifest["inputs"]
     if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
         raise PersonaProseReviewError("Manifest schema hash is malformed")
+    uncapped_purpose = None
+    if budget_purpose == H90_BUDGET_PURPOSE:
+        uncapped_purpose = H90_BUDGET_PURPOSE
     return ProxyBudget(
         registry_path=paths.registry,
-        campaign=CAMPAIGN,
+        campaign=str(manifest["campaign"]),
         source_hash=sha256_text(canonical_json(manifest)),
         prompt_hash=sha256_text(prompt),
         schema_hash=inputs["schema"],
         uncapped=True,
+        uncapped_purpose=uncapped_purpose,
     )
 
 
@@ -617,9 +699,11 @@ def _public_status_summary(
     *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
 ) -> dict[str, object]:
     status["pending"] = _pending_count(status=status)
+    manifest = status.get("manifest", {})
+    campaign = manifest.get("campaign") if isinstance(manifest, dict) else CAMPAIGN
     return {
         "dry_run": False,
-        "campaign": CAMPAIGN,
+        "campaign": campaign,
         "status_path": str(status_path),
         "total_triage_selected": status["total_triage_selected"],
         "reviewable": status["reviewable"],
@@ -643,6 +727,30 @@ def _require_worker_count(*, workers: int) -> None:
         raise PersonaProseReviewError("workers must be between 1 and 4")
 
 
+def _require_budget_purpose(*, budget_purpose: BudgetPurpose) -> None:
+    if budget_purpose not in {DEFAULT_BUDGET_PURPOSE, H90_BUDGET_PURPOSE}:
+        raise PersonaProseReviewError("Unsupported budget purpose")
+
+
+def _require_h90_private_inputs(*, paths: ReviewPaths) -> None:
+    for path, label in (
+        (paths.original, "H90 original v4 parquet"),
+        (paths.candidate, "H90 candidate parquet"),
+        (paths.triage, "H90 triage JSON"),
+        (_h90_report_path(candidate=paths.candidate), "H90 report JSON"),
+    ):
+        _require_private_file(path=path, label=label)
+
+
+def _require_private_file(*, path: Path, label: str) -> None:
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise PersonaProseReviewError(f"{label} is missing or unreadable") from exc
+    if mode & 0o077:
+        raise PersonaProseReviewError(f"{label} must be private (mode 0600)")
+
+
 def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
     if path.exists():
         existing = json.loads(path.read_text(encoding="utf-8"))
@@ -656,7 +764,9 @@ def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> N
     _write_json(path=path, value=manifest)
 
 
-def load_review_inputs(*, paths: ReviewPaths) -> ReviewInputs:
+def load_review_inputs(
+    *, paths: ReviewPaths, h90_report: dict[str, object] | None = None
+) -> ReviewInputs:
     """Load only the inputs needed to compute real allowlisted fact changes.
 
     Returns:
@@ -675,6 +785,7 @@ def load_review_inputs(*, paths: ReviewPaths) -> ReviewInputs:
         candidate_rows=_rows_by_id(candidate, label="candidate"),
         triage_personas=_load_triage_personas(paths.triage),
         prompt=paths.prompt.read_text(encoding="utf-8"),
+        h90_report=h90_report,
     )
 
 
@@ -691,6 +802,65 @@ def _load_triage_personas(path: Path) -> dict[str, dict[str, object]]:
             raise PersonaProseReviewError("Triage persona entries are malformed")
         parsed[persona_id] = entry
     return parsed
+
+
+def _load_h90_report(*, candidate: Path) -> dict[str, object]:
+    report_path = _h90_report_path(candidate=candidate)
+    document = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
+    candidate_sha256 = _h90_report_candidate_sha256(candidate=candidate)
+    changed_hashes = document.get("changed_persona_id_sha256")
+    if not isinstance(changed_hashes, list) or not all(
+        _is_sha256(value) for value in changed_hashes
+    ):
+        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
+    if len(changed_hashes) != H90_CHANGED_ROWS or len(set(changed_hashes)) != len(
+        changed_hashes
+    ):
+        raise PersonaProseReviewError("H90 v5 report must contain exactly 506 IDs")
+    changed_rows = document.get("changed_rows")
+    if changed_rows is not None and changed_rows != H90_CHANGED_ROWS:
+        raise PersonaProseReviewError("H90 v5 report changed row count mismatch")
+    return {
+        "candidate_sha256": candidate_sha256,
+        "changed_persona_id_sha256": sorted(changed_hashes),
+    }
+
+
+def _h90_report_path(*, candidate: Path) -> Path:
+    return candidate.with_suffix(".json")
+
+
+def _h90_report_candidate_sha256(*, candidate: Path) -> str:
+    report_path = _h90_report_path(candidate=candidate)
+    document = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise PersonaProseReviewError("H90 v5 report JSON must be an object")
+    for key in (
+        "candidate_sha256",
+        "candidate_v5_sha256",
+        "candidate_h90_v5_sha256",
+        "output_sha256",
+        "parquet_sha256",
+    ):
+        value = document.get(key)
+        if isinstance(value, str):
+            if not _is_sha256(value):
+                raise PersonaProseReviewError(
+                    "H90 v5 report candidate SHA-256 malformed"
+                )
+            actual = sha256_file(candidate)
+            if value != actual:
+                raise PersonaProseReviewError(
+                    "H90 v5 report candidate SHA-256 mismatch"
+                )
+            return value
+    raise PersonaProseReviewError("H90 v5 report lacks candidate SHA-256")
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _require_columns(*, frame: pl.DataFrame, columns: set[str], label: str) -> None:
@@ -748,7 +918,7 @@ def _dry_run_summary(
     would_process = min(reviewable, max_rows) if max_rows is not None else reviewable
     return {
         "dry_run": True,
-        "campaign": CAMPAIGN,
+        "campaign": manifest["campaign"],
         "manifest_sha256": sha256_text(canonical_json(manifest)),
         "total_triage_selected": selection.total_triage_selected,
         "reviewable": reviewable,
@@ -805,7 +975,12 @@ def select_review_rows(*, inputs: ReviewInputs) -> Selection:
 
     Returns:
         Full-campaign selection and static skip counts.
+
+    Raises:
+        PersonaProseReviewError: If the opt-in H90 v5 selection is unsafe.
     """
+    if inputs.h90_report is not None:
+        _validate_h90_inputs(inputs=inputs)
     reviewable: list[ReviewRow] = []
     total = 0
     no_changed_fact = 0
@@ -816,18 +991,66 @@ def select_review_rows(*, inputs: ReviewInputs) -> Selection:
         total += 1
         row = _selected_row(persona_id=persona_id, inputs=inputs)
         if row is None:
+            if inputs.h90_report is not None:
+                raise PersonaProseReviewError("H90 v5 selected row has no H90 change")
             no_changed_fact += 1
             continue
         if _has_privacy_risk(row=row):
+            if inputs.h90_report is not None:
+                raise PersonaProseReviewError("H90 v5 selected row is privacy-unsafe")
             privacy_skipped += 1
             continue
         reviewable.append(row)
+    if inputs.h90_report is not None and len(reviewable) != H90_CHANGED_ROWS:
+        raise PersonaProseReviewError("H90 v5 selection must contain exactly 506 rows")
     return Selection(
         reviewable=reviewable,
         total_triage_selected=total,
         no_changed_fact=no_changed_fact,
         privacy_skipped=privacy_skipped,
     )
+
+
+def _validate_h90_inputs(*, inputs: ReviewInputs) -> None:
+    if inputs.h90_report is None:
+        raise PersonaProseReviewError("H90 v5 report is required")
+    report_hashes = _h90_report_hashes(report=inputs.h90_report)
+    selected_hashes = sorted(
+        sha256_text(persona_id)
+        for persona_id, entry in inputs.triage_personas.items()
+        if entry.get("classification") == TRIAGE_CLASSIFICATION
+    )
+    if selected_hashes != report_hashes:
+        raise PersonaProseReviewError("H90 v5 triage IDs do not match report")
+    actual_hashes: list[str] = []
+    for persona_id, original in sorted(inputs.original_rows.items()):
+        candidate = inputs.candidate_rows.get(persona_id)
+        if candidate is None:
+            raise PersonaProseReviewError("H90 v5 candidate is missing a v4 row")
+        changed_fields = _actual_changed_fields(original=original, candidate=candidate)
+        if not changed_fields:
+            continue
+        if changed_fields != H90_CHANGED_FIELDS:
+            raise PersonaProseReviewError("H90 v5 candidate changed non-H90 fields")
+        if (
+            candidate.get("education_source_code") != "H90"
+            or candidate.get("education_level") != "not_stated"
+        ):
+            raise PersonaProseReviewError("H90 v5 candidate has invalid H90 values")
+        actual_hashes.append(sha256_text(persona_id))
+    if set(inputs.candidate_rows) != set(inputs.original_rows):
+        raise PersonaProseReviewError("H90 v5 candidate row IDs do not match v4")
+    if sorted(actual_hashes) != report_hashes:
+        raise PersonaProseReviewError(
+            "H90 v5 candidate changed IDs do not match report"
+        )
+
+
+def _h90_report_hashes(*, report: dict[str, object]) -> list[str]:
+    hashes = report.get("changed_persona_id_sha256")
+    if not isinstance(hashes, list) or not all(_is_sha256(value) for value in hashes):
+        raise PersonaProseReviewError("H90 v5 report changed ID hashes are malformed")
+    return sorted(str(value) for value in hashes)
 
 
 def _has_privacy_risk(*, row: ReviewRow) -> bool:
