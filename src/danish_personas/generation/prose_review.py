@@ -96,11 +96,16 @@ class ProseReviewResponse(StrictModel):
                     },
                 },
                 "manual_review_reason": {
-                    "type": "string",
-                    "enum": list(_MANUAL_REVIEW_REASONS),
+                    "type": ["string", "null"],
+                    "enum": [*_MANUAL_REVIEW_REASONS, None],
                 },
             },
-            "required": ["disposition", "patches", "unchanged_evidence"],
+            "required": [
+                "disposition",
+                "patches",
+                "unchanged_evidence",
+                "manual_review_reason",
+            ],
             "additionalProperties": False,
         }
 
