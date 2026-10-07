@@ -94,6 +94,14 @@ JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 
 @dataclass(frozen=True)
+class ReviewAttemptResult:
+    """One logical row result and the transient retries it needed."""
+
+    result: ProseReviewResult
+    transient_retries: int
+
+
+@dataclass(frozen=True)
 class ReviewInputs:
     """Loaded prose review inputs keyed by private persona ID in memory only."""
 
@@ -126,23 +134,6 @@ class ReviewRow:
     changed_facts: dict[str, dict[str, object]]
 
 
-@dataclass(frozen=True)
-class ReviewAttemptResult:
-    """One logical row result and the transient retries it needed."""
-
-    result: ProseReviewResult
-    transient_retries: int
-
-
-class TransientReviewAttemptsExhausted(RuntimeError):
-    """Raised when a row exhausts bounded transient provider retries."""
-
-    def __init__(self, *, transient_retries: int) -> None:
-        """Initialise with the number of retries already consumed."""
-        super().__init__("Transient prose review provider failures exhausted")
-        self.transient_retries = transient_retries
-
-
 class ReviewRunner(t.Protocol):
     """Callable contract for the injectable proxy review runner."""
 
@@ -159,6 +150,15 @@ class ReviewRunner(t.Protocol):
         transport: httpx.BaseTransport,
     ) -> ProseReviewResult:
         """Run or resume one prose review."""
+
+
+class TransientReviewAttemptsExhausted(RuntimeError):
+    """Raised when a row exhausts bounded transient provider retries."""
+
+    def __init__(self, *, transient_retries: int) -> None:
+        """Initialise with the number of retries already consumed."""
+        super().__init__("Transient prose review provider failures exhausted")
+        self.transient_retries = transient_retries
 
 
 ReviewFutureMap: t.TypeAlias = dict[futures.Future[ReviewAttemptResult], ReviewRow]
@@ -530,13 +530,6 @@ def _record_completed_review_future(
     return None
 
 
-def _record_transient_retries(*, status: dict[str, object], exc: Exception) -> None:
-    if isinstance(exc, TransientReviewAttemptsExhausted):
-        status["transient_retries"] = (
-            _status_int(status, "transient_retries") + exc.transient_retries
-        )
-
-
 def _must_stop(exc: Exception) -> bool:
     if isinstance(exc, TransientReviewAttemptsExhausted):
         return True
@@ -565,6 +558,13 @@ def _record_result(
         hashes.append(row.persona_hash)
     status["processed_persona_hashes"] = hashes
     status["pending"] = _pending_count(status=status)
+
+
+def _record_transient_retries(*, status: dict[str, object], exc: Exception) -> None:
+    if isinstance(exc, TransientReviewAttemptsExhausted):
+        status["transient_retries"] = (
+            _status_int(status, "transient_retries") + exc.transient_retries
+        )
 
 
 def _submit_review_futures(
@@ -922,6 +922,10 @@ def _run_one_review(
     raise PersonaProseReviewError("Prose review retry loop ended unexpectedly")
 
 
+def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
+    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
+
+
 def _is_retryable_transient_error(exc: Exception) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
@@ -955,10 +959,6 @@ def _retry_after_seconds(*, exc: Exception) -> float | None:
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=dt.UTC)
     return (retry_at - dt.datetime.now(tz=dt.UTC)).total_seconds()
-
-
-def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
-    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
 
 
 def _run_proxy_review_adapter(
