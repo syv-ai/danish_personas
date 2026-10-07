@@ -155,6 +155,25 @@ def _row() -> dict[str, Any]:
     }
 
 
+def _null_detail_review_inputs(
+    marital_status: object,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, object]]]:
+    row = _row()
+    row["marital_status"] = marital_status
+    row["legal_status_detail"] = "married"
+    changed_facts: dict[str, dict[str, object]] = {
+        "legal_status_detail": {"old": "married", "new": None}
+    }
+    return row, _candidate_row(changed_facts, row=row), changed_facts
+
+
+def _user_payload(request: httpx.Request) -> dict[str, object]:
+    request_body = json.loads(request.content)
+    value = json.loads(request_body["messages"][1]["content"])
+    assert isinstance(value, dict)
+    return value
+
+
 def _config(**overrides: object) -> GenerationConfig:
     values: dict[str, object] = {
         "base_url": "http://127.0.0.1:18080/v1",
@@ -253,6 +272,13 @@ def test_all_dispositions_checkpoint_privately_and_resume_without_network(
     assert result.disposition == expected_disposition
     assert len(requests) == 1
     request_body = json.loads(requests[0].content)
+    normal_payload = {
+        "persona": _row()["persona"],
+        "changed_facts": {"marital_status": {"old": "single", "new": "married"}},
+    }
+    assert request_body["messages"][1]["content"] == json.dumps(
+        normal_payload, ensure_ascii=False
+    )
     user_payload = json.loads(request_body["messages"][1]["content"])
     assert set(user_payload) == {"persona", "changed_facts"}
     assert "gender" not in user_payload
@@ -501,6 +527,154 @@ def test_rejects_sensitive_identity_terms_before_network(tmp_path: Path) -> None
             },
         )
     assert not requests
+
+
+@pytest.mark.parametrize(
+    ("marital_status", "expected_label"),
+    [("divorced", "skilt"), ("widowed", "enkestand"), ("never_married", "aldrig gift")],
+)
+def test_adds_minimal_null_detail_context_for_allowed_statuses(
+    tmp_path: Path, marital_status: str, expected_label: str
+) -> None:
+    """Send only the allowlisted Danish target for supported null transitions."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs(marital_status)
+    requests: list[httpx.Request] = []
+
+    run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            requests,
+        ),
+    )
+
+    request_text = requests[0].content.decode()
+    user_payload = _user_payload(requests[0])
+    assert set(user_payload) == {
+        "persona",
+        "changed_facts",
+        "legal_status_detail_null_context",
+    }
+    assert user_payload["legal_status_detail_null_context"] == {
+        "target_marital_category_da": expected_label,
+        "explanation": (
+            "legal_status_detail = null betyder, at en ikke-understøttet fin "
+            "detalje er fjernet. Den aktuelle kildeunderstøttede "
+            "civilstandskategori her er målet; udled ingen nye personlige træk."
+        ),
+    }
+    assert marital_status not in request_text
+    assert "candidate_row" not in request_text
+    assert all(
+        secret not in request_text
+        for secret in [
+            "private-id",
+            "private-sex",
+            "private municipality",
+            "private origin",
+        ]
+    )
+
+    checkpoint = json.loads((tmp_path / "review.json").read_text(encoding="utf-8"))
+    assert (
+        checkpoint["payload_sha256"]
+        == hashlib.sha256(
+            json.dumps(
+                user_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("marital_status", ["single", "married_or_separated", None])
+def test_rejects_null_detail_context_without_allowed_status(
+    tmp_path: Path, marital_status: object
+) -> None:
+    """Fail closed when the target marital category is not concrete and allowed."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs("divorced")
+    row["marital_status"] = marital_status
+    candidate_row["marital_status"] = marital_status
+    requests: list[httpx.Request] = []
+
+    with pytest.raises(ProxyReviewError, match="concrete marital_status"):
+        run_proxy_review(
+            row=row,
+            candidate_row=candidate_row,
+            changed_facts=changed_facts,
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=tmp_path / "review.json",
+            transport=_transport("{}", requests),
+        )
+
+    assert not requests
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_rejects_old_null_detail_checkpoint_without_payload_hash(
+    tmp_path: Path,
+) -> None:
+    """Do not reuse legacy checkpoints for requests that now include context."""
+    row, candidate_row, changed_facts = _null_detail_review_inputs("divorced")
+    run_proxy_review(
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=tmp_path / "review.json",
+        transport=_transport(
+            json.dumps(
+                {
+                    "disposition": "needs_manual_review",
+                    "patches": [],
+                    "unchanged_evidence": [],
+                    "manual_review_reason": "ambiguous",
+                }
+            ),
+            [],
+        ),
+    )
+    checkpoint_path = tmp_path / "review.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint.pop("payload_sha256")
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    with pytest.raises(ProxyReviewError, match="malformed"):
+        run_proxy_review(
+            row=row,
+            candidate_row=candidate_row,
+            changed_facts=changed_facts,
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=checkpoint_path,
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
 
 
 def test_rejects_stale_checkpoint_inputs(tmp_path: Path) -> None:
