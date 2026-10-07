@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import typing as t
 from dataclasses import FrozenInstanceError
-from typing import Any
 
 import pytest
 
@@ -20,17 +20,25 @@ def test_provider_schema_uses_exact_review_dispositions_and_basic_keywords() -> 
     """Expose a strict proxy schema while keeping local-only constraints local."""
     schema = ProseReviewResponse.provider_json_schema()
 
-    assert schema["properties"]["disposition"]["enum"] == [
+    properties = _schema_object(schema["properties"])
+    disposition = _schema_object(properties["disposition"])
+    manual_review_reason = _schema_object(properties["manual_review_reason"])
+    required = schema["required"]
+    assert isinstance(required, list)
+
+    assert disposition["enum"] == [
         "patched",
         "unchanged_consistent",
         "needs_manual_review",
     ]
-    assert set(schema["required"]) == {"disposition", "patches", "unchanged_evidence"}
-    assert schema["properties"]["manual_review_reason"]["enum"] == [
+    assert set(required) == set(properties)
+    assert manual_review_reason["type"] == ["string", "null"]
+    assert manual_review_reason["enum"] == [
         "ambiguous",
         "multiple_edits",
         "sensitive",
         "insufficient_evidence",
+        None,
     ]
     assert _schema_keys(schema).isdisjoint(
         {
@@ -68,7 +76,7 @@ def test_patched_review_applies_existing_patch_validator_and_is_immutable() -> N
     ) / len(original)
     assert result.patches[0].old_excerpt == "Før ændring"
     with pytest.raises(FrozenInstanceError):
-        result.proposed_text = original  # type: ignore[misc]
+        setattr(result, "proposed_text", original)
 
 
 @pytest.mark.parametrize(
@@ -94,7 +102,7 @@ def test_patched_review_applies_existing_patch_validator_and_is_immutable() -> N
     ],
 )
 def test_patched_review_fails_closed_for_non_patch_disposition_data(
-    response: dict[str, Any],
+    response: dict[str, object],
 ) -> None:
     """Reject empty, excessive, or mixed patch decisions locally."""
     with pytest.raises(ProseReviewError):
@@ -214,7 +222,7 @@ def test_needs_manual_review_requires_bounded_reason_and_no_edits() -> None:
     ],
 )
 def test_needs_manual_review_rejects_patch_or_classifier_payloads(
-    response: dict[str, Any],
+    response: dict[str, object],
 ) -> None:
     """Keep manual review separate from patching and unchanged classification."""
     with pytest.raises(ProseReviewError):
@@ -269,6 +277,11 @@ def test_extra_fields_and_unsafe_changed_facts_fail_closed() -> None:
 
 def _persona_text(unique_phrase: str) -> str:
     return f"{unique_phrase}. " + "Dette er en syntetisk dansk persona. " * 12
+
+
+def _schema_object(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return t.cast(dict[str, object], value)
 
 
 def _schema_keys(value: object) -> set[str]:
