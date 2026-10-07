@@ -73,6 +73,80 @@ def test_builds_private_offline_v4_dashboard_without_provider_io(
     assert (paths.output.parent.stat().st_mode & 0o777) == 0o700
 
 
+def test_accepts_signed_legacy_null_detail_checkpoint_as_provisional(
+    tmp_path: Path,
+) -> None:
+    """Historical contextless null-detail checkpoints are labelled provisional."""
+    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
+    checkpoint_path = _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0"
+    )
+    _remove_signed_payload_hash(path=checkpoint_path)
+    persona_hash = sha256_text("pid-0")
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    summary = dashboard.build_prose_review_v4_dashboard(paths=paths, limit=10)
+
+    content = paths.output.read_text(encoding="utf-8")
+    assert summary["verified_checkpoints"] == 1
+    assert "LEGACY PROVISIONAL" in content
+    assert "renewed review" in content
+
+
+def test_malformed_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
+    """Legacy handling still requires the complete signed old key set."""
+    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
+    checkpoint_path = _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0"
+    )
+    _remove_signed_payload_hash(path=checkpoint_path)
+    document = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document.pop("source_pin_sha256")
+    _resign_checkpoint(document=document)
+    checkpoint_path.write_text(json.dumps(document), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+    persona_hash = sha256_text("pid-0")
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="schema"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
+
+    assert not paths.output.exists()
+
+
+def test_stale_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
+    """A legacy-shaped checkpoint must still match the candidate row exactly."""
+    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
+    checkpoint_path = _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0"
+    )
+    _remove_signed_payload_hash(path=checkpoint_path)
+    persona_hash = sha256_text("pid-0")
+    pl.DataFrame(
+        [
+            {
+                "persona_id": "pid-0",
+                "persona": TEXT,
+                "job_title": "endnu nyere titel",
+                "education_level": "lang uddannelse",
+                "marital_status": "divorced",
+                "legal_status_detail": None,
+            }
+        ]
+    ).write_parquet(paths.candidate)
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, dict)
+    inputs["candidate_v4"] = sha256_file(paths.candidate)
+    _write_json(paths.manifest, manifest)
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="binding mismatch"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
+
+    assert not paths.output.exists()
+
+
 def test_html_escapes_malicious_prose_and_fact_values(tmp_path: Path) -> None:
     """Raw prose, diffs, patches, and fact values are escaped before HTML."""
     malicious_old = '<img src=x onerror="alert(1)">'
@@ -196,6 +270,7 @@ def _write_fixture(
     marker: str = "Før ændring",
     old_value: str = "gammel titel",
     new_value: str = "ny titel",
+    legal_status_detail_null: bool = False,
 ) -> tuple[FixturePaths, dict[str, dashboard.JSONValue]]:
     root = tmp_path / "private"
     root.mkdir(mode=0o700)
@@ -213,12 +288,16 @@ def _write_fixture(
     for index in range(count):
         persona_id = f"pid-{index}"
         text = TEXT.replace("Før ændring", marker)
+        original_detail = "married" if legal_status_detail_null else "standard"
+        candidate_detail = None if legal_status_detail_null else original_detail
         rows.append(
             {
                 "persona_id": persona_id,
                 "persona": text,
                 "job_title": old_value,
                 "education_level": "kort uddannelse",
+                "marital_status": "divorced",
+                "legal_status_detail": original_detail,
             }
         )
         candidates.append(
@@ -227,6 +306,8 @@ def _write_fixture(
                 "persona": text,
                 "job_title": new_value,
                 "education_level": "lang uddannelse",
+                "marital_status": "divorced",
+                "legal_status_detail": candidate_detail,
             }
         )
     pl.DataFrame(rows).write_parquet(original)
@@ -380,6 +461,22 @@ def _write_checkpoint(
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     path.chmod(0o600)
     return path
+
+
+def _remove_signed_payload_hash(*, path: Path) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    document.pop("payload_sha256")
+    _resign_checkpoint(document=document)
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _resign_checkpoint(*, document: dict[str, object]) -> None:
+    unsigned = {
+        key: value for key, value in document.items() if key != "checkpoint_sha256"
+    }
+    document["checkpoint_sha256"] = sha256_text(canonical_json(unsigned))
 
 
 def _response(
