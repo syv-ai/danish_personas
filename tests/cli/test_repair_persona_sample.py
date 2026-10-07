@@ -231,6 +231,29 @@ def test_cost_preflight_and_pinned_generation_config_are_used(
     )
 
 
+def test_default_batch_config_and_dry_run_counts(tmp_path: Path) -> None:
+    """The 100-row limit must not exceed the per-client limit of one request."""
+    paths = _write_inputs(tmp_path)
+    config = repair._generation_config(prompt_path=paths.prompt)
+    assert config.maximum_total_requests == 1
+    selected = repair.select_eligible_repairs(
+        inputs=repair.load_repair_inputs(paths=paths), max_attempts=100
+    )
+    summary = repair._dry_run_summary(
+        selected=selected * 4,
+        manifest=repair.build_manifest(
+            paths=paths,
+            max_attempts=100,
+            cost_cap_usd=Decimal("10"),
+            expected_original_sha256=sha256_file(paths.original),
+        ),
+    )
+    assert summary["selected_count"] == 8
+    preview = summary["selected"]
+    assert isinstance(preview, list)
+    assert len(preview) == repair.DRY_RUN_LIMIT
+
+
 def test_dry_run_selects_safe_rows_without_private_identity_columns(
     tmp_path: Path,
 ) -> None:

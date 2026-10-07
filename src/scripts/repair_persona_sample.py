@@ -263,13 +263,13 @@ def run_repair_campaign(
     loaded = load_repair_inputs(paths=paths)
     selected = select_eligible_repairs(inputs=loaded, max_attempts=max_attempts)
     if dry_run:
-        return _dry_run_summary(selected=selected[:DRY_RUN_LIMIT], manifest=manifest)
+        return _dry_run_summary(selected=selected, manifest=manifest)
     _prepare_private_output(paths.output_dir)
     status_path = paths.output_dir / "status.json"
     status = _load_or_create_status(
         status_path=status_path, manifest=manifest, total=len(selected)
     )
-    config = _generation_config(prompt_path=paths.prompt, max_attempts=max_attempts)
+    config = _generation_config(prompt_path=paths.prompt)
     budget = _proxy_budget(
         paths=paths, prompt=loaded.prompt, manifest=manifest, cost_cap_usd=cost_cap_usd
     )
@@ -291,14 +291,14 @@ def run_repair_campaign(
     return _public_status_summary(status=status, status_path=status_path)
 
 
-def _generation_config(*, prompt_path: Path, max_attempts: int) -> GenerationConfig:
+def _generation_config(*, prompt_path: Path) -> GenerationConfig:
     return GenerationConfig(
         base_url=BASE_URL,
         model=MODEL,
         api_key_env=None,
         timeout_seconds=120.0,
         maximum_http_attempts=1,
-        maximum_total_requests=max_attempts,
+        maximum_total_requests=1,
         retry_backoff_seconds=0.0,
         maximum_rows_per_shard=1,
         max_tokens=None,
@@ -593,7 +593,7 @@ def _dry_run_summary(
                 "persona_sha256": repair.persona_hash,
                 "changed_fields": sorted(repair.changed_facts),
             }
-            for repair in selected
+            for repair in selected[:DRY_RUN_LIMIT]
         ],
         "selected_count": len(selected),
         "manifest_sha256": sha256_text(canonical_json(manifest)),
