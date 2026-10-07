@@ -356,18 +356,25 @@ def _budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProxyBudget:
         ),
         encoding="utf-8",
     )
-    kwargs = {
-        "ledger_path": tmp_path / "ignored.jsonl",
-        "registry_path": registry,
-        "campaign": "synthetic-patch-verification-test",
-        "source_hash": "b" * 64,
-        "prompt_hash": hashlib.sha256(_PROMPT.encode()).hexdigest(),
-        "schema_hash": hashlib.sha256(_canonical_schema()).hexdigest(),
-        "cap_usd": Decimal("1"),
-    }
-    ProxyBudget(**kwargs)
+    ProxyBudget(
+        ledger_path=tmp_path / "ignored.jsonl",
+        registry_path=registry,
+        campaign="synthetic-patch-verification-test",
+        source_hash="b" * 64,
+        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
+        schema_hash=hashlib.sha256(_canonical_schema()).hexdigest(),
+        cap_usd=Decimal("1"),
+    )
     return ProxyBudget(
-        **kwargs, uncapped=True, uncapped_purpose="patch_verification"
+        ledger_path=tmp_path / "ignored.jsonl",
+        registry_path=registry,
+        campaign="synthetic-patch-verification-test",
+        source_hash="b" * 64,
+        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
+        schema_hash=hashlib.sha256(_canonical_schema()).hexdigest(),
+        cap_usd=Decimal("1"),
+        uncapped=True,
+        uncapped_purpose="patch_verification",
     )
 
 
