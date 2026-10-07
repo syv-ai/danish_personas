@@ -15,13 +15,15 @@ def _registry(path: Path, *, price: str = "0.1", model: str = "gpt-6-luna") -> P
     path.write_text(
         json.dumps(
             {
-                "models": [
-                    {
-                        "id": model,
-                        "maxTokens": 128_000,
-                        "cost": {"input": price, "output": "0.5"},
-                    }
-                ]
+                "openai-codex": {
+                    "models": [
+                        {
+                            "id": model,
+                            "maxTokens": 128_000,
+                            "cost": {"input": price, "output": "0.5"},
+                        }
+                    ]
+                }
             }
         ),
         encoding="utf-8",
@@ -113,6 +115,44 @@ def test_registry_price_or_model_change_fails_closed(
     _registry(registry, price=price, model=model)
     with pytest.raises(ProxyBudgetError, match="registry"):
         budget.reserve_attempt("attempt-1", {"x": 1})
+
+
+def test_registry_rejects_duplicate_pinned_models(tmp_path: Path) -> None:
+    """Reject ambiguous duplicate entries in the configured provider registry."""
+    registry = _registry(tmp_path / "models-store.json")
+    document = json.loads(registry.read_text(encoding="utf-8"))
+    document["openai-codex"]["models"].append(
+        document["openai-codex"]["models"][0].copy()
+    )
+    registry.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProxyBudgetError, match="registry"):
+        ProxyBudget(
+            ledger_path=tmp_path / "budget.jsonl",
+            registry_path=registry,
+            campaign="campaign-1",
+            source_hash="a" * 64,
+            prompt_hash="b" * 64,
+            schema_hash="c" * 64,
+        )
+
+
+def test_registry_rejects_model_under_wrong_provider(tmp_path: Path) -> None:
+    """Do not accept a matching model entry from a different provider."""
+    registry = _registry(tmp_path / "models-store.json")
+    document = json.loads(registry.read_text(encoding="utf-8"))
+    document["wrong-provider"] = document.pop("openai-codex")
+    registry.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProxyBudgetError, match="registry"):
+        ProxyBudget(
+            ledger_path=tmp_path / "budget.jsonl",
+            registry_path=registry,
+            campaign="campaign-1",
+            source_hash="a" * 64,
+            prompt_hash="b" * 64,
+            schema_hash="c" * 64,
+        )
 
 
 def test_reservation_rejects_ids_reused_for_historical_entries(tmp_path: Path) -> None:

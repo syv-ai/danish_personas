@@ -39,9 +39,10 @@ class ProxyBudgetError(RuntimeError):
 class ProxyBudget:
     """Append-only request budget bound to pinned model and campaign inputs.
 
-    The registry is expected to contain a model entry with ``id`` (or ``name``),
-    ``maxTokens``, and ``cost`` containing ``input`` and ``output`` prices in
-    USD per million tokens. ``models`` may be a mapping or list.
+    The registry is expected to contain the ``openai-codex`` provider with a
+    model entry having ``id`` (or ``name``), ``maxTokens``, and ``cost`` with
+    ``input`` and ``output`` prices in USD per million tokens. ``models`` may be
+    a mapping or list. A flat ``models`` registry is also supported.
     """
 
     def __init__(
@@ -224,7 +225,15 @@ class ProxyBudget:
     def _check_registry(self) -> None:
         try:
             document = json.loads(self.registry_path.read_text(encoding="utf-8"))
-            models = document.get("models", document)
+            if not isinstance(document, dict):
+                raise ValueError("invalid models registry")
+            if "models" in document:
+                models = document["models"]
+            else:
+                provider = document.get("openai-codex")
+                if not isinstance(provider, dict):
+                    raise ValueError("missing openai-codex provider")
+                models = provider.get("models")
             if isinstance(models, dict):
                 candidates = [
                     dict(value, id=key) if isinstance(value, dict) else value
@@ -234,12 +243,15 @@ class ProxyBudget:
                 candidates = models
             else:
                 raise ValueError("invalid models registry")
-            model = next(
+            matching_models = [
                 item
                 for item in candidates
                 if isinstance(item, dict)
                 and item.get("id", item.get("name")) == self.pins["model"]
-            )
+            ]
+            if len(matching_models) != 1:
+                raise ValueError("model is missing or duplicated")
+            model = matching_models[0]
             cost = model["cost"]
             inputs, outputs = cost["input"], cost["output"]
             if (
