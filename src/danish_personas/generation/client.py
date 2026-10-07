@@ -82,6 +82,9 @@ class OpenAIClient:
                 Response schema name.
             json_schema:
                 JSON Schema accepted by the endpoint.
+            record_request (optional):
+                Per-call callback persisted before the client-wide callback and
+                network I/O for each attempt.
 
         Returns:
             Completion text and auditable metadata.
@@ -113,10 +116,11 @@ class OpenAIClient:
             started = monotonic()
             try:
                 next_request = self._requests_made + 1
-                if self._record_request is not None:
-                    self._record_request(next_request)
-                if record_request is not None:
-                    record_request(next_request)
+                _record_attempt(
+                    attempt_number=next_request,
+                    per_call=record_request,
+                    client_wide=self._record_request,
+                )
                 self._requests_made = next_request
                 response = self._client.post("chat/completions", json=body)
                 response.raise_for_status()
@@ -199,6 +203,19 @@ class OpenAIClient:
     def requests_made(self) -> int:
         """HTTP attempts made by this client instance."""
         return self._requests_made
+
+
+def _record_attempt(
+    *,
+    attempt_number: int,
+    per_call: c.Callable[[int], None] | None,
+    client_wide: c.Callable[[int], None] | None,
+) -> None:
+    """Persist per-call and client-wide attempt accounting before network I/O."""
+    if per_call is not None:
+        per_call(attempt_number)
+    if client_wide is not None:
+        client_wide(attempt_number)
 
 
 class RequestBudgetExceeded(RuntimeError):
