@@ -10,7 +10,6 @@ from danish_personas.generation.prose_patch import (
     apply_patches,
 )
 
-
 TEXT = (
     "Maja er rolig og nysgerrig. Hun holder af lange gåture ved kysten og bruger "
     "weekenderne på at besøge familie og venner. På arbejdet er hun grundig, "
@@ -23,18 +22,19 @@ TEXT = (
 
 
 def response(*patches: tuple[str, str]) -> str:
-    """Serialise patch pairs as a provider response."""
+    """Serialise patch pairs as a provider response.
+
+    Returns:
+        JSON text containing the requested patches.
+    """
     return json.dumps(
-        {
-            "patches": [
-                {"old_excerpt": old, "new_excerpt": new} for old, new in patches
-            ]
-        },
+        {"patches": [{"old_excerpt": old, "new_excerpt": new} for old, new in patches]},
         ensure_ascii=False,
     )
 
 
 def test_apply_preserves_untouched_unicode_text_exactly() -> None:
+    """Preserve all text around a Unicode replacement exactly."""
     original = TEXT.replace("kysten", "Øresundskysten")
     output = apply_patches(original, response(("Øresundskysten", "Øresund")))
 
@@ -45,14 +45,17 @@ def test_apply_preserves_untouched_unicode_text_exactly() -> None:
 
 
 def test_two_non_overlapping_patches_apply_from_original_offsets() -> None:
+    """Apply two edits using offsets from the unchanged source text."""
     output = apply_patches(
-        TEXT,
-        response(("rolig", "venlig"), ("grundig", "omhyggelig")),
+        TEXT, response(("rolig", "venlig"), ("grundig", "omhyggelig"))
     )
 
     assert "venlig og nysgerrig" in output
     assert "omhyggelig, hjælpsom" in output
-    assert len(output) == len(TEXT) + len("omhyggelig") - len("grundig")
+    expected_delta = (len("venlig") - len("rolig")) + (
+        len("omhyggelig") - len("grundig")
+    )
+    assert len(output) == len(TEXT) + expected_delta
 
 
 @pytest.mark.parametrize(
@@ -60,18 +63,19 @@ def test_two_non_overlapping_patches_apply_from_original_offsets() -> None:
     [
         "not json",
         '{"patches": []}',
-        '{"patches": [{"old_excerpt": "rolig", "new_excerpt": "venlig", '
-        '"extra": 1}]}',
+        '{"patches": [{"old_excerpt": "rolig", "new_excerpt": "venlig", "extra": 1}]}',
         '{"patches": [{"old_excerpt": "", "new_excerpt": "venlig"}]}',
         '{"patches": [{"old_excerpt": "x"}], "extra": true}',
     ],
 )
 def test_rejects_malformed_empty_or_extra_field_responses(raw: str) -> None:
+    """Reject malformed payloads and fields outside the response schema."""
     with pytest.raises(ProsePatchError):
         apply_patches(TEXT, raw)
 
 
 def test_rejects_duplicate_and_non_unique_excerpt() -> None:
+    """Require each distinct old excerpt to occur exactly once."""
     with pytest.raises(ProsePatchError, match="exactly once"):
         apply_patches(TEXT + " rolig", response(("rolig", "venlig")))
     with pytest.raises(ProsePatchError, match="Duplicate"):
@@ -79,23 +83,25 @@ def test_rejects_duplicate_and_non_unique_excerpt() -> None:
 
 
 def test_rejects_excerpt_without_unicode_word_boundaries() -> None:
+    """Reject excerpt matches that begin inside a Unicode word."""
     with pytest.raises(ProsePatchError, match="word boundaries"):
         apply_patches(TEXT.replace("rolig", "urolig"), response(("rolig", "venlig")))
 
 
 def test_rejects_overlapping_and_identical_patches() -> None:
+    """Reject overlapping spans and replacements with no change."""
     with pytest.raises(ProsePatchError, match="Overlapping"):
         apply_patches(
-            TEXT,
-            response(("rolig og", "venlig og"), ("og nysgerrig", "og åben")),
+            TEXT, response(("rolig og", "venlig og"), ("og nysgerrig", "og åben"))
         )
     with pytest.raises(ProsePatchError, match="Identical"):
         apply_patches(TEXT, response(("rolig", "rolig")))
 
 
 def test_rejects_wide_edit_and_whole_paragraph_rewrite() -> None:
+    """Enforce the edit budget and prohibit complete paragraph replacement."""
     wide_excerpt = "Z" * 110
-    wide_text = "A" * 150 + wide_excerpt + "B" * 250
+    wide_text = "A" * 150 + " " + wide_excerpt + " " + "B" * 250
     with pytest.raises(ProsePatchError, match="budget"):
         apply_patches(wide_text, response((wide_excerpt, "Y" * 110)))
 
@@ -106,8 +112,10 @@ def test_rejects_wide_edit_and_whole_paragraph_rewrite() -> None:
 
 
 def test_rejects_out_of_range_result_and_enforces_local_limits() -> None:
+    """Reject invalid final lengths and excerpts outside local-edit limits."""
+    short_text = "Maja er nysgerrig. " + "Hun læser gerne bøger. " * 7
     with pytest.raises(ProsePatchError, match="300–900"):
-        apply_patches(TEXT, response(("nysgerrig", "åben")))
+        apply_patches(short_text, response(("nysgerrig", "åben")))
     with pytest.raises(ProsePatchError):
         apply_patches(TEXT, response(("rolig", "x" * 141)))
     with pytest.raises(ProsePatchError):
@@ -115,6 +123,7 @@ def test_rejects_out_of_range_result_and_enforces_local_limits() -> None:
 
 
 def test_patch_is_deterministic_and_reapplication_fails_closed() -> None:
+    """Ensure patching is deterministic and cannot be reapplied."""
     patch = response(("rolig", "venlig"))
     first = apply_patches(TEXT, patch)
     assert apply_patches(TEXT, patch) == first
@@ -123,6 +132,7 @@ def test_patch_is_deterministic_and_reapplication_fails_closed() -> None:
 
 
 def test_provider_schema_omits_field_length_constraints() -> None:
+    """Expose a proxy-compatible schema without provider-fragile constraints."""
     schema = ProsePatchResponse.provider_json_schema()
     assert schema["required"] == ["patches"]
     assert schema["additionalProperties"] is False
