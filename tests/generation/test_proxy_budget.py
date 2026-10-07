@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -14,8 +15,11 @@ from danish_personas.generation.proxy_budget import ProxyBudget, ProxyBudgetErro
 
 @pytest.fixture(autouse=True)
 def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep all test campaigns on one isolated user-level ledger."""
+    """Keep all test campaigns on isolated user-level ledgers."""
     monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
+    monkeypatch.setattr(
+        proxy_budget, "USER_UNCAPPED_BUDGET_PATH", tmp_path / "uncapped.jsonl"
+    )
 
 
 def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
@@ -46,6 +50,27 @@ def _budget(tmp_path: Path, *, cap: str = "1") -> ProxyBudget:
         prompt_hash="b" * 64,
         schema_hash="c" * 64,
         cap_usd=Decimal(cap),
+    )
+
+
+def _uncapped_budget(
+    tmp_path: Path,
+    *,
+    model: str = "gpt-6-luna",
+    campaign: str = "campaign-1",
+    prompt_hash: str = "b" * 64,
+    request_overhead_bytes: int = 4096,
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-uncapped.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json", model=model),
+        campaign=campaign,
+        source_hash="a" * 64,
+        prompt_hash=prompt_hash,
+        schema_hash="c" * 64,
+        model=model,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
     )
 
 
@@ -224,3 +249,94 @@ def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
             budget.record_usage(
                 "attempt-1", input_tokens=1, output_tokens=1, response_sha256=digest
             )
+
+
+def test_uncapped_requires_existing_complete_capped_ledger(tmp_path: Path) -> None:
+    """Uncapped campaigns must bind a complete capped pilot ledger."""
+    with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
+        _uncapped_budget(tmp_path)
+
+    proxy_budget.USER_BUDGET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    proxy_budget.USER_BUDGET_PATH.write_text(
+        '{"type":"header","model":"gpt-6-luna"}', encoding="utf-8"
+    )
+    with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
+        _uncapped_budget(tmp_path)
+
+
+def test_uncapped_reservations_bind_old_sha_and_do_not_touch_old_ledger(
+    tmp_path: Path,
+) -> None:
+    """Permit large uncapped reservations while preserving capped history bytes."""
+    _budget(tmp_path)
+    old_bytes = proxy_budget.USER_BUDGET_PATH.read_bytes()
+    huge_overhead = 1_001_000_000
+
+    capped = ProxyBudget(
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-1",
+        source_hash="a" * 64,
+        prompt_hash="b" * 64,
+        schema_hash="c" * 64,
+        request_overhead_bytes=huge_overhead,
+    )
+    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
+        capped.reserve_attempt("giant-capped", {"x": 1})
+
+    uncapped = _uncapped_budget(tmp_path, request_overhead_bytes=huge_overhead)
+    reserved = uncapped.reserve_attempt("giant-uncapped", {"x": 1})
+
+    assert reserved > Decimal("100")
+    assert proxy_budget.USER_BUDGET_PATH.read_bytes() == old_bytes
+    uncapped_lines = proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    header = json.loads(uncapped_lines[0])
+    assert header["uncapped"] is True
+    assert header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
+    assert header["model"] == "gpt-6-luna"
+    assert header["base_url"] == "http://127.0.0.1:18080/v1"
+    assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_uncapped_restart_keeps_reservations_and_usage_idempotent(
+    tmp_path: Path,
+) -> None:
+    """Reload uncapped reservations without double-counting prior capped charges."""
+    _budget(tmp_path)
+    uncapped = _uncapped_budget(tmp_path)
+    uncapped.reserve_attempt("uncapped-attempt-1", {"x": 1})
+    uncapped.record_usage(
+        "uncapped-attempt-1", input_tokens=2, output_tokens=3, response_sha256="e" * 64
+    )
+
+    restarted = _uncapped_budget(tmp_path)
+    with pytest.raises(ProxyBudgetError, match="already reserved"):
+        restarted.reserve_attempt("uncapped-attempt-1", {"x": 1})
+    with pytest.raises(ProxyBudgetError, match="already recorded"):
+        restarted.record_usage(
+            "uncapped-attempt-1",
+            input_tokens=2,
+            output_tokens=3,
+            response_sha256="e" * 64,
+        )
+    uncapped_records = proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(uncapped_records) == 3
+
+
+def test_uncapped_rejects_model_and_manifest_changes(tmp_path: Path) -> None:
+    """Fail closed when uncapped model or campaign pins change."""
+    _budget(tmp_path)
+    _uncapped_budget(tmp_path)
+
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _uncapped_budget(tmp_path, model="different-model")
+    with pytest.raises(ProxyBudgetError, match="pins do not match"):
+        _uncapped_budget(tmp_path, prompt_hash="f" * 64)
+
+    with proxy_budget.USER_BUDGET_PATH.open("a", encoding="utf-8") as old_ledger:
+        old_ledger.write("\n")
+    with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
+        _uncapped_budget(tmp_path)

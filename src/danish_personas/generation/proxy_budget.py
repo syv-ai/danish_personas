@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
 from collections.abc import Callable
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TypeAlias, TypeVar
 
@@ -21,10 +22,12 @@ BASE_URL = "http://127.0.0.1:18080/v1"
 HARD_CAP_USD = Decimal("100")
 INTERNAL_CAP_USD = Decimal("90")
 USER_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-budget.jsonl"
+USER_UNCAPPED_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-uncapped.jsonl"
 JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 )
 Result = TypeVar("Result")
+IS_WINDOWS = sys.platform == "win32"
 
 PRIOR_RESERVATIONS = {
     "prior-failed-melious": Decimal("0.00064415"),
@@ -58,6 +61,7 @@ class ProxyBudget:
         output_usd_per_million: str = "0.5",
         cap_usd: Decimal = INTERNAL_CAP_USD,
         request_overhead_bytes: int = 4096,
+        uncapped: bool = False,
     ) -> None:
         """Create or reopen a ledger after checking pinned registry and policy.
 
@@ -67,7 +71,8 @@ class ProxyBudget:
         # ``ledger_path`` is accepted for source compatibility, but never selects
         # the ledger: all proxy campaigns share the same user-level budget.
         del ledger_path
-        self.path = USER_BUDGET_PATH
+        self.uncapped = uncapped
+        self.path = USER_UNCAPPED_BUDGET_PATH if uncapped else USER_BUDGET_PATH
         self.registry_path = Path(registry_path)
         self.pins: dict[str, JSONValue] = {
             "type": "header",
@@ -81,6 +86,8 @@ class ProxyBudget:
             "prompt_hash": prompt_hash,
             "schema_hash": schema_hash,
         }
+        if uncapped:
+            self.pins["uncapped"] = True
         self.cap = Decimal(cap_usd)
         self.overhead = request_overhead_bytes
         if (
@@ -89,7 +96,7 @@ class ProxyBudget:
             or max_tokens != 128_000
             or Decimal(input_usd_per_million) != Decimal("0.1")
             or Decimal(output_usd_per_million) != Decimal("0.5")
-            or not Decimal("0") < self.cap <= INTERNAL_CAP_USD
+            or (not uncapped and not Decimal("0") < self.cap <= INTERNAL_CAP_USD)
             or request_overhead_bytes < 0
             or not all((campaign, source_hash, prompt_hash, schema_hash))
         ):
@@ -100,32 +107,16 @@ class ProxyBudget:
         self._locked(self._initialise)
 
     def _locked(self, function: Callable[[], Result]) -> Result:
-        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        locked = False
-        try:
-            if os.name == "nt":
-                os.chmod(lock_path, 0o600)
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b"\0")
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            else:
-                os.fchmod(fd, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            locked = True
-            return function()
-        finally:
-            if locked:
-                if os.name == "nt":
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+        if self.uncapped:
+            return _locked_path(
+                USER_BUDGET_PATH, lambda: _locked_path(self.path, function)
+            )
+        return _locked_path(self.path, function)
 
     def _initialise(self) -> None:
         self._check_registry()
+        if self.uncapped:
+            self._refresh_old_ledger_pin()
         if self.path.exists():
             header, _ = self._load()
             self._check_header(header)
@@ -134,28 +125,49 @@ class ProxyBudget:
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as ledger:
             ledger.write(_canonical_json(self.pins).decode() + "\n")
-            for request_id, amount in PRIOR_RESERVATIONS.items():
-                ledger.write(
-                    _canonical_json(
-                        {
-                            "type": "reservation",
-                            "request_id": request_id,
-                            "usd": str(amount),
-                            "historical": True,
-                        }
-                    ).decode()
-                    + "\n"
-                )
+            if not self.uncapped:
+                for request_id, amount in PRIOR_RESERVATIONS.items():
+                    ledger.write(
+                        _canonical_json(
+                            {
+                                "type": "reservation",
+                                "request_id": request_id,
+                                "usd": str(amount),
+                                "historical": True,
+                            }
+                        ).decode()
+                        + "\n"
+                    )
             ledger.flush()
             os.fsync(ledger.fileno())
         os.chmod(self.path, 0o600)
+        _fsync_directory(self.path.parent)
 
     def _check_header(self, header: dict[str, JSONValue]) -> None:
         self._check_registry()
+        if self.uncapped:
+            self._refresh_old_ledger_pin()
         if header != self.pins:
             raise ProxyBudgetError(
                 "Budget ledger pins do not match current configuration"
             )
+
+    def _refresh_old_ledger_pin(self) -> None:
+        try:
+            _, _, contents = _read_ledger(USER_BUDGET_PATH)
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            InvalidOperation,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ProxyBudgetError(
+                "Original capped proxy budget ledger is missing or incomplete"
+            ) from exc
+        self.pins["old_ledger_sha256"] = hashlib.sha256(contents).hexdigest()
 
     def _check_registry(self) -> None:
         try:
@@ -203,6 +215,7 @@ class ProxyBudget:
             KeyError,
             TypeError,
             StopIteration,
+            InvalidOperation,
             json.JSONDecodeError,
         ) as exc:
             raise ProxyBudgetError(
@@ -211,18 +224,19 @@ class ProxyBudget:
 
     def _load(self) -> tuple[dict[str, JSONValue], list[dict[str, JSONValue]]]:
         try:
-            contents = self.path.read_text(encoding="utf-8")
-            if not contents.endswith("\n"):
-                raise ValueError("ledger does not end at a complete record")
-            lines = contents.splitlines()
-            if not lines or any(not line.strip() for line in lines):
-                raise ValueError("empty ledger line")
-            records = [json.loads(line) for line in lines]
-            header = records[0]
-            if not isinstance(header, dict) or header.get("type") != "header":
-                raise ValueError("missing header")
-            return header, _validate_records(records[1:])
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            header, records, _ = _read_ledger(
+                self.path, enforce_hard_cap=not self.uncapped
+            )
+            return header, records
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            InvalidOperation,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
             raise ProxyBudgetError("Budget ledger is malformed or truncated") from exc
 
     def record_usage(
@@ -274,7 +288,7 @@ class ProxyBudget:
     def _append(self, record: dict[str, JSONValue]) -> None:
         fd = os.open(self.path, os.O_WRONLY | os.O_APPEND)
         try:
-            if os.name == "nt":
+            if IS_WINDOWS:
                 os.chmod(self.path, 0o600)
             else:
                 os.fchmod(fd, 0o600)
@@ -322,7 +336,9 @@ class ProxyBudget:
             if request_id in reservations:
                 raise ProxyBudgetError("Request ID is already reserved")
             total = sum(reservations.values(), Decimal(0))
-            if total + per_request > self.cap or total + per_request > HARD_CAP_USD:
+            if not self.uncapped and (
+                total + per_request > self.cap or total + per_request > HARD_CAP_USD
+            ):
                 raise ProxyBudgetError("Proxy campaign budget cap exhausted")
             self._append(
                 {
@@ -342,23 +358,75 @@ class ProxyBudgetError(RuntimeError):
     """Raised when the durable proxy budget cannot safely authorise a request."""
 
 
+def _locked_path(path: Path, function: Callable[[], Result]) -> Result:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        if IS_WINDOWS:
+            os.chmod(lock_path, 0o600)
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
+        return function()
+    finally:
+        if locked:
+            if IS_WINDOWS:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _canonical_json(value: JSONValue) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
 
 
-def _validate_records(records: list[object]) -> list[dict[str, JSONValue]]:
-    """Validate ledger events and enforce the immutable hard cap.
+def _read_ledger(
+    path: Path, *, enforce_hard_cap: bool = True
+) -> tuple[dict[str, JSONValue], list[dict[str, JSONValue]], bytes]:
+    contents = path.read_bytes()
+    if not contents.endswith(b"\n"):
+        raise ValueError("ledger does not end at a complete record")
+    text = contents.decode("utf-8")
+    lines = text.splitlines()
+    if not lines or any(not line.strip() for line in lines):
+        raise ValueError("empty ledger line")
+    records = [json.loads(line) for line in lines]
+    header = records[0]
+    if not isinstance(header, dict) or header.get("type") != "header":
+        raise ValueError("missing header")
+    return (
+        header,
+        _validate_records(records[1:], enforce_hard_cap=enforce_hard_cap),
+        contents,
+    )
+
+
+def _validate_records(
+    records: list[object], *, enforce_hard_cap: bool = True
+) -> list[dict[str, JSONValue]]:
+    """Validate ledger events and optionally enforce the immutable hard cap.
 
     Args:
         records: Decoded JSON lines after the header.
+        enforce_hard_cap: Whether reservations must remain below the capped
+            ledger's immutable hard cap.
 
     Returns:
         Validated reservation and usage records.
 
     Raises:
-        ValueError: If a record is invalid or the hard cap is exceeded.
+        ValueError: If a record is invalid or the requested cap is exceeded.
     """
     validated: list[dict[str, JSONValue]] = []
     reservations: set[str] = set()
@@ -385,7 +453,7 @@ def _validate_records(records: list[object]) -> list[dict[str, JSONValue]]:
                 record=record, identifier=identifier, reservations=reservations
             )
         validated.append(record)
-    if total > HARD_CAP_USD:
+    if enforce_hard_cap and total > HARD_CAP_USD:
         raise ValueError("historical reservations exceed hard cap")
     return validated
 
@@ -432,3 +500,16 @@ def _validate_usage(
         or len(response_hash) != 64
     ):
         raise ValueError("invalid usage fields")
+
+
+def _fsync_directory(path: Path) -> None:
+    if IS_WINDOWS:
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
