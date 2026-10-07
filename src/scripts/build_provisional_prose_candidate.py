@@ -222,7 +222,7 @@ def build_provisional_prose_candidate(
     status = _load_second_status(
         path=second_status,
         manifest=t.cast(dict[str, JSONValue], actual_manifest),
-        available=len(loaded.rows),
+        first_patched_count=len(loaded.rows),
     )
     row_index = {row.persona_hash: row for row in loaded.rows}
     processed_hashes = verify._status_hashes(status)
@@ -329,7 +329,7 @@ def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
 
 
 def _load_second_status(
-    *, path: Path, manifest: dict[str, JSONValue], available: int
+    *, path: Path, manifest: dict[str, JSONValue], first_patched_count: int
 ) -> dict[str, object]:
     if path.stat().st_mode & 0o777 != 0o600:
         raise ProvisionalProseCandidateError(
@@ -346,8 +346,14 @@ def _load_second_status(
     rejected_count = _status_int(status=status, key="rejected")
     processed_count = _status_int(status=status, key="processed")
     pending_count = _status_int(status=status, key="pending")
-    if available_count != available:
-        raise ProvisionalProseCandidateError("Second-pass available count is stale")
+    if available_count > first_patched_count:
+        raise ProvisionalProseCandidateError(
+            "Second-pass available count exceeds current first-pass patched count"
+        )
+    if processed_count > available_count:
+        raise ProvisionalProseCandidateError(
+            "Second-pass processed count exceeds available count"
+        )
     if processed_count != accepted_count + rejected_count:
         raise ProvisionalProseCandidateError("Second-pass processed count is stale")
     if pending_count != available_count - processed_count:
@@ -469,14 +475,21 @@ def _source_metadata(
 def _review_status_counts(
     *, status: dict[str, object], loaded: verify.LoadedFirstPass
 ) -> dict[str, int]:
+    new_unverified = _new_unverified_since_second_snapshot(status=status, loaded=loaded)
     return {
         "accepted": _status_int(status=status, key="accepted"),
         "rejected": _status_int(status=status, key="rejected"),
-        "pending": _status_int(status=status, key="pending"),
+        "pending": _status_int(status=status, key="pending") + new_unverified,
         "failed": _status_int(status=status, key="failed"),
         "needs_manual_review": loaded.manual,
         "unchanged_consistent": loaded.unchanged_consistent,
     }
+
+
+def _new_unverified_since_second_snapshot(
+    *, status: dict[str, object], loaded: verify.LoadedFirstPass
+) -> int:
+    return len(loaded.rows) - _status_int(status=status, key="available")
 
 
 def _summary(
@@ -492,6 +505,10 @@ def _summary(
     report_path = _report_path(output=output)
     first_counts = _first_counts(loaded=loaded)
     second_counts = _review_status_counts(status=status, loaded=loaded)
+    unresolved_count = _json_int(
+        document=report, key="unresolved_count", label="candidate report"
+    )
+    new_unverified = _new_unverified_since_second_snapshot(status=status, loaded=loaded)
     return {
         **report,
         "dry_run": not write_output,
@@ -502,10 +519,12 @@ def _summary(
         "not_release_ready": True,
         "accepted_patch_count": len(accepted_hashes),
         "manual_count": loaded.manual,
-        "pending_count": _status_int(status=status, key="pending"),
-        "unresolved_count": _json_int(
-            document=report, key="unresolved_count", label="candidate report"
-        ),
+        "pending_count": second_counts["pending"],
+        "unresolved_count": unresolved_count,
+        "unresolved_total": unresolved_count,
+        "first_patched_count": len(loaded.rows),
+        "second_snapshot_available": _status_int(status=status, key="available"),
+        "new_unverified_since_second_snapshot": new_unverified,
         "first_pass_counts": first_counts,
         "second_pass_counts": second_counts,
         "source_hashes": _source_hashes(metadata=source_metadata),
