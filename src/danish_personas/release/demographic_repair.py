@@ -2,6 +2,7 @@
 
 import hashlib
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import polars as pl
 
@@ -29,15 +30,56 @@ _STATUS_CODES = {
 }
 
 
+class _StageReport(TypedDict):
+    """Diagnostics emitted for one source-backed repair stage."""
+
+    name: str
+    changed_persona_ids: list[object]
+    changed_count: int
+    infeasible_strata: int
+    diagnostics: NotRequired[dict[str, object]]
+    after_source_support: NotRequired[str]
+    blocker: NotRequired[str]
+    diagnostic: NotRequired[str]
+
+
+class _BlockingInfeasibility(TypedDict):
+    """One repair blocker, without row-level source keys."""
+
+    stage: str
+    count: int
+
+
+class _DistributionDiagnostic(TypedDict):
+    """Compact per-stage distribution summary."""
+
+    stage: str
+    changed_count: int
+    infeasible_strata: int
+
+
+class _RepairReport(TypedDict):
+    """Structured diagnostics returned by demographic repair."""
+
+    stages: list[_StageReport]
+    blocking_infeasibility: list[_BlockingInfeasibility]
+    after_source_support: object
+    distribution_diagnostics: list[_DistributionDiagnostic]
+
+
 def _valid_status_code(row: dict[str, object]) -> bool:
-    return row["detailed_status_code"] in _STATUS_CODES.get(
-        row["labour_market_status"], set()
+    status = row["labour_market_status"]
+    code = row["detailed_status_code"]
+    return (
+        isinstance(status, str)
+        and isinstance(code, str)
+        and code in _STATUS_CODES.get(status, set())
     )
 
 
 def repair_demographics(
     frame: pl.DataFrame, bundle_dir: Path
-) -> tuple[pl.DataFrame, dict[str, object]]:
+) -> tuple[pl.DataFrame, _RepairReport]:
     """Repair source-supported marginals atomically.
 
     An infeasible stage returns the original frame, never an earlier partial repair.
@@ -49,7 +91,12 @@ def repair_demographics(
     """
     original = frame.clone()
     current = frame.clone()
-    report: dict[str, object] = {"stages": [], "blocking_infeasibility": []}
+    report: _RepairReport = {
+        "stages": [],
+        "blocking_infeasibility": [],
+        "after_source_support": {},
+        "distribution_diagnostics": [],
+    }
     id_column = "persona_id" if "persona_id" in frame.columns else None
 
     def apply_stage(
@@ -60,7 +107,7 @@ def repair_demographics(
         transform: bool = False,
     ) -> None:
         nonlocal current
-        stage_report: dict[str, object] = {
+        stage_report: _StageReport = {
             "name": name,
             "changed_persona_ids": [],
             "changed_count": 0,
@@ -156,12 +203,7 @@ def repair_demographics(
 
 
 def _block(
-    *,
-    report: dict[str, object],
-    item: dict[str, object],
-    name: str,
-    reason: str,
-    count: int = 1,
+    *, report: _RepairReport, item: _StageReport, name: str, reason: str, count: int = 1
 ) -> None:
     item.update(infeasible_strata=count, blocker=reason)
     report["blocking_infeasibility"].append({"stage": name, "count": count})
@@ -179,7 +221,7 @@ def _finish_atomic(
     *,
     original: pl.DataFrame,
     current: pl.DataFrame,
-    report: dict[str, object],
+    report: _RepairReport,
     bundle_dir: Path,
 ) -> pl.DataFrame:
     """Validate invariants and roll back all stages when any blocker exists.
@@ -222,7 +264,7 @@ def _finish_atomic(
     return final
 
 
-def _missing_stage(*, report: dict[str, object], name: str) -> None:
+def _missing_stage(*, report: _RepairReport, name: str) -> None:
     _block(
         report=report,
         item={
@@ -240,7 +282,7 @@ def _repair_detail(
     *,
     current: pl.DataFrame,
     bundle_dir: Path,
-    report: dict[str, object],
+    report: _RepairReport,
     id_column: str | None,
 ) -> pl.DataFrame:
     """Repair RAS202 code and label together inside broad-status strata.
@@ -250,7 +292,7 @@ def _repair_detail(
 
     """
     name = "ras202_detail"
-    item: dict[str, object] = {
+    item: _StageReport = {
         "name": name,
         "changed_persona_ids": [],
         "changed_count": 0,
@@ -478,7 +520,7 @@ def _adjust_job_functions(
             raise ValueError("eligible row lacks paired job-function fields")
         if titles is not None:
             titles[index] = None
-    updates: list[pl.Expr] = [
+    updates: list[pl.Expr | pl.Series] = [
         pl.Series("job_function_code", functions),
         pl.Series("job_function", labels),
         pl.Series("job_function_resolution", resolutions),
