@@ -185,7 +185,7 @@ def test_changed_row_and_unbounded_tokens_fail_closed(
     """Reject stale checkpoints and non-positive token limits."""
     _run(tmp_path, config, FakeClient(json.dumps({"persona": "d" * 300})))
     changed = [{"id": "a", "age": 41, "gender": "female", "job_title": "lærer"}]
-    with pytest.raises(RepairError, match="Checkpoint"):
+    with pytest.raises(RepairError, match="Stale or malformed repair ledger"):
         _run(tmp_path, config, FakeClient("unused"), rows=changed)
     unbounded = GenerationConfig.model_construct(**{**config.__dict__, "max_tokens": 0})
     with pytest.raises(RepairError, match="max_tokens"):

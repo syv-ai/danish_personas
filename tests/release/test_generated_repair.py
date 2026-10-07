@@ -121,13 +121,12 @@ def test_duplicate_lists_are_deduplicated_only_when_valid() -> None:
     ]
     assert report["changed"]["repairable"] == [
         "hobbies_and_interests",
+        "job_title",
         "legal_status_detail",
         "partner_gender",
         "skills_and_expertise",
     ]
-    assert report["prose_regeneration"]["repairable"] == report["changed"][
-        "repairable"
-    ]
+    assert report["prose_regeneration"]["repairable"] == report["changed"]["repairable"]
     assert "skills_and_expertise" in report["unresolved"]["undersized"]
     assert repaired["persona_id"].to_list() == frame["persona_id"].to_list()
 

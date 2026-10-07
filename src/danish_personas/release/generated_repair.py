@@ -188,6 +188,9 @@ def _repair_lists(
             isinstance(value, str) and value.strip() for value in unique
         )
         if not valid:
+            if cleaned != values:
+                row[field] = cleaned
+                fields.append(field)
             pending.append(field)
             continue
         if unique != values:
@@ -197,9 +200,7 @@ def _repair_lists(
             pending.append(field)
 
 
-def _check_residual_legal_status(
-    *, row: dict[str, object], pending: list[str]
-) -> None:
+def _check_residual_legal_status(*, row: dict[str, object], pending: list[str]) -> None:
     """Flag invalid legal-status combinations after all deterministic repairs."""
     marital = row["marital_status"]
     detail = row["legal_status_detail"]
