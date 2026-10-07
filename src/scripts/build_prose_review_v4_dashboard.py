@@ -63,44 +63,6 @@ JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONValue: t.TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
 
-class ProseReviewV4DashboardError(RuntimeError):
-    """Raised when the v4 dashboard cannot be built safely."""
-
-
-@dataclass(frozen=True)
-class DashboardPaths:
-    """Filesystem inputs for the v4 prose-review dashboard."""
-
-    original: Path = DEFAULT_ORIGINAL
-    candidate: Path = DEFAULT_CANDIDATE
-    triage: Path = DEFAULT_TRIAGE
-    prompt: Path = DEFAULT_PROMPT
-    registry: Path = DEFAULT_REGISTRY
-    status: Path = DEFAULT_STATUS
-    manifest: Path = DEFAULT_MANIFEST
-    checkpoint_root: Path = DEFAULT_OUTPUT_DIR
-    output: Path = DEFAULT_OUTPUT
-
-
-@dataclass(frozen=True)
-class ReviewDecision:
-    """One locally verified v4 checkpoint decision."""
-
-    persona_hash: str
-    short_id: str
-    disposition: str
-    changed_fields: tuple[str, ...]
-    changed_facts: tuple[tuple[str, str, str], ...]
-    changed_fraction: float
-    original_text: str
-    proposed_text: str
-    patches: tuple[tuple[str, str], ...]
-    unchanged_evidence: tuple[tuple[str, str, str], ...]
-    manual_review_reason: str | None
-    unchanged_consistent_note: str | None
-    legacy_provisional: bool = False
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run the dashboard command-line interface.
 
@@ -141,6 +103,21 @@ def main(argv: list[str] | None = None) -> int:
         summary["verified_checkpoints"],
     )
     return 0
+
+
+@dataclass(frozen=True)
+class DashboardPaths:
+    """Filesystem inputs for the v4 prose-review dashboard."""
+
+    original: Path = DEFAULT_ORIGINAL
+    candidate: Path = DEFAULT_CANDIDATE
+    triage: Path = DEFAULT_TRIAGE
+    prompt: Path = DEFAULT_PROMPT
+    registry: Path = DEFAULT_REGISTRY
+    status: Path = DEFAULT_STATUS
+    manifest: Path = DEFAULT_MANIFEST
+    checkpoint_root: Path = DEFAULT_OUTPUT_DIR
+    output: Path = DEFAULT_OUTPUT
 
 
 def _argument_parser() -> argparse.ArgumentParser:
@@ -229,102 +206,164 @@ def build_prose_review_v4_dashboard(
     }
 
 
-def render_dashboard(
+class ProseReviewV4DashboardError(RuntimeError):
+    """Raised when the v4 dashboard cannot be built safely."""
+
+
+def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ProseReviewV4DashboardError(f"{label} is missing") from exc
+    except json.JSONDecodeError as exc:
+        raise ProseReviewV4DashboardError(f"{label} is not valid JSON") from exc
+    if not isinstance(document, dict):
+        raise ProseReviewV4DashboardError(f"{label} must be a JSON object")
+    return t.cast(dict[str, JSONValue], document)
+
+
+def _checkpoint_path(*, checkpoint_root: Path, persona_hash: str) -> Path:
+    roots = (checkpoint_root, checkpoint_root / "checkpoints")
+    if checkpoint_root.name == "checkpoints":
+        roots = (checkpoint_root,)
+    candidates = tuple(
+        root / persona_hash[:2] / f"{persona_hash}.json" for root in roots
+    )
+    for path in candidates:
+        if path.exists():
+            return path
+    raise ProseReviewV4DashboardError("Processed checkpoint file is missing")
+
+
+def _load_complete_checkpoint(*, path: Path) -> dict[str, JSONValue]:
+    if path.suffix != ".json" or not path.is_file():
+        raise ProseReviewV4DashboardError("Checkpoint path is not a complete JSON file")
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ProseReviewV4DashboardError("Checkpoint file must be private (mode 0600)")
+    document = _load_json_object(path=path, label="checkpoint")
+    return document
+
+
+def _changed_facts_mapping(
+    *, original: dict[str, JSONValue], candidate: dict[str, JSONValue]
+) -> dict[str, dict[str, object]]:
+    facts: dict[str, dict[str, object]] = {}
+    for field in sorted((set(original) & set(candidate)) & _ALLOWED_FACTS):
+        old = original[field]
+        new = candidate[field]
+        if old != new:
+            facts[field] = {"old": old, "new": new}
+    return facts
+
+
+def _checkpoint_binding(
     *,
-    status: dict[str, JSONValue],
+    original: dict[str, JSONValue],
+    candidate: dict[str, JSONValue],
+    changed_facts: dict[str, dict[str, object]],
+    original_text: str,
+    prompt: str,
     manifest: dict[str, JSONValue],
-    decisions: list[ReviewDecision],
-    cards: list[ReviewDecision],
-    limit: int | None,
-) -> str:
-    """Render the complete offline dashboard document.
+    payload: dict[str, object],
+) -> dict[str, str | int]:
+    schema = ProseReviewResponse.provider_json_schema()
+    binding: dict[str, str | int] = {
+        "checkpoint_version": _CHECKPOINT_VERSION,
+        "original_text_sha256": sha256_text(original_text),
+        "row_sha256": sha256_text(canonical_json(original)),
+        "candidate_row_sha256": sha256_text(canonical_json(candidate)),
+        "changed_facts_sha256": sha256_text(canonical_json(changed_facts)),
+        "prompt_sha256": sha256_text(prompt),
+        "schema_sha256": sha256_text(canonical_json(schema)),
+        "campaign_sha256": sha256_text(CAMPAIGN),
+        "model_sha256": sha256_text(MODEL),
+        "base_url_sha256": sha256_text(BASE_URL),
+        "source_pin_sha256": sha256_text(canonical_json(manifest)),
+    }
+    if "legal_status_detail_null_context" in payload:
+        binding["payload_sha256"] = sha256_text(canonical_json(payload))
+    return binding
 
-    Args:
-        status:
-            Private campaign status document.
-        manifest:
-            Private campaign manifest document.
-        decisions:
-            Locally verified checkpoint decisions.
-        cards:
-            Patched decisions selected for full proposal-card review.
-        limit:
-            Configured patched-card limit, or ``None`` for all.
 
-    Returns:
-        Self-contained HTML with no scripts, network references, or sidecars.
-    """
-    disposition_counts = Counter(decision.disposition for decision in decisions)
-    processed = _status_int(status=status, key="processed")
-    pending = _status_int(status=status, key="pending")
-    failed = _status_int(status=status, key="failed")
-    attempted = _status_int(status=status, key="attempted")
-    limit_text = "all patched proposals" if limit is None else f"limit {limit}"
-    card_html = "\n".join(
-        _render_patched_card(index=index, decision=decision)
-        for index, decision in enumerate(cards, start=1)
-    )
-    if not cards:
-        card_html = (
-            '<p class="empty">No locally verified patched checkpoints are available '
-            "within this dashboard selection.</p>"
-        )
-    csp = (
-        "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; "
-        "script-src 'none'; base-uri 'none'; form-action 'none'; "
-        "frame-ancestors 'none'"
-    )
-    styles = _styles()
-    unchanged = _render_unchanged_summary(decisions=decisions)
-    manual = _render_manual_summary(decisions=decisions)
-    campaign = html.escape(_manifest_text(manifest=manifest, key="campaign"))
-    legacy_count = sum(decision.legacy_provisional for decision in decisions)
-    legacy_notice = _render_legacy_notice(count=legacy_count)
-    notice = (
-        "<strong>NOT accepted repairs.</strong> This private offline dashboard "
-        "shows locally validated checkpoint proposals for human audit only. It "
-        "does not approve dataset changes, publishing, or data-card edits."
-    )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="{csp}">
-<title>Private v4 prose-review dashboard</title>
-<style>
-{styles}
-</style>
-</head>
-<body>
-<main>
-<h1>Private v4 prose-review dashboard</h1>
-<p class="notice">{notice}</p>
-<section class="counts" aria-label="Run counts">
-<div class="count"><strong>{processed}</strong> processed</div>
-<div class="count"><strong>{pending}</strong> pending</div>
-<div class="count"><strong>{failed}</strong> failed</div>
-<div class="count"><strong>{attempted}</strong> attempted</div>
-<div class="count"><strong>{disposition_counts["patched"]}</strong> patched</div>
-<div class="count"><strong>{len(cards)}</strong> cards, {html.escape(limit_text)}</div>
-</section>
-<section class="summary" aria-label="Campaign binding">
-<h2>Verified local bindings</h2>
-<p>Campaign: <code>{campaign}</code>. Each rendered checkpoint passed local schema,
-source-row, candidate-row, prompt, schema, model, base URL, source-pin, checksum,
-patch-application, and proposed-text hash validation. Raw persona IDs are not shown.</p>
-{legacy_notice}
-</section>
-{unchanged}
-{manual}
-<section aria-label="Patched proposal cards">
-<h2>Patched proposal cards</h2>
-{card_html}
-</section>
-</main>
-</body>
-</html>
-"""
+def _checkpoint_response(*, checkpoint: dict[str, JSONValue]) -> dict[str, object]:
+    return {
+        "disposition": checkpoint.get("disposition"),
+        "patches": checkpoint.get("patches"),
+        "unchanged_evidence": checkpoint.get("unchanged_evidence"),
+        "manual_review_reason": checkpoint.get("manual_review_reason"),
+    }
+
+
+def _checkpoint_uses_legacy_contextless_binding(
+    *,
+    checkpoint: dict[str, JSONValue],
+    binding: dict[str, str | int],
+    changed_facts: dict[str, dict[str, object]],
+    original_text: str,
+    pre_context_payload: dict[str, object],
+    context: dict[str, object] | None,
+) -> bool:
+    if checkpoint.get("payload_sha256") is not None:
+        return False
+    if "payload_sha256" not in binding:
+        return False
+    if context is None:
+        return False
+    detail_change = changed_facts.get("legal_status_detail")
+    if (
+        detail_change is None
+        or not isinstance(detail_change.get("old"), str)
+        or detail_change.get("new") is not None
+    ):
+        return False
+    expected_payload = {"persona": original_text, "changed_facts": changed_facts}
+    if pre_context_payload != expected_payload:
+        raise ProseReviewV4DashboardError("Legacy checkpoint payload is malformed")
+    legacy_binding = _legacy_contextless_binding(binding=binding)
+    expected_keys = _checkpoint_expected_keys(binding=legacy_binding)
+    if set(checkpoint) != expected_keys:
+        return False
+    return True
+
+
+def _checkpoint_expected_keys(*, binding: dict[str, str | int]) -> set[str]:
+    return set(binding) | {
+        "disposition",
+        "changed_fraction",
+        "proposed_text_sha256",
+        "patches",
+        "unchanged_evidence",
+        "manual_review_reason",
+        "unchanged_consistent_note",
+        "checkpoint_sha256",
+    }
+
+
+def _legacy_contextless_binding(
+    *, binding: dict[str, str | int]
+) -> dict[str, str | int]:
+    legacy_binding = dict(binding)
+    legacy_binding.pop("payload_sha256", None)
+    return legacy_binding
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    """One locally verified v4 checkpoint decision."""
+
+    persona_hash: str
+    short_id: str
+    disposition: str
+    changed_fields: tuple[str, ...]
+    changed_facts: tuple[tuple[str, str, str], ...]
+    changed_fraction: float
+    original_text: str
+    proposed_text: str
+    patches: tuple[tuple[str, str], ...]
+    unchanged_evidence: tuple[tuple[str, str, str], ...]
+    manual_review_reason: str | None
+    unchanged_consistent_note: str | None
+    legacy_provisional: bool = False
 
 
 def _load_verified_decisions(
@@ -435,75 +474,6 @@ def _verify_checkpoint_decision(
     )
 
 
-def _checkpoint_binding(
-    *,
-    original: dict[str, JSONValue],
-    candidate: dict[str, JSONValue],
-    changed_facts: dict[str, dict[str, object]],
-    original_text: str,
-    prompt: str,
-    manifest: dict[str, JSONValue],
-    payload: dict[str, object],
-) -> dict[str, str | int]:
-    schema = ProseReviewResponse.provider_json_schema()
-    binding: dict[str, str | int] = {
-        "checkpoint_version": _CHECKPOINT_VERSION,
-        "original_text_sha256": sha256_text(original_text),
-        "row_sha256": sha256_text(canonical_json(original)),
-        "candidate_row_sha256": sha256_text(canonical_json(candidate)),
-        "changed_facts_sha256": sha256_text(canonical_json(changed_facts)),
-        "prompt_sha256": sha256_text(prompt),
-        "schema_sha256": sha256_text(canonical_json(schema)),
-        "campaign_sha256": sha256_text(CAMPAIGN),
-        "model_sha256": sha256_text(MODEL),
-        "base_url_sha256": sha256_text(BASE_URL),
-        "source_pin_sha256": sha256_text(canonical_json(manifest)),
-    }
-    if "legal_status_detail_null_context" in payload:
-        binding["payload_sha256"] = sha256_text(canonical_json(payload))
-    return binding
-
-
-def _checkpoint_uses_legacy_contextless_binding(
-    *,
-    checkpoint: dict[str, JSONValue],
-    binding: dict[str, str | int],
-    changed_facts: dict[str, dict[str, object]],
-    original_text: str,
-    pre_context_payload: dict[str, object],
-    context: dict[str, object] | None,
-) -> bool:
-    if checkpoint.get("payload_sha256") is not None:
-        return False
-    if "payload_sha256" not in binding:
-        return False
-    if context is None:
-        return False
-    detail_change = changed_facts.get("legal_status_detail")
-    if (
-        detail_change is None
-        or not isinstance(detail_change.get("old"), str)
-        or detail_change.get("new") is not None
-    ):
-        return False
-    expected_payload = {"persona": original_text, "changed_facts": changed_facts}
-    if pre_context_payload != expected_payload:
-        raise ProseReviewV4DashboardError("Legacy checkpoint payload is malformed")
-    legacy_binding = _legacy_contextless_binding(binding=binding)
-    expected_keys = _checkpoint_expected_keys(binding=legacy_binding)
-    if set(checkpoint) != expected_keys:
-        return False
-    return True
-
-
-def _legacy_contextless_binding(
-    *, binding: dict[str, str | int]
-) -> dict[str, str | int]:
-    legacy_binding = dict(binding)
-    legacy_binding.pop("payload_sha256", None)
-    return legacy_binding
-
-
 def _decision_from_result(
     *,
     persona_hash: str,
@@ -536,124 +506,53 @@ def _decision_from_result(
     )
 
 
-def _verify_manifest_sources(
-    *, manifest: dict[str, JSONValue], paths: DashboardPaths
-) -> str:
-    if manifest.get("version") != 1 or manifest.get("campaign") != CAMPAIGN:
-        raise ProseReviewV4DashboardError("manifest.json is not the v4 review campaign")
-    if manifest.get("model") != MODEL or manifest.get("base_url") != BASE_URL:
-        raise ProseReviewV4DashboardError("manifest.json model or base URL changed")
-    if manifest.get("allowed_facts") != sorted(_ALLOWED_FACTS):
-        raise ProseReviewV4DashboardError("manifest.json allowlist changed")
-    inputs = _manifest_inputs(manifest=manifest)
-    expected_schema = sha256_text(
-        canonical_json(ProseReviewResponse.provider_json_schema())
-    )
-    _verify_input_hash(inputs=inputs, key="original", path=paths.original)
-    _verify_input_hash(inputs=inputs, key="candidate_v4", path=paths.candidate)
-    _verify_input_hash(inputs=inputs, key="triage", path=paths.triage)
-    _verify_input_hash(inputs=inputs, key="prompt", path=paths.prompt)
-    _verify_input_hash(inputs=inputs, key="registry", path=paths.registry)
-    if inputs.get("schema") != expected_schema:
-        raise ProseReviewV4DashboardError("manifest.json schema hash changed")
+def _display_value(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "null"
     try:
-        return paths.prompt.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ProseReviewV4DashboardError("Prompt file is not readable") from exc
+        return canonical_json(value)
+    except TypeError:
+        return str(value)
 
 
-def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ProseReviewV4DashboardError(f"{label} is missing") from exc
-    except json.JSONDecodeError as exc:
-        raise ProseReviewV4DashboardError(f"{label} is not valid JSON") from exc
-    if not isinstance(document, dict):
-        raise ProseReviewV4DashboardError(f"{label} must be a JSON object")
-    return t.cast(dict[str, JSONValue], document)
-
-
-def _verify_status_manifest(
-    *, status: dict[str, JSONValue], manifest: dict[str, JSONValue]
-) -> None:
-    if status.get("manifest") != manifest:
-        raise ProseReviewV4DashboardError("status.json does not match manifest.json")
-
-
-def _verify_status_counts(*, status: dict[str, JSONValue], hashes: list[str]) -> None:
-    processed = _status_int(status=status, key="processed")
-    if processed != len(hashes):
-        raise ProseReviewV4DashboardError("status.json processed hashes are incomplete")
-    for key in (
-        "reviewable",
-        "patched",
-        "unchanged_consistent",
-        "needs_manual_review",
-        "failed",
-        "attempted",
-        "pending",
-    ):
-        _status_int(status=status, key=key)
-
-
-def _verify_decision_counts(
-    *, status: dict[str, JSONValue], decisions: list[ReviewDecision]
-) -> None:
-    counts = Counter(decision.disposition for decision in decisions)
-    for key in ("patched", "unchanged_consistent", "needs_manual_review"):
-        if _status_int(status=status, key=key) != counts[key]:
-            raise ProseReviewV4DashboardError(
-                "status.json disposition counts are stale"
-            )
-
-
-def _status_hashes(*, status: dict[str, JSONValue]) -> list[str]:
-    value = status.get("processed_persona_hashes")
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ProseReviewV4DashboardError("status.json processed hashes are malformed")
-    hashes = list(value)
-    invalid_hash = any(_HASH_RE.fullmatch(item) is None for item in hashes)
-    if len(hashes) != len(set(hashes)) or invalid_hash:
-        raise ProseReviewV4DashboardError("status.json processed hashes are invalid")
-    return hashes
-
-
-def _status_int(*, status: dict[str, JSONValue], key: str) -> int:
-    value = status.get(key)
-    if not isinstance(value, int) or value < 0:
-        raise ProseReviewV4DashboardError(f"status.json {key} is invalid")
+def _row_text(*, row: dict[str, JSONValue], label: str) -> str:
+    value = row.get(PERSONA_FIELD)
+    if not isinstance(value, str):
+        raise ProseReviewV4DashboardError(f"{label} row has invalid prose")
     return value
 
 
-def _manifest_inputs(*, manifest: dict[str, JSONValue]) -> dict[str, str]:
-    inputs = manifest.get("inputs")
-    if not isinstance(inputs, dict):
-        raise ProseReviewV4DashboardError("manifest.json input hashes are missing")
-    parsed: dict[str, str] = {}
-    for key, value in inputs.items():
-        if isinstance(key, str) and isinstance(value, str):
-            parsed[key] = value
-    return parsed
+def _verify_checkpoint_digest(*, checkpoint: dict[str, JSONValue]) -> None:
+    digest = checkpoint.get("checkpoint_sha256")
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    if digest != sha256_text(canonical_json(unsigned)):
+        raise ProseReviewV4DashboardError("Checkpoint checksum is invalid")
 
 
-def _manifest_text(*, manifest: dict[str, JSONValue], key: str) -> str:
-    value = manifest.get(key)
-    return value if isinstance(value, str) else ""
+def _verify_checkpoint_keys(
+    *, checkpoint: dict[str, JSONValue], binding: dict[str, str | int]
+) -> None:
+    if set(checkpoint) != _checkpoint_expected_keys(binding=binding):
+        raise ProseReviewV4DashboardError("Checkpoint schema is malformed")
 
 
-def _verify_input_hash(*, inputs: dict[str, str], key: str, path: Path) -> None:
-    expected = inputs.get(key)
-    if expected is None:
-        raise ProseReviewV4DashboardError(f"manifest.json lacks {key} hash")
-    try:
-        actual = sha256_file(path)
-    except OSError as exc:
-        raise ProseReviewV4DashboardError(
-            f"Manifest input is not readable: {key}"
-        ) from exc
-    if actual != expected:
-        raise ProseReviewV4DashboardError(f"Manifest input hash mismatch: {key}")
+def _verify_checkpoint_result(
+    *, checkpoint: dict[str, JSONValue], result: ProseReviewResult
+) -> None:
+    if checkpoint.get("disposition") != result.disposition:
+        raise ProseReviewV4DashboardError("Checkpoint disposition changed")
+    if checkpoint.get("changed_fraction") != result.changed_fraction:
+        raise ProseReviewV4DashboardError("Checkpoint changed fraction changed")
+    if checkpoint.get("proposed_text_sha256") != sha256_text(result.proposed_text):
+        raise ProseReviewV4DashboardError("Checkpoint proposed text hash changed")
+    if checkpoint.get("manual_review_reason") != result.manual_review_reason:
+        raise ProseReviewV4DashboardError("Checkpoint manual reason changed")
+    if checkpoint.get("unchanged_consistent_note") != result.unchanged_consistent_note:
+        raise ProseReviewV4DashboardError("Checkpoint unchanged note changed")
 
 
 def _rows_by_hash(*, path: Path, label: str) -> dict[str, dict[str, JSONValue]]:
@@ -677,111 +576,6 @@ def _rows_by_hash(*, path: Path, label: str) -> dict[str, dict[str, JSONValue]]:
             raise ProseReviewV4DashboardError(f"{label} parquet has duplicate hashes")
         rows[persona_hash] = t.cast(dict[str, JSONValue], row)
     return rows
-
-
-def _checkpoint_path(*, checkpoint_root: Path, persona_hash: str) -> Path:
-    roots = (checkpoint_root, checkpoint_root / "checkpoints")
-    if checkpoint_root.name == "checkpoints":
-        roots = (checkpoint_root,)
-    candidates = tuple(
-        root / persona_hash[:2] / f"{persona_hash}.json" for root in roots
-    )
-    for path in candidates:
-        if path.exists():
-            return path
-    raise ProseReviewV4DashboardError("Processed checkpoint file is missing")
-
-
-def _load_complete_checkpoint(*, path: Path) -> dict[str, JSONValue]:
-    if path.suffix != ".json" or not path.is_file():
-        raise ProseReviewV4DashboardError("Checkpoint path is not a complete JSON file")
-    if path.stat().st_mode & 0o777 != 0o600:
-        raise ProseReviewV4DashboardError("Checkpoint file must be private (mode 0600)")
-    document = _load_json_object(path=path, label="checkpoint")
-    return document
-
-
-def _verify_checkpoint_keys(
-    *, checkpoint: dict[str, JSONValue], binding: dict[str, str | int]
-) -> None:
-    if set(checkpoint) != _checkpoint_expected_keys(binding=binding):
-        raise ProseReviewV4DashboardError("Checkpoint schema is malformed")
-
-
-def _checkpoint_expected_keys(*, binding: dict[str, str | int]) -> set[str]:
-    return set(binding) | {
-        "disposition",
-        "changed_fraction",
-        "proposed_text_sha256",
-        "patches",
-        "unchanged_evidence",
-        "manual_review_reason",
-        "unchanged_consistent_note",
-        "checkpoint_sha256",
-    }
-
-
-def _verify_checkpoint_digest(*, checkpoint: dict[str, JSONValue]) -> None:
-    digest = checkpoint.get("checkpoint_sha256")
-    unsigned = {
-        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
-    }
-    if digest != sha256_text(canonical_json(unsigned)):
-        raise ProseReviewV4DashboardError("Checkpoint checksum is invalid")
-
-
-def _checkpoint_response(*, checkpoint: dict[str, JSONValue]) -> dict[str, object]:
-    return {
-        "disposition": checkpoint.get("disposition"),
-        "patches": checkpoint.get("patches"),
-        "unchanged_evidence": checkpoint.get("unchanged_evidence"),
-        "manual_review_reason": checkpoint.get("manual_review_reason"),
-    }
-
-
-def _verify_checkpoint_result(
-    *, checkpoint: dict[str, JSONValue], result: ProseReviewResult
-) -> None:
-    if checkpoint.get("disposition") != result.disposition:
-        raise ProseReviewV4DashboardError("Checkpoint disposition changed")
-    if checkpoint.get("changed_fraction") != result.changed_fraction:
-        raise ProseReviewV4DashboardError("Checkpoint changed fraction changed")
-    if checkpoint.get("proposed_text_sha256") != sha256_text(result.proposed_text):
-        raise ProseReviewV4DashboardError("Checkpoint proposed text hash changed")
-    if checkpoint.get("manual_review_reason") != result.manual_review_reason:
-        raise ProseReviewV4DashboardError("Checkpoint manual reason changed")
-    if checkpoint.get("unchanged_consistent_note") != result.unchanged_consistent_note:
-        raise ProseReviewV4DashboardError("Checkpoint unchanged note changed")
-
-
-def _changed_facts_mapping(
-    *, original: dict[str, JSONValue], candidate: dict[str, JSONValue]
-) -> dict[str, dict[str, object]]:
-    facts: dict[str, dict[str, object]] = {}
-    for field in sorted((set(original) & set(candidate)) & _ALLOWED_FACTS):
-        old = original[field]
-        new = candidate[field]
-        if old != new:
-            facts[field] = {"old": old, "new": new}
-    return facts
-
-
-def _row_text(*, row: dict[str, JSONValue], label: str) -> str:
-    value = row.get(PERSONA_FIELD)
-    if not isinstance(value, str):
-        raise ProseReviewV4DashboardError(f"{label} row has invalid prose")
-    return value
-
-
-def _display_value(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if value is None:
-        return "null"
-    try:
-        return canonical_json(value)
-    except TypeError:
-        return str(value)
 
 
 def _select_patched_cards(
@@ -831,6 +625,233 @@ def _fraction_bucket_index(value: float) -> int:
     return _FRACTION_ORDER[_fraction_bucket(value)]
 
 
+def _status_hashes(*, status: dict[str, JSONValue]) -> list[str]:
+    value = status.get("processed_persona_hashes")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ProseReviewV4DashboardError("status.json processed hashes are malformed")
+    hashes = list(value)
+    invalid_hash = any(_HASH_RE.fullmatch(item) is None for item in hashes)
+    if len(hashes) != len(set(hashes)) or invalid_hash:
+        raise ProseReviewV4DashboardError("status.json processed hashes are invalid")
+    return hashes
+
+
+def _verify_decision_counts(
+    *, status: dict[str, JSONValue], decisions: list[ReviewDecision]
+) -> None:
+    counts = Counter(decision.disposition for decision in decisions)
+    for key in ("patched", "unchanged_consistent", "needs_manual_review"):
+        if _status_int(status=status, key=key) != counts[key]:
+            raise ProseReviewV4DashboardError(
+                "status.json disposition counts are stale"
+            )
+
+
+def _status_int(*, status: dict[str, JSONValue], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise ProseReviewV4DashboardError(f"status.json {key} is invalid")
+    return value
+
+
+def _verify_manifest_sources(
+    *, manifest: dict[str, JSONValue], paths: DashboardPaths
+) -> str:
+    if manifest.get("version") != 1 or manifest.get("campaign") != CAMPAIGN:
+        raise ProseReviewV4DashboardError("manifest.json is not the v4 review campaign")
+    if manifest.get("model") != MODEL or manifest.get("base_url") != BASE_URL:
+        raise ProseReviewV4DashboardError("manifest.json model or base URL changed")
+    if manifest.get("allowed_facts") != sorted(_ALLOWED_FACTS):
+        raise ProseReviewV4DashboardError("manifest.json allowlist changed")
+    inputs = _manifest_inputs(manifest=manifest)
+    expected_schema = sha256_text(
+        canonical_json(ProseReviewResponse.provider_json_schema())
+    )
+    _verify_input_hash(inputs=inputs, key="original", path=paths.original)
+    _verify_input_hash(inputs=inputs, key="candidate_v4", path=paths.candidate)
+    _verify_input_hash(inputs=inputs, key="triage", path=paths.triage)
+    _verify_input_hash(inputs=inputs, key="prompt", path=paths.prompt)
+    _verify_input_hash(inputs=inputs, key="registry", path=paths.registry)
+    if inputs.get("schema") != expected_schema:
+        raise ProseReviewV4DashboardError("manifest.json schema hash changed")
+    try:
+        return paths.prompt.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProseReviewV4DashboardError("Prompt file is not readable") from exc
+
+
+def _manifest_inputs(*, manifest: dict[str, JSONValue]) -> dict[str, str]:
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ProseReviewV4DashboardError("manifest.json input hashes are missing")
+    parsed: dict[str, str] = {}
+    for key, value in inputs.items():
+        if isinstance(key, str) and isinstance(value, str):
+            parsed[key] = value
+    return parsed
+
+
+def _verify_input_hash(*, inputs: dict[str, str], key: str, path: Path) -> None:
+    expected = inputs.get(key)
+    if expected is None:
+        raise ProseReviewV4DashboardError(f"manifest.json lacks {key} hash")
+    try:
+        actual = sha256_file(path)
+    except OSError as exc:
+        raise ProseReviewV4DashboardError(
+            f"Manifest input is not readable: {key}"
+        ) from exc
+    if actual != expected:
+        raise ProseReviewV4DashboardError(f"Manifest input hash mismatch: {key}")
+
+
+def _verify_status_counts(*, status: dict[str, JSONValue], hashes: list[str]) -> None:
+    processed = _status_int(status=status, key="processed")
+    if processed != len(hashes):
+        raise ProseReviewV4DashboardError("status.json processed hashes are incomplete")
+    for key in (
+        "reviewable",
+        "patched",
+        "unchanged_consistent",
+        "needs_manual_review",
+        "failed",
+        "attempted",
+        "pending",
+    ):
+        _status_int(status=status, key=key)
+
+
+def _verify_status_manifest(
+    *, status: dict[str, JSONValue], manifest: dict[str, JSONValue]
+) -> None:
+    if status.get("manifest") != manifest:
+        raise ProseReviewV4DashboardError("status.json does not match manifest.json")
+
+
+def _write_private_html(*, path: Path, content: str) -> None:
+    if not path.parent.exists():
+        raise ProseReviewV4DashboardError("Dashboard output directory must exist")
+    if not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:
+        raise ProseReviewV4DashboardError("Dashboard output directory must be private")
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def render_dashboard(
+    *,
+    status: dict[str, JSONValue],
+    manifest: dict[str, JSONValue],
+    decisions: list[ReviewDecision],
+    cards: list[ReviewDecision],
+    limit: int | None,
+) -> str:
+    """Render the complete offline dashboard document.
+
+    Args:
+        status:
+            Private campaign status document.
+        manifest:
+            Private campaign manifest document.
+        decisions:
+            Locally verified checkpoint decisions.
+        cards:
+            Patched decisions selected for full proposal-card review.
+        limit:
+            Configured patched-card limit, or ``None`` for all.
+
+    Returns:
+        Self-contained HTML with no scripts, network references, or sidecars.
+    """
+    disposition_counts = Counter(decision.disposition for decision in decisions)
+    processed = _status_int(status=status, key="processed")
+    pending = _status_int(status=status, key="pending")
+    failed = _status_int(status=status, key="failed")
+    attempted = _status_int(status=status, key="attempted")
+    limit_text = "all patched proposals" if limit is None else f"limit {limit}"
+    card_html = "\n".join(
+        _render_patched_card(index=index, decision=decision)
+        for index, decision in enumerate(cards, start=1)
+    )
+    if not cards:
+        card_html = (
+            '<p class="empty">No locally verified patched checkpoints are available '
+            "within this dashboard selection.</p>"
+        )
+    csp = (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; "
+        "script-src 'none'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'"
+    )
+    styles = _styles()
+    unchanged = _render_unchanged_summary(decisions=decisions)
+    manual = _render_manual_summary(decisions=decisions)
+    campaign = html.escape(_manifest_text(manifest=manifest, key="campaign"))
+    legacy_count = sum(decision.legacy_provisional for decision in decisions)
+    legacy_notice = _render_legacy_notice(count=legacy_count)
+    notice = (
+        "<strong>NOT accepted repairs.</strong> This private offline dashboard "
+        "shows locally validated checkpoint proposals for human audit only. It "
+        "does not approve dataset changes, publishing, or data-card edits."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="{csp}">
+<title>Private v4 prose-review dashboard</title>
+<style>
+{styles}
+</style>
+</head>
+<body>
+<main>
+<h1>Private v4 prose-review dashboard</h1>
+<p class="notice">{notice}</p>
+<section class="counts" aria-label="Run counts">
+<div class="count"><strong>{processed}</strong> processed</div>
+<div class="count"><strong>{pending}</strong> pending</div>
+<div class="count"><strong>{failed}</strong> failed</div>
+<div class="count"><strong>{attempted}</strong> attempted</div>
+<div class="count"><strong>{disposition_counts["patched"]}</strong> patched</div>
+<div class="count"><strong>{len(cards)}</strong> cards, {html.escape(limit_text)}</div>
+</section>
+<section class="summary" aria-label="Campaign binding">
+<h2>Verified local bindings</h2>
+<p>Campaign: <code>{campaign}</code>. Each rendered checkpoint passed local schema,
+source-row, candidate-row, prompt, schema, model, base URL, source-pin, checksum,
+patch-application, and proposed-text hash validation. Raw persona IDs are not shown.</p>
+{legacy_notice}
+</section>
+{unchanged}
+{manual}
+<section aria-label="Patched proposal cards">
+<h2>Patched proposal cards</h2>
+{card_html}
+</section>
+</main>
+</body>
+</html>
+"""
+
+
+def _manifest_text(*, manifest: dict[str, JSONValue], key: str) -> str:
+    value = manifest.get(key)
+    return value if isinstance(value, str) else ""
+
+
 def _render_legacy_notice(*, count: int) -> str:
     if count == 0:
         return ""
@@ -841,37 +862,6 @@ def _render_legacy_notice(*, count: int) -> str:
         "without source-verified context. They require renewed review before any "
         "dataset change.</p>"
     )
-
-
-def _render_unchanged_summary(*, decisions: list[ReviewDecision]) -> str:
-    unchanged = [
-        decision
-        for decision in decisions
-        if decision.disposition == "unchanged_consistent"
-    ]
-    evidence_counts: Counter[tuple[str, str]] = Counter()
-    for decision in unchanged:
-        for field, kind, _quote in decision.unchanged_evidence:
-            evidence_counts[(field, kind)] += 1
-    rows = "".join(
-        "<tr>"
-        f"<td>{html.escape(field)}</td>"
-        f"<td>{html.escape(kind)}</td>"
-        f"<td>{count}</td>"
-        "</tr>"
-        for (field, kind), count in sorted(evidence_counts.items())
-    )
-    if not rows:
-        rows = (
-            '<tr><td colspan="3">No provisional unchanged-consistent '
-            "decisions.</td></tr>"
-        )
-    return f"""<section class="summary" aria-label="Unchanged-consistent summary">
-<h2>Provisional unchanged-consistent summary</h2>
-<p>These counts are classifier outputs only, not independently certified repairs.</p>
-<table><thead><tr><th>Field</th><th>Evidence kind</th><th>Count</th></tr></thead>
-<tbody>{rows}</tbody></table>
-</section>"""
 
 
 def _render_manual_summary(*, decisions: list[ReviewDecision]) -> str:
@@ -958,6 +948,37 @@ fraction: {decision.changed_fraction:.1%}</p>
 </article>"""
 
 
+def _render_unchanged_summary(*, decisions: list[ReviewDecision]) -> str:
+    unchanged = [
+        decision
+        for decision in decisions
+        if decision.disposition == "unchanged_consistent"
+    ]
+    evidence_counts: Counter[tuple[str, str]] = Counter()
+    for decision in unchanged:
+        for field, kind, _quote in decision.unchanged_evidence:
+            evidence_counts[(field, kind)] += 1
+    rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(field)}</td>"
+        f"<td>{html.escape(kind)}</td>"
+        f"<td>{count}</td>"
+        "</tr>"
+        for (field, kind), count in sorted(evidence_counts.items())
+    )
+    if not rows:
+        rows = (
+            '<tr><td colspan="3">No provisional unchanged-consistent '
+            "decisions.</td></tr>"
+        )
+    return f"""<section class="summary" aria-label="Unchanged-consistent summary">
+<h2>Provisional unchanged-consistent summary</h2>
+<p>These counts are classifier outputs only, not independently certified repairs.</p>
+<table><thead><tr><th>Field</th><th>Evidence kind</th><th>Count</th></tr></thead>
+<tbody>{rows}</tbody></table>
+</section>"""
+
+
 def _styles() -> str:
     return """
 :root { color-scheme: light; font-family: system-ui, sans-serif; }
@@ -991,27 +1012,6 @@ th, td { border: 1px solid #cbd5e1; padding: 0.45rem; text-align: left; }
 .empty { background: white; border: 1px dashed #64748b; padding: 1rem; }
 @media (max-width: 760px) { .compare { grid-template-columns: 1fr; } }
 """.strip()
-
-
-def _write_private_html(*, path: Path, content: str) -> None:
-    if not path.parent.exists():
-        raise ProseReviewV4DashboardError("Dashboard output directory must exist")
-    if not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:
-        raise ProseReviewV4DashboardError("Dashboard output directory must be private")
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

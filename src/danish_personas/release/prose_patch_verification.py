@@ -66,10 +66,6 @@ _MAX_PATCHES = 2
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
-class ProsePatchVerificationError(ValueError):
-    """Raised when a prose patch proposal fails local verification."""
-
-
 class ProsePatchExcerpt(StrictModel):
     """One exact replacement proposed by the first-pass patcher."""
 
@@ -144,6 +140,32 @@ class ProsePatchVerificationResult(StrictModel):
     fact_evidence: list[ProsePatchFactEvidence] = Field(default_factory=list)
 
 
+def validate_prose_patch_verification(
+    *,
+    original_text: str,
+    changed_facts: c.Mapping[str, c.Mapping[str, object]],
+    proposed_text: str,
+    patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]],
+    second_review: str | c.Mapping[str, object] | ProsePatchSecondReview,
+    original_checkpoint_sha256: str | None = None,
+    original_checkpoint_sha: str | None = None,
+) -> ProsePatchVerificationResult:
+    """Alias for callers that use validation terminology.
+
+    Returns:
+        Verification result. ``accepted=True`` never means release-ready.
+    """
+    return verify_prose_patch_proposal(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        proposed_text=proposed_text,
+        patches=patches,
+        second_review=second_review,
+        original_checkpoint_sha256=original_checkpoint_sha256,
+        original_checkpoint_sha=original_checkpoint_sha,
+    )
+
+
 def verify_prose_patch_proposal(
     *,
     original_text: str,
@@ -211,56 +233,30 @@ def verify_prose_patch_proposal(
     )
 
 
-def verify_prose_patch(
+def _accepts_review(
     *,
-    original_text: str,
-    changed_facts: c.Mapping[str, c.Mapping[str, object]],
-    proposed_text: str,
-    patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]],
-    second_review: str | c.Mapping[str, object] | ProsePatchSecondReview,
-    original_checkpoint_sha256: str | None = None,
-    original_checkpoint_sha: str | None = None,
-) -> ProsePatchVerificationResult:
-    """Alias for ``verify_prose_patch_proposal``.
-
-    Returns:
-        Verification result. ``accepted=True`` never means release-ready.
-    """
-    return verify_prose_patch_proposal(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        proposed_text=proposed_text,
-        patches=patches,
-        second_review=second_review,
-        original_checkpoint_sha256=original_checkpoint_sha256,
-        original_checkpoint_sha=original_checkpoint_sha,
-    )
+    review: ProsePatchSecondReview,
+    changed_facts: dict[str, dict[str, object]],
+    evidence: tuple[ProsePatchFactEvidence, ...],
+) -> bool:
+    if review.verdict != "accept":
+        if not review.reasons:
+            raise ProsePatchVerificationError("Non-accept verdicts require a reason")
+        return False
+    if review.reasons:
+        raise ProsePatchVerificationError("Accepted verdicts must not include reasons")
+    evidence_by_field = {item.field: item for item in evidence}
+    if set(evidence_by_field) != set(changed_facts):
+        raise ProsePatchVerificationError("Accepted verdict lacks per-fact evidence")
+    if any(item.proposed_quote is None for item in evidence_by_field.values()):
+        raise ProsePatchVerificationError(
+            "Accepted verdict lacks proposed quote evidence"
+        )
+    return True
 
 
-def validate_prose_patch_verification(
-    *,
-    original_text: str,
-    changed_facts: c.Mapping[str, c.Mapping[str, object]],
-    proposed_text: str,
-    patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]],
-    second_review: str | c.Mapping[str, object] | ProsePatchSecondReview,
-    original_checkpoint_sha256: str | None = None,
-    original_checkpoint_sha: str | None = None,
-) -> ProsePatchVerificationResult:
-    """Alias for callers that use validation terminology.
-
-    Returns:
-        Verification result. ``accepted=True`` never means release-ready.
-    """
-    return verify_prose_patch_proposal(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        proposed_text=proposed_text,
-        patches=patches,
-        second_review=second_review,
-        original_checkpoint_sha256=original_checkpoint_sha256,
-        original_checkpoint_sha=original_checkpoint_sha,
-    )
+class ProsePatchVerificationError(ValueError):
+    """Raised when a prose patch proposal fails local verification."""
 
 
 def _checkpoint_sha(
@@ -272,6 +268,43 @@ def _checkpoint_sha(
     if checkpoint_sha is None or not _SHA256_RE.fullmatch(checkpoint_sha):
         raise ProsePatchVerificationError("Checkpoint SHA must be a SHA-256 digest")
     return checkpoint_sha.lower()
+
+
+def _parse_patches(
+    *, patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]]
+) -> list[ProsePatchExcerpt]:
+    if not 1 <= len(patches) <= _MAX_PATCHES:
+        raise ProsePatchVerificationError(
+            "Patched proposals must contain one or two patches"
+        )
+    parsed: list[ProsePatchExcerpt] = []
+    try:
+        for patch in patches:
+            parsed.append(
+                patch
+                if isinstance(patch, ProsePatchExcerpt)
+                else ProsePatchExcerpt.model_validate(patch)
+            )
+    except (ValidationError, TypeError, ValueError) as error:
+        raise ProsePatchVerificationError("Invalid exact prose patch") from error
+    return parsed
+
+
+def _parse_second_review(
+    *, second_review: str | c.Mapping[str, object] | ProsePatchSecondReview
+) -> ProsePatchSecondReview:
+    if isinstance(second_review, ProsePatchSecondReview):
+        return second_review
+    try:
+        return (
+            ProsePatchSecondReview.model_validate_json(second_review)
+            if isinstance(second_review, str)
+            else ProsePatchSecondReview.model_validate(second_review)
+        )
+    except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ProsePatchVerificationError(
+            "Invalid second-pass review response"
+        ) from error
 
 
 def _validate_changed_facts(
@@ -301,59 +334,17 @@ def _validate_changed_facts(
     return facts
 
 
-def _parse_patches(
-    *, patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]]
-) -> list[ProsePatchExcerpt]:
-    if not 1 <= len(patches) <= _MAX_PATCHES:
-        raise ProsePatchVerificationError(
-            "Patched proposals must contain one or two patches"
+def _safe_fact_value(value: object) -> bool:
+    if value is None or isinstance(value, bool | int | float):
+        return True
+    if isinstance(value, str):
+        return len(value) <= _MAX_FACT_VALUE_LENGTH
+    if isinstance(value, list):
+        return all(
+            isinstance(item, str) and len(item) <= _MAX_FACT_VALUE_LENGTH
+            for item in value
         )
-    parsed: list[ProsePatchExcerpt] = []
-    try:
-        for patch in patches:
-            parsed.append(
-                patch
-                if isinstance(patch, ProsePatchExcerpt)
-                else ProsePatchExcerpt.model_validate(patch)
-            )
-    except (ValidationError, TypeError, ValueError) as error:
-        raise ProsePatchVerificationError("Invalid exact prose patch") from error
-    return parsed
-
-
-def _verify_reapplied_text(
-    *, original_text: str, proposed_text: str, patches: list[ProsePatchExcerpt]
-) -> int:
-    if not original_text:
-        raise ProsePatchVerificationError("Original text must be non-empty")
-    spans = _find_patch_spans(original_text=original_text, patches=patches)
-    changed_characters = _changed_characters(spans=spans)
-    if (
-        changed_characters > _MAX_PATCH_LENGTH
-        or changed_characters > len(original_text) * 0.2
-    ):
-        raise ProsePatchVerificationError("Patch exceeds the changed-text budget")
-    reapplied = _apply_spans(original_text=original_text, spans=spans)
-    if reapplied != proposed_text:
-        raise ProsePatchVerificationError("Proposed text does not match exact patches")
-    return changed_characters
-
-
-def _parse_second_review(
-    *, second_review: str | c.Mapping[str, object] | ProsePatchSecondReview
-) -> ProsePatchSecondReview:
-    if isinstance(second_review, ProsePatchSecondReview):
-        return second_review
-    try:
-        return (
-            ProsePatchSecondReview.model_validate_json(second_review)
-            if isinstance(second_review, str)
-            else ProsePatchSecondReview.model_validate(second_review)
-        )
-    except (ValidationError, ValueError, TypeError, json.JSONDecodeError) as error:
-        raise ProsePatchVerificationError(
-            "Invalid second-pass review response"
-        ) from error
+    return False
 
 
 def _validate_quote_evidence(
@@ -385,26 +376,39 @@ def _validate_quote_evidence(
     return tuple(validated)
 
 
-def _accepts_review(
-    *,
-    review: ProsePatchSecondReview,
-    changed_facts: dict[str, dict[str, object]],
-    evidence: tuple[ProsePatchFactEvidence, ...],
-) -> bool:
-    if review.verdict != "accept":
-        if not review.reasons:
-            raise ProsePatchVerificationError("Non-accept verdicts require a reason")
-        return False
-    if review.reasons:
-        raise ProsePatchVerificationError("Accepted verdicts must not include reasons")
-    evidence_by_field = {item.field: item for item in evidence}
-    if set(evidence_by_field) != set(changed_facts):
-        raise ProsePatchVerificationError("Accepted verdict lacks per-fact evidence")
-    if any(item.proposed_quote is None for item in evidence_by_field.values()):
-        raise ProsePatchVerificationError(
-            "Accepted verdict lacks proposed quote evidence"
-        )
-    return True
+def _verify_reapplied_text(
+    *, original_text: str, proposed_text: str, patches: list[ProsePatchExcerpt]
+) -> int:
+    if not original_text:
+        raise ProsePatchVerificationError("Original text must be non-empty")
+    spans = _find_patch_spans(original_text=original_text, patches=patches)
+    changed_characters = _changed_characters(spans=spans)
+    if (
+        changed_characters > _MAX_PATCH_LENGTH
+        or changed_characters > len(original_text) * 0.2
+    ):
+        raise ProsePatchVerificationError("Patch exceeds the changed-text budget")
+    reapplied = _apply_spans(original_text=original_text, spans=spans)
+    if reapplied != proposed_text:
+        raise ProsePatchVerificationError("Proposed text does not match exact patches")
+    return changed_characters
+
+
+def _apply_spans(
+    *, original_text: str, spans: list[tuple[int, int, ProsePatchExcerpt]]
+) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for start, end, patch in spans:
+        parts.append(original_text[cursor:start])
+        parts.append(patch.new_excerpt)
+        cursor = end
+    parts.append(original_text[cursor:])
+    return "".join(parts)
+
+
+def _changed_characters(*, spans: list[tuple[int, int, ProsePatchExcerpt]]) -> int:
+    return sum(max(end - start, len(patch.new_excerpt)) for start, end, patch in spans)
 
 
 def _find_patch_spans(
@@ -431,23 +435,6 @@ def _find_patch_spans(
     return spans
 
 
-def _changed_characters(*, spans: list[tuple[int, int, ProsePatchExcerpt]]) -> int:
-    return sum(max(end - start, len(patch.new_excerpt)) for start, end, patch in spans)
-
-
-def _apply_spans(
-    *, original_text: str, spans: list[tuple[int, int, ProsePatchExcerpt]]
-) -> str:
-    parts: list[str] = []
-    cursor = 0
-    for start, end, patch in spans:
-        parts.append(original_text[cursor:start])
-        parts.append(patch.new_excerpt)
-        cursor = end
-    parts.append(original_text[cursor:])
-    return "".join(parts)
-
-
 def _occurrences(*, text: str, needle: str) -> list[int]:
     starts: list[int] = []
     position = text.find(needle)
@@ -457,14 +444,27 @@ def _occurrences(*, text: str, needle: str) -> list[int]:
     return starts
 
 
-def _safe_fact_value(value: object) -> bool:
-    if value is None or isinstance(value, bool | int | float):
-        return True
-    if isinstance(value, str):
-        return len(value) <= _MAX_FACT_VALUE_LENGTH
-    if isinstance(value, list):
-        return all(
-            isinstance(item, str) and len(item) <= _MAX_FACT_VALUE_LENGTH
-            for item in value
-        )
-    return False
+def verify_prose_patch(
+    *,
+    original_text: str,
+    changed_facts: c.Mapping[str, c.Mapping[str, object]],
+    proposed_text: str,
+    patches: c.Sequence[ProsePatchExcerpt | c.Mapping[str, object]],
+    second_review: str | c.Mapping[str, object] | ProsePatchSecondReview,
+    original_checkpoint_sha256: str | None = None,
+    original_checkpoint_sha: str | None = None,
+) -> ProsePatchVerificationResult:
+    """Alias for ``verify_prose_patch_proposal``.
+
+    Returns:
+        Verification result. ``accepted=True`` never means release-ready.
+    """
+    return verify_prose_patch_proposal(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        proposed_text=proposed_text,
+        patches=patches,
+        second_review=second_review,
+        original_checkpoint_sha256=original_checkpoint_sha256,
+        original_checkpoint_sha=original_checkpoint_sha,
+    )

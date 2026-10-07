@@ -23,56 +23,6 @@ TEXT = (
 )
 
 
-class FixturePaths(dashboard.DashboardPaths):
-    """Typed alias for synthetic v4 dashboard paths."""
-
-
-def test_builds_private_offline_v4_dashboard_without_provider_io(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Patched cards and aggregate summaries come from local checkpoints only."""
-    paths, manifest = _write_fixture(tmp_path, count=3)
-    hashes = [sha256_text(f"pid-{index}") for index in range(3)]
-    _write_checkpoint(
-        paths=paths, manifest=manifest, persona_id="pid-0", disposition="patched"
-    )
-    _write_checkpoint(
-        paths=paths,
-        manifest=manifest,
-        persona_id="pid-1",
-        disposition="unchanged_consistent",
-    )
-    _write_checkpoint(
-        paths=paths,
-        manifest=manifest,
-        persona_id="pid-2",
-        disposition="needs_manual_review",
-    )
-    _write_status(paths=paths, manifest=manifest, hashes=hashes)
-
-    def fail_provider_call(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("dashboard attempted provider I/O")
-
-    monkeypatch.setattr(
-        "danish_personas.generation.client.OpenAIClient.complete", fail_provider_call
-    )
-
-    summary = dashboard.build_prose_review_v4_dashboard(paths=paths, limit=10)
-
-    content = paths.output.read_text(encoding="utf-8")
-    assert summary["verified_checkpoints"] == 3
-    assert summary["patched_cards"] == 1
-    assert "NOT accepted repairs" in content
-    assert "Provisional unchanged-consistent summary" in content
-    assert "Needs-manual-review aggregate summary" in content
-    assert "pid-0" not in content
-    assert hashes[0][:12] in content
-    assert "Exact unified diff" in content
-    assert "<script" not in content
-    assert (paths.output.stat().st_mode & 0o777) == 0o600
-    assert (paths.output.parent.stat().st_mode & 0o777) == 0o700
-
-
 def test_accepts_signed_legacy_null_detail_checkpoint_as_provisional(
     tmp_path: Path,
 ) -> None:
@@ -93,174 +43,133 @@ def test_accepts_signed_legacy_null_detail_checkpoint_as_provisional(
     assert "renewed review" in content
 
 
-def test_malformed_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
-    """Legacy handling still requires the complete signed old key set."""
-    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
-    checkpoint_path = _write_checkpoint(
-        paths=paths, manifest=manifest, persona_id="pid-0"
-    )
-    _remove_signed_payload_hash(path=checkpoint_path)
-    document = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+def _remove_signed_payload_hash(*, path: Path) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(document, dict)
-    document.pop("source_pin_sha256")
+    document.pop("payload_sha256")
     _resign_checkpoint(document=document)
-    checkpoint_path.write_text(json.dumps(document), encoding="utf-8")
-    checkpoint_path.chmod(0o600)
-    persona_hash = sha256_text("pid-0")
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="schema"):
-        dashboard.build_prose_review_v4_dashboard(paths=paths)
-
-    assert not paths.output.exists()
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    path.chmod(0o600)
 
 
-def test_stale_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
-    """A legacy-shaped checkpoint must still match the candidate row exactly."""
-    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
-    checkpoint_path = _write_checkpoint(
-        paths=paths, manifest=manifest, persona_id="pid-0"
+def _resign_checkpoint(*, document: dict[str, object]) -> None:
+    unsigned = {
+        key: value for key, value in document.items() if key != "checkpoint_sha256"
+    }
+    document["checkpoint_sha256"] = sha256_text(canonical_json(unsigned))
+
+
+def _response(
+    *,
+    disposition: str,
+    old_excerpt: str,
+    new_excerpt: str,
+    changed_facts: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    if disposition == "patched":
+        return {
+            "disposition": "patched",
+            "patches": [{"old_excerpt": old_excerpt, "new_excerpt": new_excerpt}],
+            "unchanged_evidence": [],
+            "manual_review_reason": None,
+        }
+    if disposition == "unchanged_consistent":
+        return {
+            "disposition": "unchanged_consistent",
+            "patches": [],
+            "unchanged_evidence": [
+                {"field": field, "kind": "fact_not_stated", "quote": ""}
+                for field in changed_facts
+            ],
+            "manual_review_reason": None,
+        }
+    return {
+        "disposition": "needs_manual_review",
+        "patches": [],
+        "unchanged_evidence": [],
+        "manual_review_reason": "ambiguous",
+    }
+
+
+def _row(*, path: Path, persona_id: str) -> dict[str, dashboard.JSONValue]:
+    for row in pl.read_parquet(path).to_dicts():
+        if row["persona_id"] == persona_id:
+            return row
+    raise AssertionError("missing fixture row")
+
+
+class FixturePaths(dashboard.DashboardPaths):
+    """Typed alias for synthetic v4 dashboard paths."""
+
+
+def _write_checkpoint(
+    *,
+    paths: FixturePaths,
+    manifest: dict[str, dashboard.JSONValue],
+    persona_id: str,
+    disposition: str = "patched",
+    old_excerpt: str = "Før ændring",
+    new_excerpt: str = "Efter ændring",
+) -> Path:
+    original = _row(path=paths.original, persona_id=persona_id)
+    candidate = _row(path=paths.candidate, persona_id=persona_id)
+    changed_facts = dashboard._changed_facts_mapping(
+        original=original, candidate=candidate
     )
-    _remove_signed_payload_hash(path=checkpoint_path)
-    persona_hash = sha256_text("pid-0")
-    pl.DataFrame(
-        [
-            {
-                "persona_id": "pid-0",
-                "persona": TEXT,
-                "job_title": "endnu nyere titel",
-                "education_level": "lang uddannelse",
-                "marital_status": "divorced",
-                "legal_status_detail": None,
-            }
-        ]
-    ).write_parquet(paths.candidate)
-    inputs = manifest["inputs"]
-    assert isinstance(inputs, dict)
-    inputs["candidate_v4"] = sha256_file(paths.candidate)
-    _write_json(paths.manifest, manifest)
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="binding mismatch"):
-        dashboard.build_prose_review_v4_dashboard(paths=paths)
-
-    assert not paths.output.exists()
-
-
-def test_html_escapes_malicious_prose_and_fact_values(tmp_path: Path) -> None:
-    """Raw prose, diffs, patches, and fact values are escaped before HTML."""
-    malicious_old = '<img src=x onerror="alert(1)">'
-    malicious_new = '<script>alert("patched")</script>'
-    paths, manifest = _write_fixture(
-        tmp_path,
-        count=1,
-        marker=malicious_old,
-        old_value='<svg onload="old()">',
-        new_value='<script>alert("fact")</script>',
+    prompt = paths.prompt.read_text(encoding="utf-8")
+    _, payload = dashboard._validated_input(
+        original, candidate, changed_facts, None, None, prompt
     )
-    persona_hash = sha256_text("pid-0")
-    _write_checkpoint(
-        paths=paths,
+    payload = dashboard._payload_with_null_detail_context(
+        payload=payload,
+        row=original,
+        candidate_row=candidate,
+        changed_facts=changed_facts,
+    )
+    response = _response(
+        disposition=disposition,
+        old_excerpt=old_excerpt,
+        new_excerpt=new_excerpt,
+        changed_facts=changed_facts,
+    )
+    result = validate_prose_review(
+        original_text=str(original["persona"]),
+        changed_facts=changed_facts,
+        response=response,
+    )
+    binding = dashboard._checkpoint_binding(
+        original=original,
+        candidate=candidate,
+        changed_facts=changed_facts,
+        original_text=str(original["persona"]),
+        prompt=prompt,
         manifest=manifest,
-        persona_id="pid-0",
-        disposition="patched",
-        old_excerpt=malicious_old,
-        new_excerpt=malicious_new,
+        payload=payload,
     )
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    dashboard.build_prose_review_v4_dashboard(paths=paths, limit=None)
-
-    content = paths.output.read_text(encoding="utf-8")
-    assert malicious_old not in content
-    assert malicious_new not in content
-    assert '<script>alert("fact")</script>' not in content
-    assert "&lt;img src=x" in content
-    assert "&lt;script&gt;alert" in content
-    assert "<script" not in content
-
-
-def test_stale_checkpoint_fails_closed_without_output(tmp_path: Path) -> None:
-    """A checkpoint bound to an older candidate parquet is refused."""
-    paths, manifest = _write_fixture(tmp_path, count=1)
-    persona_hash = sha256_text("pid-0")
-    _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-    pl.DataFrame(
-        [
-            {
-                "persona_id": "pid-0",
-                "persona": TEXT,
-                "job_title": "endnu nyere titel",
-                "education_level": "lang uddannelse",
-            }
-        ]
-    ).write_parquet(paths.candidate)
-    inputs = manifest["inputs"]
-    assert isinstance(inputs, dict)
-    inputs["candidate_v4"] = sha256_file(paths.candidate)
-    _write_json(paths.manifest, manifest)
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="binding mismatch"):
-        dashboard.build_prose_review_v4_dashboard(paths=paths)
-
-    assert not paths.output.exists()
-
-
-def test_file_permissions_are_private_and_unsafe_output_parent_is_refused(
-    tmp_path: Path,
-) -> None:
-    """The dashboard writes 0600 files and does not relax shared directories."""
-    paths, manifest = _write_fixture(tmp_path, count=1)
-    persona_hash = sha256_text("pid-0")
-    _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    unsafe = tmp_path / "shared"
-    unsafe.mkdir(mode=0o755)
-    unsafe_paths = FixturePaths(
-        original=paths.original,
-        candidate=paths.candidate,
-        triage=paths.triage,
-        prompt=paths.prompt,
-        registry=paths.registry,
-        status=paths.status,
-        manifest=paths.manifest,
-        checkpoint_root=paths.checkpoint_root,
-        output=unsafe / "dashboard.html",
-    )
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="private"):
-        dashboard.build_prose_review_v4_dashboard(paths=unsafe_paths)
-
-    assert (unsafe.stat().st_mode & 0o777) == 0o755
-    dashboard.build_prose_review_v4_dashboard(paths=paths)
-    assert (paths.output.stat().st_mode & 0o777) == 0o600
-
-
-def test_missing_original_candidate_or_proposed_hash_fails_closed(
-    tmp_path: Path,
-) -> None:
-    """Missing source rows or proposed-text bindings abort the build."""
-    paths, manifest = _write_fixture(tmp_path, count=1)
-    missing_hash = sha256_text("missing-private-id")
-    _write_status(paths=paths, manifest=manifest, hashes=[missing_hash])
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="missing"):
-        dashboard.build_prose_review_v4_dashboard(paths=paths)
-
-    persona_hash = sha256_text("pid-0")
-    checkpoint = _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
-    document = json.loads(checkpoint.read_text(encoding="utf-8"))
-    del document["proposed_text_sha256"]
+    document: dict[str, dashboard.JSONValue] = {
+        **binding,
+        "disposition": result.disposition,
+        "changed_fraction": result.changed_fraction,
+        "proposed_text_sha256": sha256_text(result.proposed_text),
+        "patches": [
+            {"old_excerpt": patch.old_excerpt, "new_excerpt": patch.new_excerpt}
+            for patch in result.patches
+        ],
+        "unchanged_evidence": [
+            {"field": item.field, "kind": item.kind, "quote": item.quote}
+            for item in result.unchanged_evidence
+        ],
+        "manual_review_reason": result.manual_review_reason,
+        "unchanged_consistent_note": result.unchanged_consistent_note,
+    }
     document["checkpoint_sha256"] = sha256_text(canonical_json(document))
-    checkpoint.write_text(json.dumps(document), encoding="utf-8")
-    checkpoint.chmod(0o600)
-    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
-
-    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="schema"):
-        dashboard.build_prose_review_v4_dashboard(paths=paths)
+    persona_hash = sha256_text(persona_id)
+    parent = paths.checkpoint_root / "checkpoints" / persona_hash[:2]
+    parent.mkdir(mode=0o700, exist_ok=True)
+    path = parent / f"{persona_hash}.json"
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    path.chmod(0o600)
+    return path
 
 
 def _write_fixture(
@@ -351,6 +260,12 @@ def _manifest(*, paths: FixturePaths) -> dict[str, dashboard.JSONValue]:
     }
 
 
+def _write_json(path: Path, value: object) -> None:
+    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+
+
 def _write_status(
     *, paths: FixturePaths, manifest: dict[str, dashboard.JSONValue], hashes: list[str]
 ) -> None:
@@ -393,132 +308,217 @@ def _count_disposition(
     return count
 
 
-def _write_checkpoint(
-    *,
-    paths: FixturePaths,
-    manifest: dict[str, dashboard.JSONValue],
-    persona_id: str,
-    disposition: str = "patched",
-    old_excerpt: str = "Før ændring",
-    new_excerpt: str = "Efter ændring",
-) -> Path:
-    original = _row(path=paths.original, persona_id=persona_id)
-    candidate = _row(path=paths.candidate, persona_id=persona_id)
-    changed_facts = dashboard._changed_facts_mapping(
-        original=original, candidate=candidate
+def test_builds_private_offline_v4_dashboard_without_provider_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Patched cards and aggregate summaries come from local checkpoints only."""
+    paths, manifest = _write_fixture(tmp_path, count=3)
+    hashes = [sha256_text(f"pid-{index}") for index in range(3)]
+    _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0", disposition="patched"
     )
-    prompt = paths.prompt.read_text(encoding="utf-8")
-    _, payload = dashboard._validated_input(
-        original, candidate, changed_facts, None, None, prompt
-    )
-    payload = dashboard._payload_with_null_detail_context(
-        payload=payload,
-        row=original,
-        candidate_row=candidate,
-        changed_facts=changed_facts,
-    )
-    response = _response(
-        disposition=disposition,
-        old_excerpt=old_excerpt,
-        new_excerpt=new_excerpt,
-        changed_facts=changed_facts,
-    )
-    result = validate_prose_review(
-        original_text=str(original["persona"]),
-        changed_facts=changed_facts,
-        response=response,
-    )
-    binding = dashboard._checkpoint_binding(
-        original=original,
-        candidate=candidate,
-        changed_facts=changed_facts,
-        original_text=str(original["persona"]),
-        prompt=prompt,
+    _write_checkpoint(
+        paths=paths,
         manifest=manifest,
-        payload=payload,
+        persona_id="pid-1",
+        disposition="unchanged_consistent",
     )
-    document: dict[str, dashboard.JSONValue] = {
-        **binding,
-        "disposition": result.disposition,
-        "changed_fraction": result.changed_fraction,
-        "proposed_text_sha256": sha256_text(result.proposed_text),
-        "patches": [
-            {"old_excerpt": patch.old_excerpt, "new_excerpt": patch.new_excerpt}
-            for patch in result.patches
-        ],
-        "unchanged_evidence": [
-            {"field": item.field, "kind": item.kind, "quote": item.quote}
-            for item in result.unchanged_evidence
-        ],
-        "manual_review_reason": result.manual_review_reason,
-        "unchanged_consistent_note": result.unchanged_consistent_note,
-    }
-    document["checkpoint_sha256"] = sha256_text(canonical_json(document))
-    persona_hash = sha256_text(persona_id)
-    parent = paths.checkpoint_root / "checkpoints" / persona_hash[:2]
-    parent.mkdir(mode=0o700, exist_ok=True)
-    path = parent / f"{persona_hash}.json"
-    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-    path.chmod(0o600)
-    return path
+    _write_checkpoint(
+        paths=paths,
+        manifest=manifest,
+        persona_id="pid-2",
+        disposition="needs_manual_review",
+    )
+    _write_status(paths=paths, manifest=manifest, hashes=hashes)
+
+    def fail_provider_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("dashboard attempted provider I/O")
+
+    monkeypatch.setattr(
+        "danish_personas.generation.client.OpenAIClient.complete", fail_provider_call
+    )
+
+    summary = dashboard.build_prose_review_v4_dashboard(paths=paths, limit=10)
+
+    content = paths.output.read_text(encoding="utf-8")
+    assert summary["verified_checkpoints"] == 3
+    assert summary["patched_cards"] == 1
+    assert "NOT accepted repairs" in content
+    assert "Provisional unchanged-consistent summary" in content
+    assert "Needs-manual-review aggregate summary" in content
+    assert "pid-0" not in content
+    assert hashes[0][:12] in content
+    assert "Exact unified diff" in content
+    assert "<script" not in content
+    assert (paths.output.stat().st_mode & 0o777) == 0o600
+    assert (paths.output.parent.stat().st_mode & 0o777) == 0o700
 
 
-def _remove_signed_payload_hash(*, path: Path) -> None:
-    document = json.loads(path.read_text(encoding="utf-8"))
+def test_file_permissions_are_private_and_unsafe_output_parent_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The dashboard writes 0600 files and does not relax shared directories."""
+    paths, manifest = _write_fixture(tmp_path, count=1)
+    persona_hash = sha256_text("pid-0")
+    _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    unsafe = tmp_path / "shared"
+    unsafe.mkdir(mode=0o755)
+    unsafe_paths = FixturePaths(
+        original=paths.original,
+        candidate=paths.candidate,
+        triage=paths.triage,
+        prompt=paths.prompt,
+        registry=paths.registry,
+        status=paths.status,
+        manifest=paths.manifest,
+        checkpoint_root=paths.checkpoint_root,
+        output=unsafe / "dashboard.html",
+    )
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="private"):
+        dashboard.build_prose_review_v4_dashboard(paths=unsafe_paths)
+
+    assert (unsafe.stat().st_mode & 0o777) == 0o755
+    dashboard.build_prose_review_v4_dashboard(paths=paths)
+    assert (paths.output.stat().st_mode & 0o777) == 0o600
+
+
+def test_html_escapes_malicious_prose_and_fact_values(tmp_path: Path) -> None:
+    """Raw prose, diffs, patches, and fact values are escaped before HTML."""
+    malicious_old = '<img src=x onerror="alert(1)">'
+    malicious_new = '<script>alert("patched")</script>'
+    paths, manifest = _write_fixture(
+        tmp_path,
+        count=1,
+        marker=malicious_old,
+        old_value='<svg onload="old()">',
+        new_value='<script>alert("fact")</script>',
+    )
+    persona_hash = sha256_text("pid-0")
+    _write_checkpoint(
+        paths=paths,
+        manifest=manifest,
+        persona_id="pid-0",
+        disposition="patched",
+        old_excerpt=malicious_old,
+        new_excerpt=malicious_new,
+    )
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    dashboard.build_prose_review_v4_dashboard(paths=paths, limit=None)
+
+    content = paths.output.read_text(encoding="utf-8")
+    assert malicious_old not in content
+    assert malicious_new not in content
+    assert '<script>alert("fact")</script>' not in content
+    assert "&lt;img src=x" in content
+    assert "&lt;script&gt;alert" in content
+    assert "<script" not in content
+
+
+def test_malformed_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
+    """Legacy handling still requires the complete signed old key set."""
+    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
+    checkpoint_path = _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0"
+    )
+    _remove_signed_payload_hash(path=checkpoint_path)
+    document = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     assert isinstance(document, dict)
-    document.pop("payload_sha256")
+    document.pop("source_pin_sha256")
     _resign_checkpoint(document=document)
-    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-    path.chmod(0o600)
+    checkpoint_path.write_text(json.dumps(document), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+    persona_hash = sha256_text("pid-0")
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="schema"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
+
+    assert not paths.output.exists()
 
 
-def _resign_checkpoint(*, document: dict[str, object]) -> None:
-    unsigned = {
-        key: value for key, value in document.items() if key != "checkpoint_sha256"
-    }
-    document["checkpoint_sha256"] = sha256_text(canonical_json(unsigned))
+def test_missing_original_candidate_or_proposed_hash_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Missing source rows or proposed-text bindings abort the build."""
+    paths, manifest = _write_fixture(tmp_path, count=1)
+    missing_hash = sha256_text("missing-private-id")
+    _write_status(paths=paths, manifest=manifest, hashes=[missing_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="missing"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
+
+    persona_hash = sha256_text("pid-0")
+    checkpoint = _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
+    document = json.loads(checkpoint.read_text(encoding="utf-8"))
+    del document["proposed_text_sha256"]
+    document["checkpoint_sha256"] = sha256_text(canonical_json(document))
+    checkpoint.write_text(json.dumps(document), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="schema"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
 
 
-def _response(
-    *,
-    disposition: str,
-    old_excerpt: str,
-    new_excerpt: str,
-    changed_facts: dict[str, dict[str, object]],
-) -> dict[str, object]:
-    if disposition == "patched":
-        return {
-            "disposition": "patched",
-            "patches": [{"old_excerpt": old_excerpt, "new_excerpt": new_excerpt}],
-            "unchanged_evidence": [],
-            "manual_review_reason": None,
-        }
-    if disposition == "unchanged_consistent":
-        return {
-            "disposition": "unchanged_consistent",
-            "patches": [],
-            "unchanged_evidence": [
-                {"field": field, "kind": "fact_not_stated", "quote": ""}
-                for field in changed_facts
-            ],
-            "manual_review_reason": None,
-        }
-    return {
-        "disposition": "needs_manual_review",
-        "patches": [],
-        "unchanged_evidence": [],
-        "manual_review_reason": "ambiguous",
-    }
+def test_stale_checkpoint_fails_closed_without_output(tmp_path: Path) -> None:
+    """A checkpoint bound to an older candidate parquet is refused."""
+    paths, manifest = _write_fixture(tmp_path, count=1)
+    persona_hash = sha256_text("pid-0")
+    _write_checkpoint(paths=paths, manifest=manifest, persona_id="pid-0")
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+    pl.DataFrame(
+        [
+            {
+                "persona_id": "pid-0",
+                "persona": TEXT,
+                "job_title": "endnu nyere titel",
+                "education_level": "lang uddannelse",
+            }
+        ]
+    ).write_parquet(paths.candidate)
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, dict)
+    inputs["candidate_v4"] = sha256_file(paths.candidate)
+    _write_json(paths.manifest, manifest)
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
+
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="binding mismatch"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
+
+    assert not paths.output.exists()
 
 
-def _row(*, path: Path, persona_id: str) -> dict[str, dashboard.JSONValue]:
-    for row in pl.read_parquet(path).to_dicts():
-        if row["persona_id"] == persona_id:
-            return row
-    raise AssertionError("missing fixture row")
+def test_stale_legacy_null_detail_checkpoint_fails_closed(tmp_path: Path) -> None:
+    """A legacy-shaped checkpoint must still match the candidate row exactly."""
+    paths, manifest = _write_fixture(tmp_path, count=1, legal_status_detail_null=True)
+    checkpoint_path = _write_checkpoint(
+        paths=paths, manifest=manifest, persona_id="pid-0"
+    )
+    _remove_signed_payload_hash(path=checkpoint_path)
+    persona_hash = sha256_text("pid-0")
+    pl.DataFrame(
+        [
+            {
+                "persona_id": "pid-0",
+                "persona": TEXT,
+                "job_title": "endnu nyere titel",
+                "education_level": "lang uddannelse",
+                "marital_status": "divorced",
+                "legal_status_detail": None,
+            }
+        ]
+    ).write_parquet(paths.candidate)
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, dict)
+    inputs["candidate_v4"] = sha256_file(paths.candidate)
+    _write_json(paths.manifest, manifest)
+    _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
 
+    with pytest.raises(dashboard.ProseReviewV4DashboardError, match="binding mismatch"):
+        dashboard.build_prose_review_v4_dashboard(paths=paths)
 
-def _write_json(path: Path, value: object) -> None:
-    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o600)
+    assert not paths.output.exists()
