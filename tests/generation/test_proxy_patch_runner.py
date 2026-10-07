@@ -62,18 +62,19 @@ def _budget(tmp_path: Path) -> ProxyBudget:
         ledger_path=tmp_path / "budget.jsonl",
         registry_path=registry,
         campaign="synthetic-test",
-        source_hash="a" * 64,            prompt_hash=hashlib.sha256(
-                "Ret kun den nødvendige lokale formulering.".encode()
-            ).hexdigest(),
-            schema_hash=hashlib.sha256(
-                json.dumps(
-                    ProsePatchResponse.provider_json_schema(),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest(),
-cap_usd=Decimal("1"),
+        source_hash="a" * 64,
+        prompt_hash=hashlib.sha256(
+            "Ret kun den nødvendige lokale formulering.".encode()
+        ).hexdigest(),
+        schema_hash=hashlib.sha256(
+            json.dumps(
+                ProsePatchResponse.provider_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+        cap_usd=Decimal("1"),
     )
 
 
@@ -83,7 +84,9 @@ def _row() -> dict[str, Any]:
         "source_sex": "private-sex",
         "municipality": "private municipality",
         "origin_country_da": "private origin",
-        "persona_text": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "persona": "Før ændring. " + "Dette er en syntetisk person. " * 12,
+        "skills_and_expertise": ["planlægning"] * 3,
+        "hobbies_and_interests": ["cykling"] * 3,
     }
 
 
@@ -130,8 +133,10 @@ def _run(tmp_path: Path, transport: httpx.BaseTransport, **kwargs: object):
 def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     tmp_path: Path,
 ) -> None:
-    old = _row()["persona_text"]
-    raw = json.dumps({"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]})
+    old = _row()["persona"]
+    raw = json.dumps(
+        {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
+    )
     requests: list[httpx.Request] = []
     events: list[str] = []
     budget = _budget(tmp_path)
@@ -157,12 +162,20 @@ def test_payload_privacy_callback_before_network_and_restart_is_idempotent(
     user_payload = json.loads(body["messages"][1]["content"])
     assert events == ["reserved", "network"]
     assert user_payload == {
-        "persona_text": old,
+        "persona": old,
         "changed_facts": {"marital_status": {"old": "single", "new": "married"}},
         "gender": "kvinde",
         "partner_gender": "mand",
     }
-    assert all(secret not in requests[0].content.decode() for secret in ["private-id", "private-sex", "municipality", "origin_country_da"])
+    assert all(
+        secret not in requests[0].content.decode()
+        for secret in [
+            "private-id",
+            "private-sex",
+            "municipality",
+            "origin_country_da",
+        ]
+    )
     assert result.persona_text == old.replace("Før ændring", "Efter ændring")
     assert result.persona_text[len("Efter ændring") :] == old[len("Før ændring") :]
     assert (tmp_path / "provisional.json").stat().st_mode & 0o777 == 0o600
@@ -188,9 +201,13 @@ def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ProxyPatchError):
-        _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)), config=_config(max_tokens=100))
+        _run(
+            tmp_path,
+            httpx.MockTransport(lambda _: httpx.Response(500)),
+            config=_config(max_tokens=100),
+        )
     row = _row()
-    row["persona_text"] += " Seksual orientation."
+    row["persona"] += " Seksual orientation."
     with pytest.raises(ProxyPatchError):
         _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)), row=row)
     with pytest.raises(ProxyPatchError):
@@ -202,11 +219,85 @@ def test_rejects_bad_config_sensitive_original_and_non_allowlisted_fact(
 
 
 @pytest.mark.parametrize(
+    "identity_term",
+    [
+        "seksuel orientering",
+        "seksual orientation",
+        "homoseksuel",
+        "biseksuel",
+        "transkønnet",
+        "interkønnet",
+    ],
+)
+def test_rejects_sensitive_fact_values(tmp_path: Path, identity_term: str) -> None:
+    with pytest.raises(ProxyPatchError):
+        _run(
+            tmp_path,
+            httpx.MockTransport(lambda _: httpx.Response(500)),
+            changed_facts={"job_title": {"old": "ordinary", "new": identity_term}},
+        )
+
+
+def test_rejects_shared_checkpoint_directory_without_changing_its_mode(
+    tmp_path: Path,
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    shared.chmod(0o755)
+    with pytest.raises(ProxyPatchError, match="must be private"):
+        run_proxy_patch(
+            row=_row(),
+            changed_facts={"marital_status": {"old": "single", "new": "married"}},
+            gender=None,
+            partner_gender=None,
+            prompt="Ret kun den nødvendige lokale formulering.",
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=shared / "checkpoint.json",
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+    assert shared.stat().st_mode & 0o777 == 0o755
+
+
+def test_rejects_checkpoint_with_matching_checksum_but_false_rewrite(
+    tmp_path: Path,
+) -> None:
+    old = _row()["persona"]
+    raw = json.dumps(
+        {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
+    )
+    requests: list[httpx.Request] = []
+    _run(tmp_path, _transport(raw, requests))
+    path = tmp_path / "provisional.json"
+    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    checkpoint["proposed_persona_text"] = old + " En skjult ændring."
+    unsigned = {
+        key: value
+        for key, value in checkpoint.items()
+        if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    with pytest.raises(ProxyPatchError):
+        _run(tmp_path, httpx.MockTransport(lambda _: httpx.Response(500)))
+
+
+@pytest.mark.parametrize(
     "content",
     [
         "not json",
         json.dumps({"patches": [{"old_excerpt": "not present", "new_excerpt": "x"}]}),
-        json.dumps({"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "x", "extra": 1}]}),
+        json.dumps(
+            {
+                "patches": [
+                    {"old_excerpt": "Før ændring", "new_excerpt": "x", "extra": 1}
+                ]
+            }
+        ),
     ],
 )
 def test_rejects_malformed_and_unmatched_patch(tmp_path: Path, content: str) -> None:
@@ -223,7 +314,9 @@ def test_rejects_oversized_actual_http_body_before_network(tmp_path: Path) -> No
     # Force a reservation bound too small for the constructed HTTP body.
     budget.overhead = -1
     seen: list[httpx.Request] = []
-    raw = json.dumps({"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]})
+    raw = json.dumps(
+        {"patches": [{"old_excerpt": "Før ændring", "new_excerpt": "Efter ændring"}]}
+    )
     with pytest.raises((ProxyPatchError, ProxyBudgetError)):
         run_proxy_patch(
             row=_row(),
