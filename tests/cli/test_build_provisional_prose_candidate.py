@@ -45,11 +45,6 @@ class _FakeBudget:
             "uncapped_purpose": kwargs["uncapped_purpose"],
         }
 
-    def reserve_attempt(self, request_id: str, request: dict[str, object]) -> Decimal:
-        assert request_id
-        assert request
-        return Decimal("0")
-
     def record_usage(
         self,
         request_id: str,
@@ -63,11 +58,10 @@ class _FakeBudget:
         assert output_tokens >= 0
         assert len(response_sha256) == 64
 
-
-class _CheckpointBudget(_FakeBudget):
-    """Budget shape used only to forge genuine fixture checkpoints."""
-
-    overhead = 0
+    def reserve_attempt(self, request_id: str, request: dict[str, object]) -> Decimal:
+        assert request_id
+        assert request
+        return Decimal("0")
 
 
 def test_dry_run_and_write_revalidate_accepted_checkpoint_without_provider(
@@ -119,44 +113,139 @@ def test_dry_run_and_write_revalidate_accepted_checkpoint_without_provider(
     )
 
 
-def test_growing_first_pass_preserves_second_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Second-pass available may lag behind newer first-pass patches."""
-    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
-    paths = _write_fixture(tmp_path, include_growth_row=True)
-    _write_second_campaign(paths=paths, accepted=True)
-    _advance_first_pass_growth(paths=paths)
-
-    dry_run = _build(
-        paths=paths,
-        output=tmp_path / "candidate.parquet",
-        publication_v1=tmp_path / "publication-v1.parquet",
-        write_output=False,
+def _build(
+    *, paths: FixturePaths, output: Path, publication_v1: Path, write_output: bool
+) -> dict[str, candidate.JSONValue]:
+    return candidate.build_provisional_prose_candidate(
+        original=paths.original,
+        v4_structured=paths.candidate,
+        triage=paths.triage,
+        first_prompt=paths.first_prompt,
+        verify_prompt=paths.verify_prompt,
+        registry=paths.registry,
+        first_status=paths.first_status,
+        first_manifest=paths.first_manifest,
+        first_checkpoint_root=paths.first_checkpoint_root,
+        second_status=paths.output_dir / "status.json",
+        second_manifest=paths.output_dir / "manifest.json",
+        second_checkpoint_root=paths.output_dir,
+        output=output,
+        publication_v1=publication_v1,
+        write_output=write_output,
     )
 
-    assert dry_run["accepted_patch_count"] == 1
-    assert dry_run["first_patched_count"] == 2
-    assert dry_run["second_snapshot_available"] == 1
-    assert dry_run["new_unverified_since_second_snapshot"] == 1
-    assert dry_run["pending_count"] == 1
-    assert dry_run["unresolved_count"] == 3
-    assert dry_run["unresolved_total"] == 3
-    assert dry_run["first_pass_counts"] == {
-        "needs_manual_review": 1,
-        "patched": 2,
-        "unchanged_consistent": 1,
-    }
-    assert dry_run["second_pass_counts"] == {
-        "accepted": 1,
+
+def _write_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
+    loaded = verify.load_first_pass(paths=paths)
+    manifest = verify._verification_manifest(paths=paths, loaded=loaded)
+    _write_json(paths.output_dir / "manifest.json", manifest)
+    budget = t.cast(
+        ProxyBudget,
+        _checkpoint_budget(paths=paths, prompt=loaded.verify_prompt, manifest=manifest),
+    )
+    config = verify._generation_config(prompt_path=paths.verify_prompt)
+    row = loaded.rows[0]
+    checkpoint_path = verify._checkpoint_path(
+        output_dir=paths.output_dir, persona_hash=row.persona_hash
+    )
+    run_proxy_patch_verification(
+        row=row.original_row,
+        candidate_row=row.candidate_row,
+        changed_facts=row.changed_facts,
+        proposed_text=row.proposed_text,
+        patches=row.patches,
+        first_checkpoint_sha256=row.first_checkpoint_sha256,
+        prompt=loaded.verify_prompt,
+        config=config,
+        budget=budget,
+        checkpoint_path=checkpoint_path,
+        transport=_transport(_review(row=row, accepted=accepted)),
+    )
+    status: dict[str, object] = {
+        "version": verify.STATUS_VERSION,
+        "manifest": manifest,
+        "available": len(loaded.rows),
+        "accepted": 1 if accepted else 0,
+        "rejected": 0 if accepted else 1,
+        "manual": loaded.manual,
+        "unchanged_consistent": loaded.unchanged_consistent,
         "failed": 0,
-        "needs_manual_review": 1,
-        "pending": 1,
-        "rejected": 0,
-        "unchanged_consistent": 1,
+        "attempted": 1,
+        "transient_retries": 0,
+        "processed": 1,
+        "pending": len(loaded.rows) - 1,
+        "processed_persona_hashes": [row.persona_hash],
+        "accepted_is_provisional": True,
+        "provisional_notice": verify.PROVISIONAL_NOTICE,
     }
-    assert "first_manifest_content_sha256" in dry_run["source_hashes"]
-    assert "second_manifest_sha256" in dry_run["source_hashes"]
+    _write_json(paths.output_dir / "status.json", status)
+
+
+class _CheckpointBudget(_FakeBudget):
+    """Budget shape used only to forge genuine fixture checkpoints."""
+
+    overhead = 0
+
+
+def _checkpoint_budget(
+    *, paths: FixturePaths, prompt: str, manifest: dict[str, candidate.JSONValue]
+) -> _CheckpointBudget:
+    inputs = manifest["inputs"]
+    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
+        raise AssertionError("fixture manifest schema is malformed")
+    return _CheckpointBudget(
+        registry_path=paths.registry,
+        campaign=verify.CAMPAIGN,
+        source_hash=sha256_text(canonical_json(manifest)),
+        prompt_hash=sha256_text(prompt),
+        schema_hash=inputs["schema"],
+        uncapped=True,
+        uncapped_purpose=verify.PATCH_VERIFICATION_PURPOSE,
+    )
+
+
+def _review(*, row: verify.VerifyRow, accepted: bool) -> str:
+    if not accepted:
+        return json.dumps(
+            {"verdict": "reject", "reasons": ["fact_mismatch"], "fact_evidence": []},
+            ensure_ascii=False,
+        )
+    patch = row.patches[0]
+    evidence = [
+        {
+            "field": field,
+            "status": "corrected",
+            "original_quote": patch["old_excerpt"],
+            "proposed_quote": patch["new_excerpt"],
+        }
+        for field in row.changed_facts
+    ]
+    return json.dumps(
+        {"verdict": "accept", "reasons": [], "fact_evidence": evidence},
+        ensure_ascii=False,
+    )
+
+
+def _transport(response_content: str) -> httpx.MockTransport:
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": verify.MODEL,
+                "choices": [{"message": {"content": response_content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    return httpx.MockTransport(respond)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
 
 
 def test_duplicate_second_status_and_stale_checkpoint_fail_closed(
@@ -241,6 +330,60 @@ def test_duplicate_second_status_and_stale_checkpoint_fail_closed(
         )
 
 
+def test_growing_first_pass_preserves_second_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second-pass available may lag behind newer first-pass patches."""
+    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
+    paths = _write_fixture(tmp_path, include_growth_row=True)
+    _write_second_campaign(paths=paths, accepted=True)
+    _advance_first_pass_growth(paths=paths)
+
+    dry_run = _build(
+        paths=paths,
+        output=tmp_path / "candidate.parquet",
+        publication_v1=tmp_path / "publication-v1.parquet",
+        write_output=False,
+    )
+
+    assert dry_run["accepted_patch_count"] == 1
+    assert dry_run["first_patched_count"] == 2
+    assert dry_run["second_snapshot_available"] == 1
+    assert dry_run["new_unverified_since_second_snapshot"] == 1
+    assert dry_run["pending_count"] == 1
+    assert dry_run["unresolved_count"] == 3
+    assert dry_run["unresolved_total"] == 3
+    assert dry_run["first_pass_counts"] == {
+        "needs_manual_review": 1,
+        "patched": 2,
+        "unchanged_consistent": 1,
+    }
+    assert dry_run["second_pass_counts"] == {
+        "accepted": 1,
+        "failed": 0,
+        "needs_manual_review": 1,
+        "pending": 1,
+        "rejected": 0,
+        "unchanged_consistent": 1,
+    }
+    source_hashes = dry_run["source_hashes"]
+    assert isinstance(source_hashes, dict)
+    assert "first_manifest_content_sha256" in source_hashes
+    assert "second_manifest_sha256" in source_hashes
+
+
+def _advance_first_pass_growth(*, paths: FixturePaths) -> None:
+    manifest = json.loads(paths.first_manifest.read_text(encoding="utf-8"))
+    _write_first_checkpoint(
+        paths=paths, manifest=manifest, persona_id="growth-row", disposition="patched"
+    )
+    _write_first_status(
+        paths=paths,
+        manifest=manifest,
+        persona_ids=("patched-row", "manual-row", "unchanged-row", "growth-row"),
+    )
+
+
 def test_write_refuses_existing_candidate_and_publication_guard(tmp_path: Path) -> None:
     """The write path refuses to overwrite candidates or publication-v1 files."""
     output = tmp_path / "prose-candidate-v5-PROVISIONAL.parquet"
@@ -258,40 +401,6 @@ def test_write_refuses_existing_candidate_and_publication_guard(tmp_path: Path) 
         _build_missing_sources(
             output=output, publication_v1=publication_v1, write_output=True
         )
-
-
-def _advance_first_pass_growth(*, paths: FixturePaths) -> None:
-    manifest = json.loads(paths.first_manifest.read_text(encoding="utf-8"))
-    _write_first_checkpoint(
-        paths=paths, manifest=manifest, persona_id="growth-row", disposition="patched"
-    )
-    _write_first_status(
-        paths=paths,
-        manifest=manifest,
-        persona_ids=("patched-row", "manual-row", "unchanged-row", "growth-row"),
-    )
-
-
-def _build(
-    *, paths: FixturePaths, output: Path, publication_v1: Path, write_output: bool
-) -> dict[str, candidate.JSONValue]:
-    return candidate.build_provisional_prose_candidate(
-        original=paths.original,
-        v4_structured=paths.candidate,
-        triage=paths.triage,
-        first_prompt=paths.first_prompt,
-        verify_prompt=paths.verify_prompt,
-        registry=paths.registry,
-        first_status=paths.first_status,
-        first_manifest=paths.first_manifest,
-        first_checkpoint_root=paths.first_checkpoint_root,
-        second_status=paths.output_dir / "status.json",
-        second_manifest=paths.output_dir / "manifest.json",
-        second_checkpoint_root=paths.output_dir,
-        output=output,
-        publication_v1=publication_v1,
-        write_output=write_output,
-    )
 
 
 def _build_missing_sources(
@@ -315,110 +424,3 @@ def _build_missing_sources(
         publication_v1=publication_v1,
         write_output=write_output,
     )
-
-
-def _write_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
-    loaded = verify.load_first_pass(paths=paths)
-    manifest = verify._verification_manifest(paths=paths, loaded=loaded)
-    _write_json(paths.output_dir / "manifest.json", manifest)
-    budget = t.cast(
-        ProxyBudget,
-        _checkpoint_budget(paths=paths, prompt=loaded.verify_prompt, manifest=manifest),
-    )
-    config = verify._generation_config(prompt_path=paths.verify_prompt)
-    row = loaded.rows[0]
-    checkpoint_path = verify._checkpoint_path(
-        output_dir=paths.output_dir, persona_hash=row.persona_hash
-    )
-    run_proxy_patch_verification(
-        row=row.original_row,
-        candidate_row=row.candidate_row,
-        changed_facts=row.changed_facts,
-        proposed_text=row.proposed_text,
-        patches=row.patches,
-        first_checkpoint_sha256=row.first_checkpoint_sha256,
-        prompt=loaded.verify_prompt,
-        config=config,
-        budget=budget,
-        checkpoint_path=checkpoint_path,
-        transport=_transport(_review(row=row, accepted=accepted)),
-    )
-    status: dict[str, object] = {
-        "version": verify.STATUS_VERSION,
-        "manifest": manifest,
-        "available": len(loaded.rows),
-        "accepted": 1 if accepted else 0,
-        "rejected": 0 if accepted else 1,
-        "manual": loaded.manual,
-        "unchanged_consistent": loaded.unchanged_consistent,
-        "failed": 0,
-        "attempted": 1,
-        "transient_retries": 0,
-        "processed": 1,
-        "pending": len(loaded.rows) - 1,
-        "processed_persona_hashes": [row.persona_hash],
-        "accepted_is_provisional": True,
-        "provisional_notice": verify.PROVISIONAL_NOTICE,
-    }
-    _write_json(paths.output_dir / "status.json", status)
-
-
-def _checkpoint_budget(
-    *, paths: FixturePaths, prompt: str, manifest: dict[str, candidate.JSONValue]
-) -> _CheckpointBudget:
-    inputs = manifest["inputs"]
-    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
-        raise AssertionError("fixture manifest schema is malformed")
-    return _CheckpointBudget(
-        registry_path=paths.registry,
-        campaign=verify.CAMPAIGN,
-        source_hash=sha256_text(canonical_json(manifest)),
-        prompt_hash=sha256_text(prompt),
-        schema_hash=inputs["schema"],
-        uncapped=True,
-        uncapped_purpose=verify.PATCH_VERIFICATION_PURPOSE,
-    )
-
-
-def _review(*, row: verify.VerifyRow, accepted: bool) -> str:
-    if not accepted:
-        return json.dumps(
-            {"verdict": "reject", "reasons": ["fact_mismatch"], "fact_evidence": []},
-            ensure_ascii=False,
-        )
-    patch = row.patches[0]
-    evidence = [
-        {
-            "field": field,
-            "status": "corrected",
-            "original_quote": patch["old_excerpt"],
-            "proposed_quote": patch["new_excerpt"],
-        }
-        for field in row.changed_facts
-    ]
-    return json.dumps(
-        {"verdict": "accept", "reasons": [], "fact_evidence": evidence},
-        ensure_ascii=False,
-    )
-
-
-def _transport(response_content: str) -> httpx.MockTransport:
-    def respond(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": verify.MODEL,
-                "choices": [{"message": {"content": response_content}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
-        )
-
-    return httpx.MockTransport(respond)
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o600)

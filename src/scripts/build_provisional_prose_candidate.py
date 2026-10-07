@@ -312,10 +312,30 @@ class ProvisionalProseCandidateError(RuntimeError):
     """Raised when a provisional preview cannot be built safely."""
 
 
-def _require_private_files(*, files: dict[str, Path]) -> None:
-    for label, path in files.items():
-        if path.stat().st_mode & 0o777 != 0o600:
-            raise ProvisionalProseCandidateError(f"{label} must be private (0600)")
+def _checkpoint_is_accepted(*, path: Path) -> bool:
+    if not path.exists():
+        raise ProvisionalProseCandidateError("Second-pass checkpoint is missing")
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ProvisionalProseCandidateError(
+            "Second-pass checkpoint must be private (0600)"
+        )
+    checkpoint = _load_json_object(path=path, label="second checkpoint")
+    digest = checkpoint.get("checkpoint_sha256")
+    unsigned = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    if not isinstance(digest, str) or digest.lower() != sha256_text(
+        canonical_json(unsigned)
+    ):
+        raise ProvisionalProseCandidateError(
+            "Second-pass checkpoint checksum is invalid"
+        )
+    accepted = checkpoint.get("accepted")
+    if not isinstance(accepted, bool):
+        raise ProvisionalProseCandidateError(
+            "Second-pass checkpoint lacks accepted flag"
+        )
+    return accepted
 
 
 def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
@@ -326,6 +346,74 @@ def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
     if not isinstance(value, dict):
         raise ProvisionalProseCandidateError(f"{label} is not a JSON object")
     return t.cast(dict[str, JSONValue], value)
+
+
+def _failing_transport() -> httpx.MockTransport:
+    def respond(_request: httpx.Request) -> httpx.Response:
+        raise ProvisionalProseCandidateError("Provider access is disabled offline")
+
+    return httpx.MockTransport(respond)
+
+
+def _first_pass_records(
+    *, loaded: verify.LoadedFirstPass, original_frame: pl.DataFrame
+) -> list[dict[str, object]]:
+    ids_by_hash = _ids_by_hash(frame=original_frame)
+    patched_by_hash = {row.persona_hash: row for row in loaded.rows}
+    records: list[dict[str, object]] = []
+    for decision in loaded.decisions:
+        persona_id = ids_by_hash.get(decision.persona_hash)
+        if persona_id is None:
+            raise ProvisionalProseCandidateError("First-pass decision has unknown ID")
+        row = patched_by_hash.get(decision.persona_hash)
+        record: dict[str, object] = {
+            "persona_id": persona_id,
+            "persona_hash": decision.persona_hash,
+            "disposition": decision.disposition,
+        }
+        if row is not None:
+            record.update(
+                {
+                    "checkpoint_sha256": row.first_checkpoint_sha256,
+                    "original_persona_sha256": sha256_text(
+                        str(row.original_row["persona"])
+                    ),
+                    "proposed_text_sha256": sha256_text(row.proposed_text),
+                    "proposed_text": row.proposed_text,
+                    "patches": row.patches,
+                    "changed_facts": row.changed_facts,
+                }
+            )
+        records.append(record)
+    return records
+
+
+def _ids_by_hash(*, frame: pl.DataFrame) -> dict[str, str]:
+    if "persona_id" not in frame.columns:
+        raise ProvisionalProseCandidateError("Published frame is missing persona_id")
+    ids: dict[str, str] = {}
+    for raw_id in frame.get_column("persona_id").to_list():
+        if not isinstance(raw_id, str) or not raw_id:
+            raise ProvisionalProseCandidateError(
+                "Published frame has invalid persona_id"
+            )
+        persona_hash = sha256_text(raw_id)
+        if persona_hash in ids:
+            raise ProvisionalProseCandidateError("Published frame has duplicate IDs")
+        ids[persona_hash] = raw_id
+    return ids
+
+
+def _guard_write_targets(*, output: Path, publication_v1: Path) -> None:
+    report = _report_path(output=output)
+    for path in (output, report, publication_v1):
+        if path.exists():
+            message = f"Refusing to overwrite existing file: {path}"
+            raise ProvisionalProseCandidateError(message)
+
+
+def _report_path(*, output: Path) -> Path:
+    return output.with_suffix(".json")
 
 
 def _load_second_status(
@@ -372,37 +460,10 @@ def _status_int(*, status: dict[str, object], key: str) -> int:
     return value
 
 
-def _json_int(*, document: dict[str, JSONValue], key: str, label: str) -> int:
-    value = document.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ProvisionalProseCandidateError(f"{label} {key} count is malformed")
-    return value
-
-
-def _checkpoint_is_accepted(*, path: Path) -> bool:
-    if not path.exists():
-        raise ProvisionalProseCandidateError("Second-pass checkpoint is missing")
-    if path.stat().st_mode & 0o777 != 0o600:
-        raise ProvisionalProseCandidateError(
-            "Second-pass checkpoint must be private (0600)"
-        )
-    checkpoint = _load_json_object(path=path, label="second checkpoint")
-    digest = checkpoint.get("checkpoint_sha256")
-    unsigned = {
-        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
-    }
-    if not isinstance(digest, str) or digest.lower() != sha256_text(
-        canonical_json(unsigned)
-    ):
-        raise ProvisionalProseCandidateError(
-            "Second-pass checkpoint checksum is invalid"
-        )
-    accepted = checkpoint.get("accepted")
-    if not isinstance(accepted, bool):
-        raise ProvisionalProseCandidateError(
-            "Second-pass checkpoint lacks accepted flag"
-        )
-    return accepted
+def _require_private_files(*, files: dict[str, Path]) -> None:
+    for label, path in files.items():
+        if path.stat().st_mode & 0o777 != 0o600:
+            raise ProvisionalProseCandidateError(f"{label} must be private (0600)")
 
 
 def _second_pass_record(
@@ -416,37 +477,14 @@ def _second_pass_record(
     return record
 
 
-def _first_pass_records(
-    *, loaded: verify.LoadedFirstPass, original_frame: pl.DataFrame
-) -> list[dict[str, object]]:
-    ids_by_hash = _ids_by_hash(frame=original_frame)
-    patched_by_hash = {row.persona_hash: row for row in loaded.rows}
-    records: list[dict[str, object]] = []
-    for decision in loaded.decisions:
-        persona_id = ids_by_hash.get(decision.persona_hash)
-        if persona_id is None:
-            raise ProvisionalProseCandidateError("First-pass decision has unknown ID")
-        row = patched_by_hash.get(decision.persona_hash)
-        record: dict[str, object] = {
-            "persona_id": persona_id,
-            "persona_hash": decision.persona_hash,
-            "disposition": decision.disposition,
-        }
-        if row is not None:
-            record.update(
-                {
-                    "checkpoint_sha256": row.first_checkpoint_sha256,
-                    "original_persona_sha256": sha256_text(
-                        str(row.original_row["persona"])
-                    ),
-                    "proposed_text_sha256": sha256_text(row.proposed_text),
-                    "proposed_text": row.proposed_text,
-                    "patches": row.patches,
-                    "changed_facts": row.changed_facts,
-                }
-            )
-        records.append(record)
-    return records
+def _persona_id(*, row: verify.VerifyRow) -> str:
+    raw_id = row.original_row.get("persona_id")
+    if not isinstance(raw_id, str) or sha256_text(raw_id) != row.persona_hash:
+        raise ProvisionalProseCandidateError("First-pass row ID does not match hash")
+    candidate_id = row.candidate_row.get("persona_id")
+    if candidate_id != raw_id:
+        raise ProvisionalProseCandidateError("Original and v4 row IDs do not match")
+    return raw_id
 
 
 def _source_metadata(
@@ -538,14 +576,6 @@ def _summary(
     }
 
 
-def _source_hashes(*, metadata: dict[str, JSONValue]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in metadata.items()
-        if key.endswith("sha256") and isinstance(value, str)
-    }
-
-
 def _first_counts(*, loaded: verify.LoadedFirstPass) -> dict[str, int]:
     counts: dict[str, int] = {}
     for decision in loaded.decisions:
@@ -553,38 +583,19 @@ def _first_counts(*, loaded: verify.LoadedFirstPass) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _ids_by_hash(*, frame: pl.DataFrame) -> dict[str, str]:
-    if "persona_id" not in frame.columns:
-        raise ProvisionalProseCandidateError("Published frame is missing persona_id")
-    ids: dict[str, str] = {}
-    for raw_id in frame.get_column("persona_id").to_list():
-        if not isinstance(raw_id, str) or not raw_id:
-            raise ProvisionalProseCandidateError(
-                "Published frame has invalid persona_id"
-            )
-        persona_hash = sha256_text(raw_id)
-        if persona_hash in ids:
-            raise ProvisionalProseCandidateError("Published frame has duplicate IDs")
-        ids[persona_hash] = raw_id
-    return ids
+def _json_int(*, document: dict[str, JSONValue], key: str, label: str) -> int:
+    value = document.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ProvisionalProseCandidateError(f"{label} {key} count is malformed")
+    return value
 
 
-def _persona_id(*, row: verify.VerifyRow) -> str:
-    raw_id = row.original_row.get("persona_id")
-    if not isinstance(raw_id, str) or sha256_text(raw_id) != row.persona_hash:
-        raise ProvisionalProseCandidateError("First-pass row ID does not match hash")
-    candidate_id = row.candidate_row.get("persona_id")
-    if candidate_id != raw_id:
-        raise ProvisionalProseCandidateError("Original and v4 row IDs do not match")
-    return raw_id
-
-
-def _guard_write_targets(*, output: Path, publication_v1: Path) -> None:
-    report = _report_path(output=output)
-    for path in (output, report, publication_v1):
-        if path.exists():
-            message = f"Refusing to overwrite existing file: {path}"
-            raise ProvisionalProseCandidateError(message)
+def _source_hashes(*, metadata: dict[str, JSONValue]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key.endswith("sha256") and isinstance(value, str)
+    }
 
 
 def _write_outputs(
@@ -595,24 +606,6 @@ def _write_outputs(
     report_path = _report_path(output=output)
     _write_new_parquet(path=output, frame=preview)
     _write_new_json(path=report_path, value=report)
-
-
-def _write_new_parquet(*, path: Path, frame: pl.DataFrame) -> None:
-    if path.exists():
-        message = f"Refusing to overwrite existing file: {path}"
-        raise ProvisionalProseCandidateError(message)
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        os.close(fd)
-        frame.write_parquet(temporary)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _write_new_json(*, path: Path, value: dict[str, JSONValue]) -> None:
@@ -636,15 +629,22 @@ def _write_new_json(*, path: Path, value: dict[str, JSONValue]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _report_path(*, output: Path) -> Path:
-    return output.with_suffix(".json")
-
-
-def _failing_transport() -> httpx.MockTransport:
-    def respond(_request: httpx.Request) -> httpx.Response:
-        raise ProvisionalProseCandidateError("Provider access is disabled offline")
-
-    return httpx.MockTransport(respond)
+def _write_new_parquet(*, path: Path, frame: pl.DataFrame) -> None:
+    if path.exists():
+        message = f"Refusing to overwrite existing file: {path}"
+        raise ProvisionalProseCandidateError(message)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.close(fd)
+        frame.write_parquet(temporary)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

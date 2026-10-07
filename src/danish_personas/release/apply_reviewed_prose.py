@@ -155,106 +155,6 @@ def apply_reviewed_prose(
     return preview, report
 
 
-def _validated_rows(
-    *, frame: pl.DataFrame, label: str, expected_row_count: int | None
-) -> tuple[dict[str, dict[str, object]], list[str]]:
-    missing = {_ID_FIELD, _PROSE_FIELD} - set(frame.columns)
-    if missing:
-        raise ValueError(f"{label} lacks required columns: {sorted(missing)}")
-    if expected_row_count is not None and frame.height != expected_row_count:
-        raise ValueError(f"{label} does not contain the expected row count")
-    rows: dict[str, dict[str, object]] = {}
-    ordered_ids: list[str] = []
-    for row in frame.to_dicts():
-        persona_id = row.get(_ID_FIELD)
-        persona = row.get(_PROSE_FIELD)
-        if not isinstance(persona_id, str) or not persona_id:
-            raise ValueError(f"{label} contains a missing persona ID")
-        if persona_id in rows:
-            raise ValueError(f"{label} contains duplicate persona IDs")
-        if not isinstance(persona, str) or not persona.strip():
-            raise ValueError(f"{label} contains missing or blank prose")
-        rows[persona_id] = row
-        ordered_ids.append(persona_id)
-    return rows, ordered_ids
-
-
-def _validate_v4_frame(
-    *, frame: pl.DataFrame, ordered_ids: list[str], expected_row_count: int | None
-) -> None:
-    _, v4_ids = _validated_rows(
-        frame=frame, label="v4 structured frame", expected_row_count=expected_row_count
-    )
-    if v4_ids != ordered_ids:
-        raise ValueError("v4 structured frame must preserve ordered published IDs")
-
-
-def _index_first_pass_records(
-    *, records: c.Sequence[c.Mapping[str, object]], ordered_ids: list[str]
-) -> tuple[dict[str, c.Mapping[str, object]], int, dict[str, int]]:
-    known_ids = set(ordered_ids)
-    indexed: dict[str, c.Mapping[str, object]] = {}
-    skipped = 0
-    status_counts: dict[str, int] = {}
-    seen_ids: set[str] = set()
-    checkpoint_shas: set[str] = set()
-    for record in records:
-        persona_id = _record_persona_id(record=record, known_ids=known_ids)
-        if persona_id in seen_ids:
-            raise ValueError("First-pass records contain duplicate persona IDs")
-        seen_ids.add(persona_id)
-        _validate_record_hashes(record=record)
-        status = _record_status(record=record)
-        if status is not None:
-            status_counts[status] = status_counts.get(status, 0) + 1
-        if status in _SKIPPED_STATUSES:
-            skipped += 1
-            continue
-        if status not in {None, _PATCHED_STATUS}:
-            raise ValueError("First-pass record has an unsupported status")
-        checkpoint_sha = _required_sha(
-            record=record, keys=("checkpoint_sha256", "first_checkpoint_sha256")
-        )
-        if checkpoint_sha in checkpoint_shas:
-            raise ValueError("First-pass records contain duplicate checkpoint hashes")
-        checkpoint_shas.add(checkpoint_sha)
-        _require_string(record=record, keys=("proposed_text", "proposed_persona"))
-        _require_sequence(record=record, key="patches")
-        _require_mapping(record=record, key="changed_facts")
-        indexed[persona_id] = record
-    return indexed, skipped, status_counts
-
-
-def _index_second_pass_records(
-    *, records: c.Sequence[c.Mapping[str, object]], ordered_ids: list[str]
-) -> tuple[dict[str, c.Mapping[str, object]], int, dict[str, int]]:
-    known_ids = set(ordered_ids)
-    indexed: dict[str, c.Mapping[str, object]] = {}
-    skipped = 0
-    status_counts: dict[str, int] = {}
-    seen_ids: set[str] = set()
-    link_shas: set[str] = set()
-    for record in records:
-        persona_id = _record_persona_id(record=record, known_ids=known_ids)
-        if persona_id in seen_ids:
-            raise ValueError("Second-pass records contain duplicate persona IDs")
-        seen_ids.add(persona_id)
-        _validate_record_hashes(record=record)
-        status = _record_status(record=record)
-        if status is not None:
-            status_counts[status] = status_counts.get(status, 0) + 1
-        accepted = record.get("accepted")
-        if accepted is not True:
-            skipped += 1
-            continue
-        link_sha = _required_sha(record=record, keys=("original_checkpoint_sha256",))
-        if link_sha in link_shas:
-            raise ValueError("Second-pass records contain duplicate checkpoint links")
-        link_shas.add(link_sha)
-        indexed[persona_id] = record
-    return indexed, skipped, status_counts
-
-
 def _accepted_proposed_text(
     *,
     persona_id: str,
@@ -304,6 +204,113 @@ def _accepted_proposed_text(
     return proposed_text
 
 
+def _changed_facts(
+    *, record: c.Mapping[str, object]
+) -> c.Mapping[str, c.Mapping[str, object]]:
+    value = record.get("changed_facts")
+    if not isinstance(value, c.Mapping):
+        raise ValueError("First-pass record is missing changed facts")
+    changed: dict[str, c.Mapping[str, object]] = {}
+    for key, fact in value.items():
+        if not isinstance(key, str) or not isinstance(fact, c.Mapping):
+            raise ValueError("First-pass changed facts are malformed")
+        changed[key] = fact
+    return changed
+
+
+def _patches(*, record: c.Mapping[str, object]) -> list[c.Mapping[str, object]]:
+    value = record.get("patches")
+    if isinstance(value, str) or not isinstance(value, c.Sequence):
+        raise ValueError("First-pass record is missing patches")
+    patches: list[c.Mapping[str, object]] = []
+    for item in value:
+        if not isinstance(item, c.Mapping):
+            raise ValueError("First-pass patch is malformed")
+        patches.append(item)
+    return patches
+
+
+def _record_text(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str):
+            return value
+    raise ValueError(f"Record is missing required text field: {keys[0]}")
+
+
+def _required_sha(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str):
+            return _validate_sha(value=value, label=key)
+    raise ValueError(f"Record is missing required SHA-256 field: {keys[0]}")
+
+
+def _validate_sha(*, value: str, label: str) -> str:
+    if _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a SHA-256 digest")
+    return value.lower()
+
+
+def _second_review(*, record: c.Mapping[str, object]) -> dict[str, object]:
+    verdict = record.get("review_verdict") or record.get("verdict")
+    if verdict != "accept":
+        raise ValueError("Accepted second-pass record must carry an accept verdict")
+    reasons = record.get("reasons")
+    evidence = record.get("fact_evidence")
+    if not isinstance(reasons, list) or not isinstance(evidence, list):
+        raise ValueError("Accepted second-pass record lacks review evidence")
+    return {"verdict": verdict, "reasons": reasons, "fact_evidence": evidence}
+
+
+def _assert_only_persona_differs(
+    *, preview: pl.DataFrame, v4_structured: pl.DataFrame
+) -> None:
+    for column in v4_structured.columns:
+        if column == _PROSE_FIELD:
+            continue
+        preview_values = preview.get_column(column).to_list()
+        v4_values = v4_structured.get_column(column).to_list()
+        if preview_values != v4_values:
+            raise ValueError("Preview changed a non-prose column")
+
+
+def _index_first_pass_records(
+    *, records: c.Sequence[c.Mapping[str, object]], ordered_ids: list[str]
+) -> tuple[dict[str, c.Mapping[str, object]], int, dict[str, int]]:
+    known_ids = set(ordered_ids)
+    indexed: dict[str, c.Mapping[str, object]] = {}
+    skipped = 0
+    status_counts: dict[str, int] = {}
+    seen_ids: set[str] = set()
+    checkpoint_shas: set[str] = set()
+    for record in records:
+        persona_id = _record_persona_id(record=record, known_ids=known_ids)
+        if persona_id in seen_ids:
+            raise ValueError("First-pass records contain duplicate persona IDs")
+        seen_ids.add(persona_id)
+        _validate_record_hashes(record=record)
+        status = _record_status(record=record)
+        if status is not None:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        if status in _SKIPPED_STATUSES:
+            skipped += 1
+            continue
+        if status not in {None, _PATCHED_STATUS}:
+            raise ValueError("First-pass record has an unsupported status")
+        checkpoint_sha = _required_sha(
+            record=record, keys=("checkpoint_sha256", "first_checkpoint_sha256")
+        )
+        if checkpoint_sha in checkpoint_shas:
+            raise ValueError("First-pass records contain duplicate checkpoint hashes")
+        checkpoint_shas.add(checkpoint_sha)
+        _require_string(record=record, keys=("proposed_text", "proposed_persona"))
+        _require_sequence(record=record, key="patches")
+        _require_mapping(record=record, key="changed_facts")
+        indexed[persona_id] = record
+    return indexed, skipped, status_counts
+
+
 def _record_persona_id(*, record: c.Mapping[str, object], known_ids: set[str]) -> str:
     raw_id = record.get(_ID_FIELD) or record.get("id")
     raw_hash = record.get("persona_hash")
@@ -338,36 +345,10 @@ def _record_status(*, record: c.Mapping[str, object]) -> str | None:
     return status
 
 
-def _validate_record_hashes(*, record: c.Mapping[str, object]) -> None:
-    for key, value in record.items():
-        if _SHA_KEY_RE.search(key) and isinstance(value, str):
-            _validate_sha(value=value, label=key)
-
-
-def _required_sha(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = record.get(key)
-        if isinstance(value, str):
-            return _validate_sha(value=value, label=key)
-    raise ValueError(f"Record is missing required SHA-256 field: {keys[0]}")
-
-
-def _validate_sha(*, value: str, label: str) -> str:
-    if _SHA256_RE.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a SHA-256 digest")
-    return value.lower()
-
-
-def _require_string(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> None:
-    _record_text(record=record, keys=keys)
-
-
-def _record_text(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = record.get(key)
-        if isinstance(value, str):
-            return value
-    raise ValueError(f"Record is missing required text field: {keys[0]}")
+def _require_mapping(*, record: c.Mapping[str, object], key: str) -> None:
+    value = record.get(key)
+    if not isinstance(value, c.Mapping):
+        raise ValueError(f"Record is missing required mapping field: {key}")
 
 
 def _require_sequence(*, record: c.Mapping[str, object], key: str) -> None:
@@ -376,89 +357,52 @@ def _require_sequence(*, record: c.Mapping[str, object], key: str) -> None:
         raise ValueError(f"Record is missing required sequence field: {key}")
 
 
-def _require_mapping(*, record: c.Mapping[str, object], key: str) -> None:
-    value = record.get(key)
-    if not isinstance(value, c.Mapping):
-        raise ValueError(f"Record is missing required mapping field: {key}")
+def _require_string(*, record: c.Mapping[str, object], keys: tuple[str, ...]) -> None:
+    _record_text(record=record, keys=keys)
 
 
-def _changed_facts(
-    *, record: c.Mapping[str, object]
-) -> c.Mapping[str, c.Mapping[str, object]]:
-    value = record.get("changed_facts")
-    if not isinstance(value, c.Mapping):
-        raise ValueError("First-pass record is missing changed facts")
-    changed: dict[str, c.Mapping[str, object]] = {}
-    for key, fact in value.items():
-        if not isinstance(key, str) or not isinstance(fact, c.Mapping):
-            raise ValueError("First-pass changed facts are malformed")
-        changed[key] = fact
-    return changed
+def _validate_record_hashes(*, record: c.Mapping[str, object]) -> None:
+    for key, value in record.items():
+        if _SHA_KEY_RE.search(key) and isinstance(value, str):
+            _validate_sha(value=value, label=key)
 
 
-def _patches(*, record: c.Mapping[str, object]) -> list[c.Mapping[str, object]]:
-    value = record.get("patches")
-    if isinstance(value, str) or not isinstance(value, c.Sequence):
-        raise ValueError("First-pass record is missing patches")
-    patches: list[c.Mapping[str, object]] = []
-    for item in value:
-        if not isinstance(item, c.Mapping):
-            raise ValueError("First-pass patch is malformed")
-        patches.append(item)
-    return patches
-
-
-def _second_review(*, record: c.Mapping[str, object]) -> dict[str, object]:
-    verdict = record.get("review_verdict") or record.get("verdict")
-    if verdict != "accept":
-        raise ValueError("Accepted second-pass record must carry an accept verdict")
-    reasons = record.get("reasons")
-    evidence = record.get("fact_evidence")
-    if not isinstance(reasons, list) or not isinstance(evidence, list):
-        raise ValueError("Accepted second-pass record lacks review evidence")
-    return {"verdict": verdict, "reasons": reasons, "fact_evidence": evidence}
-
-
-def _validate_source_metadata(*, metadata: c.Mapping[str, object]) -> None:
-    if not metadata:
-        raise ValueError("Source metadata must contain immutable SHA-bound pins")
-    sha_values = _metadata_sha_values(value=metadata)
-    if not sha_values:
-        raise ValueError("Source metadata must contain at least one SHA-256 pin")
-    for label, value in sha_values:
-        _validate_sha(value=value, label=label)
-
-
-def _metadata_sha_values(
-    *, value: object, prefix: str = "metadata"
-) -> list[tuple[str, str]]:
-    if isinstance(value, c.Mapping):
-        pairs: list[tuple[str, str]] = []
-        for key, child in value.items():
-            key_text = str(key)
-            label = f"{prefix}.{key_text}"
-            if _SHA_KEY_RE.search(key_text) and isinstance(child, str):
-                pairs.append((label, child))
-            pairs.extend(_metadata_sha_values(value=child, prefix=label))
-        return pairs
-    if isinstance(value, list):
-        pairs = []
-        for index, child in enumerate(value):
-            pairs.extend(_metadata_sha_values(value=child, prefix=f"{prefix}[{index}]"))
-        return pairs
-    return []
-
-
-def _assert_only_persona_differs(
-    *, preview: pl.DataFrame, v4_structured: pl.DataFrame
-) -> None:
-    for column in v4_structured.columns:
-        if column == _PROSE_FIELD:
+def _index_second_pass_records(
+    *, records: c.Sequence[c.Mapping[str, object]], ordered_ids: list[str]
+) -> tuple[dict[str, c.Mapping[str, object]], int, dict[str, int]]:
+    known_ids = set(ordered_ids)
+    indexed: dict[str, c.Mapping[str, object]] = {}
+    skipped = 0
+    status_counts: dict[str, int] = {}
+    seen_ids: set[str] = set()
+    link_shas: set[str] = set()
+    for record in records:
+        persona_id = _record_persona_id(record=record, known_ids=known_ids)
+        if persona_id in seen_ids:
+            raise ValueError("Second-pass records contain duplicate persona IDs")
+        seen_ids.add(persona_id)
+        _validate_record_hashes(record=record)
+        status = _record_status(record=record)
+        if status is not None:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        accepted = record.get("accepted")
+        if accepted is not True:
+            skipped += 1
             continue
-        preview_values = preview.get_column(column).to_list()
-        v4_values = v4_structured.get_column(column).to_list()
-        if preview_values != v4_values:
-            raise ValueError("Preview changed a non-prose column")
+        link_sha = _required_sha(record=record, keys=("original_checkpoint_sha256",))
+        if link_sha in link_shas:
+            raise ValueError("Second-pass records contain duplicate checkpoint links")
+        link_shas.add(link_sha)
+        indexed[persona_id] = record
+    return indexed, skipped, status_counts
+
+
+def _merge_counts(*counts: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for mapping in counts:
+        for key, value in mapping.items():
+            merged[key] = merged.get(key, 0) + value
+    return merged
 
 
 def _report(
@@ -511,6 +455,24 @@ def _report(
     }
 
 
+def _frame_hash(*, frame: pl.DataFrame) -> str:
+    return _hash_json({"columns": frame.columns, "rows": _jsonable(frame.to_dicts())})
+
+
+def _hash_json(value: object) -> str:
+    return sha256_text(canonical_json(value))
+
+
+def _jsonable(value: object) -> JSONValue:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, c.Mapping):
+        return {str(key): _jsonable(child) for key, child in value.items()}
+    if isinstance(value, c.Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [_jsonable(child) for child in value]
+    return str(value)
+
+
 def _metadata_status_counts(*, metadata: c.Mapping[str, object]) -> dict[str, int]:
     raw_status = metadata.get("review_status") or metadata.get("status")
     if not isinstance(raw_status, c.Mapping):
@@ -542,27 +504,65 @@ def _unresolved_count(
     return from_status or skipped_first + skipped_second
 
 
-def _merge_counts(*counts: dict[str, int]) -> dict[str, int]:
-    merged: dict[str, int] = {}
-    for mapping in counts:
-        for key, value in mapping.items():
-            merged[key] = merged.get(key, 0) + value
-    return merged
+def _validate_source_metadata(*, metadata: c.Mapping[str, object]) -> None:
+    if not metadata:
+        raise ValueError("Source metadata must contain immutable SHA-bound pins")
+    sha_values = _metadata_sha_values(value=metadata)
+    if not sha_values:
+        raise ValueError("Source metadata must contain at least one SHA-256 pin")
+    for label, value in sha_values:
+        _validate_sha(value=value, label=label)
 
 
-def _frame_hash(*, frame: pl.DataFrame) -> str:
-    return _hash_json({"columns": frame.columns, "rows": _jsonable(frame.to_dicts())})
-
-
-def _hash_json(value: object) -> str:
-    return sha256_text(canonical_json(value))
-
-
-def _jsonable(value: object) -> JSONValue:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
+def _metadata_sha_values(
+    *, value: object, prefix: str = "metadata"
+) -> list[tuple[str, str]]:
     if isinstance(value, c.Mapping):
-        return {str(key): _jsonable(child) for key, child in value.items()}
-    if isinstance(value, c.Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [_jsonable(child) for child in value]
-    return str(value)
+        pairs: list[tuple[str, str]] = []
+        for key, child in value.items():
+            key_text = str(key)
+            label = f"{prefix}.{key_text}"
+            if _SHA_KEY_RE.search(key_text) and isinstance(child, str):
+                pairs.append((label, child))
+            pairs.extend(_metadata_sha_values(value=child, prefix=label))
+        return pairs
+    if isinstance(value, list):
+        pairs = []
+        for index, child in enumerate(value):
+            pairs.extend(_metadata_sha_values(value=child, prefix=f"{prefix}[{index}]"))
+        return pairs
+    return []
+
+
+def _validate_v4_frame(
+    *, frame: pl.DataFrame, ordered_ids: list[str], expected_row_count: int | None
+) -> None:
+    _, v4_ids = _validated_rows(
+        frame=frame, label="v4 structured frame", expected_row_count=expected_row_count
+    )
+    if v4_ids != ordered_ids:
+        raise ValueError("v4 structured frame must preserve ordered published IDs")
+
+
+def _validated_rows(
+    *, frame: pl.DataFrame, label: str, expected_row_count: int | None
+) -> tuple[dict[str, dict[str, object]], list[str]]:
+    missing = {_ID_FIELD, _PROSE_FIELD} - set(frame.columns)
+    if missing:
+        raise ValueError(f"{label} lacks required columns: {sorted(missing)}")
+    if expected_row_count is not None and frame.height != expected_row_count:
+        raise ValueError(f"{label} does not contain the expected row count")
+    rows: dict[str, dict[str, object]] = {}
+    ordered_ids: list[str] = []
+    for row in frame.to_dicts():
+        persona_id = row.get(_ID_FIELD)
+        persona = row.get(_PROSE_FIELD)
+        if not isinstance(persona_id, str) or not persona_id:
+            raise ValueError(f"{label} contains a missing persona ID")
+        if persona_id in rows:
+            raise ValueError(f"{label} contains duplicate persona IDs")
+        if not isinstance(persona, str) or not persona.strip():
+            raise ValueError(f"{label} contains missing or blank prose")
+        rows[persona_id] = row
+        ordered_ids.append(persona_id)
+    return rows, ordered_ids
