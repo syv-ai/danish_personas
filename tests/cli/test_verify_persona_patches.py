@@ -393,6 +393,187 @@ def _append_growth_checkpoint(paths: FixturePaths) -> None:
     )
 
 
+def _set_first_status_progress(
+    *, paths: FixturePaths, reviewable: int, pending: int, failed: int = 0
+) -> None:
+    status = json.loads(paths.first_status.read_text(encoding="utf-8"))
+    status["reviewable"] = reviewable
+    status["pending"] = pending
+    status["failed"] = failed
+    _write_json(paths.first_status, status)
+
+
+def test_follow_polls_growth_until_first_pass_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Follow mode waits for growth and exits only after first-pass completion."""
+    paths = _write_fixture(tmp_path, include_growth_row=True)
+    _set_first_status_progress(paths=paths, reviewable=4, pending=1)
+    calls: list[Path] = []
+    budget_calls = 0
+    sleeps: list[float] = []
+    now = 0.0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal budget_calls
+            budget_calls += 1
+
+    def fake_runner(**kwargs: object) -> ProsePatchVerificationResult:
+        checkpoint_path = kwargs["checkpoint_path"]
+        assert isinstance(checkpoint_path, Path)
+        calls.append(checkpoint_path)
+        return _verification_result(accepted=True)
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+        if len(sleeps) == 1:
+            _append_growth_checkpoint(paths)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(verify.time, "monotonic", lambda: now)
+    monkeypatch.setattr(verify.time, "sleep", fake_sleep)
+
+    summary = verify.follow_patch_verification_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        verify_runner=fake_runner,
+        poll_seconds=300.0,
+        stall_seconds=5_400.0,
+    )
+
+    assert sleeps == [300.0]
+    assert len(calls) == 2
+    assert budget_calls == 2
+    assert summary["processed"] == 2
+    assert summary["pending"] == 0
+    assert summary["first_pass_pending"] == 0
+    assert summary["first_pass_patched"] == 2
+    assert summary["follow_first_pass"] is True
+
+
+def test_follow_stall_timeout_avoids_idle_provider_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Follow mode aborts after bounded idle polling without provider calls."""
+    paths = _write_fixture(tmp_path)
+    _set_first_status_progress(paths=paths, reviewable=4, pending=1)
+    calls = 0
+    budget_calls = 0
+    sleeps: list[float] = []
+    now = 0.0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal budget_calls
+            budget_calls += 1
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        nonlocal calls
+        calls += 1
+        return _verification_result(accepted=True)
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(verify.time, "monotonic", lambda: now)
+    monkeypatch.setattr(verify.time, "sleep", fake_sleep)
+
+    with pytest.raises(verify.PatchVerificationCampaignError, match="not advanced"):
+        verify.follow_patch_verification_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            verify_runner=fake_runner,
+            poll_seconds=300.0,
+            stall_seconds=600.0,
+        )
+
+    assert sleeps == [300.0, 300.0]
+    assert calls == 1
+    assert budget_calls == 1
+
+
+def test_follow_manifest_change_fails_before_idle_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Follow mode revalidates first-pass pins after each sleep."""
+    paths = _write_fixture(tmp_path)
+    _set_first_status_progress(paths=paths, reviewable=4, pending=1)
+    calls = 0
+    now = 0.0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        nonlocal calls
+        calls += 1
+        return _verification_result(accepted=True)
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+        manifest = json.loads(paths.first_manifest.read_text(encoding="utf-8"))
+        manifest["campaign"] = "changed"
+        _write_json(paths.first_manifest, manifest)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(verify.time, "monotonic", lambda: now)
+    monkeypatch.setattr(verify.time, "sleep", fake_sleep)
+
+    with pytest.raises(Exception, match="manifest"):
+        verify.follow_patch_verification_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            verify_runner=fake_runner,
+            poll_seconds=300.0,
+            stall_seconds=600.0,
+        )
+
+    assert calls == 1
+
+
+def test_follow_requires_run_and_clean_first_pass(tmp_path: Path) -> None:
+    """Follow mode never starts in dry-run or after a first-pass failure."""
+    paths = _write_fixture(tmp_path)
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        raise AssertionError("provider must not be called")
+
+    with pytest.raises(verify.PatchVerificationCampaignError, match="requires --run"):
+        verify.follow_patch_verification_campaign(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            verify_runner=fake_runner,
+        )
+
+    _set_first_status_progress(paths=paths, reviewable=3, pending=0, failed=1)
+    with pytest.raises(verify.PatchVerificationCampaignError, match="failed rows"):
+        verify.follow_patch_verification_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            verify_runner=fake_runner,
+        )
+
+    assert not paths.output_dir.exists()
+
+
 def test_stale_first_pass_checkpoint_fails_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
