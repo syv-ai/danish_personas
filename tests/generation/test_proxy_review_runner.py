@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
+import threading
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +32,83 @@ from danish_personas.generation.proxy_review_runner import (
 )
 
 _PROMPT = "Vurder om den oprindelige persona kræver en lokal ændring."
+
+
+def test_prepare_checkpoint_parent_allows_two_threads_for_same_new_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Create the same hash-prefix directory safely from concurrent workers."""
+    parent = tmp_path / "checkpoints" / "ab"
+    original_exists = Path.exists
+    original_mkdir = Path.mkdir
+    exists_barrier = threading.Barrier(parties=2)
+    mkdir_lock = threading.Lock()
+    prefix_exist_ok_values: list[bool] = []
+
+    def coordinated_exists(self: Path) -> bool:
+        exists = original_exists(self)
+        if self == parent and not exists:
+            exists_barrier.wait(timeout=5)
+        return exists
+
+    def recording_mkdir(
+        self: Path,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        if self == parent:
+            with mkdir_lock:
+                prefix_exist_ok_values.append(exist_ok)
+        original_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "exists", coordinated_exists)
+    monkeypatch.setattr(Path, "mkdir", recording_mkdir)
+    errors: list[BaseException] = []
+
+    def prepare_parent() -> None:
+        try:
+            review_runner._prepare_checkpoint_parent(parent)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=prepare_parent) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert prefix_exist_ok_values == [True, True]
+    assert stat.S_IMODE(parent.lstat().st_mode) == 0o700
+
+
+def test_prepare_checkpoint_parent_rejects_symlink_prefix(tmp_path: Path) -> None:
+    """Reject a hash-prefix path that resolves through a final symlink."""
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    parent = tmp_path / "checkpoints" / "ab"
+    parent.parent.mkdir(mode=0o700)
+    try:
+        parent.symlink_to(target=target, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ProxyReviewError, match="real directory"):
+        review_runner._prepare_checkpoint_parent(parent)
+
+
+def test_prepare_checkpoint_parent_rejects_public_prefix_mode(
+    tmp_path: Path,
+) -> None:
+    """Reject an existing hash-prefix directory with group/world permissions."""
+    parent = tmp_path / "checkpoints" / "ab"
+    parent.mkdir(mode=0o700, parents=True)
+    parent.chmod(0o755)
+
+    with pytest.raises(ProxyReviewError, match="mode 0700"):
+        review_runner._prepare_checkpoint_parent(parent)
 
 
 @pytest.fixture(autouse=True)

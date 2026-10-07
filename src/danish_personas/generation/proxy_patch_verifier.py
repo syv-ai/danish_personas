@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import typing as t
 import uuid
 from pathlib import Path
@@ -364,8 +365,26 @@ def _prepare_checkpoint_parent(*, parent: Path) -> None:
         missing.append(current)
         current = current.parent
     for directory in reversed(missing):
-        directory.mkdir(mode=0o700)
-    if parent.stat().st_mode & 0o077:
+        try:
+            directory.mkdir(mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise ProxyPatchVerificationError(
+                "Checkpoint directory path is unsafe"
+            ) from exc
+        _validate_checkpoint_directory(directory=directory)
+    _validate_checkpoint_directory(directory=parent)
+
+
+def _validate_checkpoint_directory(*, directory: Path) -> None:
+    try:
+        mode = directory.lstat().st_mode
+    except OSError as exc:
+        raise ProxyPatchVerificationError("Checkpoint directory path is unsafe") from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise ProxyPatchVerificationError(
+            "Checkpoint directory must be a real directory"
+        )
+    if stat.S_IMODE(mode) != 0o700:
         raise ProxyPatchVerificationError(
             "Checkpoint directory must be private (mode 0700)"
         )
