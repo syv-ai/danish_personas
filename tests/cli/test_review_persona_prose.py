@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import typing as t
 from pathlib import Path
 
@@ -135,6 +137,91 @@ def test_run_uses_uncapped_budget_and_resumes_without_duplicate_attempts(
         )
 
 
+def test_delayed_runner_never_exceeds_worker_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bounded scheduling keeps delayed provider work within the worker limit."""
+    paths = _write_inputs(
+        tmp_path, include_second_reviewable=True, extra_reviewable_count=4
+    )
+    active = 0
+    max_active = 0
+    calls = 0
+    lock = threading.Lock()
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def delayed_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal active, max_active, calls
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            calls += 1
+        time.sleep(0.01)
+        with lock:
+            active -= 1
+        return _result("unchanged_consistent")
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    summary = review.run_review_campaign(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=2,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_candidate_sha256=sha256_file(paths.candidate),
+        review_runner=delayed_runner,
+    )
+
+    assert calls == 6
+    assert max_active <= 2
+    assert summary["processed"] == 6
+    assert summary["pending"] == 0
+
+
+def test_fatal_first_result_does_not_invoke_later_pending_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fatal failures cancel rows that were not already running."""
+    paths = _write_inputs(
+        tmp_path, include_second_reviewable=True, extra_reviewable_count=2
+    )
+    calls = 0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def failing_first_runner(**_kwargs: object) -> ProseReviewResult:
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "https://example.test")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    monkeypatch.setattr(review, "ProxyBudget", FakeBudget)
+    with pytest.raises(review.PersonaProseReviewError, match="stopped"):
+        review.run_review_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_candidate_sha256=sha256_file(paths.candidate),
+            review_runner=failing_first_runner,
+        )
+
+    status = json.loads((paths.output_dir / "status.json").read_text())
+    assert calls == 1
+    assert status["failed"] == 1
+    assert status["attempted"] == 1
+    assert status["processed"] == 0
+    assert status["pending"] == 4
+    assert status["processed_persona_hashes"] == []
+
+
 def test_429_failure_is_pending_not_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -196,7 +283,10 @@ def test_source_hash_validation_fails_closed(tmp_path: Path) -> None:
 
 
 def _write_inputs(
-    tmp_path: Path, *, include_second_reviewable: bool = False
+    tmp_path: Path,
+    *,
+    include_second_reviewable: bool = False,
+    extra_reviewable_count: int = 0,
 ) -> review.ReviewPaths:
     original_rows: list[dict[str, object]] = [
         {
@@ -251,6 +341,20 @@ def _write_inputs(
         row = dict(original_rows[-1])
         row["job_title"] = "rådgiver"
         candidate_rows.append(row)
+    for index in range(extra_reviewable_count):
+        original_rows.append(
+            {
+                "persona_id": f"extra-review-row-{index:02d}",
+                "persona": PERSONA,
+                "age": 35 + index,
+                "job_title": "analytiker",
+                "detailed_status_code": "F",
+                "sexual_orientation": "not collected",
+            }
+        )
+        row = dict(original_rows[-1])
+        row["age"] = 36 + index
+        candidate_rows.append(row)
 
     original = tmp_path / "original.parquet"
     candidate = tmp_path / "candidate.parquet"
@@ -265,6 +369,10 @@ def _write_inputs(
     }
     if include_second_reviewable:
         personas["job-row"] = {"classification": review.TRIAGE_CLASSIFICATION}
+    for index in range(extra_reviewable_count):
+        personas[f"extra-review-row-{index:02d}"] = {
+            "classification": review.TRIAGE_CLASSIFICATION
+        }
     triage.write_text(
         json.dumps({"personas": personas, "counts": {}}, ensure_ascii=False),
         encoding="utf-8",
