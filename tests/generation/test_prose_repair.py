@@ -218,10 +218,7 @@ def test_interrupted_request_resumes_with_cumulative_reservation(
 
     class InterruptedClient(FakeClient):
         def complete(
-            self,
-            *,
-            record_request: c.Callable[[int], None],
-            **kwargs: object,
+            self, *, record_request: c.Callable[[int], None], **kwargs: object
         ) -> LLMResponse:
             del kwargs
             record_request(1)
@@ -249,9 +246,7 @@ def test_malformed_ledger_reservation_fails_closed(
         "\n".join(
             [
                 *ledger_path.read_text().splitlines()[:1],
-                json.dumps(
-                    {"type": "reservation", "id": "a", "usd": "not-a-number"}
-                ),
+                json.dumps({"type": "reservation", "id": "a", "usd": "not-a-number"}),
             ]
         )
         + "\n"
