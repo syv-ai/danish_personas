@@ -52,10 +52,6 @@ _NULL_DETAIL_EXPLANATION_DA = (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
-class ProxyPatchVerificationError(ValueError):
-    """Raised when a proxy patch verification cannot be completed safely."""
-
-
 def run_proxy_patch_verification(
     *,
     row: dict[str, object],
@@ -191,144 +187,8 @@ def run_proxy_patch_verification(
     return result
 
 
-def _validate_config(*, config: GenerationConfig) -> None:
-    if (
-        config.base_url != BASE_URL
-        or config.model != MODEL
-        or config.max_tokens is not None
-        or config.reasoning_effort != "none"
-        or config.enable_thinking is not None
-    ):
-        raise ProxyPatchVerificationError(
-            "Generation configuration is not the pinned local proxy"
-        )
-
-
-def _validate_checkpoint_sha(*, first_checkpoint_sha256: str) -> None:
-    if _SHA256_RE.fullmatch(first_checkpoint_sha256) is None:
-        raise ProxyPatchVerificationError(
-            "First checkpoint SHA must be a SHA-256 digest"
-        )
-
-
-def _scan_verifier_text(
-    *,
-    proposed_text: str,
-    patches: list[dict[str, str]],
-    changed_facts: dict[str, dict[str, object]],
-    prompt: str,
-) -> None:
-    if _contains_sensitive_text(proposed_text) or _contains_sensitive_text(prompt):
-        raise ProxyPatchVerificationError(
-            "Outbound verifier text contains a sensitive-identity term"
-        )
-    excerpt_values: list[str] = []
-    for patch in patches:
-        if not isinstance(patch, dict):
-            raise ProxyPatchVerificationError("Patch excerpts must be dictionaries")
-        excerpt_values.extend(str(value) for value in patch.values())
-    outbound = [*excerpt_values, *_fact_text(changed_facts)]
-    if any(_contains_sensitive_text(value) for value in outbound):
-        raise ProxyPatchVerificationError(
-            "Outbound verifier text contains a sensitive-identity term"
-        )
-
-
-def _prevalidate_patch_inputs(
-    *,
-    original_text: str,
-    changed_facts: dict[str, dict[str, object]],
-    proposed_text: str,
-    patches: list[dict[str, str]],
-    first_checkpoint_sha256: str,
-) -> None:
-    try:
-        _conservative_result(
-            original_text=original_text,
-            changed_facts=changed_facts,
-            proposed_text=proposed_text,
-            patches=patches,
-            first_checkpoint_sha256=first_checkpoint_sha256,
-        )
-    except LocalVerificationError as exc:
-        raise ProxyPatchVerificationError(
-            "Patch inputs failed local verification"
-        ) from exc
-
-
-def _payload(
-    *,
-    original_text: str,
-    proposed_text: str,
-    patches: list[dict[str, str]],
-    changed_facts: dict[str, dict[str, object]],
-    base_payload: dict[str, object],
-    row: dict[str, object],
-    candidate_row: dict[str, object],
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "original_persona": original_text,
-        "proposed_persona": proposed_text,
-        "patches": patches,
-        "changed_facts": changed_facts,
-    }
-    if "gender" in base_payload or "partner_gender" in base_payload:
-        raise ProxyPatchVerificationError(
-            "Verifier payload must not contain gender fields"
-        )
-    return _payload_with_null_detail_context(
-        payload=payload,
-        row=row,
-        candidate_row=candidate_row,
-        changed_facts=changed_facts,
-    )
-
-
-def _payload_with_null_detail_context(
-    *,
-    payload: dict[str, object],
-    row: dict[str, object],
-    candidate_row: dict[str, object],
-    changed_facts: dict[str, dict[str, object]],
-) -> dict[str, object]:
-    detail_change = changed_facts.get("legal_status_detail")
-    if detail_change is None or detail_change.get("new") is not None:
-        return payload
-    marital_status = candidate_row.get("marital_status")
-    if marital_status not in _NULL_DETAIL_MARITAL_STATUS_DA:
-        raise ProxyPatchVerificationError(
-            "legal_status_detail null verification requires a concrete marital_status"
-        )
-    if not _marital_status_is_verified(
-        marital_status=marital_status,
-        row=row,
-        changed_facts=changed_facts,
-    ):
-        raise ProxyPatchVerificationError(
-            "legal_status_detail null context must be verified by the rows"
-        )
-    with_context = dict(payload)
-    with_context[_LEGAL_STATUS_DETAIL_NULL_CONTEXT] = {
-        "target_marital_category_da": _NULL_DETAIL_MARITAL_STATUS_DA[
-            t.cast(str, marital_status)
-        ],
-        "explanation": _NULL_DETAIL_EXPLANATION_DA,
-    }
-    return with_context
-
-
-def _marital_status_is_verified(
-    *,
-    marital_status: object,
-    row: dict[str, object],
-    changed_facts: dict[str, dict[str, object]],
-) -> bool:
-    change = changed_facts.get("marital_status")
-    if change is not None:
-        return change.get("new") == marital_status and change.get("old") == row.get(
-            "marital_status"
-        )
-    return row.get("marital_status") == marital_status
+class ProxyPatchVerificationError(ValueError):
+    """Raised when a proxy patch verification cannot be completed safely."""
 
 
 def _build_binding(
@@ -392,6 +252,147 @@ def _build_binding(
     }
 
 
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _conservative_result(
+    *,
+    original_text: str,
+    changed_facts: dict[str, dict[str, object]],
+    proposed_text: str,
+    patches: list[dict[str, str]],
+    first_checkpoint_sha256: str,
+) -> ProsePatchVerificationResult:
+    return verify_prose_patch_proposal(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        proposed_text=proposed_text,
+        patches=patches,
+        second_review={
+            "verdict": "needs_manual_review",
+            "reasons": ["invalid_quote_evidence"],
+            "fact_evidence": [],
+        },
+        original_checkpoint_sha256=first_checkpoint_sha256,
+    )
+
+
+def _payload(
+    *,
+    original_text: str,
+    proposed_text: str,
+    patches: list[dict[str, str]],
+    changed_facts: dict[str, dict[str, object]],
+    base_payload: dict[str, object],
+    row: dict[str, object],
+    candidate_row: dict[str, object],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "original_persona": original_text,
+        "proposed_persona": proposed_text,
+        "patches": patches,
+        "changed_facts": changed_facts,
+    }
+    if "gender" in base_payload or "partner_gender" in base_payload:
+        raise ProxyPatchVerificationError(
+            "Verifier payload must not contain gender fields"
+        )
+    return _payload_with_null_detail_context(
+        payload=payload,
+        row=row,
+        candidate_row=candidate_row,
+        changed_facts=changed_facts,
+    )
+
+
+def _payload_with_null_detail_context(
+    *,
+    payload: dict[str, object],
+    row: dict[str, object],
+    candidate_row: dict[str, object],
+    changed_facts: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    detail_change = changed_facts.get("legal_status_detail")
+    if detail_change is None or detail_change.get("new") is not None:
+        return payload
+    marital_status = candidate_row.get("marital_status")
+    if marital_status not in _NULL_DETAIL_MARITAL_STATUS_DA:
+        raise ProxyPatchVerificationError(
+            "legal_status_detail null verification requires a concrete marital_status"
+        )
+    if not _marital_status_is_verified(
+        marital_status=marital_status, row=row, changed_facts=changed_facts
+    ):
+        raise ProxyPatchVerificationError(
+            "legal_status_detail null context must be verified by the rows"
+        )
+    with_context = dict(payload)
+    with_context[_LEGAL_STATUS_DETAIL_NULL_CONTEXT] = {
+        "target_marital_category_da": _NULL_DETAIL_MARITAL_STATUS_DA[
+            t.cast(str, marital_status)
+        ],
+        "explanation": _NULL_DETAIL_EXPLANATION_DA,
+    }
+    return with_context
+
+
+def _marital_status_is_verified(
+    *,
+    marital_status: object,
+    row: dict[str, object],
+    changed_facts: dict[str, dict[str, object]],
+) -> bool:
+    change = changed_facts.get("marital_status")
+    if change is not None:
+        return change.get("new") == marital_status and change.get("old") == row.get(
+            "marital_status"
+        )
+    return row.get("marital_status") == marital_status
+
+
+def _prepare_checkpoint_parent(*, parent: Path) -> None:
+    missing: list[Path] = []
+    current = parent
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+    if parent.stat().st_mode & 0o077:
+        raise ProxyPatchVerificationError(
+            "Checkpoint directory must be private (mode 0700)"
+        )
+
+
+def _prevalidate_patch_inputs(
+    *,
+    original_text: str,
+    changed_facts: dict[str, dict[str, object]],
+    proposed_text: str,
+    patches: list[dict[str, str]],
+    first_checkpoint_sha256: str,
+) -> None:
+    try:
+        _conservative_result(
+            original_text=original_text,
+            changed_facts=changed_facts,
+            proposed_text=proposed_text,
+            patches=patches,
+            first_checkpoint_sha256=first_checkpoint_sha256,
+        )
+    except LocalVerificationError as exc:
+        raise ProxyPatchVerificationError(
+            "Patch inputs failed local verification"
+        ) from exc
+
+
 def _request_review(
     *,
     prompt: str,
@@ -445,6 +446,24 @@ def _request_review(
             "Provider token usage exceeds the reservation policy"
         )
     return response
+
+
+class _BoundedTransport(httpx.BaseTransport):
+    """Reject a request whose actual body exceeds its durable reservation."""
+
+    def __init__(self, transport: httpx.BaseTransport, limit: int) -> None:
+        self.transport = transport
+        self.limit = limit
+
+    def close(self) -> None:
+        self.transport.close()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if len(request.content) > self.limit:
+            raise ProxyPatchVerificationError(
+                "Constructed HTTP body exceeds reserved input bound"
+            )
+        return self.transport.handle_request(request)
 
 
 def _request_body(
@@ -530,6 +549,25 @@ def _checkpoint_review(*, checkpoint: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _read_checkpoint(*, path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError
+        return t.cast(dict[str, object], value)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ProxyPatchVerificationError(
+            "Patch-verification checkpoint is unreadable"
+        ) from exc
+
+
+def _require_private_checkpoint(*, path: Path) -> None:
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ProxyPatchVerificationError(
+            "Patch-verification checkpoint must be private (mode 0600)"
+        )
+
+
 def _verify_checkpoint_result(
     *, checkpoint: dict[str, object], result: ProsePatchVerificationResult
 ) -> None:
@@ -552,6 +590,20 @@ def _verify_checkpoint_result(
         )
 
 
+def _serialise_evidence(
+    result: ProsePatchVerificationResult,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "field": item.field,
+            "status": item.status,
+            "original_quote": item.original_quote,
+            "proposed_quote": item.proposed_quote,
+        }
+        for item in result.fact_evidence
+    ]
+
+
 def _save_checkpoint(
     *, path: Path, binding: dict[str, str | int], result: ProsePatchVerificationResult
 ) -> None:
@@ -572,56 +624,6 @@ def _save_checkpoint(
     _write_checkpoint(path=path, value=document)
 
 
-def _serialise_evidence(
-    result: ProsePatchVerificationResult,
-) -> list[dict[str, object]]:
-    return [
-        {
-            "field": item.field,
-            "status": item.status,
-            "original_quote": item.original_quote,
-            "proposed_quote": item.proposed_quote,
-        }
-        for item in result.fact_evidence
-    ]
-
-
-def _conservative_result(
-    *,
-    original_text: str,
-    changed_facts: dict[str, dict[str, object]],
-    proposed_text: str,
-    patches: list[dict[str, str]],
-    first_checkpoint_sha256: str,
-) -> ProsePatchVerificationResult:
-    return verify_prose_patch_proposal(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        proposed_text=proposed_text,
-        patches=patches,
-        second_review={
-            "verdict": "needs_manual_review",
-            "reasons": ["invalid_quote_evidence"],
-            "fact_evidence": [],
-        },
-        original_checkpoint_sha256=first_checkpoint_sha256,
-    )
-
-
-def _prepare_checkpoint_parent(*, parent: Path) -> None:
-    missing: list[Path] = []
-    current = parent
-    while not current.exists():
-        missing.append(current)
-        current = current.parent
-    for directory in reversed(missing):
-        directory.mkdir(mode=0o700)
-    if parent.stat().st_mode & 0o077:
-        raise ProxyPatchVerificationError(
-            "Checkpoint directory must be private (mode 0700)"
-        )
-
-
 def _write_checkpoint(*, path: Path, value: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -638,48 +640,44 @@ def _write_checkpoint(*, path: Path, value: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_checkpoint(*, path: Path) -> dict[str, object]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError
-        return t.cast(dict[str, object], value)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+def _scan_verifier_text(
+    *,
+    proposed_text: str,
+    patches: list[dict[str, str]],
+    changed_facts: dict[str, dict[str, object]],
+    prompt: str,
+) -> None:
+    if _contains_sensitive_text(proposed_text) or _contains_sensitive_text(prompt):
         raise ProxyPatchVerificationError(
-            "Patch-verification checkpoint is unreadable"
-        ) from exc
-
-
-def _require_private_checkpoint(*, path: Path) -> None:
-    if path.stat().st_mode & 0o777 != 0o600:
+            "Outbound verifier text contains a sensitive-identity term"
+        )
+    excerpt_values: list[str] = []
+    for patch in patches:
+        if not isinstance(patch, dict):
+            raise ProxyPatchVerificationError("Patch excerpts must be dictionaries")
+        excerpt_values.extend(str(value) for value in patch.values())
+    outbound = [*excerpt_values, *_fact_text(changed_facts)]
+    if any(_contains_sensitive_text(value) for value in outbound):
         raise ProxyPatchVerificationError(
-            "Patch-verification checkpoint must be private (mode 0600)"
+            "Outbound verifier text contains a sensitive-identity term"
         )
 
 
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+def _validate_checkpoint_sha(*, first_checkpoint_sha256: str) -> None:
+    if _SHA256_RE.fullmatch(first_checkpoint_sha256) is None:
+        raise ProxyPatchVerificationError(
+            "First checkpoint SHA must be a SHA-256 digest"
+        )
 
 
-def _sha(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-class _BoundedTransport(httpx.BaseTransport):
-    """Reject a request whose actual body exceeds its durable reservation."""
-
-    def __init__(self, transport: httpx.BaseTransport, limit: int) -> None:
-        self.transport = transport
-        self.limit = limit
-
-    def close(self) -> None:
-        self.transport.close()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        if len(request.content) > self.limit:
-            raise ProxyPatchVerificationError(
-                "Constructed HTTP body exceeds reserved input bound"
-            )
-        return self.transport.handle_request(request)
+def _validate_config(*, config: GenerationConfig) -> None:
+    if (
+        config.base_url != BASE_URL
+        or config.model != MODEL
+        or config.max_tokens is not None
+        or config.reasoning_effort != "none"
+        or config.enable_thinking is not None
+    ):
+        raise ProxyPatchVerificationError(
+            "Generation configuration is not the pinned local proxy"
+        )

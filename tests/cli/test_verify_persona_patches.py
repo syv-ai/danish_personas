@@ -34,10 +34,6 @@ PERSONA = (
 )
 
 
-class FixturePaths(verify.VerifyPaths):
-    """Typed alias for synthetic verification paths."""
-
-
 def test_dry_run_revalidates_first_pass_without_provider_or_outputs(
     tmp_path: Path,
 ) -> None:
@@ -66,145 +62,23 @@ def test_dry_run_revalidates_first_pass_without_provider_or_outputs(
     assert not paths.output_dir.exists()
 
 
-def test_run_processes_only_patched_and_resumes_as_first_pass_grows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The verification manifest omits dynamic first-pass checkpoint counts."""
-    paths = _write_fixture(tmp_path, include_growth_row=True)
-    calls: list[dict[str, object]] = []
-    budget_kwargs: list[dict[str, object]] = []
-
-    class FakeBudget:
-        def __init__(self, **kwargs: object) -> None:
-            budget_kwargs.append(kwargs)
-
-    def fake_runner(
-        *,
-        row: dict[str, object],
-        candidate_row: dict[str, object],
-        changed_facts: dict[str, dict[str, object]],
-        proposed_text: str,
-        patches: list[dict[str, str]],
-        first_checkpoint_sha256: str,
-        prompt: str,
-        config: GenerationConfig,
-        budget: object,
-        checkpoint_path: Path,
-        transport: httpx.BaseTransport,
-    ) -> ProsePatchVerificationResult:
-        del row, candidate_row, prompt, budget, transport
-        calls.append(
-            {
-                "changed_facts": changed_facts,
-                "proposed_text": proposed_text,
-                "patches": patches,
-                "first_checkpoint_sha256": first_checkpoint_sha256,
-                "checkpoint_path": checkpoint_path,
-            }
-        )
-        assert config.model == verify.MODEL
-        assert config.maximum_http_attempts == 1
-        assert checkpoint_path.parent.parent == paths.output_dir / "checkpoints"
-        return _verification_result(accepted=True)
-
-    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
-
-    first = verify.run_patch_verification_campaign(
-        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
-    )
-    first_manifest = json.loads((paths.output_dir / "manifest.json").read_text())
-
-    _append_growth_checkpoint(paths)
-    second = verify.run_patch_verification_campaign(
-        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
-    )
-    second_manifest = json.loads((paths.output_dir / "manifest.json").read_text())
-
-    assert first["available"] == 1
-    assert first["processed"] == 1
-    assert second["available"] == 2
-    assert second["processed"] == 2
-    assert second["accepted"] == 2
-    assert len(calls) == 2
-    assert calls[0]["changed_facts"] == {"age": {"old": 41, "new": 42}}
-    assert calls[1]["changed_facts"] == {
-        "job_title": {"old": "rådgiver", "new": "analytiker"}
-    }
-    assert budget_kwargs[-1]["uncapped"] is True
-    assert budget_kwargs[-1]["uncapped_purpose"] == "patch_verification"
-    assert first_manifest == second_manifest
-    assert "available" not in first_manifest
-    assert "checkpoint" not in json.dumps(first_manifest)
-    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
-    assert ((paths.output_dir / "status.json").stat().st_mode & 0o777) == 0o600
-
-
-def test_stale_first_pass_checkpoint_fails_before_provider(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """First-pass digest and binding are checked before any second-pass call."""
-    paths = _write_fixture(tmp_path)
-    _tamper_first_checkpoint(paths=paths, persona_id="patched-row")
-    called = False
-
-    class FakeBudget:
-        def __init__(self, **_kwargs: object) -> None:
-            raise AssertionError("budget must not be created before revalidation")
-
-    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
-        nonlocal called
-        called = True
-        return _verification_result(accepted=True)
-
-    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
-
-    with pytest.raises(Exception, match="checksum|digest|binding|decision"):
-        verify.run_patch_verification_campaign(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            verify_runner=fake_runner,
-        )
-
-    assert called is False
-    assert not paths.output_dir.exists()
-
-
-def test_transient_500_retries_without_completing_failed_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Transient provider failures remain pending until a retry succeeds."""
-    paths = _write_fixture(tmp_path)
-    attempts = 0
-
-    class FakeBudget:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            request = httpx.Request("POST", "https://proxy.invalid")
-            response = httpx.Response(500, request=request)
-            raise httpx.HTTPStatusError(
-                "server failed", request=request, response=response
-            )
-        return _verification_result(accepted=False)
-
-    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
-    monkeypatch.setattr(verify.time, "sleep", lambda _seconds: None)
-
-    summary = verify.run_patch_verification_campaign(
-        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
+def _verification_result(*, accepted: bool) -> ProsePatchVerificationResult:
+    return ProsePatchVerificationResult(
+        accepted=accepted,
+        review_verdict="accept" if accepted else "reject",
+        reasons=[] if accepted else ["fact_mismatch"],
+        changed_fraction=0.01,
+        changed_characters=8,
+        patch_count=1,
+        original_checkpoint_sha256="a" * 64,
+        provisional=True,
+        requires_later_release_gate=True,
+        fact_evidence=[],
     )
 
-    assert attempts == 2
-    assert summary["rejected"] == 1
-    assert summary["accepted"] == 0
-    assert summary["transient_retries"] == 1
-    assert summary["pending"] == 0
+
+class FixturePaths(verify.VerifyPaths):
+    """Typed alias for synthetic verification paths."""
 
 
 def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> FixturePaths:
@@ -270,28 +144,6 @@ def _write_fixture(tmp_path: Path, *, include_growth_row: bool = False) -> Fixtu
     return paths
 
 
-def _append_growth_checkpoint(paths: FixturePaths) -> None:
-    manifest = _first_manifest(paths=paths)
-    _write_first_checkpoint(
-        paths=paths, manifest=manifest, persona_id="growth-row", disposition="patched"
-    )
-    _write_first_status(
-        paths=paths,
-        manifest=manifest,
-        persona_ids=("patched-row", "manual-row", "unchanged-row", "growth-row"),
-    )
-
-
-def _row(*, persona_id: str, age: int, job_title: str) -> dict[str, object]:
-    return {
-        "persona_id": persona_id,
-        "persona": PERSONA,
-        "age": age,
-        "job_title": job_title,
-        "sexual_orientation": "not collected",
-    }
-
-
 def _first_manifest(*, paths: FixturePaths) -> dict[str, dashboard.JSONValue]:
     return {
         "version": 1,
@@ -312,43 +164,14 @@ def _first_manifest(*, paths: FixturePaths) -> dict[str, dashboard.JSONValue]:
     }
 
 
-def _write_first_status(
-    *,
-    paths: FixturePaths,
-    manifest: dict[str, dashboard.JSONValue],
-    persona_ids: tuple[str, ...],
-) -> None:
-    dispositions = {
-        "patched-row": "patched",
-        "manual-row": "needs_manual_review",
-        "unchanged-row": "unchanged_consistent",
-        "growth-row": "patched",
+def _row(*, persona_id: str, age: int, job_title: str) -> dict[str, object]:
+    return {
+        "persona_id": persona_id,
+        "persona": PERSONA,
+        "age": age,
+        "job_title": job_title,
+        "sexual_orientation": "not collected",
     }
-    processed: list[dashboard.JSONValue] = [
-        sha256_text(persona_id) for persona_id in persona_ids
-    ]
-    status: dict[str, dashboard.JSONValue] = {
-        "version": 1,
-        "manifest": manifest,
-        "reviewable": len(persona_ids),
-        "patched": sum(
-            dispositions[persona_id] == "patched" for persona_id in persona_ids
-        ),
-        "unchanged_consistent": sum(
-            dispositions[persona_id] == "unchanged_consistent"
-            for persona_id in persona_ids
-        ),
-        "needs_manual_review": sum(
-            dispositions[persona_id] == "needs_manual_review"
-            for persona_id in persona_ids
-        ),
-        "failed": 0,
-        "attempted": len(persona_ids),
-        "processed": len(persona_ids),
-        "pending": 0,
-        "processed_persona_hashes": processed,
-    }
-    _write_json(paths.first_status, status)
 
 
 def _write_first_checkpoint(
@@ -439,6 +262,169 @@ def _row_by_id(*, path: Path, persona_id: str) -> dict[str, dashboard.JSONValue]
     raise AssertionError(f"missing row {persona_id}")
 
 
+def _write_first_status(
+    *,
+    paths: FixturePaths,
+    manifest: dict[str, dashboard.JSONValue],
+    persona_ids: tuple[str, ...],
+) -> None:
+    dispositions = {
+        "patched-row": "patched",
+        "manual-row": "needs_manual_review",
+        "unchanged-row": "unchanged_consistent",
+        "growth-row": "patched",
+    }
+    processed: list[dashboard.JSONValue] = [
+        sha256_text(persona_id) for persona_id in persona_ids
+    ]
+    status: dict[str, dashboard.JSONValue] = {
+        "version": 1,
+        "manifest": manifest,
+        "reviewable": len(persona_ids),
+        "patched": sum(
+            dispositions[persona_id] == "patched" for persona_id in persona_ids
+        ),
+        "unchanged_consistent": sum(
+            dispositions[persona_id] == "unchanged_consistent"
+            for persona_id in persona_ids
+        ),
+        "needs_manual_review": sum(
+            dispositions[persona_id] == "needs_manual_review"
+            for persona_id in persona_ids
+        ),
+        "failed": 0,
+        "attempted": len(persona_ids),
+        "processed": len(persona_ids),
+        "pending": 0,
+        "processed_persona_hashes": processed,
+    }
+    _write_json(paths.first_status, status)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+
+
+def test_run_processes_only_patched_and_resumes_as_first_pass_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verification manifest omits dynamic first-pass checkpoint counts."""
+    paths = _write_fixture(tmp_path, include_growth_row=True)
+    calls: list[dict[str, object]] = []
+    budget_kwargs: list[dict[str, object]] = []
+
+    class FakeBudget:
+        def __init__(self, **kwargs: object) -> None:
+            budget_kwargs.append(kwargs)
+
+    def fake_runner(
+        *,
+        row: dict[str, object],
+        candidate_row: dict[str, object],
+        changed_facts: dict[str, dict[str, object]],
+        proposed_text: str,
+        patches: list[dict[str, str]],
+        first_checkpoint_sha256: str,
+        prompt: str,
+        config: GenerationConfig,
+        budget: object,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+    ) -> ProsePatchVerificationResult:
+        del row, candidate_row, prompt, budget, transport
+        calls.append(
+            {
+                "changed_facts": changed_facts,
+                "proposed_text": proposed_text,
+                "patches": patches,
+                "first_checkpoint_sha256": first_checkpoint_sha256,
+                "checkpoint_path": checkpoint_path,
+            }
+        )
+        assert config.model == verify.MODEL
+        assert config.maximum_http_attempts == 1
+        assert checkpoint_path.parent.parent == paths.output_dir / "checkpoints"
+        return _verification_result(accepted=True)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+
+    first = verify.run_patch_verification_campaign(
+        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
+    )
+    first_manifest = json.loads((paths.output_dir / "manifest.json").read_text())
+
+    _append_growth_checkpoint(paths)
+    second = verify.run_patch_verification_campaign(
+        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
+    )
+    second_manifest = json.loads((paths.output_dir / "manifest.json").read_text())
+
+    assert first["available"] == 1
+    assert first["processed"] == 1
+    assert second["available"] == 2
+    assert second["processed"] == 2
+    assert second["accepted"] == 2
+    assert len(calls) == 2
+    assert calls[0]["changed_facts"] == {"age": {"old": 41, "new": 42}}
+    assert calls[1]["changed_facts"] == {
+        "job_title": {"old": "rådgiver", "new": "analytiker"}
+    }
+    assert budget_kwargs[-1]["uncapped"] is True
+    assert budget_kwargs[-1]["uncapped_purpose"] == "patch_verification"
+    assert first_manifest == second_manifest
+    assert "available" not in first_manifest
+    assert "checkpoint" not in json.dumps(first_manifest)
+    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
+    assert ((paths.output_dir / "status.json").stat().st_mode & 0o777) == 0o600
+
+
+def _append_growth_checkpoint(paths: FixturePaths) -> None:
+    manifest = _first_manifest(paths=paths)
+    _write_first_checkpoint(
+        paths=paths, manifest=manifest, persona_id="growth-row", disposition="patched"
+    )
+    _write_first_status(
+        paths=paths,
+        manifest=manifest,
+        persona_ids=("patched-row", "manual-row", "unchanged-row", "growth-row"),
+    )
+
+
+def test_stale_first_pass_checkpoint_fails_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-pass digest and binding are checked before any second-pass call."""
+    paths = _write_fixture(tmp_path)
+    _tamper_first_checkpoint(paths=paths, persona_id="patched-row")
+    called = False
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            raise AssertionError("budget must not be created before revalidation")
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        nonlocal called
+        called = True
+        return _verification_result(accepted=True)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+
+    with pytest.raises(Exception, match="checksum|digest|binding|decision"):
+        verify.run_patch_verification_campaign(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            verify_runner=fake_runner,
+        )
+
+    assert called is False
+    assert not paths.output_dir.exists()
+
+
 def _tamper_first_checkpoint(*, paths: FixturePaths, persona_id: str) -> None:
     persona_hash = sha256_text(persona_id)
     path = paths.first_checkpoint_root / "checkpoints" / persona_hash[:2]
@@ -451,23 +437,37 @@ def _tamper_first_checkpoint(*, paths: FixturePaths, persona_id: str) -> None:
     path.chmod(0o600)
 
 
-def _verification_result(*, accepted: bool) -> ProsePatchVerificationResult:
-    return ProsePatchVerificationResult(
-        accepted=accepted,
-        review_verdict="accept" if accepted else "reject",
-        reasons=[] if accepted else ["fact_mismatch"],
-        changed_fraction=0.01,
-        changed_characters=8,
-        patch_count=1,
-        original_checkpoint_sha256="a" * 64,
-        provisional=True,
-        requires_later_release_gate=True,
-        fact_evidence=[],
+def test_transient_500_retries_without_completing_failed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Transient provider failures remain pending until a retry succeeds."""
+    paths = _write_fixture(tmp_path)
+    attempts = 0
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def fake_runner(**_kwargs: object) -> ProsePatchVerificationResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            request = httpx.Request("POST", "https://proxy.invalid")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError(
+                "server failed", request=request, response=response
+            )
+        return _verification_result(accepted=False)
+
+    monkeypatch.setattr(verify, "ProxyBudget", FakeBudget)
+    monkeypatch.setattr(verify.time, "sleep", lambda _seconds: None)
+
+    summary = verify.run_patch_verification_campaign(
+        paths=paths, execute=True, max_rows=None, workers=1, verify_runner=fake_runner
     )
 
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    content = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o600)
+    assert attempts == 2
+    assert summary["rejected"] == 1
+    assert summary["accepted"] == 0
+    assert summary["transient_retries"] == 1
+    assert summary["pending"] == 0

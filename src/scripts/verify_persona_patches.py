@@ -165,19 +165,6 @@ class VerifyRunner(t.Protocol):
 VerifyFutureMap: t.TypeAlias = dict[futures.Future[VerifyAttemptResult], VerifyRow]
 
 
-class TransientVerificationAttemptsExhausted(Exception):
-    """Raised when a row exhausts bounded transient provider retries."""
-
-    def __init__(self, *, transient_retries: int) -> None:
-        """Initialise the exhausted-retry marker.
-
-        Args:
-            transient_retries: Number of transient retries already consumed.
-        """
-        super().__init__("Transient provider failures exhausted for one row")
-        self.transient_retries = transient_retries
-
-
 @click.command()
 @click.option("--original", type=click.Path(path_type=Path), default=DEFAULT_ORIGINAL)
 @click.option("--candidate", type=click.Path(path_type=Path), default=DEFAULT_CANDIDATE)
@@ -349,6 +336,430 @@ class PatchVerificationCampaignError(Exception):
     """Raised when the patch-verification CLI must fail closed."""
 
 
+def _dry_run_summary(
+    *,
+    rows: list[VerifyRow],
+    manual: int,
+    unchanged_consistent: int,
+    max_rows: int | None,
+    workers: int,
+) -> dict[str, object]:
+    would_process = len(rows) if max_rows is None else min(max_rows, len(rows))
+    return {
+        "dry_run": True,
+        "campaign": CAMPAIGN,
+        "available": len(rows),
+        "would_process": would_process,
+        "accepted": 0,
+        "rejected": 0,
+        "manual": manual,
+        "unchanged_consistent": unchanged_consistent,
+        "processed": 0,
+        "pending": len(rows),
+        "max_rows": max_rows,
+        "workers": workers,
+        "accepted_is_provisional": True,
+        "provisional_notice": PROVISIONAL_NOTICE,
+    }
+
+
+def _generation_config(*, prompt_path: Path) -> GenerationConfig:
+    return GenerationConfig(
+        base_url=BASE_URL,
+        model=MODEL,
+        api_key_env=None,
+        timeout_seconds=120.0,
+        maximum_http_attempts=1,
+        maximum_total_requests=1,
+        retry_backoff_seconds=0.0,
+        maximum_rows_per_shard=1,
+        max_tokens=None,
+        enable_thinking=None,
+        reasoning_effort="none",
+        prompt=prompt_path,
+        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
+    )
+
+
+def _load_or_create_status(
+    *,
+    status_path: Path,
+    manifest: dict[str, JSONValue],
+    available: int,
+    manual: int,
+    unchanged_consistent: int,
+) -> dict[str, object]:
+    if status_path.exists():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        if status.get("manifest") != manifest:
+            raise PatchVerificationCampaignError(
+                "status.json pins do not match current inputs"
+            )
+        if status_path.stat().st_mode & 0o777 != 0o600:
+            raise PatchVerificationCampaignError("status.json must be private (0600)")
+        return _validate_status(status)
+    status: dict[str, object] = {
+        "version": STATUS_VERSION,
+        "manifest": manifest,
+        "available": available,
+        "accepted": 0,
+        "rejected": 0,
+        "manual": manual,
+        "unchanged_consistent": unchanged_consistent,
+        "failed": 0,
+        "attempted": 0,
+        "transient_retries": 0,
+        "processed": 0,
+        "pending": available,
+        "processed_persona_hashes": [],
+        "accepted_is_provisional": True,
+        "provisional_notice": PROVISIONAL_NOTICE,
+    }
+    _write_status(path=status_path, status=status)
+    return status
+
+
+def _validate_status(status: object) -> dict[str, object]:
+    if not isinstance(status, dict) or status.get("version") != STATUS_VERSION:
+        raise PatchVerificationCampaignError("status.json is malformed")
+    for key in {
+        "available",
+        "accepted",
+        "rejected",
+        "manual",
+        "unchanged_consistent",
+        "failed",
+        "attempted",
+        "transient_retries",
+        "processed",
+        "pending",
+    }:
+        if not isinstance(status.get(key), int) or int(status[key]) < 0:
+            raise PatchVerificationCampaignError("status.json counters are malformed")
+    _status_hashes(status)
+    return status
+
+
+def _status_hashes(status: dict[str, object]) -> list[str]:
+    value = status.get("processed_persona_hashes")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise PatchVerificationCampaignError(
+            "status.json processed hashes are malformed"
+        )
+    if len(value) != len(set(value)):
+        raise PatchVerificationCampaignError("status.json processed hashes are invalid")
+    return list(value)
+
+
+def _write_status(*, path: Path, status: dict[str, object]) -> None:
+    _write_json(path=path, value=t.cast(dict[str, JSONValue], status))
+
+
+def _write_json(*, path: Path, value: dict[str, JSONValue]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _pending_rows(
+    *, rows: list[VerifyRow], status: dict[str, object], max_rows: int | None
+) -> list[VerifyRow]:
+    processed = set(_status_hashes(status))
+    pending = [row for row in rows if row.persona_hash not in processed]
+    if max_rows is not None:
+        return pending[:max_rows]
+    return pending
+
+
+def _prepare_private_output(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(output_dir, 0o700)
+    if output_dir.stat().st_mode & 0o077:
+        raise PatchVerificationCampaignError("Output directory must be private (0700)")
+
+
+def _process_pending(
+    *,
+    rows: list[VerifyRow],
+    status: dict[str, object],
+    status_path: Path,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    workers: int,
+    verify_runner: VerifyRunner,
+) -> None:
+    row_iter = iter(rows)
+    future_map: VerifyFutureMap = {}
+    stop_exc: Exception | None = None
+    executor = futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        _submit_verification_futures(
+            row_iter=row_iter,
+            future_map=future_map,
+            executor=executor,
+            limit=workers,
+            output_dir=output_dir,
+            prompt=prompt,
+            config=config,
+            budget=budget,
+            verify_runner=verify_runner,
+        )
+        while future_map:
+            done, _ = futures.wait(future_map, return_when=futures.FIRST_COMPLETED)
+            future = next(iter(done))
+            row = future_map.pop(future)
+            if future.cancelled():
+                continue
+            completed_exc = _record_completed_future(
+                future=future, row=row, status=status, status_path=status_path
+            )
+            if completed_exc is not None:
+                if stop_exc is None:
+                    stop_exc = completed_exc
+                _cancel_not_started(future_map=future_map)
+                continue
+            if stop_exc is None and not _has_completed_future(future_map=future_map):
+                _submit_verification_futures(
+                    row_iter=row_iter,
+                    future_map=future_map,
+                    executor=executor,
+                    limit=workers,
+                    output_dir=output_dir,
+                    prompt=prompt,
+                    config=config,
+                    budget=budget,
+                    verify_runner=verify_runner,
+                )
+    finally:
+        if stop_exc is not None:
+            _cancel_not_started(future_map=future_map)
+        executor.shutdown(wait=stop_exc is None, cancel_futures=stop_exc is not None)
+    if stop_exc is not None:
+        raise PatchVerificationCampaignError(
+            "Patch verification stopped before all rows were resolved"
+        ) from stop_exc
+
+
+def _cancel_not_started(*, future_map: VerifyFutureMap) -> None:
+    for future in future_map:
+        future.cancel()
+
+
+def _has_completed_future(*, future_map: VerifyFutureMap) -> bool:
+    return any(future.done() for future in future_map)
+
+
+def _record_completed_future(
+    *,
+    future: futures.Future[VerifyAttemptResult],
+    row: VerifyRow,
+    status: dict[str, object],
+    status_path: Path,
+) -> Exception | None:
+    status["attempted"] = _status_int(status, "attempted") + 1
+    try:
+        attempt_result = future.result()
+    except Exception as exc:
+        _record_transient_retries(status=status, exc=exc)
+        status["failed"] = _status_int(status, "failed") + 1
+        status["pending"] = _pending_count(status=status)
+        _write_status(path=status_path, status=status)
+        return exc
+    status["transient_retries"] = (
+        _status_int(status, "transient_retries") + attempt_result.transient_retries
+    )
+    _record_result(status=status, row=row, result=attempt_result.result)
+    _write_status(path=status_path, status=status)
+    return None
+
+
+def _pending_count(*, status: dict[str, object]) -> int:
+    return max(0, _status_int(status, "available") - len(_status_hashes(status)))
+
+
+def _status_int(status: dict[str, object], key: str) -> int:
+    value = status.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise PatchVerificationCampaignError(f"status.json counter is malformed: {key}")
+    return value
+
+
+def _record_result(
+    *, status: dict[str, object], row: VerifyRow, result: ProsePatchVerificationResult
+) -> None:
+    if result.accepted:
+        status["accepted"] = _status_int(status, "accepted") + 1
+    else:
+        status["rejected"] = _status_int(status, "rejected") + 1
+    status["processed"] = _status_int(status, "processed") + 1
+    hashes = _status_hashes(status)
+    if row.persona_hash not in hashes:
+        hashes.append(row.persona_hash)
+    status["processed_persona_hashes"] = hashes
+    status["pending"] = _pending_count(status=status)
+
+
+def _record_transient_retries(*, status: dict[str, object], exc: Exception) -> None:
+    if isinstance(exc, TransientVerificationAttemptsExhausted):
+        status["transient_retries"] = (
+            _status_int(status, "transient_retries") + exc.transient_retries
+        )
+
+
+def _submit_verification_futures(
+    *,
+    row_iter: c.Iterator[VerifyRow],
+    future_map: VerifyFutureMap,
+    executor: futures.ThreadPoolExecutor,
+    limit: int,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    verify_runner: VerifyRunner,
+) -> None:
+    while len(future_map) < limit:
+        try:
+            row = next(row_iter)
+        except StopIteration:
+            return
+        future_map[
+            executor.submit(
+                _run_one_verification,
+                row=row,
+                output_dir=output_dir,
+                prompt=prompt,
+                config=config,
+                budget=budget,
+                verify_runner=verify_runner,
+            )
+        ] = row
+
+
+def _proxy_budget(
+    *, paths: VerifyPaths, prompt: str, manifest: dict[str, JSONValue]
+) -> ProxyBudget:
+    inputs = manifest["inputs"]
+    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
+        raise PatchVerificationCampaignError("Manifest schema hash is malformed")
+    return ProxyBudget(
+        registry_path=paths.registry,
+        campaign=CAMPAIGN,
+        source_hash=sha256_text(canonical_json(manifest)),
+        prompt_hash=sha256_text(prompt),
+        schema_hash=inputs["schema"],
+        uncapped=True,
+        uncapped_purpose=PATCH_VERIFICATION_PURPOSE,
+    )
+
+
+def _public_status_summary(
+    *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
+) -> dict[str, object]:
+    status["pending"] = _pending_count(status=status)
+    return {
+        "dry_run": False,
+        "campaign": CAMPAIGN,
+        "status_path": str(status_path),
+        "available": status["available"],
+        "accepted": status["accepted"],
+        "rejected": status["rejected"],
+        "manual": status["manual"],
+        "unchanged_consistent": status["unchanged_consistent"],
+        "failed": status["failed"],
+        "attempted": status["attempted"],
+        "transient_retries": status["transient_retries"],
+        "processed": status["processed"],
+        "pending": status["pending"],
+        "max_rows": max_rows,
+        "workers": workers,
+        "accepted_is_provisional": True,
+        "provisional_notice": PROVISIONAL_NOTICE,
+    }
+
+
+def _refresh_available_counts(
+    *, status: dict[str, object], available: int, manual: int, unchanged_consistent: int
+) -> None:
+    status["available"] = available
+    status["manual"] = manual
+    status["unchanged_consistent"] = unchanged_consistent
+    status["pending"] = _pending_count(status=status)
+    status["accepted_is_provisional"] = True
+    status["provisional_notice"] = PROVISIONAL_NOTICE
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if workers < 1 or workers > 4:
+        raise PatchVerificationCampaignError("workers must be between one and four")
+
+
+def _verification_manifest(
+    *, paths: VerifyPaths, loaded: LoadedFirstPass
+) -> dict[str, JSONValue]:
+    schema_hash = sha256_text(
+        canonical_json(ProsePatchSecondReview.provider_json_schema())
+    )
+    return {
+        "version": MANIFEST_VERSION,
+        "campaign": CAMPAIGN,
+        "inputs": {
+            "original": sha256_file(paths.original),
+            "candidate_v4": sha256_file(paths.candidate),
+            "triage": sha256_file(paths.triage),
+            "first_pass_manifest": sha256_file(paths.first_manifest),
+            "first_pass_manifest_content": sha256_text(canonical_json(loaded.manifest)),
+            "verify_prompt": sha256_file(paths.verify_prompt),
+            "registry": sha256_file(paths.registry),
+            "schema": schema_hash,
+        },
+        "first_pass_campaign": loaded.manifest.get("campaign"),
+        "model": MODEL,
+        "base_url": BASE_URL,
+        "reasoning_effort": "none",
+        "max_tokens": None,
+        "maximum_http_attempts": 1,
+        "allowed_facts": sorted(_ALLOWED_FACTS),
+        "provisional_notice": PROVISIONAL_NOTICE,
+    }
+
+
+def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
+    if path.exists():
+        existing = _load_json_object(path=path, label="verification manifest")
+        if existing != manifest:
+            raise PatchVerificationCampaignError(
+                "manifest.json pins do not match current inputs"
+            )
+        if path.stat().st_mode & 0o777 != 0o600:
+            raise PatchVerificationCampaignError("manifest.json must be private (0600)")
+        return
+    _write_json(path=path, value=manifest)
+
+
+def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PatchVerificationCampaignError(f"{label} is not readable JSON") from exc
+    if not isinstance(value, dict):
+        raise PatchVerificationCampaignError(f"{label} is not a JSON object")
+    return t.cast(dict[str, JSONValue], value)
+
+
 def load_first_pass(*, paths: VerifyPaths) -> LoadedFirstPass:
     """Load and locally revalidate completed first-pass checkpoints.
 
@@ -445,347 +856,6 @@ def _object_row(*, row: c.Mapping[str, JSONValue]) -> dict[str, object]:
     return {key: value for key, value in row.items()}
 
 
-def _verification_manifest(
-    *, paths: VerifyPaths, loaded: LoadedFirstPass
-) -> dict[str, JSONValue]:
-    schema_hash = sha256_text(
-        canonical_json(ProsePatchSecondReview.provider_json_schema())
-    )
-    return {
-        "version": MANIFEST_VERSION,
-        "campaign": CAMPAIGN,
-        "inputs": {
-            "original": sha256_file(paths.original),
-            "candidate_v4": sha256_file(paths.candidate),
-            "triage": sha256_file(paths.triage),
-            "first_pass_manifest": sha256_file(paths.first_manifest),
-            "first_pass_manifest_content": sha256_text(canonical_json(loaded.manifest)),
-            "verify_prompt": sha256_file(paths.verify_prompt),
-            "registry": sha256_file(paths.registry),
-            "schema": schema_hash,
-        },
-        "first_pass_campaign": loaded.manifest.get("campaign"),
-        "model": MODEL,
-        "base_url": BASE_URL,
-        "reasoning_effort": "none",
-        "max_tokens": None,
-        "maximum_http_attempts": 1,
-        "allowed_facts": sorted(_ALLOWED_FACTS),
-        "provisional_notice": PROVISIONAL_NOTICE,
-    }
-
-
-def _generation_config(*, prompt_path: Path) -> GenerationConfig:
-    return GenerationConfig(
-        base_url=BASE_URL,
-        model=MODEL,
-        api_key_env=None,
-        timeout_seconds=120.0,
-        maximum_http_attempts=1,
-        maximum_total_requests=1,
-        retry_backoff_seconds=0.0,
-        maximum_rows_per_shard=1,
-        max_tokens=None,
-        enable_thinking=None,
-        reasoning_effort="none",
-        prompt=prompt_path,
-        origin_label_contract=Path("config/folk2-ieland-labels-da.yaml"),
-    )
-
-
-def _proxy_budget(
-    *, paths: VerifyPaths, prompt: str, manifest: dict[str, JSONValue]
-) -> ProxyBudget:
-    inputs = manifest["inputs"]
-    if not isinstance(inputs, dict) or not isinstance(inputs.get("schema"), str):
-        raise PatchVerificationCampaignError("Manifest schema hash is malformed")
-    return ProxyBudget(
-        registry_path=paths.registry,
-        campaign=CAMPAIGN,
-        source_hash=sha256_text(canonical_json(manifest)),
-        prompt_hash=sha256_text(prompt),
-        schema_hash=inputs["schema"],
-        uncapped=True,
-        uncapped_purpose=PATCH_VERIFICATION_PURPOSE,
-    )
-
-
-def _dry_run_summary(
-    *,
-    rows: list[VerifyRow],
-    manual: int,
-    unchanged_consistent: int,
-    max_rows: int | None,
-    workers: int,
-) -> dict[str, object]:
-    would_process = len(rows) if max_rows is None else min(max_rows, len(rows))
-    return {
-        "dry_run": True,
-        "campaign": CAMPAIGN,
-        "available": len(rows),
-        "would_process": would_process,
-        "accepted": 0,
-        "rejected": 0,
-        "manual": manual,
-        "unchanged_consistent": unchanged_consistent,
-        "processed": 0,
-        "pending": len(rows),
-        "max_rows": max_rows,
-        "workers": workers,
-        "accepted_is_provisional": True,
-        "provisional_notice": PROVISIONAL_NOTICE,
-    }
-
-
-def _prepare_private_output(output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(output_dir, 0o700)
-    if output_dir.stat().st_mode & 0o077:
-        raise PatchVerificationCampaignError("Output directory must be private (0700)")
-
-
-def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONValue]) -> None:
-    if path.exists():
-        existing = _load_json_object(path=path, label="verification manifest")
-        if existing != manifest:
-            raise PatchVerificationCampaignError(
-                "manifest.json pins do not match current inputs"
-            )
-        if path.stat().st_mode & 0o777 != 0o600:
-            raise PatchVerificationCampaignError("manifest.json must be private (0600)")
-        return
-    _write_json(path=path, value=manifest)
-
-
-def _load_or_create_status(
-    *,
-    status_path: Path,
-    manifest: dict[str, JSONValue],
-    available: int,
-    manual: int,
-    unchanged_consistent: int,
-) -> dict[str, object]:
-    if status_path.exists():
-        status = json.loads(status_path.read_text(encoding="utf-8"))
-        if status.get("manifest") != manifest:
-            raise PatchVerificationCampaignError(
-                "status.json pins do not match current inputs"
-            )
-        if status_path.stat().st_mode & 0o777 != 0o600:
-            raise PatchVerificationCampaignError("status.json must be private (0600)")
-        return _validate_status(status)
-    status: dict[str, object] = {
-        "version": STATUS_VERSION,
-        "manifest": manifest,
-        "available": available,
-        "accepted": 0,
-        "rejected": 0,
-        "manual": manual,
-        "unchanged_consistent": unchanged_consistent,
-        "failed": 0,
-        "attempted": 0,
-        "transient_retries": 0,
-        "processed": 0,
-        "pending": available,
-        "processed_persona_hashes": [],
-        "accepted_is_provisional": True,
-        "provisional_notice": PROVISIONAL_NOTICE,
-    }
-    _write_status(path=status_path, status=status)
-    return status
-
-
-def _validate_status(status: object) -> dict[str, object]:
-    if not isinstance(status, dict) or status.get("version") != STATUS_VERSION:
-        raise PatchVerificationCampaignError("status.json is malformed")
-    for key in {
-        "available",
-        "accepted",
-        "rejected",
-        "manual",
-        "unchanged_consistent",
-        "failed",
-        "attempted",
-        "transient_retries",
-        "processed",
-        "pending",
-    }:
-        if not isinstance(status.get(key), int) or int(status[key]) < 0:
-            raise PatchVerificationCampaignError("status.json counters are malformed")
-    _status_hashes(status)
-    return status
-
-
-def _refresh_available_counts(
-    *, status: dict[str, object], available: int, manual: int, unchanged_consistent: int
-) -> None:
-    status["available"] = available
-    status["manual"] = manual
-    status["unchanged_consistent"] = unchanged_consistent
-    status["pending"] = _pending_count(status=status)
-    status["accepted_is_provisional"] = True
-    status["provisional_notice"] = PROVISIONAL_NOTICE
-
-
-def _pending_rows(
-    *, rows: list[VerifyRow], status: dict[str, object], max_rows: int | None
-) -> list[VerifyRow]:
-    processed = set(_status_hashes(status))
-    pending = [row for row in rows if row.persona_hash not in processed]
-    if max_rows is not None:
-        return pending[:max_rows]
-    return pending
-
-
-def _process_pending(
-    *,
-    rows: list[VerifyRow],
-    status: dict[str, object],
-    status_path: Path,
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    workers: int,
-    verify_runner: VerifyRunner,
-) -> None:
-    row_iter = iter(rows)
-    future_map: VerifyFutureMap = {}
-    stop_exc: Exception | None = None
-    executor = futures.ThreadPoolExecutor(max_workers=workers)
-    try:
-        _submit_verification_futures(
-            row_iter=row_iter,
-            future_map=future_map,
-            executor=executor,
-            limit=workers,
-            output_dir=output_dir,
-            prompt=prompt,
-            config=config,
-            budget=budget,
-            verify_runner=verify_runner,
-        )
-        while future_map:
-            done, _ = futures.wait(future_map, return_when=futures.FIRST_COMPLETED)
-            future = next(iter(done))
-            row = future_map.pop(future)
-            if future.cancelled():
-                continue
-            completed_exc = _record_completed_future(
-                future=future, row=row, status=status, status_path=status_path
-            )
-            if completed_exc is not None:
-                if stop_exc is None:
-                    stop_exc = completed_exc
-                _cancel_not_started(future_map=future_map)
-                continue
-            if stop_exc is None and not _has_completed_future(future_map=future_map):
-                _submit_verification_futures(
-                    row_iter=row_iter,
-                    future_map=future_map,
-                    executor=executor,
-                    limit=workers,
-                    output_dir=output_dir,
-                    prompt=prompt,
-                    config=config,
-                    budget=budget,
-                    verify_runner=verify_runner,
-                )
-    finally:
-        if stop_exc is not None:
-            _cancel_not_started(future_map=future_map)
-        executor.shutdown(wait=stop_exc is None, cancel_futures=stop_exc is not None)
-    if stop_exc is not None:
-        raise PatchVerificationCampaignError(
-            "Patch verification stopped before all rows were resolved"
-        ) from stop_exc
-
-
-def _submit_verification_futures(
-    *,
-    row_iter: c.Iterator[VerifyRow],
-    future_map: VerifyFutureMap,
-    executor: futures.ThreadPoolExecutor,
-    limit: int,
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    verify_runner: VerifyRunner,
-) -> None:
-    while len(future_map) < limit:
-        try:
-            row = next(row_iter)
-        except StopIteration:
-            return
-        future_map[
-            executor.submit(
-                _run_one_verification,
-                row=row,
-                output_dir=output_dir,
-                prompt=prompt,
-                config=config,
-                budget=budget,
-                verify_runner=verify_runner,
-            )
-        ] = row
-
-
-def _record_completed_future(
-    *,
-    future: futures.Future[VerifyAttemptResult],
-    row: VerifyRow,
-    status: dict[str, object],
-    status_path: Path,
-) -> Exception | None:
-    status["attempted"] = _status_int(status, "attempted") + 1
-    try:
-        attempt_result = future.result()
-    except Exception as exc:
-        _record_transient_retries(status=status, exc=exc)
-        status["failed"] = _status_int(status, "failed") + 1
-        status["pending"] = _pending_count(status=status)
-        _write_status(path=status_path, status=status)
-        return exc
-    status["transient_retries"] = (
-        _status_int(status, "transient_retries") + attempt_result.transient_retries
-    )
-    _record_result(status=status, row=row, result=attempt_result.result)
-    _write_status(path=status_path, status=status)
-    return None
-
-
-def _record_result(
-    *, status: dict[str, object], row: VerifyRow, result: ProsePatchVerificationResult
-) -> None:
-    if result.accepted:
-        status["accepted"] = _status_int(status, "accepted") + 1
-    else:
-        status["rejected"] = _status_int(status, "rejected") + 1
-    status["processed"] = _status_int(status, "processed") + 1
-    hashes = _status_hashes(status)
-    if row.persona_hash not in hashes:
-        hashes.append(row.persona_hash)
-    status["processed_persona_hashes"] = hashes
-    status["pending"] = _pending_count(status=status)
-
-
-def _record_transient_retries(*, status: dict[str, object], exc: Exception) -> None:
-    if isinstance(exc, TransientVerificationAttemptsExhausted):
-        status["transient_retries"] = (
-            _status_int(status, "transient_retries") + exc.transient_retries
-        )
-
-
-def _cancel_not_started(*, future_map: VerifyFutureMap) -> None:
-    for future in future_map:
-        future.cancel()
-
-
-def _has_completed_future(*, future_map: VerifyFutureMap) -> bool:
-    return any(future.done() for future in future_map)
-
-
 def _run_one_verification(
     *,
     row: VerifyRow,
@@ -830,6 +900,23 @@ def _run_one_verification(
     raise PatchVerificationCampaignError("Patch verification retry loop ended")
 
 
+class TransientVerificationAttemptsExhausted(Exception):
+    """Raised when a row exhausts bounded transient provider retries."""
+
+    def __init__(self, *, transient_retries: int) -> None:
+        """Initialise the exhausted-retry marker.
+
+        Args:
+            transient_retries: Number of transient retries already consumed.
+        """
+        super().__init__("Transient provider failures exhausted for one row")
+        self.transient_retries = transient_retries
+
+
+def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
+    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
+
+
 def _is_retryable_transient_error(exc: Exception) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in TRANSIENT_STATUS_CODES
@@ -860,93 +947,6 @@ def _retry_after_seconds(*, exc: Exception) -> float | None:
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=dt.UTC)
     return (retry_at - dt.datetime.now(tz=dt.UTC)).total_seconds()
-
-
-def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
-    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
-
-
-def _public_status_summary(
-    *, status: dict[str, object], status_path: Path, max_rows: int | None, workers: int
-) -> dict[str, object]:
-    status["pending"] = _pending_count(status=status)
-    return {
-        "dry_run": False,
-        "campaign": CAMPAIGN,
-        "status_path": str(status_path),
-        "available": status["available"],
-        "accepted": status["accepted"],
-        "rejected": status["rejected"],
-        "manual": status["manual"],
-        "unchanged_consistent": status["unchanged_consistent"],
-        "failed": status["failed"],
-        "attempted": status["attempted"],
-        "transient_retries": status["transient_retries"],
-        "processed": status["processed"],
-        "pending": status["pending"],
-        "max_rows": max_rows,
-        "workers": workers,
-        "accepted_is_provisional": True,
-        "provisional_notice": PROVISIONAL_NOTICE,
-    }
-
-
-def _pending_count(*, status: dict[str, object]) -> int:
-    return max(0, _status_int(status, "available") - len(_status_hashes(status)))
-
-
-def _status_hashes(status: dict[str, object]) -> list[str]:
-    value = status.get("processed_persona_hashes")
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise PatchVerificationCampaignError(
-            "status.json processed hashes are malformed"
-        )
-    if len(value) != len(set(value)):
-        raise PatchVerificationCampaignError("status.json processed hashes are invalid")
-    return list(value)
-
-
-def _status_int(status: dict[str, object], key: str) -> int:
-    value = status.get(key)
-    if not isinstance(value, int) or value < 0:
-        raise PatchVerificationCampaignError(f"status.json counter is malformed: {key}")
-    return value
-
-
-def _require_worker_count(*, workers: int) -> None:
-    if workers < 1 or workers > 4:
-        raise PatchVerificationCampaignError("workers must be between one and four")
-
-
-def _load_json_object(*, path: Path, label: str) -> dict[str, JSONValue]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PatchVerificationCampaignError(f"{label} is not readable JSON") from exc
-    if not isinstance(value, dict):
-        raise PatchVerificationCampaignError(f"{label} is not a JSON object")
-    return t.cast(dict[str, JSONValue], value)
-
-
-def _write_status(*, path: Path, status: dict[str, object]) -> None:
-    _write_json(path=path, value=t.cast(dict[str, JSONValue], status))
-
-
-def _write_json(*, path: Path, value: dict[str, JSONValue]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _run_proxy_patch_verification_adapter(

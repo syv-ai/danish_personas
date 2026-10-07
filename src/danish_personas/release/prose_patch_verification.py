@@ -460,6 +460,33 @@ def _validate_evidence_status_quotes(
         )
 
 
+def _quotes_show_patch_vicinity(
+    *, original_quote: str, proposed_quote: str, patches: list[ProsePatchExcerpt]
+) -> bool:
+    return any(
+        _quote_overlaps_excerpt(quote=original_quote, excerpt=patch.old_excerpt)
+        and _quote_overlaps_excerpt(quote=proposed_quote, excerpt=patch.new_excerpt)
+        for patch in patches
+    )
+
+
+def _quote_overlaps_excerpt(*, quote: str, excerpt: str) -> bool:
+    return quote in excerpt or excerpt in quote
+
+
+def _required_quote(*, quote: str | None, label: str) -> str:
+    if quote is None:
+        raise ProsePatchVerificationError(f"{label} quote evidence is required")
+    if quote == "":
+        raise ProsePatchVerificationError("Fact evidence quote must be non-empty")
+    return quote
+
+
+def _validate_exact_quote(*, quote: str, text: str, label: str) -> None:
+    if quote not in text:
+        raise ProsePatchVerificationError(f"{label} quote evidence is not exact")
+
+
 def _validate_optional_exact_quotes(
     *,
     original_quote: str | None,
@@ -477,33 +504,6 @@ def _validate_optional_exact_quotes(
         _validate_exact_quote(
             quote=proposed_quote, text=proposed_text, label="Proposed"
         )
-
-
-def _required_quote(*, quote: str | None, label: str) -> str:
-    if quote is None:
-        raise ProsePatchVerificationError(f"{label} quote evidence is required")
-    if quote == "":
-        raise ProsePatchVerificationError("Fact evidence quote must be non-empty")
-    return quote
-
-
-def _validate_exact_quote(*, quote: str, text: str, label: str) -> None:
-    if quote not in text:
-        raise ProsePatchVerificationError(f"{label} quote evidence is not exact")
-
-
-def _quotes_show_patch_vicinity(
-    *, original_quote: str, proposed_quote: str, patches: list[ProsePatchExcerpt]
-) -> bool:
-    return any(
-        _quote_overlaps_excerpt(quote=original_quote, excerpt=patch.old_excerpt)
-        and _quote_overlaps_excerpt(quote=proposed_quote, excerpt=patch.new_excerpt)
-        for patch in patches
-    )
-
-
-def _quote_overlaps_excerpt(*, quote: str, excerpt: str) -> bool:
-    return quote in excerpt or excerpt in quote
 
 
 def _verify_reapplied_text(

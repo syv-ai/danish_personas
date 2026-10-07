@@ -67,268 +67,6 @@ def test_accepts_and_resumes_without_network(
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize(
-    ("verdict", "expected_reason"),
-    [
-        ("reject", "fact_mismatch"),
-        ("needs_manual_review", "ambiguity"),
-    ],
-)
-def test_reject_and_abstain_checkpoint_privately(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    verdict: str,
-    expected_reason: str,
-) -> None:
-    """Store every provider verdict class for deterministic resume."""
-    result = run_proxy_patch_verification(
-        row=_row(),
-        candidate_row=_candidate_row(),
-        changed_facts=_facts(),
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
-        checkpoint_path=tmp_path / f"{verdict}.json",
-        transport=_transport(_review(verdict), []),
-    )
-
-    assert result.accepted is False
-    assert result.review_verdict == verdict
-    assert result.reasons == [expected_reason]
-    assert (tmp_path / f"{verdict}.json").stat().st_mode & 0o777 == 0o600
-
-
-def test_invalid_completion_is_accounted_then_checkpointed_manual(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Record usage for schema-invalid content before local abstention."""
-    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    events: list[str] = []
-    original_record_usage = budget.record_usage
-
-    def record_usage(
-        request_id: str,
-        *,
-        input_tokens: int,
-        output_tokens: int,
-        response_sha256: str,
-    ) -> None:
-        events.append("usage")
-        original_record_usage(
-            request_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            response_sha256=response_sha256,
-        )
-
-    monkeypatch.setattr(budget, "record_usage", record_usage)
-    result = run_proxy_patch_verification(
-        row=_row(),
-        candidate_row=_candidate_row(),
-        changed_facts=_facts(),
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=budget,
-        checkpoint_path=tmp_path / "invalid.json",
-        transport=_transport("not-json", [], events),
-    )
-
-    assert events == ["network", "usage"]
-    assert result.accepted is False
-    assert result.review_verdict == "needs_manual_review"
-    assert result.reasons == ["invalid_quote_evidence"]
-    checkpoint_text = (tmp_path / "invalid.json").read_text(encoding="utf-8")
-    assert "not-json" not in checkpoint_text
-
-
-def test_failed_http_retry_gets_unique_reservations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reserve each retried attempt with a fresh durable request ID."""
-    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    request_ids: list[str] = []
-    events: list[str] = []
-    original_reserve = budget.reserve_attempt
-
-    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
-        request_ids.append(request_id)
-        events.append("reserved")
-        return original_reserve(request_id, request)
-
-    monkeypatch.setattr(budget, "reserve_attempt", reserve)
-    run_proxy_patch_verification(
-        row=_row(),
-        candidate_row=_candidate_row(),
-        changed_facts=_facts(),
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(maximum_http_attempts=2),
-        budget=budget,
-        checkpoint_path=tmp_path / "retry.json",
-        transport=_retry_transport(events),
-    )
-
-    assert events == ["reserved", "network", "reserved", "network"]
-    assert len(request_ids) == 2
-    assert len(set(request_ids)) == 2
-
-
-def test_privacy_guard_omits_private_fields_and_reserves_before_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Send only the bounded verifier payload, never row identifiers."""
-    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    requests: list[httpx.Request] = []
-    events: list[str] = []
-    original_reserve = budget.reserve_attempt
-
-    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
-        events.append("reserved")
-        return original_reserve(request_id, request)
-
-    monkeypatch.setattr(budget, "reserve_attempt", reserve)
-    run_proxy_patch_verification(
-        row=_row(),
-        candidate_row=_candidate_row(),
-        changed_facts=_facts(),
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=budget,
-        checkpoint_path=tmp_path / "privacy.json",
-        transport=_transport(_review("reject"), requests, events),
-    )
-
-    body = requests[0].content.decode()
-    assert events[:2] == ["reserved", "network"]
-    assert "private-id" not in body
-    assert "origin_country" not in body
-    assert "identity_sidecar" not in body
-    assert "sexual_orientation" not in body
-    assert "candidate_row" not in body
-    assert "original_persona" in body
-    assert "proposed_persona" in body
-
-
-def test_rejects_sensitive_text_before_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Scan proposed prose and excerpts, not only structured fact values."""
-    with pytest.raises(ProxyPatchVerificationError, match="sensitive-identity"):
-        run_proxy_patch_verification(
-            row=_row(),
-            candidate_row=_candidate_row(),
-            changed_facts=_facts(),
-            proposed_text=_proposed_text() + " Seksuel orientering.",
-            patches=_patches(),
-            first_checkpoint_sha256=_FIRST_SHA,
-            prompt=_PROMPT,
-            config=_config(),
-            budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
-            checkpoint_path=tmp_path / "sensitive.json",
-            transport=_failing_transport(),
-        )
-
-
-def test_rejects_stale_checkpoint_without_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Refuse a checkpoint bound to a different proposed text."""
-    checkpoint = tmp_path / "stale.json"
-    run_proxy_patch_verification(
-        row=_row(),
-        candidate_row=_candidate_row(),
-        changed_facts=_facts(),
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
-        checkpoint_path=checkpoint,
-        transport=_transport(_review("accept"), []),
-    )
-
-    with pytest.raises(ProxyPatchVerificationError, match="changed"):
-        run_proxy_patch_verification(
-            row=_row(),
-            candidate_row=_candidate_row(),
-            changed_facts=_facts(),
-            proposed_text=_proposed_text().replace("gift", "nygift", 1),
-            patches=[{"old_excerpt": _OLD_EXCERPT, "new_excerpt": "nygift"}],
-            first_checkpoint_sha256=_FIRST_SHA,
-            prompt=_PROMPT,
-            config=_config(),
-            budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
-            checkpoint_path=checkpoint,
-            transport=_failing_transport(),
-        )
-
-
-def test_adds_verified_null_detail_context(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Include only a verified broad marital category for null fine detail."""
-    row = _row()
-    row["marital_status"] = "divorced"
-    row["legal_status_detail"] = "separated"
-    facts: dict[str, dict[str, object]] = {
-        "legal_status_detail": {"old": "separated", "new": None}
-    }
-    candidate = dict(row)
-    candidate["legal_status_detail"] = None
-    requests: list[httpx.Request] = []
-
-    run_proxy_patch_verification(
-        row=row,
-        candidate_row=candidate,
-        changed_facts=facts,
-        proposed_text=_proposed_text(),
-        patches=_patches(),
-        first_checkpoint_sha256=_FIRST_SHA,
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
-        checkpoint_path=tmp_path / "null-detail.json",
-        transport=_transport(_review("reject", facts=facts), requests),
-    )
-
-    body = requests[0].content.decode()
-    assert "target_marital_category_da" in body
-    assert "skilt" in body
-    assert "separated" in body
-
-
-def _config(**overrides: object) -> GenerationConfig:
-    values: dict[str, object] = {
-        "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-luna",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 1,
-        "maximum_total_requests": None,
-        "retry_backoff_seconds": 0.0,
-        "maximum_rows_per_shard": 1,
-        "max_tokens": None,
-        "enable_thinking": None,
-        "reasoning_effort": "none",
-        "prompt": Path("config/persona-verify-da.md"),
-        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
-    }
-    values.update(overrides)
-    return GenerationConfig.model_validate(values)
-
-
 def _budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProxyBudget:
     monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
     monkeypatch.setattr(
@@ -387,6 +125,12 @@ def _canonical_schema() -> bytes:
     ).encode()
 
 
+def _candidate_row() -> dict[str, object]:
+    candidate = dict(_row())
+    candidate["marital_status"] = "married"
+    return candidate
+
+
 def _row() -> dict[str, object]:
     return {
         "persona_id": "private-id",
@@ -403,22 +147,43 @@ def _row() -> dict[str, object]:
     }
 
 
-def _candidate_row() -> dict[str, object]:
-    candidate = dict(_row())
-    candidate["marital_status"] = "married"
-    return candidate
+def _config(**overrides: object) -> GenerationConfig:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:18080/v1",
+        "model": "gpt-6-luna",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 1,
+        "maximum_total_requests": None,
+        "retry_backoff_seconds": 0.0,
+        "maximum_rows_per_shard": 1,
+        "max_tokens": None,
+        "enable_thinking": None,
+        "reasoning_effort": "none",
+        "prompt": Path("config/persona-verify-da.md"),
+        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+    }
+    values.update(overrides)
+    return GenerationConfig.model_validate(values)
 
 
 def _facts() -> dict[str, dict[str, object]]:
     return {"marital_status": {"old": "single", "new": "married"}}
 
 
-def _proposed_text() -> str:
-    return str(_row()["persona"]).replace(_OLD_EXCERPT, _NEW_EXCERPT, 1)
+def _failing_transport() -> httpx.MockTransport:
+    def respond(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("transport should not be called")
+
+    return httpx.MockTransport(respond)
 
 
 def _patches() -> list[dict[str, str]]:
     return [{"old_excerpt": _OLD_EXCERPT, "new_excerpt": _NEW_EXCERPT}]
+
+
+def _proposed_text() -> str:
+    return str(_row()["persona"]).replace(_OLD_EXCERPT, _NEW_EXCERPT, 1)
 
 
 def _review(verdict: str, facts: dict[str, dict[str, object]] | None = None) -> str:
@@ -446,9 +211,7 @@ def _review(verdict: str, facts: dict[str, dict[str, object]] | None = None) -> 
 
 
 def _transport(
-    response_content: str,
-    seen: list[httpx.Request],
-    events: list[str] | None = None,
+    response_content: str, seen: list[httpx.Request], events: list[str] | None = None
 ) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(request)
@@ -458,6 +221,86 @@ def _transport(
         return _completion_response(content=response_content)
 
     return httpx.MockTransport(respond)
+
+
+def _completion_response(content: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "id": "response-1",
+            "model": "gpt-6-luna",
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+        },
+    )
+
+
+def test_adds_verified_null_detail_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Include only a verified broad marital category for null fine detail."""
+    row = _row()
+    row["marital_status"] = "divorced"
+    row["legal_status_detail"] = "separated"
+    facts: dict[str, dict[str, object]] = {
+        "legal_status_detail": {"old": "separated", "new": None}
+    }
+    candidate = dict(row)
+    candidate["legal_status_detail"] = None
+    requests: list[httpx.Request] = []
+
+    run_proxy_patch_verification(
+        row=row,
+        candidate_row=candidate,
+        changed_facts=facts,
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
+        checkpoint_path=tmp_path / "null-detail.json",
+        transport=_transport(_review("reject", facts=facts), requests),
+    )
+
+    body = requests[0].content.decode()
+    assert "target_marital_category_da" in body
+    assert "skilt" in body
+    assert "separated" in body
+
+
+def test_failed_http_retry_gets_unique_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reserve each retried attempt with a fresh durable request ID."""
+    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    request_ids: list[str] = []
+    events: list[str] = []
+    original_reserve = budget.reserve_attempt
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        request_ids.append(request_id)
+        events.append("reserved")
+        return original_reserve(request_id, request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    run_proxy_patch_verification(
+        row=_row(),
+        candidate_row=_candidate_row(),
+        changed_facts=_facts(),
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(maximum_http_attempts=2),
+        budget=budget,
+        checkpoint_path=tmp_path / "retry.json",
+        transport=_retry_transport(events),
+    )
+
+    assert events == ["reserved", "network", "reserved", "network"]
+    assert len(request_ids) == 2
+    assert len(set(request_ids)) == 2
 
 
 def _retry_transport(events: list[str]) -> httpx.MockTransport:
@@ -474,20 +317,165 @@ def _retry_transport(events: list[str]) -> httpx.MockTransport:
     return httpx.MockTransport(respond)
 
 
-def _failing_transport() -> httpx.MockTransport:
-    def respond(_request: httpx.Request) -> httpx.Response:
-        raise AssertionError("transport should not be called")
+def test_invalid_completion_is_accounted_then_checkpointed_manual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record usage for schema-invalid content before local abstention."""
+    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    events: list[str] = []
+    original_record_usage = budget.record_usage
 
-    return httpx.MockTransport(respond)
+    def record_usage(
+        request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
+    ) -> None:
+        events.append("usage")
+        original_record_usage(
+            request_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            response_sha256=response_sha256,
+        )
 
-
-def _completion_response(content: str) -> httpx.Response:
-    return httpx.Response(
-        200,
-        json={
-            "id": "response-1",
-            "model": "gpt-6-luna",
-            "choices": [{"message": {"content": content}}],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-        },
+    monkeypatch.setattr(budget, "record_usage", record_usage)
+    result = run_proxy_patch_verification(
+        row=_row(),
+        candidate_row=_candidate_row(),
+        changed_facts=_facts(),
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=tmp_path / "invalid.json",
+        transport=_transport("not-json", [], events),
     )
+
+    assert events == ["network", "usage"]
+    assert result.accepted is False
+    assert result.review_verdict == "needs_manual_review"
+    assert result.reasons == ["invalid_quote_evidence"]
+    checkpoint_text = (tmp_path / "invalid.json").read_text(encoding="utf-8")
+    assert "not-json" not in checkpoint_text
+
+
+def test_privacy_guard_omits_private_fields_and_reserves_before_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Send only the bounded verifier payload, never row identifiers."""
+    budget = _budget(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    requests: list[httpx.Request] = []
+    events: list[str] = []
+    original_reserve = budget.reserve_attempt
+
+    def reserve(request_id: str, request: dict[str, JSONValue]) -> Decimal:
+        events.append("reserved")
+        return original_reserve(request_id, request)
+
+    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    run_proxy_patch_verification(
+        row=_row(),
+        candidate_row=_candidate_row(),
+        changed_facts=_facts(),
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=tmp_path / "privacy.json",
+        transport=_transport(_review("reject"), requests, events),
+    )
+
+    body = requests[0].content.decode()
+    assert events[:2] == ["reserved", "network"]
+    assert "private-id" not in body
+    assert "origin_country" not in body
+    assert "identity_sidecar" not in body
+    assert "sexual_orientation" not in body
+    assert "candidate_row" not in body
+    assert "original_persona" in body
+    assert "proposed_persona" in body
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_reason"),
+    [("reject", "fact_mismatch"), ("needs_manual_review", "ambiguity")],
+)
+def test_reject_and_abstain_checkpoint_privately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str, expected_reason: str
+) -> None:
+    """Store every provider verdict class for deterministic resume."""
+    result = run_proxy_patch_verification(
+        row=_row(),
+        candidate_row=_candidate_row(),
+        changed_facts=_facts(),
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
+        checkpoint_path=tmp_path / f"{verdict}.json",
+        transport=_transport(_review(verdict), []),
+    )
+
+    assert result.accepted is False
+    assert result.review_verdict == verdict
+    assert result.reasons == [expected_reason]
+    assert (tmp_path / f"{verdict}.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_rejects_sensitive_text_before_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scan proposed prose and excerpts, not only structured fact values."""
+    with pytest.raises(ProxyPatchVerificationError, match="sensitive-identity"):
+        run_proxy_patch_verification(
+            row=_row(),
+            candidate_row=_candidate_row(),
+            changed_facts=_facts(),
+            proposed_text=_proposed_text() + " Seksuel orientering.",
+            patches=_patches(),
+            first_checkpoint_sha256=_FIRST_SHA,
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
+            checkpoint_path=tmp_path / "sensitive.json",
+            transport=_failing_transport(),
+        )
+
+
+def test_rejects_stale_checkpoint_without_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refuse a checkpoint bound to a different proposed text."""
+    checkpoint = tmp_path / "stale.json"
+    run_proxy_patch_verification(
+        row=_row(),
+        candidate_row=_candidate_row(),
+        changed_facts=_facts(),
+        proposed_text=_proposed_text(),
+        patches=_patches(),
+        first_checkpoint_sha256=_FIRST_SHA,
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
+        checkpoint_path=checkpoint,
+        transport=_transport(_review("accept"), []),
+    )
+
+    with pytest.raises(ProxyPatchVerificationError, match="changed"):
+        run_proxy_patch_verification(
+            row=_row(),
+            candidate_row=_candidate_row(),
+            changed_facts=_facts(),
+            proposed_text=_proposed_text().replace("gift", "nygift", 1),
+            patches=[{"old_excerpt": _OLD_EXCERPT, "new_excerpt": "nygift"}],
+            first_checkpoint_sha256=_FIRST_SHA,
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path=tmp_path, monkeypatch=monkeypatch),
+            checkpoint_path=checkpoint,
+            transport=_failing_transport(),
+        )

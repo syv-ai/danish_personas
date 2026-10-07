@@ -111,6 +111,124 @@ def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
         budget.reserve_attempt("attempt-1", {"x": 1})
 
 
+def test_patch_verification_requires_strict_purpose_and_local_model(
+    tmp_path: Path,
+) -> None:
+    """Patch verification is only the explicit local uncapped purpose."""
+    _budget(tmp_path)
+
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, uncapped=False)
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, uncapped_purpose="review")
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, model="different-model")
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _patch_verification_budget(tmp_path, base_url="https://api.openai.com/v1")
+
+
+def _patch_verification_budget(
+    tmp_path: Path,
+    *,
+    model: str = "gpt-6-luna",
+    base_url: str = "http://127.0.0.1:18080/v1",
+    request_overhead_bytes: int = 4096,
+    uncapped: bool = True,
+    uncapped_purpose: str | None = "patch_verification",
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-patch-verification.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json", model=model),
+        campaign="campaign-1",
+        source_hash="a" * 64,
+        prompt_hash="b" * 64,
+        schema_hash="c" * 64,
+        model=model,
+        base_url=base_url,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=uncapped,
+        uncapped_purpose=uncapped_purpose,
+    )
+
+
+def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
+    tmp_path: Path,
+) -> None:
+    """Patch verification reloads its own completed reservations."""
+    _budget(tmp_path)
+    patch = _patch_verification_budget(tmp_path)
+    patch.reserve_attempt("patch-attempt-1", {"x": 1})
+    patch.record_usage(
+        "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
+    )
+
+    restarted = _patch_verification_budget(tmp_path)
+    with pytest.raises(ProxyBudgetError, match="already reserved"):
+        restarted.reserve_attempt("patch-attempt-1", {"x": 1})
+    with pytest.raises(ProxyBudgetError, match="already recorded"):
+        restarted.record_usage(
+            "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
+        )
+    patch_records = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(patch_records) == 3
+
+
+def test_patch_verification_uses_independent_ledger_without_touching_old_ledgers(
+    tmp_path: Path,
+) -> None:
+    """Patch verification reservations preserve capped and prose-review ledgers."""
+    _budget(tmp_path)
+    old_bytes = proxy_budget.USER_BUDGET_PATH.read_bytes()
+    _uncapped_budget(tmp_path)
+    v4_bytes = proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes()
+
+    patch = _patch_verification_budget(tmp_path, request_overhead_bytes=1_001_000_000)
+    reserved = patch.reserve_attempt("patch-attempt-1", {"x": 1})
+    patch.record_usage(
+        "patch-attempt-1", input_tokens=2, output_tokens=3, response_sha256="f" * 64
+    )
+
+    assert reserved > Decimal("100")
+    assert proxy_budget.USER_BUDGET_PATH.read_bytes() == old_bytes
+    assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes() == v4_bytes
+    assert not (tmp_path / "ignored-patch-verification.jsonl").exists()
+    patch_lines = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    patch_header = json.loads(patch_lines[0])
+    assert patch_header["uncapped"] is True
+    assert patch_header["uncapped_purpose"] == "patch_verification"
+    assert patch_header["source_hash"] == "a" * 64
+    assert patch_header["prompt_hash"] == "b" * 64
+    assert patch_header["schema_hash"] == "c" * 64
+    assert patch_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
+    patch_mode = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.stat().st_mode
+    assert patch_mode & 0o777 == 0o600
+
+
+def _uncapped_budget(
+    tmp_path: Path,
+    *,
+    model: str = "gpt-6-luna",
+    campaign: str = "campaign-1",
+    prompt_hash: str = "b" * 64,
+    request_overhead_bytes: int = 4096,
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-uncapped.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json", model=model),
+        campaign=campaign,
+        source_hash="a" * 64,
+        prompt_hash=prompt_hash,
+        schema_hash="c" * 64,
+        model=model,
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+    )
+
+
 @pytest.mark.parametrize(
     ("price", "model"), [("0.2", "gpt-6-luna"), ("0.1", "different-model")]
 )
@@ -240,67 +358,6 @@ def test_uncapped_rejects_model_and_manifest_changes(tmp_path: Path) -> None:
         _uncapped_budget(tmp_path)
 
 
-def _uncapped_budget(
-    tmp_path: Path,
-    *,
-    model: str = "gpt-6-luna",
-    campaign: str = "campaign-1",
-    prompt_hash: str = "b" * 64,
-    request_overhead_bytes: int = 4096,
-) -> ProxyBudget:
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored-uncapped.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json", model=model),
-        campaign=campaign,
-        source_hash="a" * 64,
-        prompt_hash=prompt_hash,
-        schema_hash="c" * 64,
-        model=model,
-        request_overhead_bytes=request_overhead_bytes,
-        uncapped=True,
-    )
-
-
-def _patch_verification_budget(
-    tmp_path: Path,
-    *,
-    model: str = "gpt-6-luna",
-    base_url: str = "http://127.0.0.1:18080/v1",
-    request_overhead_bytes: int = 4096,
-    uncapped: bool = True,
-    uncapped_purpose: str | None = "patch_verification",
-) -> ProxyBudget:
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored-patch-verification.jsonl",
-        registry_path=_registry(tmp_path / "models-store.json", model=model),
-        campaign="campaign-1",
-        source_hash="a" * 64,
-        prompt_hash="b" * 64,
-        schema_hash="c" * 64,
-        model=model,
-        base_url=base_url,
-        request_overhead_bytes=request_overhead_bytes,
-        uncapped=uncapped,
-        uncapped_purpose=uncapped_purpose,
-    )
-
-
-def test_patch_verification_requires_strict_purpose_and_local_model(
-    tmp_path: Path,
-) -> None:
-    """Patch verification is only the explicit local uncapped purpose."""
-    _budget(tmp_path)
-
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, uncapped=False)
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, uncapped_purpose="review")
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, model="different-model")
-    with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _patch_verification_budget(tmp_path, base_url="https://api.openai.com/v1")
-
-
 def test_uncapped_requires_existing_complete_capped_ledger(tmp_path: Path) -> None:
     """Uncapped campaigns must bind a complete capped pilot ledger."""
     with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
@@ -374,74 +431,6 @@ def test_uncapped_restart_keeps_reservations_and_usage_idempotent(
         encoding="utf-8"
     ).splitlines()
     assert len(uncapped_records) == 3
-
-
-def test_patch_verification_uses_independent_ledger_without_touching_old_ledgers(
-    tmp_path: Path,
-) -> None:
-    """Patch verification reservations preserve capped and prose-review ledgers."""
-    _budget(tmp_path)
-    old_bytes = proxy_budget.USER_BUDGET_PATH.read_bytes()
-    _uncapped_budget(tmp_path)
-    v4_bytes = proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes()
-
-    patch = _patch_verification_budget(
-        tmp_path, request_overhead_bytes=1_001_000_000
-    )
-    reserved = patch.reserve_attempt("patch-attempt-1", {"x": 1})
-    patch.record_usage(
-        "patch-attempt-1",
-        input_tokens=2,
-        output_tokens=3,
-        response_sha256="f" * 64,
-    )
-
-    assert reserved > Decimal("100")
-    assert proxy_budget.USER_BUDGET_PATH.read_bytes() == old_bytes
-    assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.read_bytes() == v4_bytes
-    assert not (tmp_path / "ignored-patch-verification.jsonl").exists()
-    patch_lines = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
-        encoding="utf-8"
-    ).splitlines()
-    patch_header = json.loads(patch_lines[0])
-    assert patch_header["uncapped"] is True
-    assert patch_header["uncapped_purpose"] == "patch_verification"
-    assert patch_header["source_hash"] == "a" * 64
-    assert patch_header["prompt_hash"] == "b" * 64
-    assert patch_header["schema_hash"] == "c" * 64
-    assert patch_header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
-    patch_mode = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.stat().st_mode
-    assert patch_mode & 0o777 == 0o600
-
-
-def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
-    tmp_path: Path,
-) -> None:
-    """Patch verification reloads its own completed reservations."""
-    _budget(tmp_path)
-    patch = _patch_verification_budget(tmp_path)
-    patch.reserve_attempt("patch-attempt-1", {"x": 1})
-    patch.record_usage(
-        "patch-attempt-1",
-        input_tokens=2,
-        output_tokens=3,
-        response_sha256="f" * 64,
-    )
-
-    restarted = _patch_verification_budget(tmp_path)
-    with pytest.raises(ProxyBudgetError, match="already reserved"):
-        restarted.reserve_attempt("patch-attempt-1", {"x": 1})
-    with pytest.raises(ProxyBudgetError, match="already recorded"):
-        restarted.record_usage(
-            "patch-attempt-1",
-            input_tokens=2,
-            output_tokens=3,
-            response_sha256="f" * 64,
-        )
-    patch_records = proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH.read_text(
-        encoding="utf-8"
-    ).splitlines()
-    assert len(patch_records) == 3
 
 
 def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
