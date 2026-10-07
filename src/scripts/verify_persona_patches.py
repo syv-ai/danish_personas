@@ -573,6 +573,13 @@ def _record_completed_future(
     try:
         attempt_result = future.result()
     except Exception as exc:
+        if isinstance(exc, httpx.HTTPStatusError):
+            LOGGER.error(
+                "Patch verification halted: HTTP %d",
+                exc.response.status_code,
+            )
+        else:
+            LOGGER.error("Patch verification halted: %s", type(exc).__name__)
         _record_transient_retries(status=status, exc=exc)
         status["failed"] = _status_int(status, "failed") + 1
         status["pending"] = _pending_count(status=status)
