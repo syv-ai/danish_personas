@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc as c
 import concurrent.futures as futures
 import json
 import logging
@@ -133,6 +134,9 @@ class ReviewRow:
     original_row: dict[str, object]
     candidate_row: dict[str, object]
     changed_facts: dict[str, dict[str, object]]
+
+
+ReviewFutureMap: t.TypeAlias = dict[futures.Future[ProseReviewResult], ReviewRow]
 
 
 @dataclass(frozen=True)
@@ -443,8 +447,76 @@ def _process_pending(
     workers: int,
     review_runner: ReviewRunner,
 ) -> None:
-    with futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {
+    row_iter = iter(rows)
+    future_map: ReviewFutureMap = {}
+    stop_exc: Exception | None = None
+    executor = futures.ThreadPoolExecutor(max_workers=workers)
+    try:
+        _submit_review_futures(
+            row_iter=row_iter,
+            future_map=future_map,
+            executor=executor,
+            limit=workers,
+            output_dir=output_dir,
+            prompt=prompt,
+            config=config,
+            budget=budget,
+            review_runner=review_runner,
+        )
+        while future_map:
+            done, _ = futures.wait(future_map, return_when=futures.FIRST_COMPLETED)
+            future = next(iter(done))
+            row = future_map.pop(future)
+            if future.cancelled():
+                continue
+            completed_exc = _record_completed_review_future(
+                future=future, row=row, status=status, status_path=status_path
+            )
+            if completed_exc is not None:
+                if stop_exc is None:
+                    stop_exc = completed_exc
+                _cancel_not_started(future_map=future_map)
+                continue
+            if stop_exc is None and not _has_completed_future(future_map=future_map):
+                _submit_review_futures(
+                    row_iter=row_iter,
+                    future_map=future_map,
+                    executor=executor,
+                    limit=workers,
+                    output_dir=output_dir,
+                    prompt=prompt,
+                    config=config,
+                    budget=budget,
+                    review_runner=review_runner,
+                )
+    finally:
+        if stop_exc is not None:
+            _cancel_not_started(future_map=future_map)
+        executor.shutdown(wait=stop_exc is None, cancel_futures=stop_exc is not None)
+    if stop_exc is not None:
+        raise PersonaProseReviewError(
+            "Prose review stopped before all rows were resolved"
+        ) from stop_exc
+
+
+def _submit_review_futures(
+    *,
+    row_iter: c.Iterator[ReviewRow],
+    future_map: ReviewFutureMap,
+    executor: futures.ThreadPoolExecutor,
+    limit: int,
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    review_runner: ReviewRunner,
+) -> None:
+    while len(future_map) < limit:
+        try:
+            row = next(row_iter)
+        except StopIteration:
+            return
+        future_map[
             executor.submit(
                 _run_one_review,
                 row=row,
@@ -453,26 +525,40 @@ def _process_pending(
                 config=config,
                 budget=budget,
                 review_runner=review_runner,
-            ): row
-            for row in rows
-        }
-        for future in futures.as_completed(future_map):
-            row = future_map[future]
-            status["attempted"] = _status_int(status, "attempted") + 1
-            try:
-                result = future.result()
-            except Exception as exc:
-                status["failed"] = _status_int(status, "failed") + 1
-                status["pending"] = _pending_count(status=status)
-                _write_status(path=status_path, status=status)
-                if _must_stop(exc):
-                    raise PersonaProseReviewError(
-                        "Prose review stopped before all rows were resolved"
-                    ) from exc
-                LOGGER.warning("Persona prose review failed for one selected row")
-                continue
-            _record_result(status=status, row=row, result=result)
-            _write_status(path=status_path, status=status)
+            )
+        ] = row
+
+
+def _record_completed_review_future(
+    *,
+    future: futures.Future[ProseReviewResult],
+    row: ReviewRow,
+    status: dict[str, object],
+    status_path: Path,
+) -> Exception | None:
+    status["attempted"] = _status_int(status, "attempted") + 1
+    try:
+        result = future.result()
+    except Exception as exc:
+        status["failed"] = _status_int(status, "failed") + 1
+        status["pending"] = _pending_count(status=status)
+        _write_status(path=status_path, status=status)
+        if _must_stop(exc):
+            return exc
+        LOGGER.warning("Persona prose review failed for one selected row")
+        return None
+    _record_result(status=status, row=row, result=result)
+    _write_status(path=status_path, status=status)
+    return None
+
+
+def _cancel_not_started(*, future_map: ReviewFutureMap) -> None:
+    for future in future_map:
+        future.cancel()
+
+
+def _has_completed_future(*, future_map: ReviewFutureMap) -> bool:
+    return any(future.done() for future in future_map)
 
 
 def _run_one_review(
