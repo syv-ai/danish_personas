@@ -126,7 +126,7 @@ def generate_lgbt_overlay(
     overlay = pl.DataFrame(
         {
             persona_id_column: identifiers,
-            "sexual_orientation_minority_identity": orientations,
+            "sexual_orientation_identity": orientations,
             "trans_or_nonbinary_identity": gender_identities,
             "variation_in_sex_characteristics": sex_characteristics,
         }
