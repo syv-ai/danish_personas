@@ -84,6 +84,7 @@ def run_proxy_review(
         candidate_row=candidate_row,
         changed_facts=changed_facts,
     )
+    verified_context = _verified_context_from_payload(payload=payload)
 
     schema = ProseReviewResponse.provider_json_schema()
     binding = _build_binding(
@@ -104,6 +105,7 @@ def run_proxy_review(
             binding=binding,
             original_text=original_text,
             changed_facts=changed_facts,
+            verified_context=verified_context,
         )
 
     response = _request_review(
@@ -120,6 +122,7 @@ def run_proxy_review(
             original_text=original_text,
             changed_facts=changed_facts,
             response=response.content,
+            verified_context=verified_context,
         )
     except LocalProseReviewError:
         result = _insufficient_evidence_result(
@@ -208,6 +211,20 @@ def _payload_with_null_detail_context(
         "explanation": _NULL_DETAIL_EXPLANATION_DA,
     }
     return with_context
+
+
+def _verified_context_from_payload(
+    *, payload: dict[str, object]
+) -> dict[str, object] | None:
+    context = payload.get(_LEGAL_STATUS_DETAIL_NULL_CONTEXT)
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ProxyReviewError("legal_status_detail null context is malformed")
+    target = context.get("target_marital_category_da")
+    if not isinstance(target, str):
+        raise ProxyReviewError("legal_status_detail null context is malformed")
+    return {_LEGAL_STATUS_DETAIL_NULL_CONTEXT: {"target_marital_category_da": target}}
 
 
 def _marital_status_is_verified(
@@ -355,6 +372,7 @@ def _resume_checkpoint(
     binding: dict[str, str | int],
     original_text: str,
     changed_facts: dict[str, dict[str, object]],
+    verified_context: dict[str, object] | None,
 ) -> ProseReviewResult:
     _require_private_checkpoint(path)
     checkpoint = _read_checkpoint(path)
@@ -372,7 +390,10 @@ def _resume_checkpoint(
     response = _checkpoint_response(checkpoint)
     try:
         result = validate_prose_review(
-            original_text=original_text, changed_facts=changed_facts, response=response
+            original_text=original_text,
+            changed_facts=changed_facts,
+            response=response,
+            verified_context=verified_context,
         )
     except LocalProseReviewError as exc:
         raise ProxyReviewError("Review checkpoint decision is invalid") from exc

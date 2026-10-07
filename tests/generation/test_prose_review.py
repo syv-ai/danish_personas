@@ -296,3 +296,124 @@ def test_unchanged_consistent_requires_bounded_evidence_for_each_fact() -> None:
     assert result.changed_fraction == 0.0
     assert result.unchanged_consistent_note == UNCHANGED_CONSISTENT_NOTE
     assert result.patches == ()
+
+
+@pytest.mark.parametrize(
+    ("target", "quote"),
+    [
+        ("skilt", "Hun er skilt"),
+        ("skilt", "Hun er fraskilt"),
+        ("enkestand", "Han lever i enkestand"),
+        ("enkestand", "Hun er enke"),
+        ("aldrig gift", "Han er aldrig gift"),
+        ("aldrig gift", "Hun er ugift"),
+    ],
+)
+def test_null_detail_context_accepts_conservative_danish_quote(
+    target: str, quote: str
+) -> None:
+    """Accept null detail evidence only when verified Danish category text appears."""
+    original = _persona_text(f"{quote} og har stabile rutiner")
+
+    result = validate_prose_review(
+        original_text=original,
+        changed_facts={"legal_status_detail": {"old": "married", "new": None}},
+        response={
+            "disposition": "unchanged_consistent",
+            "patches": [],
+            "unchanged_evidence": [
+                {
+                    "field": "legal_status_detail",
+                    "kind": "new_value_present",
+                    "quote": quote,
+                }
+            ],
+        },
+        verified_context={
+            "legal_status_detail_null_context": {"target_marital_category_da": target}
+        },
+    )
+
+    assert result.disposition == "unchanged_consistent"
+    assert result.unchanged_consistent_note == UNCHANGED_CONSISTENT_NOTE
+
+
+@pytest.mark.parametrize(
+    ("target", "quote"),
+    [
+        ("skilt", "Hun er separeret"),
+        ("skilt", "Hun er ikke skilt"),
+        ("enkestand", "Han er ikke enkemand"),
+        ("aldrig gift", "Hun er ikke længere ugift"),
+        ("aldrig gift", "Hun er tidligere ugift"),
+        ("skilt", "Hun er divorced"),
+    ],
+)
+def test_null_detail_context_rejects_wrong_or_unsafe_quotes(
+    target: str, quote: str
+) -> None:
+    """Keep the null-detail exception narrow and Danish-only."""
+    with pytest.raises(ProseReviewError):
+        validate_prose_review(
+            original_text=_persona_text(f"{quote} og har stabile rutiner"),
+            changed_facts={"legal_status_detail": {"old": "married", "new": None}},
+            response={
+                "disposition": "unchanged_consistent",
+                "patches": [],
+                "unchanged_evidence": [
+                    {
+                        "field": "legal_status_detail",
+                        "kind": "new_value_present",
+                        "quote": quote,
+                    }
+                ],
+            },
+            verified_context={
+                "legal_status_detail_null_context": {
+                    "target_marital_category_da": target
+                }
+            },
+        )
+
+
+def test_null_detail_quote_without_verified_context_is_rejected() -> None:
+    """Do not accept quoted evidence for None without runner-verified context."""
+    with pytest.raises(ProseReviewError):
+        validate_prose_review(
+            original_text=_persona_text("Hun er skilt og har stabile rutiner"),
+            changed_facts={"legal_status_detail": {"old": "married", "new": None}},
+            response={
+                "disposition": "unchanged_consistent",
+                "patches": [],
+                "unchanged_evidence": [
+                    {
+                        "field": "legal_status_detail",
+                        "kind": "new_value_present",
+                        "quote": "Hun er skilt",
+                    }
+                ],
+            },
+        )
+
+
+def test_non_null_new_value_present_validation_is_unchanged() -> None:
+    """Keep ordinary concrete new-value evidence on the existing path."""
+    original = _persona_text("Personen arbejder som koordinator")
+
+    result = validate_prose_review(
+        original_text=original,
+        changed_facts={"job_title": {"old": "analytiker", "new": "koordinator"}},
+        response={
+            "disposition": "unchanged_consistent",
+            "patches": [],
+            "unchanged_evidence": [
+                {
+                    "field": "job_title",
+                    "kind": "new_value_present",
+                    "quote": "arbejder som koordinator",
+                }
+            ],
+        },
+    )
+
+    assert result.disposition == "unchanged_consistent"
