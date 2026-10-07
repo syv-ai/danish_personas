@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections.abc as c
 import json
 import os
+import typing as t
 from hashlib import sha256
 from pathlib import Path
 
@@ -113,14 +114,17 @@ class FakeClient:
 
 
 def _run(
-    tmp_path: Path, config: GenerationConfig, client: FakeClient, **kwargs: object
+    tmp_path: Path,
+    config: GenerationConfig,
+    client: FakeClient | OpenAIClient,
+    **kwargs: object,
 ) -> list[dict[str, object]]:
     """Run the repair fixture with overridable input values.
 
     Returns:
         The repaired fixture rows.
     """
-    defaults: dict[str, object] = {
+    defaults: dict[str, t.Any] = {
         "rows": [
             {
                 "id": "a",
@@ -144,7 +148,7 @@ def _run(
         "client": client,
     }
     defaults.update(kwargs)
-    return run_prose_repair(**defaults)  # type: ignore[arg-type]
+    return run_prose_repair(**defaults)
 
 
 def test_changed_fields_are_reason_metadata_not_payload_allowlist(
@@ -171,7 +175,7 @@ def test_changed_row_and_unbounded_tokens_fail_closed(
     changed = [{"id": "a", "age": 41, "gender": "female", "job_title": "lærer"}]
     with pytest.raises(RepairError, match="Stale or malformed repair ledger"):
         _run(tmp_path, config, FakeClient("unused"), rows=changed)
-    unbounded = GenerationConfig.model_construct(**{**config.__dict__, "max_tokens": 0})
+    unbounded = config.model_copy(update={"max_tokens": 0})
     with pytest.raises(RepairError, match="max_tokens"):
         _run(tmp_path / "other", unbounded, FakeClient("unused"))
 
@@ -262,7 +266,7 @@ def test_provider_configuration_must_match_mistral(
     tmp_path: Path, config: GenerationConfig, field: str, value: str
 ) -> None:
     """Reject non-Mistral provider settings before invoking the client."""
-    wrong_config = GenerationConfig.model_construct(**{**config.__dict__, field: value})
+    wrong_config = config.model_copy(update={field: value})
     client = FakeClient("unused")
     with pytest.raises(RepairError, match="Mistral|mistral-small-2603|MISTRAL_API_KEY"):
         _run(tmp_path, wrong_config, client)

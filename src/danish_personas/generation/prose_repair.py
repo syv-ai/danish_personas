@@ -144,6 +144,7 @@ def run_prose_repair(
     )
     if not rows:
         return []
+    cost_cap = _require_cost_cap(cost_cap_usd)
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(output_dir, 0o700)
     lock_path = output_dir / ".repair.lock"
@@ -162,7 +163,7 @@ def run_prose_repair(
             input_manifest_sha256=input_manifest_sha256,
             sidecar_sha256=sidecar_sha256,
             output_dir=output_dir,
-            cost_cap_usd=cost_cap_usd,
+            cost_cap_usd=cost_cap,
             client=client,
         )
     finally:
@@ -201,7 +202,7 @@ def _run_locked(
     input_manifest_sha256: str,
     sidecar_sha256: str,
     output_dir: Path,
-    cost_cap_usd: float | None,
+    cost_cap_usd: float,
     client: _RepairClient,
 ) -> list[dict[str, t.Any]]:
     schema = _Prose.model_json_schema()
@@ -255,7 +256,7 @@ def _load_ledger(
     path: Path,
     binding: dict[str, object],
     identifiers: list[str],
-    cost_cap_usd: float | None,
+    cost_cap_usd: float,
 ) -> list[float]:
     """Load and fail closed on inconsistent durable request reservations.
 
@@ -396,7 +397,7 @@ def _repair_row(
     output_dir: Path,
     ledger_path: Path,
     reserved: list[float],
-    cost_cap_usd: float | None,
+    cost_cap_usd: float,
     client: _RepairClient,
 ) -> dict[str, t.Any]:
     checkpoint_path = output_dir / f"{sha256(identifier.encode()).hexdigest()}.json"
@@ -566,6 +567,18 @@ def _verify_response(
         raise RepairError("Provider response usage exceeds the reserved token bounds")
 
 
+def _require_cost_cap(cost_cap_usd: float | None) -> float:
+    """Return a validated cost cap while enforcing the $100 hard limit."""
+    if (
+        cost_cap_usd is None
+        or not math.isfinite(cost_cap_usd)
+        or cost_cap_usd <= 0
+        or cost_cap_usd > 100
+    ):
+        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
+    return cost_cap_usd
+
+
 def _validate_inputs(
     *,
     rows: list[dict[str, t.Any]],
@@ -586,13 +599,7 @@ def _validate_inputs(
     Raises:
         RepairError: If any bound or input metadata is invalid.
     """
-    if (
-        cost_cap_usd is None
-        or not math.isfinite(cost_cap_usd)
-        or cost_cap_usd <= 0
-        or cost_cap_usd > 100
-    ):
-        raise RepairError("Cost cap must be finite, positive, and no greater than $100")
+    _require_cost_cap(cost_cap_usd)
     if model != "mistral-small-2603" or config.model != "mistral-small-2603":
         raise RepairError("Repair model must be mistral-small-2603")
     if config.base_url != "https://api.mistral.ai/v1":
@@ -622,11 +629,12 @@ def _validate_row_metadata(
     Raises:
         RepairError: If row identifiers or changed-field metadata are invalid.
     """
-    identifiers = [row.get(id_field) for row in rows]
-    if any(
-        not isinstance(identifier, str) or not identifier for identifier in identifiers
-    ):
-        raise RepairError("Every input row requires a non-empty string ID")
+    identifiers: list[str] = []
+    for row in rows:
+        identifier = row.get(id_field)
+        if not isinstance(identifier, str) or not identifier:
+            raise RepairError("Every input row requires a non-empty string ID")
+        identifiers.append(identifier)
     if len(set(identifiers)) != len(identifiers):
         raise RepairError("Duplicate input IDs are not allowed")
     if set(changed_fields) - set(identifiers):
