@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from danish_personas.generation import proxy_budget
 from danish_personas.generation.proxy_budget import ProxyBudget, ProxyBudgetError
+
+
+@pytest.fixture(autouse=True)
+def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep all test campaigns on one isolated user-level ledger."""
+    monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
 
 
 def test_internal_cap_includes_historical_reservations(tmp_path: Path) -> None:
@@ -121,10 +128,14 @@ def test_reservation_is_durable_conservative_and_usage_does_not_refund(
     assert (tmp_path / "budget.jsonl").stat().st_mode & 0o777 == 0o600
 
     budget.record_usage(
-        "attempt-1", input_tokens=3, output_tokens=5, response="private response"
+        "attempt-1",
+        input_tokens=3,
+        output_tokens=5,
+        response_sha256="d" * 64,
     )
     assert budget.reserve_attempt("attempt-2", {"content": "fødselsdag"}) == reserved
     ledger_text = (tmp_path / "budget.jsonl").read_text(encoding="utf-8")
+    assert "d" * 64 in ledger_text
     assert "private response" not in ledger_text
     assert "fødselsdag" not in ledger_text
     assert '"response_sha256"' in ledger_text
@@ -146,10 +157,65 @@ def test_restart_keeps_prior_reservations_and_rejects_unknown_usage(
     restarted = _budget(tmp_path)
     with pytest.raises(ProxyBudgetError, match="unknown request ID"):
         restarted.record_usage(
-            "unknown", input_tokens=1, output_tokens=1, response=b"response"
+            "unknown", input_tokens=1, output_tokens=1, response_sha256="d" * 64
         )
     with pytest.raises(ProxyBudgetError, match="already reserved"):
         restarted.reserve_attempt("attempt-1", {"x": 1})
+
+
+def test_alternate_ledger_path_cannot_reset_shared_budget(tmp_path: Path) -> None:
+    """Caller-provided paths cannot create a fresh campaign budget."""
+    budget = _budget(tmp_path, cap="0.13")
+    budget.reserve_attempt("attempt-1", {"x": 1})
+    second = ProxyBudget(
+        ledger_path=tmp_path / "different-ledger.jsonl",
+        registry_path=_registry(tmp_path / "models-store.json"),
+        campaign="campaign-1",
+        source_hash="a" * 64,
+        prompt_hash="b" * 64,
+        schema_hash="c" * 64,
+        cap_usd=Decimal("0.13"),
+    )
+    assert second.path == budget.path == proxy_budget.USER_BUDGET_PATH
+    with pytest.raises(ProxyBudgetError, match="cap exhausted"):
+        second.reserve_attempt("attempt-2", {"x": 1})
+    assert not (tmp_path / "different-ledger.jsonl").exists()
+
+
+def test_changed_campaign_pins_fail_closed(tmp_path: Path) -> None:
+    """A shared ledger cannot be reopened under changed source or prompt pins."""
+    _budget(tmp_path)
+    changed_pins = (
+        ("source_hash", "e" * 64),
+        ("prompt_hash", "f" * 64),
+        ("schema_hash", "0" * 64),
+    )
+    for field, value in changed_pins:
+        pins = {
+            "campaign": "campaign-1",
+            "source_hash": "a" * 64,
+            "prompt_hash": "b" * 64,
+            "schema_hash": "c" * 64,
+        }
+        pins[field] = value
+        with pytest.raises(ProxyBudgetError, match="pins do not match"):
+            ProxyBudget(
+                registry_path=_registry(tmp_path / "models-store.json"), **pins
+            )
+
+
+def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
+    """Only an existing lowercase SHA-256 digest may be recorded."""
+    budget = _budget(tmp_path)
+    budget.reserve_attempt("attempt-1", {"x": 1})
+    for digest in ("A" * 64, "d" * 63, "not-a-digest"):
+        with pytest.raises(ProxyBudgetError, match="lowercase hex digest"):
+            budget.record_usage(
+                "attempt-1",
+                input_tokens=1,
+                output_tokens=1,
+                response_sha256=digest,
+            )
 
 
 def test_truncated_ledger_fails_closed(tmp_path: Path) -> None:

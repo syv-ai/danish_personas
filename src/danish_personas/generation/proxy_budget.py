@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import re
 import os
 import sys
 from collections.abc import Callable
@@ -20,6 +20,7 @@ MODEL = "gpt-6-luna"
 BASE_URL = "http://127.0.0.1:18080/v1"
 HARD_CAP_USD = Decimal("100")
 INTERNAL_CAP_USD = Decimal("90")
+USER_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-budget.jsonl"
 JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 )
@@ -44,7 +45,7 @@ class ProxyBudget:
     def __init__(
         self,
         *,
-        ledger_path: Path,
+        ledger_path: Path | None = None,
         registry_path: Path,
         campaign: str,
         source_hash: str,
@@ -63,7 +64,10 @@ class ProxyBudget:
         Raises:
             ProxyBudgetError: If configuration or pinned model metadata is invalid.
         """
-        self.path = Path(ledger_path)
+        # ``ledger_path`` is accepted for source compatibility, but never selects
+        # the ledger: all proxy campaigns share the same user-level budget.
+        del ledger_path
+        self.path = USER_BUDGET_PATH
         self.registry_path = Path(registry_path)
         self.pins: dict[str, JSONValue] = {
             "type": "header",
@@ -227,7 +231,7 @@ class ProxyBudget:
         *,
         input_tokens: int,
         output_tokens: int,
-        response: bytes | str,
+        response_sha256: str,
     ) -> None:
         """Record observed usage and response hash without refunding a reservation.
 
@@ -236,10 +240,10 @@ class ProxyBudget:
         """
         if input_tokens < 0 or output_tokens < 0:
             raise ProxyBudgetError("Observed token counts must be non-negative")
-        response_bytes = (
-            response.encode("utf-8") if isinstance(response, str) else response
-        )
-        response_hash = hashlib.sha256(response_bytes).hexdigest()
+        if not isinstance(response_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", response_sha256
+        ) is None:
+            raise ProxyBudgetError("Response SHA-256 must be a lowercase hex digest")
 
         def operation() -> None:
             header, records = self._load()
@@ -260,7 +264,7 @@ class ProxyBudget:
                     "request_id": request_id,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
-                    "response_sha256": response_hash,
+                    "response_sha256": response_sha256,
                 }
             )
 
