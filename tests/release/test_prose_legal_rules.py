@@ -1,9 +1,17 @@
 """Offline contracts for conservative legal-clause prose proposals."""
 
-from danish_personas.release.prose_legal_rules import propose_legal_prose_repair
+from danish_personas.release.prose_legal_rules import (
+    LegalProseProposal,
+    propose_legal_prose_repair,
+)
 
 
 def _text(clause: str = "Personen er gift.") -> str:
+    """Build valid-length fixture prose with a configurable legal clause.
+
+    Returns:
+        Persona prose containing the requested opening clause.
+    """
     return (
         f"{clause}\n"
         + "Personaen har et roligt hverdagsliv og sætter pris på gode samtaler, "
@@ -16,8 +24,18 @@ def _text(clause: str = "Personen er gift.") -> str:
     )
 
 
-def _propose(text: str, *, old: str = "married", new: str | None = "separated",
-             relationship: str = "partnered"):
+def _propose(
+    text: str,
+    *,
+    old: str = "married",
+    new: str | None = "separated",
+    relationship: str = "partnered",
+) -> LegalProseProposal:
+    """Propose a legal repair using consistent default source statuses.
+
+    Returns:
+        The legal prose proposal for the supplied fixture.
+    """
     return propose_legal_prose_repair(
         old_marital_status="married_or_separated",
         new_marital_status="married_or_separated",
@@ -29,6 +47,7 @@ def _propose(text: str, *, old: str = "married", new: str | None = "separated",
 
 
 def test_changes_only_exact_standalone_clause_and_returns_evidence() -> None:
+    """Replace one matching standalone clause and include source evidence."""
     text = _text("Civilstand: gift.")
     result = _propose(text)
 
@@ -37,10 +56,11 @@ def test_changes_only_exact_standalone_clause_and_returns_evidence() -> None:
         "Civilstand: gift.", "Civilstand: separeret."
     )
     assert result.evidence and "married" in result.evidence
-    assert len(result.proposed_text) == len(text)
+    assert 300 <= len(result.proposed_text) <= 900
 
 
 def test_merged_detail_replaces_known_clause_with_neutral_source_description() -> None:
+    """Avoid inferring either legal state when the new detail is merged."""
     result = _propose(_text(), new=None)
 
     assert result.proposed_text is not None
@@ -49,6 +69,7 @@ def test_merged_detail_replaces_known_clause_with_neutral_source_description() -
 
 
 def test_abstains_for_narrative_mentions_and_embedded_or_multiple_clauses() -> None:
+    """Reject clauses that are not one standalone sentence."""
     for text in (
         _text("Personen er gift, men foretrækker ro."),
         _text("I familien er Personen er gift."),
@@ -59,11 +80,13 @@ def test_abstains_for_narrative_mentions_and_embedded_or_multiple_clauses() -> N
 
 
 def test_abstains_on_clause_source_mismatch_or_alternate_pronouns() -> None:
+    """Reject mismatched legal clauses and alternate-pronoun prose."""
     assert _propose(_text("Personen er separeret.")).abstained
     assert _propose(_text() + " Hun holder af naturen.").abstained
 
 
 def test_abstains_for_inconsistent_source_inputs_and_invalid_length() -> None:
+    """Fail closed for inconsistent statuses and out-of-range prose."""
     result = propose_legal_prose_repair(
         old_marital_status="never_married",
         new_marital_status="married_or_separated",
@@ -78,6 +101,7 @@ def test_abstains_for_inconsistent_source_inputs_and_invalid_length() -> None:
 
 
 def test_safe_change_is_idempotent_as_a_second_old_to_new_proposal() -> None:
+    """Abstain when the proposed legal detail is already current."""
     first = _propose(_text())
     assert first.proposed_text is not None
 
