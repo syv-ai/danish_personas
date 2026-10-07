@@ -13,12 +13,8 @@ import httpx
 
 from .client import OpenAIClient
 from .models import GenerationConfig, LLMResponse
-from .prose_review import (
-    ProseReviewError,
-    ProseReviewResponse,
-    ProseReviewResult,
-    validate_prose_review,
-)
+from .prose_review import ProseReviewError as LocalProseReviewError
+from .prose_review import ProseReviewResponse, ProseReviewResult, validate_prose_review
 from .proxy_budget import BASE_URL, MODEL, JSONValue, ProxyBudget
 from .proxy_patch_runner import ProxyPatchError, _validate_config, _validated_input
 
@@ -101,11 +97,16 @@ def run_proxy_review(
         budget=budget,
         transport=transport,
     )
-    result = validate_prose_review(
-        original_text=original_text,
-        changed_facts=changed_facts,
-        response=response.content,
-    )
+    try:
+        result = validate_prose_review(
+            original_text=original_text,
+            changed_facts=changed_facts,
+            response=response.content,
+        )
+    except LocalProseReviewError:
+        result = _insufficient_evidence_result(
+            original_text=original_text, changed_facts=changed_facts
+        )
     _save_checkpoint(path=checkpoint_path, binding=binding, result=result)
     return result
 
@@ -232,6 +233,21 @@ def _request_review(
     return response
 
 
+def _insufficient_evidence_result(
+    *, original_text: str, changed_facts: dict[str, dict[str, object]]
+) -> ProseReviewResult:
+    return validate_prose_review(
+        original_text=original_text,
+        changed_facts=changed_facts,
+        response={
+            "disposition": "needs_manual_review",
+            "patches": [],
+            "unchanged_evidence": [],
+            "manual_review_reason": "insufficient_evidence",
+        },
+    )
+
+
 class _BoundedTransport(httpx.BaseTransport):
     """Reject a request whose actual body exceeds its durable reservation."""
 
@@ -295,7 +311,7 @@ def _resume_checkpoint(
         result = validate_prose_review(
             original_text=original_text, changed_facts=changed_facts, response=response
         )
-    except ProseReviewError as exc:
+    except LocalProseReviewError as exc:
         raise ProxyReviewError("Review checkpoint decision is invalid") from exc
     _verify_checkpoint_result(checkpoint=checkpoint, result=result)
     return result
