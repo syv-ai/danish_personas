@@ -122,7 +122,9 @@ def test_stale_checkpoint_fails_closed_without_output(tmp_path: Path) -> None:
             }
         ]
     ).write_parquet(paths.candidate)
-    manifest["inputs"]["candidate_v4"] = sha256_file(paths.candidate)  # type: ignore[index]
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, dict)
+    inputs["candidate_v4"] = sha256_file(paths.candidate)
     _write_json(paths.manifest, manifest)
     _write_status(paths=paths, manifest=manifest, hashes=[persona_hash])
 
