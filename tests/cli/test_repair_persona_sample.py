@@ -17,171 +17,19 @@ from danish_personas.io import sha256_file
 from scripts import repair_persona_sample as repair
 
 
-def test_dry_run_selects_safe_rows_without_private_identity_columns(
-    tmp_path: Path,
-) -> None:
-    """Dry-run emits only hashed IDs and excludes unresolved and forbidden rows."""
-    paths = _write_inputs(tmp_path)
-    loaded = repair.load_repair_inputs(paths=paths)
-
-    selected = repair.select_eligible_repairs(inputs=loaded, max_attempts=10)
-    summary = repair.run_repair_campaign(
-        paths=paths,
-        max_attempts=10,
-        dry_run=True,
-        cost_cap_usd=Decimal("10"),
-        expected_original_sha256=sha256_file(paths.original),
-        patch_runner=_unused_runner,
-    )
-
-    assert [row.persona_id for row in selected] == ["legal", "job"]
-    assert all("sexual_orientation" not in row for row in loaded.identity_rows.values())
-    assert summary["dry_run"] is True
-    assert summary["selected_count"] == 2
-    assert summary["selected"] == [
-        {
-            "persona_sha256": repair.sha256_text("legal"),
-            "changed_fields": ["legal_status_detail"],
-        },
-        {
-            "persona_sha256": repair.sha256_text("job"),
-            "changed_fields": ["job_function"],
-        },
-    ]
-    assert not (paths.output_dir / "status.json").exists()
-
-
-def test_cost_preflight_and_pinned_generation_config_are_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Non-dry runs initialise the fixed budget before making patch requests."""
-    paths = _write_inputs(tmp_path)
-    events: list[str] = []
-    checkpoints: list[Path] = []
-
-    class FakeBudget:
-        def __init__(self, **kwargs: object) -> None:
-            events.append("budget")
-            assert kwargs["registry_path"] == paths.registry
-            assert kwargs["campaign"] == repair.CAMPAIGN
-            assert kwargs["cap_usd"] == Decimal("10")
-            assert kwargs["prompt_hash"] == repair.sha256_text(
-                paths.prompt.read_text(encoding="utf-8")
-            )
-
-    def fake_runner(
-        row: dict[str, object],
-        candidate_row: dict[str, object],
-        changed_facts: dict[str, dict[str, object]],
-        gender: str | None,
-        partner_gender: str | None,
-        prompt: str,
-        config: GenerationConfig,
-        budget: object,
-        checkpoint_path: Path,
-        transport: httpx.BaseTransport,
-    ) -> ProxyPatchProposal:
-        events.append("runner")
-        assert isinstance(budget, FakeBudget)
-        assert isinstance(transport, httpx.HTTPTransport)
-        assert prompt == paths.prompt.read_text(encoding="utf-8")
-        assert config.base_url == repair.BASE_URL
-        assert config.model == repair.MODEL
-        assert config.max_tokens is None
-        assert config.reasoning_effort == "none"
-        assert config.maximum_http_attempts == 1
-        assert gender in {"man", "woman"}
-        assert partner_gender in {"man", "woman"}
-        assert row["persona"] == candidate_row["persona"]
-        assert set(changed_facts) <= repair._ALLOWED_FACTS
-        checkpoints.append(checkpoint_path)
-        return ProxyPatchProposal(str(row["persona"]), 0.0, (), checkpoint_path)
-
-    monkeypatch.setattr(repair, "ProxyBudget", FakeBudget)
-
-    summary = repair.run_repair_campaign(
-        paths=paths,
-        max_attempts=2,
-        dry_run=False,
-        cost_cap_usd=Decimal("10"),
-        expected_original_sha256=sha256_file(paths.original),
-        patch_runner=fake_runner,
-    )
-
-    assert events == ["budget", "runner", "runner"]
-    assert summary["processed"] == 2
-    assert summary["proposed"] == 2
-    assert summary["reserved"] == 2
-    assert all(
-        "legal" not in str(path) and "job" not in str(path) for path in checkpoints
-    )
-
-
-def test_resume_keeps_private_status_and_skips_processed_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Resume checks the manifest and stores processed IDs only in private status."""
-    paths = _write_inputs(tmp_path)
-    calls: list[str] = []
-
-    class FakeBudget:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-    def fake_runner(
-        row: dict[str, object],
-        _candidate_row: dict[str, object],
-        _changed_facts: dict[str, dict[str, object]],
-        _gender: str | None,
-        _partner_gender: str | None,
-        _prompt: str,
-        _config: GenerationConfig,
-        _budget: object,
-        checkpoint_path: Path,
-        _transport: httpx.BaseTransport,
-    ) -> ProxyPatchProposal:
-        persona_id = str(row["persona_id"])
-        calls.append(persona_id)
-        return ProxyPatchProposal(str(row["persona"]), 0.0, (), checkpoint_path)
-
-    monkeypatch.setattr(repair, "ProxyBudget", FakeBudget)
-    expected_sha = sha256_file(paths.original)
-    repair.run_repair_campaign(
-        paths=paths,
-        max_attempts=2,
-        dry_run=False,
-        cost_cap_usd=Decimal("10"),
-        expected_original_sha256=expected_sha,
-        patch_runner=fake_runner,
-    )
-    repair.run_repair_campaign(
-        paths=paths,
-        max_attempts=2,
-        dry_run=False,
-        cost_cap_usd=Decimal("10"),
-        expected_original_sha256=expected_sha,
-        patch_runner=fake_runner,
-    )
-
-    status_path = paths.output_dir / "status.json"
-    status = json.loads(status_path.read_text(encoding="utf-8"))
-    assert calls == ["legal", "job"]
-    assert status["processed_persona_ids"] == ["legal", "job"]
-    assert status["processed"] == 2
-    assert status["skipped"] == 2
-    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
-    assert (status_path.stat().st_mode & 0o777) == 0o600
-
-    paths.prompt.write_text("Retningslinjen er ændret.\n", encoding="utf-8")
-    with pytest.raises(repair.RepairSampleError, match="pins do not match"):
-        repair.run_repair_campaign(
-            paths=paths,
-            max_attempts=2,
-            dry_run=False,
-            cost_cap_usd=Decimal("10"),
-            expected_original_sha256=expected_sha,
-            patch_runner=fake_runner,
-        )
+def _unused_runner(
+    _row: dict[str, object],
+    _candidate_row: dict[str, object],
+    _changed_facts: dict[str, dict[str, object]],
+    _gender: str | None,
+    _partner_gender: str | None,
+    _prompt: str,
+    _config: GenerationConfig,
+    _budget: object,
+    _checkpoint_path: Path,
+    _transport: httpx.BaseTransport,
+) -> ProxyPatchProposal:
+    raise AssertionError("dry-run must not call the proxy patch runner")
 
 
 def test_baseline_and_cap_fail_closed(tmp_path: Path) -> None:
@@ -206,21 +54,6 @@ def test_baseline_and_cap_fail_closed(tmp_path: Path) -> None:
             expected_original_sha256=sha256_file(paths.original),
             patch_runner=_unused_runner,
         )
-
-
-def _unused_runner(
-    _row: dict[str, object],
-    _candidate_row: dict[str, object],
-    _changed_facts: dict[str, dict[str, object]],
-    _gender: str | None,
-    _partner_gender: str | None,
-    _prompt: str,
-    _config: GenerationConfig,
-    _budget: object,
-    _checkpoint_path: Path,
-    _transport: httpx.BaseTransport,
-) -> ProxyPatchProposal:
-    raise AssertionError("dry-run must not call the proxy patch runner")
 
 
 def _write_inputs(tmp_path: Path) -> repair.RepairPaths:
@@ -299,12 +132,12 @@ def _write_inputs(tmp_path: Path) -> repair.RepairPaths:
     return paths
 
 
-def _triage(fields: list[str]) -> dict[str, object]:
-    return {
-        "classification": "needs_prose_review_or_regeneration",
-        "changed_fields": fields,
-        "reasons": fields,
-    }
+def _persona(seed: str) -> str:
+    base = (
+        f"Persona {seed} bor i en dansk kommune og har en stabil hverdag med "
+        "arbejde, familie, fritidsinteresser og praktiske rutiner. "
+    )
+    return (base * 5)[:420]
 
 
 def _row(persona_id: str, **overrides: object) -> dict[str, object]:
@@ -324,9 +157,176 @@ def _row(persona_id: str, **overrides: object) -> dict[str, object]:
     return row
 
 
-def _persona(seed: str) -> str:
-    base = (
-        f"Persona {seed} bor i en dansk kommune og har en stabil hverdag med "
-        "arbejde, familie, fritidsinteresser og praktiske rutiner. "
+def _triage(fields: list[str]) -> dict[str, object]:
+    return {
+        "classification": "needs_prose_review_or_regeneration",
+        "changed_fields": fields,
+        "reasons": fields,
+    }
+
+
+def test_cost_preflight_and_pinned_generation_config_are_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-dry runs initialise the fixed budget before making patch requests."""
+    paths = _write_inputs(tmp_path)
+    events: list[str] = []
+    checkpoints: list[Path] = []
+
+    class FakeBudget:
+        def __init__(self, **kwargs: object) -> None:
+            events.append("budget")
+            assert kwargs["registry_path"] == paths.registry
+            assert kwargs["campaign"] == repair.CAMPAIGN
+            assert kwargs["cap_usd"] == Decimal("10")
+            assert kwargs["prompt_hash"] == repair.sha256_text(
+                paths.prompt.read_text(encoding="utf-8")
+            )
+
+    def fake_runner(
+        row: dict[str, object],
+        candidate_row: dict[str, object],
+        changed_facts: dict[str, dict[str, object]],
+        gender: str | None,
+        partner_gender: str | None,
+        prompt: str,
+        config: GenerationConfig,
+        budget: object,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+    ) -> ProxyPatchProposal:
+        events.append("runner")
+        assert isinstance(budget, FakeBudget)
+        assert isinstance(transport, httpx.HTTPTransport)
+        assert prompt == paths.prompt.read_text(encoding="utf-8")
+        assert config.base_url == repair.BASE_URL
+        assert config.model == repair.MODEL
+        assert config.max_tokens is None
+        assert config.reasoning_effort == "none"
+        assert config.maximum_http_attempts == 1
+        assert gender is None
+        assert partner_gender is None
+        assert row["persona"] == candidate_row["persona"]
+        assert set(changed_facts) <= repair._ALLOWED_FACTS
+        checkpoints.append(checkpoint_path)
+        return ProxyPatchProposal(str(row["persona"]), 0.0, (), checkpoint_path)
+
+    monkeypatch.setattr(repair, "ProxyBudget", FakeBudget)
+
+    summary = repair.run_repair_campaign(
+        paths=paths,
+        max_attempts=2,
+        dry_run=False,
+        cost_cap_usd=Decimal("10"),
+        expected_original_sha256=sha256_file(paths.original),
+        patch_runner=fake_runner,
     )
-    return (base * 5)[:420]
+
+    assert events == ["budget", "runner", "runner"]
+    assert summary["processed"] == 2
+    assert summary["proposed"] == 2
+    assert summary["attempted"] == 2
+    assert all(
+        "legal" not in str(path) and "job" not in str(path) for path in checkpoints
+    )
+
+
+def test_dry_run_selects_safe_rows_without_private_identity_columns(
+    tmp_path: Path,
+) -> None:
+    """Dry-run emits only hashed IDs and excludes unresolved and forbidden rows."""
+    paths = _write_inputs(tmp_path)
+    loaded = repair.load_repair_inputs(paths=paths)
+
+    selected = repair.select_eligible_repairs(inputs=loaded, max_attempts=10)
+    summary = repair.run_repair_campaign(
+        paths=paths,
+        max_attempts=10,
+        dry_run=True,
+        cost_cap_usd=Decimal("10"),
+        expected_original_sha256=sha256_file(paths.original),
+        patch_runner=_unused_runner,
+    )
+
+    assert [row.persona_id for row in selected] == ["legal", "job"]
+    assert all("sexual_orientation" not in row for row in loaded.identity_rows.values())
+    assert summary["dry_run"] is True
+    assert summary["selected_count"] == 2
+    assert summary["selected"] == [
+        {
+            "persona_sha256": repair.sha256_text("legal"),
+            "changed_fields": ["legal_status_detail"],
+        },
+        {
+            "persona_sha256": repair.sha256_text("job"),
+            "changed_fields": ["job_function"],
+        },
+    ]
+    assert not (paths.output_dir / "status.json").exists()
+
+
+def test_resume_keeps_private_status_and_skips_processed_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resume checks the manifest and stores processed IDs only in private status."""
+    paths = _write_inputs(tmp_path)
+    calls: list[str] = []
+
+    class FakeBudget:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    def fake_runner(
+        row: dict[str, object],
+        _candidate_row: dict[str, object],
+        _changed_facts: dict[str, dict[str, object]],
+        _gender: str | None,
+        _partner_gender: str | None,
+        _prompt: str,
+        _config: GenerationConfig,
+        _budget: object,
+        checkpoint_path: Path,
+        _transport: httpx.BaseTransport,
+    ) -> ProxyPatchProposal:
+        persona_id = str(row["persona_id"])
+        calls.append(persona_id)
+        return ProxyPatchProposal(str(row["persona"]), 0.0, (), checkpoint_path)
+
+    monkeypatch.setattr(repair, "ProxyBudget", FakeBudget)
+    expected_sha = sha256_file(paths.original)
+    repair.run_repair_campaign(
+        paths=paths,
+        max_attempts=2,
+        dry_run=False,
+        cost_cap_usd=Decimal("10"),
+        expected_original_sha256=expected_sha,
+        patch_runner=fake_runner,
+    )
+    repair.run_repair_campaign(
+        paths=paths,
+        max_attempts=2,
+        dry_run=False,
+        cost_cap_usd=Decimal("10"),
+        expected_original_sha256=expected_sha,
+        patch_runner=fake_runner,
+    )
+
+    status_path = paths.output_dir / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert calls == ["legal", "job"]
+    assert status["processed_persona_ids"] == ["legal", "job"]
+    assert status["processed"] == 2
+    assert status["skipped"] == 0
+    assert (paths.output_dir.stat().st_mode & 0o777) == 0o700
+    assert (status_path.stat().st_mode & 0o777) == 0o600
+
+    paths.prompt.write_text("Retningslinjen er ændret.\n", encoding="utf-8")
+    with pytest.raises(repair.RepairSampleError, match="pins do not match"):
+        repair.run_repair_campaign(
+            paths=paths,
+            max_attempts=2,
+            dry_run=False,
+            cost_cap_usd=Decimal("10"),
+            expected_original_sha256=expected_sha,
+            patch_runner=fake_runner,
+        )
