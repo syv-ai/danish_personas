@@ -532,10 +532,7 @@ def _validate_labels(*, source: pl.DataFrame, repaired: pl.DataFrame) -> None:
 def _changed_positions(
     *, before: pl.DataFrame, after: pl.DataFrame, columns: list[str]
 ) -> list[int]:
-    changed = (
-        before.select(columns).to_struct()
-        != after.select(columns).to_struct()
-    )
+    changed = before.select(columns).to_struct() != after.select(columns).to_struct()
     return [index for index, value in enumerate(changed) if value]
 
 

@@ -51,7 +51,7 @@ def test_repair_preserves_identity_and_protected_columns_on_missing_sources(
 def test_newly_eligible_row_gets_source_weighted_job_function(tmp_path: Path) -> None:
     """Newly eligible status gets a valid sex-conditioned source allocation."""
     frame = _release_frame().with_columns(
-        pl.Series("detailed_status_code", ["130", "05"]),
+        pl.Series("detailed_status_code", ["130", "15"]),
         pl.Series("detailed_status", ["Student", "Employee"]),
         pl.Series("job_function_code", [None, "11"]),
         pl.Series("job_function", [None, "Administration"]),
@@ -60,7 +60,7 @@ def test_newly_eligible_row_gets_source_weighted_job_function(tmp_path: Path) ->
     )
     _write_folk1a(tmp_path)
     _write_ras209(tmp_path, ["employed", "employed"])
-    _write_ras202(tmp_path, ["employed", "employed"])
+    _write_ras202(tmp_path, ["employed", "employed"], employee_code="15")
     _write_job_function_marginal(tmp_path)
 
     repaired, report = repair_demographics(frame, tmp_path)
@@ -80,7 +80,7 @@ def test_newly_eligible_row_gets_source_weighted_job_function(tmp_path: Path) ->
 def test_newly_eligible_without_job_function_source_rolls_back(tmp_path: Path) -> None:
     """Missing job-function source blocks the complete repair atomically."""
     frame = _release_frame().with_columns(
-        pl.Series("detailed_status_code", ["130", "05"]),
+        pl.Series("detailed_status_code", ["130", "15"]),
         pl.Series("detailed_status", ["Student", "Employee"]),
         pl.Series("job_function_code", [None, "11"]),
         pl.Series("job_function", [None, "Administration"]),
@@ -89,7 +89,7 @@ def test_newly_eligible_without_job_function_source_rolls_back(tmp_path: Path) -
     )
     _write_folk1a(tmp_path)
     _write_ras209(tmp_path, ["employed", "employed"])
-    _write_ras202(tmp_path, ["employed", "employed"])
+    _write_ras202(tmp_path, ["employed", "employed"], employee_code="15")
 
     repaired, report = repair_demographics(frame, tmp_path)
 
@@ -208,10 +208,12 @@ def _write_job_function_marginal(tmp_path: Path) -> None:
     ).write_parquet(path)
 
 
-def _write_ras202(tmp_path: Path, statuses: list[str]) -> None:
+def _write_ras202(
+    tmp_path: Path, statuses: list[str], employee_code: str = "05"
+) -> None:
     path = tmp_path / "normalized" / "ras202_detail_unpooled.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
-    codes = ["130" if status == "student" else "05" for status in statuses]
+    codes = ["130" if status == "student" else employee_code for status in statuses]
     labels = ["Student" if code == "130" else "Employee" for code in codes]
     pl.DataFrame(
         {
