@@ -25,6 +25,7 @@ from .client import OpenAIClient
 from .models import GenerationConfig, LLMResponse
 from .proxy_budget import (
     BASE_URL,
+    EDUCATION_VERIFICATION_PURPOSE,
     MODEL,
     PATCH_VERIFICATION_PURPOSE,
     JSONValue,
@@ -39,6 +40,9 @@ from .proxy_patch_runner import (
 
 _CHECKPOINT_VERSION = 1
 _SCHEMA_NAME = "prose_patch_verification"
+_VERIFICATION_PURPOSES = frozenset(
+    {PATCH_VERIFICATION_PURPOSE, EDUCATION_VERIFICATION_PURPOSE}
+)
 _LEGAL_STATUS_DETAIL_NULL_CONTEXT = "legal_status_detail_null_context"
 _NULL_DETAIL_MARITAL_STATUS_DA = {
     "divorced": "skilt",
@@ -217,8 +221,8 @@ def _build_binding(
         or budget.pins.get("schema_hash") != schema_hash
         or not isinstance(campaign, str)
         or not budget.uncapped
-        or budget.uncapped_purpose != PATCH_VERIFICATION_PURPOSE
-        or budget.pins.get("uncapped_purpose") != PATCH_VERIFICATION_PURPOSE
+        or budget.uncapped_purpose not in _VERIFICATION_PURPOSES
+        or budget.pins.get("uncapped_purpose") != budget.uncapped_purpose
     ):
         raise ProxyPatchVerificationError(
             "Proxy budget pins do not match patch-verification prompt and schema"
