@@ -79,8 +79,7 @@ def test_hydra_resolves_nested_values_and_rejects_obsolete_llm_fields(
         Path("config/config.yaml")
         .read_text(encoding="utf-8")
         .replace(
-            "  model: mistral-small-2603",
-            "  model: ${oc.env:TEST_GENERATION_MODEL}",
+            "  model: mistral-small-2603", "  model: ${oc.env:TEST_GENERATION_MODEL}"
         )
     )
     config_path = tmp_path / "config.yaml"

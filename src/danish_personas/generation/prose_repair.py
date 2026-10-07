@@ -616,8 +616,7 @@ def _attempt_cost(*, input_token_bound: int, max_tokens: int | None) -> float:
     """
     assert max_tokens is not None
     return (
-        input_token_bound * INPUT_USD_PER_MILLION
-        + max_tokens * OUTPUT_USD_PER_MILLION
+        input_token_bound * INPUT_USD_PER_MILLION + max_tokens * OUTPUT_USD_PER_MILLION
     ) / 1_000_000
 
 
