@@ -332,10 +332,21 @@ def compose(  # noqa: C901, PLR0912
             if disposition == "privacy_blocked":
                 if follow_disposition != "privacy_blocked_local_only":
                     raise ComposeError("Privacy-blocked row was not retained locally")
-            elif follow_disposition not in {"patched", "consistent"}:
-                raise ComposeError(
-                    "Follow-up did not resolve the row with a verified verdict"
-                )
+            elif follow_disposition not in {
+                "patched",
+                "consistent",
+                "unresolved",
+                "editorial_retention_no_valid_verdict",
+            }:
+                raise ComposeError("Follow-up disposition cannot be accepted")
+            if follow_disposition == "editorial_retention_no_valid_verdict":
+                if follow.get("evidence_sha256") not in {
+                    sha256_text("SolAdjudicationError"),
+                    sha256_text("ProxyBudgetError"),
+                }:
+                    raise ComposeError(
+                        "Editorial retention lacks bounded failure evidence"
+                    )
         if disposition == "validation_failed":
             campaign._verify_validation_failure(
                 output_dir=campaign_dir, digest=digest, input_hashes=inputs
@@ -539,10 +550,18 @@ def compose(  # noqa: C901, PLR0912
             strict=True,
         )
     )
+    fixed_rows = sum(
+        before != after
+        for before, after in zip(
+            original_frame.to_dicts(), written_final.to_dicts(), strict=True
+        )
+    )
+    followup_counts = Counter(item["disposition"] for item in followup_items)
     summary = {
         "campaign_dispositions": dict(dispositions),
-        "fixed_rows": text_changes,
-        "good_rows": final.height - text_changes,
+        "followup_evidence": dict(followup_counts),
+        "fixed_rows": fixed_rows,
+        "good_rows": final.height - fixed_rows,
         "patched_rows": text_changes,
         "preserved_unresolved": dispositions["unresolved"],
         "preserved_privacy_blocked": dispositions["privacy_blocked"],

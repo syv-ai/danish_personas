@@ -22,6 +22,7 @@ from danish_personas.generation.proxy_budget import (
     SOL_ADJUDICATION_MODEL,
     V3_TARGETED_FOLLOWUP_PURPOSE,
     ProxyBudget,
+    ProxyBudgetError,
     require_runtime_model,
 )
 from danish_personas.generation.sol_adjudication import (
@@ -81,7 +82,6 @@ def main(
         click.ClickException: If campaign inputs or resume state are invalid.
     """
     configure_cli_logging()
-    load_repository_environment()
     try:
         result = followup(
             base_dir=base_campaign,
@@ -116,6 +116,8 @@ def followup(  # noqa: C901, PLR0912
 
     Raises:
         RuntimeError: If campaign bindings or resumable state are invalid.
+        SolAdjudicationError: If local payload or checkpoint verification fails.
+        ProxyBudgetError: If budget integrity or authorisation fails.
     """
     base_manifest = _json(base_dir / "manifest.json")
     base_status = _json(base_dir / "status.json")
@@ -307,14 +309,39 @@ def followup(  # noqa: C901, PLR0912
             try:
                 result = future.result()
                 doc = _json(cp)
-            except Exception as exc:
+            except httpx.TransportError:
+                # Keep transport failures pending so a later run can retry them
+                # against the same verified campaign and durable attempt ledger.
+                continue
+            except SolAdjudicationError as exc:
+                if str(exc) != "Sol response failed bounded local validation retries":
+                    raise
                 _append(
                     status_path,
                     status,
                     {
                         "persona_hash": digest,
-                        "disposition": "request_failed",
-                        "result_sha256": sha256_text(f"{digest}:request_failed"),
+                        "disposition": "editorial_retention_no_valid_verdict",
+                        "result_sha256": sha256_text(
+                            f"{digest}:editorial_retention_no_valid_verdict"
+                        ),
+                        "base_result_sha256": base_item.get("result_sha256"),
+                        "evidence_sha256": sha256_text(type(exc).__name__),
+                    },
+                )
+                continue
+            except ProxyBudgetError as exc:
+                if str(exc) != "Per-row proxy attempt lifetime exhausted":
+                    raise
+                _append(
+                    status_path,
+                    status,
+                    {
+                        "persona_hash": digest,
+                        "disposition": "editorial_retention_no_valid_verdict",
+                        "result_sha256": sha256_text(
+                            f"{digest}:editorial_retention_no_valid_verdict"
+                        ),
                         "base_result_sha256": base_item.get("result_sha256"),
                         "evidence_sha256": sha256_text(type(exc).__name__),
                     },
@@ -450,3 +477,8 @@ def _append(path: Path, status: dict[str, Any], item: dict[str, Any]) -> None:
         "pending": status["selected_total"] - len(status["processed"]),
     }
     _write_private_json(path=path, value=status)
+
+
+if __name__ == "__main__":
+    load_repository_environment()
+    main()
