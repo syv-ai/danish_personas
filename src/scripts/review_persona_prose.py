@@ -31,8 +31,10 @@ from danish_personas.generation.proxy_budget import (
     BASE_URL,
     EDUCATION_REVIEW_PURPOSE,
     MODEL,
+    REVIEW_MODEL_ENV,
     ProxyBudget,
     ProxyBudgetError,
+    require_runtime_model,
 )
 from danish_personas.generation.proxy_patch_runner import _ALLOWED_FACTS
 from danish_personas.generation.proxy_review_runner import (
@@ -1195,6 +1197,7 @@ def _run_proxy_review_adapter(
     checkpoint_path: Path,
     transport: httpx.BaseTransport,
 ) -> ProseReviewResult:
+    require_runtime_model(REVIEW_MODEL_ENV)
     return run_proxy_review(
         row=row,
         candidate_row=candidate_row,

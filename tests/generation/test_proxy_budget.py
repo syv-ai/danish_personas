@@ -79,7 +79,7 @@ def _registry(
     *,
     price: str = "0.1",
     output_price: str = "0.5",
-    model: str = "gpt-6-luna",
+    model: str = "review-model",
     max_tokens: int = 128_000,
 ) -> Path:
     path.write_text(
@@ -233,7 +233,7 @@ def _education_verification_budget(
 def _patch_verification_budget(
     tmp_path: Path,
     *,
-    model: str = "gpt-6-luna",
+    model: str = "review-model",
     base_url: str = "http://127.0.0.1:18080/v1",
     request_overhead_bytes: int = 4096,
     uncapped: bool = True,
@@ -257,7 +257,7 @@ def _patch_verification_budget(
 def _uncapped_budget(
     tmp_path: Path,
     *,
-    model: str = "gpt-6-luna",
+    model: str = "review-model",
     campaign: str = "campaign-1",
     prompt_hash: str = "b" * 64,
     request_overhead_bytes: int = 4096,
@@ -323,7 +323,7 @@ def test_patch_verification_restart_keeps_reservations_and_usage_idempotent(
 
 
 @pytest.mark.parametrize(
-    ("price", "model"), [("0.2", "gpt-6-luna"), ("0.1", "different-model")]
+    ("price", "model"), [("0.2", "review-model"), ("0.1", "different-model")]
 )
 def test_registry_price_or_model_change_fails_closed(
     tmp_path: Path, price: str, model: str
@@ -520,7 +520,7 @@ def test_sol_adjudication_rejects_mismatched_registry_and_pins(tmp_path: Path) -
     with pytest.raises(ProxyBudgetError, match="pins do not match"):
         _sol_adjudication_budget(tmp_path, registry_path=registry, prompt_hash="6" * 64)
     with pytest.raises(ProxyBudgetError, match="pinned policy"):
-        _sol_adjudication_budget(tmp_path, model="gpt-6-luna")
+        _sol_adjudication_budget(tmp_path, model="review-model")
     with pytest.raises(ProxyBudgetError, match="pinned policy"):
         _sol_adjudication_budget(tmp_path, base_url="https://api.openai.com/v1")
 
@@ -575,7 +575,7 @@ def test_sol_adjudication_restart_and_summary_are_safe(tmp_path: Path) -> None:
         )
     summary = restarted.usage_summary()
 
-    assert summary["model"] == "gpt-6-sol"
+    assert summary["model"] == "adjudication-model"
     assert summary["invoice_verified"] is False
     assert summary["reservation_count"] == 1
     assert summary["usage_count"] == 1
@@ -626,7 +626,7 @@ def test_sol_adjudication_uses_independent_uncapped_ledger(tmp_path: Path) -> No
     ).splitlines()
     header = json.loads(lines[0])
     reservation = json.loads(lines[1])
-    assert header["model"] == "gpt-6-sol"
+    assert header["model"] == "adjudication-model"
     assert header["base_url"] == "http://127.0.0.1:18080/v1"
     assert header["input_usd_per_million"] == "2"
     assert header["output_usd_per_million"] == "10"
@@ -671,7 +671,7 @@ def test_uncapped_requires_existing_complete_capped_ledger(tmp_path: Path) -> No
 
     proxy_budget.USER_BUDGET_PATH.parent.mkdir(parents=True, exist_ok=True)
     proxy_budget.USER_BUDGET_PATH.write_text(
-        '{"type":"header","model":"gpt-6-luna"}', encoding="utf-8"
+        '{"type":"header","model":"review-model"}', encoding="utf-8"
     )
     with pytest.raises(ProxyBudgetError, match="missing or incomplete"):
         _uncapped_budget(tmp_path)
@@ -707,7 +707,7 @@ def test_uncapped_reservations_bind_old_sha_and_do_not_touch_old_ledger(
     header = json.loads(uncapped_lines[0])
     assert header["uncapped"] is True
     assert header["old_ledger_sha256"] == hashlib.sha256(old_bytes).hexdigest()
-    assert header["model"] == "gpt-6-luna"
+    assert header["model"] == "review-model"
     assert header["base_url"] == "http://127.0.0.1:18080/v1"
     assert proxy_budget.USER_UNCAPPED_BUDGET_PATH.stat().st_mode & 0o777 == 0o600
 

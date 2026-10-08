@@ -17,8 +17,44 @@ if sys.platform == "win32":
 else:
     import fcntl
 
-MODEL = "gpt-6-luna"
-SOL_ADJUDICATION_MODEL = "gpt-6-sol"
+REVIEW_MODEL_ENV = "DANISH_PERSONAS_REVIEW_MODEL"
+ADJUDICATION_MODEL_ENV = "DANISH_PERSONAS_ADJUDICATION_MODEL"
+MODEL = os.environ.get(REVIEW_MODEL_ENV, "review-model").strip()
+SOL_ADJUDICATION_MODEL = os.environ.get(
+    ADJUDICATION_MODEL_ENV, "adjudication-model"
+).strip()
+
+
+def require_runtime_model(environment_variable: str) -> str:
+    """Require a private runtime model choice before a live campaign runs.
+
+    Neutral fallback identifiers keep offline fixtures usable; they are never
+    accepted for a live campaign unless explicitly configured in the environment.
+
+    Returns:
+        The selected private model identifier.
+
+    Raises:
+        ProxyBudgetError: If the environment variable is missing or blank.
+    """
+    model = os.environ.get(environment_variable, "").strip()
+    if not model:
+        raise ProxyBudgetError(
+            f"Set {environment_variable} to a private runtime model name before "
+            "running this campaign"
+        )
+    configured_model = {
+        REVIEW_MODEL_ENV: MODEL,
+        ADJUDICATION_MODEL_ENV: SOL_ADJUDICATION_MODEL,
+    }.get(environment_variable)
+    if configured_model != model:
+        raise ProxyBudgetError(
+            f"Set {environment_variable} before starting the process so the "
+            "campaign budget and request use the same model"
+        )
+    return model
+
+
 BASE_URL = "http://127.0.0.1:18080/v1"
 DEFAULT_MAX_TOKENS = 128_000
 SOL_ADJUDICATION_LEDGER_MAX_TOKENS = DEFAULT_MAX_TOKENS

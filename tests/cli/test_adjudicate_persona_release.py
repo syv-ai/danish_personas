@@ -95,14 +95,14 @@ class _RecordingRunner:
 def _sol_transport(*, original_persona: str) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["model"] == "gpt-6-sol"
+        assert body["model"] == "adjudication-model"
         assert "max_tokens" not in body
         assert "max_completion_tokens" not in body
         return httpx.Response(
             200,
             json={
                 "id": "response-1",
-                "model": "gpt-6-sol",
+                "model": "adjudication-model",
                 "choices": [
                     {
                         "message": {
@@ -168,7 +168,7 @@ def _fixture_paths(
                 "openai-codex": {
                     "models": [
                         {
-                            "id": "gpt-6-sol",
+                            "id": "adjudication-model",
                             "maxTokens": proxy_budget.DEFAULT_MAX_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }

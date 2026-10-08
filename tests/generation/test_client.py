@@ -40,7 +40,7 @@ def test_client_enforces_total_request_budget_across_retries() -> None:
 def _config() -> GenerationConfig:
     return GenerationConfig(
         base_url="http://test/v1",
-        model="gpt-test",
+        model="test-model",
         api_key_env=None,
         timeout_seconds=10.0,
         maximum_http_attempts=2,
@@ -73,7 +73,7 @@ def test_client_schema_is_accepted_by_strict_proxy_contract() -> None:
             status_code=200,
             json={
                 "id": "chatcmpl-strict-schema",
-                "model": "gpt-5.6-sol",
+                "model": "adjudication-model",
                 "choices": [{"message": {"content": "{}"}}],
                 "usage": {
                     "prompt_tokens": 1,
@@ -95,7 +95,7 @@ def test_client_schema_is_accepted_by_strict_proxy_contract() -> None:
     )
     client.close()
 
-    assert response.model == "gpt-5.6-sol"
+    assert response.model == "adjudication-model"
     assert proxy_errors == []
 
 
@@ -127,7 +127,7 @@ def test_client_sends_supported_schema_request() -> None:
             status_code=200,
             json={
                 "id": "chatcmpl-test",
-                "model": "gpt-test",
+                "model": "test-model",
                 "choices": [{"message": {"content": '{"ok":true}'}}],
                 "usage": {
                     "prompt_tokens": 10,
@@ -153,7 +153,7 @@ def test_client_sends_supported_schema_request() -> None:
     assert response.total_tokens == 14
     assert response.estimated_cost_usd == 0.00001
     assert response.inference_provider == "test-provider"
-    assert captured["model"] == "gpt-test"
+    assert captured["model"] == "test-model"
     assert "temperature" not in captured
     assert "seed" not in captured
     assert captured["reasoning_effort"] == "none"
@@ -183,7 +183,7 @@ def test_client_uses_rate_limit_backoff(
             status_code=200,
             json={
                 "id": "chatcmpl-test",
-                "model": "gpt-test",
+                "model": "test-model",
                 "choices": [{"message": {"content": '{"ok":true}'}}],
                 "usage": {},
             },

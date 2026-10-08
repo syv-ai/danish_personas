@@ -125,7 +125,7 @@ def _sol_transport(
             200,
             json={
                 "id": "response-1",
-                "model": "gpt-6-sol",
+                "model": "adjudication-model",
                 "choices": [{"message": {"content": json.dumps(content)}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 20},
             },
@@ -212,7 +212,7 @@ def _fixture_paths(
                 "openai-codex": {
                     "models": [
                         {
-                            "id": "gpt-6-sol",
+                            "id": "adjudication-model",
                             "maxTokens": proxy_budget.DEFAULT_MAX_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }
