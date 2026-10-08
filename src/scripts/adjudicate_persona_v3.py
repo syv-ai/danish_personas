@@ -383,21 +383,28 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         }
         try:
             preflight_sol_adjudication_payload(
-                original_persona=row[TEXT_FIELD], candidate_row=row, prompt=prompt_text,
-                changed_fact_hints=hints, original_row=old,
+                original_persona=row[TEXT_FIELD],
+                candidate_row=row,
+                prompt=prompt_text,
+                changed_fact_hints=hints,
+                original_row=old,
             )
         except SolAdjudicationError:
             blocked.add(index)
     for index in sorted(blocked):
         digest = id_hashes[index]
-        status["processed"].append({
-            "persona_hash": digest, "disposition": "privacy_blocked",
-            "result_sha256": sha256_text(f"{digest}:privacy_blocked"),
-        })
+        status["processed"].append(
+            {
+                "persona_hash": digest,
+                "disposition": "privacy_blocked",
+                "result_sha256": sha256_text(f"{digest}:privacy_blocked"),
+            }
+        )
     status["processed"].sort(key=lambda item: item["persona_hash"])
     status["counts"] = _count_dispositions(status["processed"])
     status["progress"] = {
-        "completed": len(status["processed"]), "total": len(selected),
+        "completed": len(status["processed"]),
+        "total": len(selected),
         "pending": len(selected) - len(status["processed"]),
     }
     _write_private_json(path=status_path, value=status)
@@ -473,7 +480,9 @@ def _process_row(
         config=config,
         budget=budget,
         checkpoint_path=(
-            output_dir / "checkpoints" / id_hashes[index][:2]
+            output_dir
+            / "checkpoints"
+            / id_hashes[index][:2]
             / f"{id_hashes[index]}.json"
         ),
         transport=transport,
@@ -537,10 +546,7 @@ def _followup_bindings(path: Path, positions: dict[str, int]) -> dict[str, int]:
         not isinstance(ordered, list)
         or not isinstance(bindings, list)
         or ordered
-        != [
-            digest
-            for digest, _ in sorted(positions.items(), key=lambda item: item[1])
-        ]
+        != [digest for digest, _ in sorted(positions.items(), key=lambda item: item[1])]
     ):
         raise ReviewError("Follow-up ordered input hashes do not match the release")
     result: dict[str, int] = {}
@@ -577,8 +583,10 @@ def _followup_unmatched_count(path: Path, positions: dict[str, int]) -> int:
     bindings = _followup_bindings(path, positions)
     processed = _followup_processed(path)
     return sum(
-        1 for item in processed
-        if isinstance(item, dict) and item.get("disposition") == "unresolved"
+        1
+        for item in processed
+        if isinstance(item, dict)
+        and item.get("disposition") == "unresolved"
         and item.get("persona_hash") not in bindings
     )
 
@@ -601,7 +609,10 @@ def _followup_processed(path: Path) -> list[dict[str, Any]]:
         not isinstance(item, dict) for item in processed
     ):
         raise ReviewError("Prior status shape is invalid")
-    if status.get("counts") != _count_dispositions(processed):
+    actual_counts = {
+        key: value for key, value in _count_dispositions(processed).items() if value > 0
+    }
+    if status.get("counts") != actual_counts:
         raise ReviewError("Follow-up status counts do not match processed rows")
     selection = manifest.get("selection")
     bindings = selection.get("row_bindings") if isinstance(selection, dict) else None
@@ -619,8 +630,12 @@ def _followup_processed(path: Path) -> list[dict[str, Any]]:
             not isinstance(digest, str)
             or digest not in known
             or digest in seen
-            or item.get("disposition") not in {
-                "consistent", "patched", "unresolved", "privacy_blocked",
+            or item.get("disposition")
+            not in {
+                "consistent",
+                "patched",
+                "unresolved",
+                "privacy_blocked",
                 "validation_failed",
             }
         ):
@@ -700,7 +715,8 @@ def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, An
         raise ReviewError("Existing status disposition counts are invalid")
     progress = status.get("progress")
     expected_progress = {
-        "completed": len(processed), "total": total,
+        "completed": len(processed),
+        "total": total,
         "pending": total - len(processed),
     }
     if progress != expected_progress or len(processed) > total:
