@@ -81,7 +81,7 @@ class ReviewError(Exception):
 @click.option("--prompt", type=click.Path(path_type=Path), default=PROMPT)
 @click.option("--output-dir", type=click.Path(path_type=Path), default=OUTPUT)
 @click.option("--registry", type=click.Path(path_type=Path), default=REGISTRY)
-@click.option("--workers", type=click.IntRange(min=1, max=4), default=1)
+@click.option("--workers", type=click.IntRange(min=1, max=20), default=4)
 @click.option("--run", "execute", is_flag=True, default=False)
 def main(
     original: Path,
@@ -151,7 +151,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         ReviewError: If pinned inputs or durable resume state are invalid.
         SolAdjudicationError: If local request validation or adjudication fails.
     """
-    if workers not in range(1, 5):
+    if workers not in range(1, 21):
         raise ReviewError("Worker count is outside the supported range")
     base = pl.read_parquet(original)
     frame = pl.read_parquet(candidate)
@@ -249,7 +249,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                 "base_url": BASE_URL,
                 "model": SOL_ADJUDICATION_MODEL,
                 "api_key_env": None,
-                "timeout_seconds": 120.0,
+                "timeout_seconds": 360.0,
                 "maximum_http_attempts": 5,
                 "maximum_total_requests": None,
                 "retry_backoff_seconds": 1.0,
@@ -332,7 +332,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
             "base_url": BASE_URL,
             "model": SOL_ADJUDICATION_MODEL,
             "api_key_env": None,
-            "timeout_seconds": 120.0,
+            "timeout_seconds": 360.0,
             "maximum_http_attempts": 5,
             "maximum_total_requests": None,
             "retry_backoff_seconds": 1.0,
@@ -479,7 +479,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     }
     _write_private_json(path=status_path, value=status)
     pending = [index for index in pending if index not in blocked]
-    with httpx.Client(base_url=BASE_URL, timeout=120) as client:
+    with httpx.Client(base_url=BASE_URL, timeout=360) as client:
         transport = client._transport
         row_iter = iter(pending)
         future_map: dict[futures.Future[dict[str, Any]], int] = {}
