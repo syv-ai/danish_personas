@@ -37,96 +37,6 @@ def test_accepted_patch_updates_only_persona_and_reports_preview() -> None:
     assert len(report["preview_sha256"]) == 64
 
 
-def test_unresolved_count_uses_skipped_rows_not_status_history() -> None:
-    """Historical status attempts do not inflate unresolved rows."""
-    original, v4, proposed = _expanded_frames()
-    source_metadata = {
-        **_metadata(),
-        "review_status": {
-            "failed": 2,
-            "manual": 1,
-            "needs_manual_review": 1,
-            "pending": 0,
-            "rejected": 1,
-            "unchanged_consistent": 1,
-        },
-    }
-
-    preview, report = apply_reviewed_prose(
-        original_published_frame=original,
-        v4_structured_frame=v4,
-        first_pass_records=[
-            _first_record(proposed=proposed),
-            {
-                "persona_id": "p2",
-                "persona_hash": sha256_text("p2"),
-                "disposition": "unchanged_consistent",
-            },
-            _first_record_for(
-                persona_id="p3",
-                checkpoint_sha=_SECOND_SHA,
-                proposed="Afvist forslag til opdateret prosatekst.",
-            ),
-        ],
-        second_pass_records=[
-            _second_record(),
-            {
-                "persona_id": "p3",
-                "persona_hash": sha256_text("p3"),
-                "status": "rejected",
-                "accepted": False,
-                "original_checkpoint_sha256": _SECOND_SHA,
-            },
-        ],
-        source_metadata=source_metadata,
-    )
-
-    assert preview.get_column("persona").to_list() == [
-        proposed,
-        _other_persona(),
-        _third_persona(),
-    ]
-    assert report["release_ready"] is False
-    assert report["changed_rows"] == 1
-    assert report["skipped_first_pass_rows"] == 1
-    assert report["skipped_second_pass_rows"] == 1
-    assert report["unresolved_count"] == 2
-    assert report["review_status_counts"] == source_metadata["review_status"]
-
-
-def test_pending_unverified_second_pass_does_not_apply_patch() -> None:
-    """Pending verification keeps proposals out of the provisional preview."""
-    original, v4, proposed = _frames()
-
-    preview, report = apply_reviewed_prose(
-        original_published_frame=original,
-        v4_structured_frame=v4,
-        first_pass_records=[_first_record(proposed=proposed)],
-        second_pass_records=[
-            {
-                "persona_id": "p1",
-                "persona_hash": sha256_text("p1"),
-                "status": "pending",
-                "accepted": False,
-                "original_checkpoint_sha256": _SHA,
-            }
-        ],
-        source_metadata=_metadata(),
-    )
-
-    assert preview.get_column("persona").to_list() == [
-        _original_persona(),
-        _other_persona(),
-    ]
-    assert report["release_ready"] is False
-    assert report["changed_rows"] == 0
-    assert report["accepted_second_pass_rows"] == 0
-    assert report["skipped_first_pass_rows"] == 0
-    assert report["skipped_second_pass_rows"] == 1
-    assert report["unresolved_count"] == 1
-    assert report["review_status_counts"] == {"patched": 1, "pending": 1}
-
-
 def _first_record(*, proposed: str) -> dict[str, object]:
     return {
         "persona_id": "p1",
@@ -138,20 +48,6 @@ def _first_record(*, proposed: str) -> dict[str, object]:
         "proposed_text": proposed,
         "patches": [{"old_excerpt": "Hun er ugift", "new_excerpt": "Hun er gift"}],
         "changed_facts": {"marital_status": {"old": "ugift", "new": "gift"}},
-    }
-
-
-def _first_record_for(
-    *, persona_id: str, checkpoint_sha: str, proposed: str
-) -> dict[str, object]:
-    return {
-        "persona_id": persona_id,
-        "persona_hash": sha256_text(persona_id),
-        "disposition": "patched",
-        "checkpoint_sha256": checkpoint_sha,
-        "proposed_text": proposed,
-        "patches": [{"old_excerpt": "oprindelig", "new_excerpt": "opdateret"}],
-        "changed_facts": {"persona": {"old": "oprindelig", "new": "opdateret"}},
     }
 
 
@@ -184,30 +80,10 @@ def _frames() -> tuple[pl.DataFrame, pl.DataFrame, str]:
     return original, v4, proposed
 
 
-def _expanded_frames() -> tuple[pl.DataFrame, pl.DataFrame, str]:
-    original, v4, proposed = _frames()
-    extra = pl.DataFrame(
-        {
-            "persona_id": ["p3"],
-            "persona": [_third_persona()],
-            "marital_status": ["ugift"],
-            "age": [35],
-        }
-    )
-    return pl.concat([original, extra]), pl.concat([v4, extra]), proposed
-
-
 def _other_persona() -> str:
     return (
         "Han er gift og arbejder på et værksted. Han laver mad til familien, "
         "går ture ved havnen og følger lokale sportskampe i weekenden."
-    )
-
-
-def _third_persona() -> str:
-    return (
-        "Hun er ugift og arbejder i en dagligvarebutik. Hun passer sin have, "
-        "besøger sin søster og læser lokalavisen om morgenen."
     )
 
 
@@ -277,6 +153,39 @@ def test_forged_second_pass_checkpoint_link_is_rejected() -> None:
             second_pass_records=[second],
             source_metadata=_metadata(),
         )
+
+
+def test_pending_unverified_second_pass_does_not_apply_patch() -> None:
+    """Pending verification keeps proposals out of the provisional preview."""
+    original, v4, proposed = _frames()
+
+    preview, report = apply_reviewed_prose(
+        original_published_frame=original,
+        v4_structured_frame=v4,
+        first_pass_records=[_first_record(proposed=proposed)],
+        second_pass_records=[
+            {
+                "persona_id": "p1",
+                "persona_hash": sha256_text("p1"),
+                "status": "pending",
+                "accepted": False,
+                "original_checkpoint_sha256": _SHA,
+            }
+        ],
+        source_metadata=_metadata(),
+    )
+
+    assert preview.get_column("persona").to_list() == [
+        _original_persona(),
+        _other_persona(),
+    ]
+    assert report["release_ready"] is False
+    assert report["changed_rows"] == 0
+    assert report["accepted_second_pass_rows"] == 0
+    assert report["skipped_first_pass_rows"] == 0
+    assert report["skipped_second_pass_rows"] == 1
+    assert report["unresolved_count"] == 1
+    assert report["review_status_counts"] == {"patched": 1, "pending": 1}
 
 
 def test_rejects_blank_proposals_and_unpinned_metadata() -> None:
@@ -354,3 +263,94 @@ def test_unchanged_and_rejected_status_records_are_skipped() -> None:
     assert report["skipped_second_pass_rows"] == 1
     assert report["unresolved_count"] == 2
     assert report["review_status_counts"] == {"rejected": 1, "unchanged_consistent": 1}
+
+
+def test_unresolved_count_excludes_recovered_failed_attempts() -> None:
+    """Historical failed attempts do not inflate exclusive review outcomes."""
+    original, v4, proposed = _expanded_frames()
+    source_metadata = {
+        **_metadata(),
+        "review_status": {
+            "accepted": 1,
+            "failed": 2,
+            "needs_manual_review": 0,
+            "pending": 0,
+            "rejected": 1,
+            "unchanged_consistent": 1,
+        },
+    }
+
+    preview, report = apply_reviewed_prose(
+        original_published_frame=original,
+        v4_structured_frame=v4,
+        first_pass_records=[
+            _first_record(proposed=proposed),
+            {
+                "persona_id": "p2",
+                "persona_hash": sha256_text("p2"),
+                "disposition": "unchanged_consistent",
+            },
+            _first_record_for(
+                persona_id="p3",
+                checkpoint_sha=_SECOND_SHA,
+                proposed="Afvist forslag til opdateret prosatekst.",
+            ),
+        ],
+        second_pass_records=[
+            _second_record(),
+            {
+                "persona_id": "p3",
+                "persona_hash": sha256_text("p3"),
+                "status": "rejected",
+                "accepted": False,
+                "original_checkpoint_sha256": _SECOND_SHA,
+            },
+        ],
+        source_metadata=source_metadata,
+    )
+
+    assert preview.get_column("persona").to_list() == [
+        proposed,
+        _other_persona(),
+        _third_persona(),
+    ]
+    assert report["release_ready"] is False
+    assert report["changed_rows"] == 1
+    assert report["skipped_first_pass_rows"] == 1
+    assert report["skipped_second_pass_rows"] == 1
+    assert report["unresolved_count"] == 2
+    assert report["review_status_counts"] == source_metadata["review_status"]
+
+
+def _expanded_frames() -> tuple[pl.DataFrame, pl.DataFrame, str]:
+    original, v4, proposed = _frames()
+    extra = pl.DataFrame(
+        {
+            "persona_id": ["p3"],
+            "persona": [_third_persona()],
+            "marital_status": ["ugift"],
+            "age": [35],
+        }
+    )
+    return pl.concat([original, extra]), pl.concat([v4, extra]), proposed
+
+
+def _third_persona() -> str:
+    return (
+        "Hun er ugift og arbejder i en dagligvarebutik. Hun passer sin have, "
+        "besøger sin søster og læser lokalavisen om morgenen."
+    )
+
+
+def _first_record_for(
+    *, persona_id: str, checkpoint_sha: str, proposed: str
+) -> dict[str, object]:
+    return {
+        "persona_id": persona_id,
+        "persona_hash": sha256_text(persona_id),
+        "disposition": "patched",
+        "checkpoint_sha256": checkpoint_sha,
+        "proposed_text": proposed,
+        "patches": [{"old_excerpt": "oprindelig", "new_excerpt": "opdateret"}],
+        "changed_facts": {"persona": {"old": "oprindelig", "new": "opdateret"}},
+    }
