@@ -10,9 +10,14 @@ from danish_personas.release.provisional_v5_preview import merge_provisional_v5_
 
 def test_merge_excludes_stale_v4_overlap_and_preserves_original_h90_prose() -> None:
     """H90 rows start from original prose before verified H90 patches apply."""
+    overlap_original = (
+        "Jeg er rådgiver i en rolig syntetisk testpersona, som beskriver "
+        "hverdagsrutiner uden private detaljer, og jeg er 41 år."
+    )
+    overlap_h90 = overlap_original.replace("rådgiver", "analytiker")
     original = pl.DataFrame(
         [
-            _row("overlap", "Jeg er rådgiver og er 41 år.", "rådgiver"),
+            _row("overlap", overlap_original, "rådgiver"),
             _row("h90-blocked", "Jeg er lærer og er 50 år.", "lærer"),
             _row("v4-only", "Jeg er mekaniker og er 60 år.", "mekaniker"),
         ]
@@ -20,14 +25,14 @@ def test_merge_excludes_stale_v4_overlap_and_preserves_original_h90_prose() -> N
     v4_structured = original.clone()
     v5_h90 = pl.DataFrame(
         [
-            _row("overlap", "Jeg er rådgiver og er 41 år.", "analytiker"),
+            _row("overlap", overlap_original, "analytiker"),
             _row("h90-blocked", "Jeg er lærer og er 50 år.", "konsulent"),
             _row("v4-only", "Jeg er mekaniker og er 60 år.", "mekaniker"),
         ]
     )
     v4_preview = pl.DataFrame(
         [
-            _row("overlap", "Jeg er rådgiver og er 42 år.", "rådgiver"),
+            _row("overlap", overlap_original.replace("41 år", "42 år"), "rådgiver"),
             _row("h90-blocked", "Jeg er lærer og er 51 år.", "lærer"),
             _row("v4-only", "Jeg er smed og er 60 år.", "mekaniker"),
         ]
@@ -35,8 +40,8 @@ def test_merge_excludes_stale_v4_overlap_and_preserves_original_h90_prose() -> N
     h90_first = [
         _first_record(
             persona_id="overlap",
-            original_text="Jeg er rådgiver og er 41 år.",
-            proposed_text="Jeg er analytiker og er 41 år.",
+            original_text=overlap_original,
+            proposed_text=overlap_h90,
             old="rådgiver",
             new="analytiker",
             checkpoint_sha="a" * 64,
@@ -64,7 +69,7 @@ def test_merge_excludes_stale_v4_overlap_and_preserves_original_h90_prose() -> N
     )
 
     personas = {row["persona_id"]: row["persona"] for row in preview.to_dicts()}
-    assert personas["overlap"] == "Jeg er analytiker og er 41 år."
+    assert personas["overlap"] == overlap_h90
     assert personas["h90-blocked"] == "Jeg er lærer og er 50 år."
     assert personas["v4-only"] == "Jeg er smed og er 60 år."
     assert report["v4_excluded_overlap_count"] == 2

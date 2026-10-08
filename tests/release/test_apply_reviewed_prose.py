@@ -7,6 +7,7 @@ import pytest
 
 from danish_personas.io import sha256_text
 from danish_personas.release.apply_reviewed_prose import apply_reviewed_prose
+from danish_personas.release.prose_patch_verification import ProsePatchVerificationError
 
 _SHA = "a" * 64
 _SECOND_SHA = "b" * 64
@@ -153,6 +154,27 @@ def test_forged_second_pass_checkpoint_link_is_rejected() -> None:
             second_pass_records=[second],
             source_metadata=_metadata(),
         )
+
+
+def test_failed_local_review_reports_hashed_persona_id() -> None:
+    """Local-review failures must not expose raw private persona IDs."""
+    original, v4, proposed = _frames()
+    second = _second_record()
+    second["fact_evidence"] = []
+
+    with pytest.raises(ValueError) as exc_info:
+        apply_reviewed_prose(
+            original_published_frame=original,
+            v4_structured_frame=v4,
+            first_pass_records=[_first_record(proposed=proposed)],
+            second_pass_records=[second],
+            source_metadata=_metadata(),
+        )
+
+    message = str(exc_info.value)
+    assert "p1" not in message
+    assert sha256_text("p1") in message
+    assert isinstance(exc_info.value.__cause__, ProsePatchVerificationError)
 
 
 def test_pending_unverified_second_pass_does_not_apply_patch() -> None:

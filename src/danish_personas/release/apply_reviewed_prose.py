@@ -197,7 +197,11 @@ def _accepted_proposed_text(
             original_checkpoint_sha256=first_sha,
         )
     except ProsePatchVerificationError as exc:
-        message = f"Accepted prose patch failed local review: {persona_id}"
+        persona_hash = sha256_text(persona_id)
+        message = (
+            "Accepted prose patch failed local review for persona SHA-256 "
+            f"{persona_hash}"
+        )
         raise ValueError(message) from exc
     if not result.accepted:
         raise ValueError("Accepted second-pass record was not locally accepted")
