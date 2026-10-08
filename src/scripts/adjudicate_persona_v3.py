@@ -412,6 +412,33 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                 raise ReviewError("Processed checkpoint disposition mismatch")
         done.add(digest)
     pending = [index for index in selected if id_hashes[index] not in done]
+    recovered: list[dict[str, Any]] = []
+    for index in pending:
+        digest = id_hashes[index]
+        evidence_path = _validation_evidence_path(output_dir=output_dir, digest=digest)
+        if evidence_path.exists():
+            _verify_validation_failure(
+                output_dir=output_dir, digest=digest, input_hashes=input_hashes
+            )
+            recovered.append(
+                {
+                    "persona_hash": digest,
+                    "disposition": "validation_failed",
+                    "result_sha256": sha256_text(f"{digest}:validation_failed"),
+                }
+            )
+    if recovered:
+        status["processed"].extend(recovered)
+        status["processed"].sort(key=lambda item: item["persona_hash"])
+        status["counts"] = _count_dispositions(status["processed"])
+        status["progress"] = {
+            "completed": len(status["processed"]),
+            "total": len(selected),
+            "pending": len(selected) - len(status["processed"]),
+        }
+        _write_private_json(path=status_path, value=status)
+        done.update(item["persona_hash"] for item in recovered)
+    pending = [index for index in pending if id_hashes[index] not in done]
     # Complete privacy preflight for every queued row before opening a client or
     # allowing any worker to issue a request.
     blocked: set[int] = set()
