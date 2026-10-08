@@ -23,6 +23,7 @@ from .proxy_budget import (
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     SOL_ADJUDICATION_PURPOSE,
+    V3_ADJUDICATION_PURPOSE,
     JSONValue,
     ProxyBudget,
 )
@@ -630,7 +631,8 @@ def _build_binding(
         or budget.pins.get("prompt_hash") != prompt_hash
         or budget.pins.get("schema_hash") != schema_hash
         or budget.pins.get("uncapped") is not True
-        or budget.pins.get("uncapped_purpose") != SOL_ADJUDICATION_PURPOSE
+        or budget.pins.get("uncapped_purpose")
+        not in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}
     ):
         raise SolAdjudicationError("Sol budget pins do not match prompt and schema")
     try:
