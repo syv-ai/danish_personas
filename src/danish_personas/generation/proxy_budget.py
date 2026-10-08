@@ -173,8 +173,9 @@ class ProxyBudget:
         if uncapped_purpose in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
-            expected_input_price = Decimal("2")
-            expected_output_price = Decimal("10")
+            if uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
+                expected_input_price = Decimal("2")
+                expected_output_price = Decimal("10")
         try:
             input_price = Decimal(input_usd_per_million)
             output_price = Decimal(output_usd_per_million)
