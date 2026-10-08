@@ -18,11 +18,16 @@ else:
     import fcntl
 
 MODEL = "gpt-6-luna"
+SOL_ADJUDICATION_MODEL = "gpt-6-sol"
 BASE_URL = "http://127.0.0.1:18080/v1"
+DEFAULT_MAX_TOKENS = 128_000
 HARD_CAP_USD = Decimal("100")
 INTERNAL_CAP_USD = Decimal("90")
 USER_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-budget.jsonl"
 USER_UNCAPPED_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-uncapped.jsonl"
+USER_SOL_ADJUDICATION_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-sol-adjudication.jsonl"
+)
 USER_PATCH_VERIFICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
 )
@@ -35,11 +40,13 @@ USER_EDUCATION_VERIFICATION_BUDGET_PATH = (
 PATCH_VERIFICATION_PURPOSE = "patch_verification"
 EDUCATION_REVIEW_PURPOSE = "h90_v5"
 EDUCATION_VERIFICATION_PURPOSE = "h90_v5_verification"
+SOL_ADJUDICATION_PURPOSE = "sol_adjudication"
 UNLIMITED_PURPOSES = frozenset(
     {
         PATCH_VERIFICATION_PURPOSE,
         EDUCATION_REVIEW_PURPOSE,
         EDUCATION_VERIFICATION_PURPOSE,
+        SOL_ADJUDICATION_PURPOSE,
     }
 )
 JSONValue: TypeAlias = (
@@ -75,7 +82,7 @@ class ProxyBudget:
         schema_hash: str,
         model: str = MODEL,
         base_url: str = BASE_URL,
-        max_tokens: int = 128_000,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         input_usd_per_million: str = "0.1",
         output_usd_per_million: str = "0.5",
         cap_usd: Decimal = INTERNAL_CAP_USD,
@@ -93,7 +100,12 @@ class ProxyBudget:
         del ledger_path
         self.uncapped = uncapped
         self.uncapped_purpose = uncapped_purpose
-        if uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
+        self._requires_capped_ledger = (
+            uncapped and uncapped_purpose != SOL_ADJUDICATION_PURPOSE
+        )
+        if uncapped and uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
+            self.path = USER_SOL_ADJUDICATION_BUDGET_PATH
+        elif uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
             self.path = USER_PATCH_VERIFICATION_BUDGET_PATH
         elif uncapped and uncapped_purpose == EDUCATION_REVIEW_PURPOSE:
             self.path = USER_EDUCATION_REVIEW_BUDGET_PATH
@@ -120,12 +132,26 @@ class ProxyBudget:
                 self.pins["uncapped_purpose"] = uncapped_purpose
         self.cap = Decimal(cap_usd)
         self.overhead = request_overhead_bytes
+        expected_model = MODEL
+        expected_input_price = Decimal("0.1")
+        expected_output_price = Decimal("0.5")
+        if uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
+            expected_model = SOL_ADJUDICATION_MODEL
+            expected_input_price = Decimal("2")
+            expected_output_price = Decimal("10")
+        try:
+            input_price = Decimal(input_usd_per_million)
+            output_price = Decimal(output_usd_per_million)
+        except InvalidOperation as exc:
+            raise ProxyBudgetError(
+                "Proxy budget configuration is not within pinned policy"
+            ) from exc
         if (
-            model != MODEL
+            model != expected_model
             or base_url != BASE_URL
-            or max_tokens != 128_000
-            or Decimal(input_usd_per_million) != Decimal("0.1")
-            or Decimal(output_usd_per_million) != Decimal("0.5")
+            or max_tokens != DEFAULT_MAX_TOKENS
+            or input_price != expected_input_price
+            or output_price != expected_output_price
             or (not uncapped and not Decimal("0") < self.cap <= INTERNAL_CAP_USD)
             or (
                 uncapped_purpose is not None
@@ -141,7 +167,7 @@ class ProxyBudget:
         self._locked(self._initialise)
 
     def _locked(self, function: Callable[[], Result]) -> Result:
-        if self.uncapped:
+        if self._requires_capped_ledger:
             return _locked_path(
                 USER_BUDGET_PATH, lambda: _locked_path(self.path, function)
             )
@@ -149,7 +175,7 @@ class ProxyBudget:
 
     def _initialise(self) -> None:
         self._check_registry()
-        if self.uncapped:
+        if self._requires_capped_ledger:
             self._refresh_old_ledger_pin()
         if self.path.exists():
             header, _ = self._load()
@@ -179,7 +205,7 @@ class ProxyBudget:
 
     def _check_header(self, header: dict[str, JSONValue]) -> None:
         self._check_registry()
-        if self.uncapped:
+        if self._requires_capped_ledger:
             self._refresh_old_ledger_pin()
         if header != self.pins:
             raise ProxyBudgetError(
@@ -273,6 +299,44 @@ class ProxyBudget:
         ) as exc:
             raise ProxyBudgetError("Budget ledger is malformed or truncated") from exc
 
+    def usage_summary(self) -> dict[str, JSONValue]:
+        """Return aggregate usage and an unverified billing estimate.
+
+        The estimate is derived only from durable ledger records and pinned list
+        prices. It is not a provider invoice or a confirmation of billed spend.
+        """
+
+        def operation() -> dict[str, JSONValue]:
+            header, records = self._load()
+            self._check_header(header)
+            reservations = [r for r in records if r["type"] == "reservation"]
+            usages = [r for r in records if r["type"] == "usage"]
+            reserved_usd = sum(
+                (Decimal(str(r["usd"])) for r in reservations), Decimal(0)
+            )
+            input_tokens = sum(int(r["input_tokens"]) for r in usages)
+            output_tokens = sum(int(r["output_tokens"]) for r in usages)
+            input_price = Decimal(str(self.pins["input_usd_per_million"]))
+            output_price = Decimal(str(self.pins["output_usd_per_million"]))
+            usage_estimate = (
+                Decimal(input_tokens) * input_price
+                + Decimal(output_tokens) * output_price
+            ) / Decimal(1_000_000)
+            return {
+                "ledger_path": str(self.path),
+                "model": str(self.pins["model"]),
+                "uncapped": self.uncapped,
+                "reservation_count": len(reservations),
+                "usage_count": len(usages),
+                "recorded_input_tokens": input_tokens,
+                "recorded_output_tokens": output_tokens,
+                "reserved_usd": str(reserved_usd),
+                "estimated_recorded_usage_usd": str(usage_estimate),
+                "invoice_verified": False,
+            }
+
+        return self._locked(operation)
+
     def record_usage(
         self,
         request_id: str,
@@ -298,15 +362,26 @@ class ProxyBudget:
             header, records = self._load()
             self._check_header(header)
             reservations = {
-                r["request_id"] for r in records if r["type"] == "reservation"
+                str(r["request_id"]): r
+                for r in records
+                if r["type"] == "reservation"
             }
-            if request_id not in reservations:
+            reservation = reservations.get(request_id)
+            if reservation is None:
                 raise ProxyBudgetError("Usage references an unknown request ID")
             if any(
                 r.get("request_id") == request_id and r["type"] == "usage"
                 for r in records
             ):
                 raise ProxyBudgetError("Usage already recorded for request ID")
+            input_bound = reservation.get("input_byte_bound")
+            output_bound = reservation.get("max_output_tokens")
+            if not isinstance(input_bound, int) or not isinstance(output_bound, int):
+                raise ProxyBudgetError(
+                    "Usage references a reservation without token bounds"
+                )
+            if input_tokens > input_bound or output_tokens > output_bound:
+                raise ProxyBudgetError("Observed token usage exceeds reserved bounds")
             self._append(
                 {
                     "type": "usage",
@@ -316,6 +391,40 @@ class ProxyBudget:
                     "response_sha256": response_sha256,
                 }
             )
+
+        self._locked(operation)
+
+    def validate_request_body(self, request_id: str, body: bytes) -> None:
+        """Ensure an actual HTTP body fits a durable reservation.
+
+        Callers should reserve an attempt and then validate the exact request
+        body immediately before I/O. This check does not reserve, refund, or
+        mutate ledger state.
+        """
+        if not isinstance(body, bytes):
+            raise ProxyBudgetError("HTTP request body must be bytes")
+
+        def operation() -> None:
+            header, records = self._load()
+            self._check_header(header)
+            reservation = next(
+                (
+                    r
+                    for r in records
+                    if r["type"] == "reservation"
+                    and r.get("request_id") == request_id
+                ),
+                None,
+            )
+            if reservation is None:
+                raise ProxyBudgetError("Body check references an unknown request ID")
+            input_bound = reservation.get("input_byte_bound")
+            if not isinstance(input_bound, int):
+                raise ProxyBudgetError(
+                    "Body check references a reservation without input bounds"
+                )
+            if len(body) > input_bound:
+                raise ProxyBudgetError("HTTP request body exceeds reserved bounds")
 
         self._locked(operation)
 
@@ -334,13 +443,19 @@ class ProxyBudget:
             os.close(fd)
 
     def reserve_attempt(
-        self, request_id: str, request: dict[str, JSONValue]
+        self,
+        request_id: str,
+        request: dict[str, JSONValue],
+        *,
+        max_output_tokens: int | None = None,
     ) -> Decimal:
         """Durably reserve worst-case cost before an HTTP attempt.
 
         Args:
             request_id: Unique identifier for this HTTP attempt.
             request: JSON-compatible provider request payload.
+            max_output_tokens (optional): Smaller response-token bound to reserve.
+                Defaults to the pinned model maximum.
 
         Returns:
             The USD amount reserved for this attempt.
@@ -350,13 +465,13 @@ class ProxyBudget:
         """
         if not request_id or not isinstance(request_id, str):
             raise ProxyBudgetError("Request ID must be a non-empty string")
+        output_bound = self._normalise_output_bound(max_output_tokens)
         request_bytes = len(_canonical_json(request)) + self.overhead
         # One token per UTF-8 byte is deliberately conservative.
         input_tokens = request_bytes
         per_request = (
             Decimal(input_tokens) * Decimal(str(self.pins["input_usd_per_million"]))
-            + Decimal(str(self.pins["max_tokens"]))
-            * Decimal(str(self.pins["output_usd_per_million"]))
+            + Decimal(output_bound) * Decimal(str(self.pins["output_usd_per_million"]))
         ) / Decimal(1_000_000)
 
         def operation() -> Decimal:
@@ -380,12 +495,26 @@ class ProxyBudget:
                     "request_id": request_id,
                     "usd": str(per_request),
                     "input_byte_bound": request_bytes,
-                    "max_output_tokens": self.pins["max_tokens"],
+                    "max_output_tokens": output_bound,
                 }
             )
             return per_request
 
         return self._locked(operation)
+
+    def _normalise_output_bound(self, max_output_tokens: int | None) -> int:
+        model_limit = self.pins["max_tokens"]
+        if not isinstance(model_limit, int):
+            raise ProxyBudgetError("Pinned model token limit is invalid")
+        if max_output_tokens is None:
+            return model_limit
+        if (
+            not isinstance(max_output_tokens, int)
+            or max_output_tokens <= 0
+            or max_output_tokens > model_limit
+        ):
+            raise ProxyBudgetError("Response token bound is outside pinned policy")
+        return max_output_tokens
 
 
 class ProxyBudgetError(RuntimeError):
@@ -476,7 +605,7 @@ def _validate_records(
         ValueError: If a record is invalid or the requested cap is exceeded.
     """
     validated: list[dict[str, JSONValue]] = []
-    reservations: set[str] = set()
+    reservations: dict[str, dict[str, JSONValue]] = {}
     total = Decimal(0)
     for value in records:
         if not isinstance(value, dict) or value.get("type") not in {
@@ -493,7 +622,7 @@ def _validate_records(
             amount = Decimal(str(record["usd"]))
             if identifier in reservations:
                 raise ValueError("invalid/duplicate reservation")
-            reservations.add(identifier)
+            reservations[identifier] = record
             total += amount
         else:
             _validate_usage(
@@ -515,15 +644,28 @@ def _validate_reservation(*, record: dict[str, JSONValue]) -> None:
         "historical",
     }
     amount = record.get("usd")
+    input_bound = record.get("input_byte_bound")
+    output_bound = record.get("max_output_tokens")
     if set(record) - allowed or not isinstance(amount, str):
         raise ValueError("invalid reservation fields")
+    if "input_byte_bound" in record and (
+        not isinstance(input_bound, int) or input_bound < 0
+    ):
+        raise ValueError("invalid reservation input bound")
+    if "max_output_tokens" in record and (
+        not isinstance(output_bound, int) or output_bound <= 0
+    ):
+        raise ValueError("invalid reservation output bound")
     value = Decimal(amount)
     if not value.is_finite() or value <= 0:
         raise ValueError("invalid reservation")
 
 
 def _validate_usage(
-    *, record: dict[str, JSONValue], identifier: str, reservations: set[str]
+    *,
+    record: dict[str, JSONValue],
+    identifier: str,
+    reservations: dict[str, dict[str, JSONValue]],
 ) -> None:
     if set(record) != {
         "type",
@@ -533,7 +675,8 @@ def _validate_usage(
         "response_sha256",
     }:
         raise ValueError("invalid usage record")
-    if identifier not in reservations:
+    reservation = reservations.get(identifier)
+    if reservation is None:
         raise ValueError("usage without reservation")
     input_tokens = record["input_tokens"]
     output_tokens = record["output_tokens"]
@@ -544,6 +687,12 @@ def _validate_usage(
         or input_tokens < 0
         or output_tokens < 0
         or not isinstance(response_hash, str)
-        or len(response_hash) != 64
+        or re.fullmatch(r"[0-9a-f]{64}", response_hash) is None
     ):
         raise ValueError("invalid usage fields")
+    input_bound = reservation.get("input_byte_bound")
+    output_bound = reservation.get("max_output_tokens")
+    if not isinstance(input_bound, int) or not isinstance(output_bound, int):
+        raise ValueError("usage references unbounded reservation")
+    if input_tokens > input_bound or output_tokens > output_bound:
+        raise ValueError("usage exceeds reserved bounds")

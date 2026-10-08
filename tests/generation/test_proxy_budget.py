@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,6 +20,11 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setattr(proxy_budget, "USER_BUDGET_PATH", tmp_path / "budget.jsonl")
     monkeypatch.setattr(
         proxy_budget, "USER_UNCAPPED_BUDGET_PATH", tmp_path / "uncapped.jsonl"
+    )
+    monkeypatch.setattr(
+        proxy_budget,
+        "USER_SOL_ADJUDICATION_BUDGET_PATH",
+        tmp_path / "sol-adjudication.jsonl",
     )
     monkeypatch.setattr(
         proxy_budget,
@@ -68,7 +74,13 @@ def _budget(tmp_path: Path, *, cap: str = "1") -> ProxyBudget:
     )
 
 
-def _registry(path: Path, *, price: str = "0.1", model: str = "gpt-6-luna") -> Path:
+def _registry(
+    path: Path,
+    *,
+    price: str = "0.1",
+    output_price: str = "0.5",
+    model: str = "gpt-6-luna",
+) -> Path:
     path.write_text(
         json.dumps(
             {
@@ -77,7 +89,7 @@ def _registry(path: Path, *, price: str = "0.1", model: str = "gpt-6-luna") -> P
                         {
                             "id": model,
                             "maxTokens": 128_000,
-                            "cost": {"input": price, "output": "0.5"},
+                            "cost": {"input": price, "output": output_price},
                         }
                     ]
                 }
@@ -259,6 +271,42 @@ def _uncapped_budget(
         model=model,
         request_overhead_bytes=request_overhead_bytes,
         uncapped=True,
+    )
+
+
+def _sol_registry(path: Path, *, price: str = "2", output_price: str = "10") -> Path:
+    return _registry(
+        path,
+        price=price,
+        output_price=output_price,
+        model=proxy_budget.SOL_ADJUDICATION_MODEL,
+    )
+
+
+def _sol_adjudication_budget(
+    tmp_path: Path,
+    *,
+    registry_path: Path | None = None,
+    model: str = proxy_budget.SOL_ADJUDICATION_MODEL,
+    base_url: str = proxy_budget.BASE_URL,
+    campaign: str = "campaign-sol",
+    prompt_hash: str = "4" * 64,
+    request_overhead_bytes: int = 4096,
+) -> ProxyBudget:
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored-sol-adjudication.jsonl",
+        registry_path=registry_path or _sol_registry(tmp_path / "models-store.json"),
+        campaign=campaign,
+        source_hash="3" * 64,
+        prompt_hash=prompt_hash,
+        schema_hash="5" * 64,
+        model=model,
+        base_url=base_url,
+        input_usd_per_million="2",
+        output_usd_per_million="10",
+        request_overhead_bytes=request_overhead_bytes,
+        uncapped=True,
+        uncapped_purpose=proxy_budget.SOL_ADJUDICATION_PURPOSE,
     )
 
 
@@ -511,6 +559,158 @@ def test_uncapped_restart_keeps_reservations_and_usage_idempotent(
         encoding="utf-8"
     ).splitlines()
     assert len(uncapped_records) == 3
+
+
+def test_sol_adjudication_uses_independent_uncapped_ledger(
+    tmp_path: Path,
+) -> None:
+    """Sol adjudication accounting is uncapped and isolated from Luna ledgers."""
+    other_ledgers = (
+        proxy_budget.USER_BUDGET_PATH,
+        proxy_budget.USER_UNCAPPED_BUDGET_PATH,
+        proxy_budget.USER_PATCH_VERIFICATION_BUDGET_PATH,
+        proxy_budget.USER_EDUCATION_REVIEW_BUDGET_PATH,
+        proxy_budget.USER_EDUCATION_VERIFICATION_BUDGET_PATH,
+    )
+    for index, path in enumerate(other_ledgers):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"existing-ledger-{index}\n".encode())
+    before = {path: path.read_bytes() for path in other_ledgers}
+
+    sol = _sol_adjudication_budget(tmp_path, request_overhead_bytes=1_001_000_000)
+    reserved = sol.reserve_attempt("sol-attempt-1", {"x": 1}, max_output_tokens=9)
+    sol.record_usage(
+        "sol-attempt-1", input_tokens=2, output_tokens=3, response_sha256="a" * 64
+    )
+
+    assert reserved > Decimal("1")
+    assert proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.exists()
+    assert {path: path.read_bytes() for path in other_ledgers} == before
+    assert not (tmp_path / "ignored-sol-adjudication.jsonl").exists()
+    lines = proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    header = json.loads(lines[0])
+    reservation = json.loads(lines[1])
+    assert header["model"] == "gpt-6-sol"
+    assert header["base_url"] == "http://127.0.0.1:18080/v1"
+    assert header["input_usd_per_million"] == "2"
+    assert header["output_usd_per_million"] == "10"
+    assert header["uncapped"] is True
+    assert header["uncapped_purpose"] == "sol_adjudication"
+    assert "old_ledger_sha256" not in header
+    assert reservation["max_output_tokens"] == 9
+    sol_mode = proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.stat().st_mode
+    assert sol_mode & 0o777 == 0o600
+
+
+def test_sol_adjudication_restart_and_summary_are_safe(tmp_path: Path) -> None:
+    """Sol adjudication resumes completed reservations and reports estimates."""
+    sol = _sol_adjudication_budget(tmp_path)
+    sol.reserve_attempt("sol-attempt-1", {"x": 1}, max_output_tokens=20)
+    sol.record_usage(
+        "sol-attempt-1", input_tokens=10, output_tokens=20, response_sha256="b" * 64
+    )
+
+    restarted = _sol_adjudication_budget(tmp_path)
+    with pytest.raises(ProxyBudgetError, match="already reserved"):
+        restarted.reserve_attempt("sol-attempt-1", {"x": 1})
+    with pytest.raises(ProxyBudgetError, match="already recorded"):
+        restarted.record_usage(
+            "sol-attempt-1",
+            input_tokens=10,
+            output_tokens=20,
+            response_sha256="b" * 64,
+        )
+    summary = restarted.usage_summary()
+
+    assert summary["model"] == "gpt-6-sol"
+    assert summary["invoice_verified"] is False
+    assert summary["reservation_count"] == 1
+    assert summary["usage_count"] == 1
+    assert summary["recorded_input_tokens"] == 10
+    assert summary["recorded_output_tokens"] == 20
+    assert summary["estimated_recorded_usage_usd"] == "0.00022"
+
+
+def test_sol_adjudication_rejects_mismatched_registry_and_pins(
+    tmp_path: Path,
+) -> None:
+    """Sol ledgers fail closed on price, model, base URL, or prompt changes."""
+    registry = _sol_registry(tmp_path / "models-store.json")
+    sol = _sol_adjudication_budget(tmp_path, registry_path=registry)
+    _sol_registry(registry, price="3")
+    with pytest.raises(ProxyBudgetError, match="registry"):
+        sol.reserve_attempt("sol-attempt-1", {"x": 1})
+
+    _sol_registry(registry)
+    with pytest.raises(ProxyBudgetError, match="pins do not match"):
+        _sol_adjudication_budget(
+            tmp_path, registry_path=registry, prompt_hash="6" * 64
+        )
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _sol_adjudication_budget(tmp_path, model="gpt-6-luna")
+    with pytest.raises(ProxyBudgetError, match="pinned policy"):
+        _sol_adjudication_budget(tmp_path, base_url="https://api.openai.com/v1")
+
+
+def test_sol_adjudication_truncated_ledger_fails_closed(tmp_path: Path) -> None:
+    """Sol adjudication refuses incomplete JSONL before reserving more spend."""
+    sol = _sol_adjudication_budget(tmp_path)
+    sol.reserve_attempt("sol-attempt-1", {"x": 1})
+    with proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.open(
+        "a", encoding="utf-8"
+    ) as ledger:
+        ledger.write('{"type":"reservation"')
+
+    with pytest.raises(ProxyBudgetError, match="malformed or truncated"):
+        sol.reserve_attempt("sol-attempt-2", {"x": 1})
+
+
+def test_sol_adjudication_concurrent_reservations_are_lock_safe(
+    tmp_path: Path,
+) -> None:
+    """Concurrent Sol reservations produce one complete event per request."""
+    registry = _sol_registry(tmp_path / "models-store.json")
+
+    def reserve(index: int) -> None:
+        budget = _sol_adjudication_budget(tmp_path, registry_path=registry)
+        budget.reserve_attempt(f"sol-attempt-{index}", {"index": index})
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(reserve, range(12)))
+
+    lines = proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    records = [json.loads(line) for line in lines[1:]]
+    assert len(records) == 12
+    assert {record["request_id"] for record in records} == {
+        f"sol-attempt-{index}" for index in range(12)
+    }
+
+
+def test_usage_rejects_values_that_exceed_reserved_bounds(tmp_path: Path) -> None:
+    """Recorded usage must stay within the reserved body and response bounds."""
+    budget = _sol_adjudication_budget(tmp_path, request_overhead_bytes=0)
+    budget.reserve_attempt("sol-attempt-1", {"x": 1}, max_output_tokens=5)
+    budget.validate_request_body("sol-attempt-1", b'{"x":1}')
+    with pytest.raises(ProxyBudgetError, match="request body exceeds reserved bounds"):
+        budget.validate_request_body("sol-attempt-1", b"x" * 10_000)
+    with pytest.raises(ProxyBudgetError, match="exceeds reserved bounds"):
+        budget.record_usage(
+            "sol-attempt-1",
+            input_tokens=1,
+            output_tokens=6,
+            response_sha256="c" * 64,
+        )
+    with pytest.raises(ProxyBudgetError, match="exceeds reserved bounds"):
+        budget.record_usage(
+            "sol-attempt-1",
+            input_tokens=10_000,
+            output_tokens=5,
+            response_sha256="c" * 64,
+        )
 
 
 def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
