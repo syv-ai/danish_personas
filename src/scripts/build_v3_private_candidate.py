@@ -21,6 +21,7 @@ from danish_personas.generation.proxy_budget import (
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     V3_LONG_ADJUDICATION_PURPOSE,
+    V3_TARGETED_FOLLOWUP_PURPOSE,
     ProxyBudget,
 )
 from danish_personas.generation.sol_adjudication import (
@@ -224,8 +225,27 @@ def compose(  # noqa: C901, PLR0912
     ):
         raise ComposeError("Targeted follow-up is incomplete or unbound")
     followup_by_hash = {item.get("persona_hash"): item for item in followup_items}
-    if set(followup_by_hash) != base_unresolved:
+    if (
+        len(followup_by_hash) != len(followup_items)
+        or set(followup_by_hash) != base_unresolved
+    ):
         raise ComposeError("Follow-up does not cover exactly the unresolved base rows")
+    follow_inputs = followup_manifest.get("input_hashes")
+    if not isinstance(follow_inputs, dict):
+        raise ComposeError("Follow-up input bindings are missing")
+    follow_expected = {
+        "base_manifest_sha256": sha256_file(campaign_dir / "manifest.json"),
+        "base_status_sha256": sha256_file(campaign_dir / "status.json"),
+        "candidate_sha256": sha256_file(candidate),
+        "original_sha256": sha256_file(original),
+        "ordered_id_hashes_sha256": ordered_hash,
+    }
+    if any(follow_inputs.get(key) != value for key, value in follow_expected.items()):
+        raise ComposeError("Follow-up source bindings do not match composition inputs")
+    if follow_inputs.get("queue_sha256") != sha256_text(
+        canonical_json(sorted(hashes.index(digest) for digest in base_unresolved))
+    ):
+        raise ComposeError("Follow-up queue binding mismatch")
     by_hash = {digest: index for index, digest in enumerate(hashes)}
     if len(by_hash) != len(hashes):
         raise ComposeError("Duplicate identities")
@@ -265,6 +285,22 @@ def compose(  # noqa: C901, PLR0912
         uncapped=True,
         uncapped_purpose=V3_LONG_ADJUDICATION_PURPOSE,
     )
+    follow_budget = ProxyBudget(
+        registry_path=campaign.REGISTRY,
+        campaign=followup_manifest["campaign"],
+        source_hash=sha256_text(canonical_json(follow_inputs)),
+        prompt_hash=follow_inputs["prompt_sha256"],
+        schema_hash=sha256_text(
+            canonical_json(SolAdjudicationResponse.provider_json_schema())
+        ),
+        model=SOL_ADJUDICATION_MODEL,
+        input_usd_per_million="0.1",
+        output_usd_per_million="0.5",
+        max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
+        cap_usd=Decimal("1"),
+        uncapped=True,
+        uncapped_purpose=V3_TARGETED_FOLLOWUP_PURPOSE,
+    )
     original_rows, rows = original_frame.to_dicts(), candidate_frame.to_dicts()
     dispositions: Counter[str] = Counter()
     seen: set[str] = set()
@@ -288,10 +324,67 @@ def compose(  # noqa: C901, PLR0912
             raise ComposeError("Campaign result digest mismatch")
         dispositions[disposition] += 1
         index = by_hash[digest]
+        if disposition in {"unresolved", "privacy_blocked", "validation_failed"}:
+            follow = followup_by_hash[digest]
+            follow_disposition = follow.get("disposition")
+            if follow.get("base_result_sha256") != item.get("result_sha256"):
+                raise ComposeError("Follow-up does not bind its base disposition")
+            if disposition == "privacy_blocked":
+                if follow_disposition != "privacy_blocked_local_only":
+                    raise ComposeError("Privacy-blocked row was not retained locally")
+            elif follow_disposition not in {"patched", "consistent"}:
+                raise ComposeError(
+                    "Follow-up did not resolve the row with a verified verdict"
+                )
         if disposition == "validation_failed":
             campaign._verify_validation_failure(
                 output_dir=campaign_dir, digest=digest, input_hashes=inputs
             )
+            follow = followup_by_hash[digest]
+            if follow.get("disposition") in {"patched", "consistent", "unresolved"}:
+                old, row = original_rows[index], rows[index]
+                follow_cp_name = follow.get("checkpoint")
+                follow_cp = (
+                    followup_dir / follow_cp_name
+                    if isinstance(follow_cp_name, str)
+                    else Path("/")
+                )
+                if (
+                    not follow_cp.is_relative_to(followup_dir)
+                    or not follow_cp.is_file()
+                    or sha256_file(follow_cp) != follow.get("checkpoint_sha256")
+                ):
+                    raise ComposeError("Follow-up checkpoint binding mismatch")
+                follow_doc = _json(follow_cp)
+                if follow_doc.get("response_sha256") != follow.get("response_sha256"):
+                    raise ComposeError("Follow-up response binding mismatch")
+                hints = {
+                    field: {"old": old[field], "new": row[field]}
+                    for field in sorted(
+                        (set(old) & set(row)) & campaign.SOL_ALLOWED_FACT_FIELDS
+                    )
+                    if old[field] != row[field]
+                }
+                verified_follow = run_sol_adjudication(
+                    original_persona=row[campaign.TEXT_FIELD],
+                    candidate_row=row,
+                    prompt=prompt,
+                    config=config,
+                    budget=follow_budget,
+                    checkpoint_path=follow_cp,
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(500, request=request)
+                    ),
+                    changed_fact_hints=hints,
+                    original_row=old,
+                    adjudication_mode="unresolved_followup",
+                )
+                if verified_follow.disposition != follow["disposition"]:
+                    raise ComposeError("Follow-up disposition verification failed")
+                if follow["disposition"] == "patched":
+                    if verified_follow.proposed_text == row[campaign.TEXT_FIELD]:
+                        raise ComposeError("Follow-up patch produced no text change")
+                    row[campaign.TEXT_FIELD] = verified_follow.proposed_text
             continue
         if disposition == "privacy_blocked":
             continue
@@ -334,7 +427,52 @@ def compose(  # noqa: C901, PLR0912
         if verified.disposition != disposition:
             raise ComposeError("Verified disposition mismatch")
         if disposition == "patched":
+            if (
+                not isinstance(verified.proposed_text, str)
+                or verified.proposed_text == row[campaign.TEXT_FIELD]
+            ):
+                raise ComposeError(
+                    "Patched verdict did not produce an exact text change"
+                )
             row[campaign.TEXT_FIELD] = verified.proposed_text
+        if disposition in {"unresolved", "validation_failed"}:
+            follow = followup_by_hash[digest]
+            if follow.get("disposition") in {"patched", "consistent", "unresolved"}:
+                follow_cp_name = follow.get("checkpoint")
+                follow_cp = (
+                    followup_dir / follow_cp_name
+                    if isinstance(follow_cp_name, str)
+                    else Path("/")
+                )
+                if (
+                    not follow_cp.is_relative_to(followup_dir)
+                    or not follow_cp.is_file()
+                    or sha256_file(follow_cp) != follow.get("checkpoint_sha256")
+                ):
+                    raise ComposeError("Follow-up checkpoint binding mismatch")
+                follow_doc = _json(follow_cp)
+                if follow_doc.get("response_sha256") != follow.get("response_sha256"):
+                    raise ComposeError("Follow-up response binding mismatch")
+                follow_verified = run_sol_adjudication(
+                    original_persona=row[campaign.TEXT_FIELD],
+                    candidate_row=row,
+                    prompt=prompt,
+                    config=config,
+                    budget=follow_budget,
+                    checkpoint_path=follow_cp,
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(500, request=request)
+                    ),
+                    changed_fact_hints=hints,
+                    original_row=old,
+                    adjudication_mode="unresolved_followup",
+                )
+                if follow_verified.disposition != follow["disposition"]:
+                    raise ComposeError("Follow-up disposition verification failed")
+                if follow["disposition"] == "patched":
+                    if follow_verified.proposed_text == row[campaign.TEXT_FIELD]:
+                        raise ComposeError("Follow-up patch produced no text change")
+                    row[campaign.TEXT_FIELD] = follow_verified.proposed_text
     selected_indexes = sorted(by_hash[digest] for digest in seen)
     if inputs.get("queue_sha256") != sha256_text(canonical_json(selected_indexes)):
         raise ComposeError("Completed rows do not match the pinned campaign queue")
@@ -392,9 +530,20 @@ def compose(  # noqa: C901, PLR0912
         output.unlink(missing_ok=True)
         patch_path.unlink(missing_ok=True)
         raise ComposeError("Release candidate failed mandatory validation gates")
+    written_final = pl.read_parquet(output)
+    text_changes = sum(
+        before != after
+        for before, after in zip(
+            candidate_frame[campaign.TEXT_FIELD].to_list(),
+            written_final[campaign.TEXT_FIELD].to_list(),
+            strict=True,
+        )
+    )
     summary = {
         "campaign_dispositions": dict(dispositions),
-        "patched_rows": dispositions["patched"],
+        "fixed_rows": text_changes,
+        "good_rows": final.height - text_changes,
+        "patched_rows": text_changes,
         "preserved_unresolved": dispositions["unresolved"],
         "preserved_privacy_blocked": dispositions["privacy_blocked"],
         "preserved_validation_failed": dispositions["validation_failed"],
