@@ -426,7 +426,6 @@ def _report(
     unresolved_count = _unresolved_count(
         skipped_first=skipped_first,
         skipped_second=skipped_second,
-        status_counts=report_status_counts,
     )
     return {
         "label": _PREVIEW_LABEL,
@@ -484,24 +483,8 @@ def _metadata_status_counts(*, metadata: c.Mapping[str, object]) -> dict[str, in
     return counts
 
 
-def _unresolved_count(
-    *, skipped_first: int, skipped_second: int, status_counts: dict[str, int]
-) -> int:
-    unresolved_statuses = {
-        "manual",
-        "needs_manual_review",
-        "rejected",
-        "reject",
-        "failed",
-        "pending",
-        "unchanged_consistent",
-    }
-    from_status = sum(
-        count
-        for status, count in status_counts.items()
-        if status in unresolved_statuses
-    )
-    return from_status or skipped_first + skipped_second
+def _unresolved_count(*, skipped_first: int, skipped_second: int) -> int:
+    return skipped_first + skipped_second
 
 
 def _validate_source_metadata(*, metadata: c.Mapping[str, object]) -> None:
