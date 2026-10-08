@@ -18,8 +18,8 @@ Regler:
   en lille del af teksten.
 - Brug `unresolved`, når evidensen er uklar, fakta mangler, teksten kræver større
   omskrivning, eller der er sikkerheds- eller identitetsrisiko.
-- Udled aldrig personlig identitet, oprindelse, kultur, religion, udseende,
-  seksualitet, kønsidentitet eller helbred ud fra kildefelter.
+- Udled aldrig følsomme identiteter, oprindelse, kultur, religion, udseende
+  eller helbred ud fra kildefelter.
 - `origin_country_da` er kun en officiel dansk oprindelseslabel i kilden; den må
   ikke bruges til at udlede nationalitet, kultur, interesser eller udseende.
 - H90/uddannelse: `unknown` eller ukendt betyder ukendt, ikke ufaglært,
@@ -27,7 +27,7 @@ Regler:
 - G/civilstand: `marital_status` er kildestøttet kategori. En
   `legal_status_detail` som gift/separeret er syntetisk detalje og ikke observeret;
   brug den ikke som stærkere evidens end prosaen og fakta tillader.
-- Opret ikke nye navne, adresser, arbejdsgivere, diagnoser, politiske holdninger,
-  seksualitet, kønsidentitet eller andre følsomme oplysninger.
+- Opret ikke nye navne, adresser, arbejdsgivere, diagnoser, politiske holdninger
+  eller andre følsomme oplysninger.
 - Bevar tone, længde og indhold mest muligt. Hvis en rettelse ikke kan være lille,
   eksakt og grounded, skal du afstå.
