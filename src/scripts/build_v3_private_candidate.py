@@ -38,6 +38,7 @@ DEFAULT_ORIGINAL = (
 DEFAULT_CANDIDATE = ROOT / "v3-private/demographics-ready.parquet"
 DEFAULT_REPAIR = ROOT / "v3-private/demographics-ready.manifest.json"
 DEFAULT_CAMPAIGN = ROOT / "v3-private/campaign-long"
+DEFAULT_FOLLOWUP = ROOT / "v3-private/campaign-followup"
 DEFAULT_OUTPUT = ROOT / "v3-private/composed-candidate.parquet"
 DEFAULT_PATCHES = ROOT / "v3-private/composed-candidate.vetted.json"
 DEFAULT_REPORT = ROOT / "v3-private/composed-candidate.report.json"
@@ -57,6 +58,9 @@ class ComposeError(RuntimeError):
 )
 @click.option(
     "--campaign-dir", type=click.Path(path_type=Path), default=DEFAULT_CAMPAIGN
+)
+@click.option(
+    "--followup-dir", type=click.Path(path_type=Path), default=DEFAULT_FOLLOWUP
 )
 @click.option("--output", type=click.Path(path_type=Path), default=DEFAULT_OUTPUT)
 @click.option(
@@ -79,6 +83,7 @@ def main(
     candidate: Path,
     repair_manifest: Path,
     campaign_dir: Path,
+    followup_dir: Path,
     output: Path,
     patch_manifest: Path,
     report: Path,
@@ -96,6 +101,7 @@ def main(
             candidate,
             repair_manifest,
             campaign_dir,
+            followup_dir,
             output,
             patch_manifest,
             report,
@@ -112,6 +118,7 @@ def compose(  # noqa: C901, PLR0912
     candidate: Path,
     repair_path: Path,
     campaign_dir: Path,
+    followup_dir: Path,
     output: Path,
     patch_path: Path,
     report_path: Path,
@@ -196,6 +203,29 @@ def compose(  # noqa: C901, PLR0912
         "selected_total"
     ):
         raise ComposeError("Campaign processed rows do not cover selection")
+    base_unresolved = {
+        item.get("persona_hash")
+        for item in processed
+        if item.get("disposition")
+        in {"unresolved", "validation_failed", "privacy_blocked"}
+    }
+    followup_manifest = _json(followup_dir / "manifest.json")
+    followup_status = _json(followup_dir / "status.json")
+    followup_items = followup_status.get("processed")
+    if (
+        followup_manifest.get("campaign")
+        != "persona-sol-adjudication-v3-targeted-followup"
+        or followup_status.get("campaign") != followup_manifest.get("campaign")
+        or followup_status.get("input_hashes") != followup_manifest.get("input_hashes")
+        or followup_status.get("progress", {}).get("pending") != 0
+        or followup_status.get("progress", {}).get("completed")
+        != followup_manifest.get("selected_total")
+        or not isinstance(followup_items, list)
+    ):
+        raise ComposeError("Targeted follow-up is incomplete or unbound")
+    followup_by_hash = {item.get("persona_hash"): item for item in followup_items}
+    if set(followup_by_hash) != base_unresolved:
+        raise ComposeError("Follow-up does not cover exactly the unresolved base rows")
     by_hash = {digest: index for index, digest in enumerate(hashes)}
     if len(by_hash) != len(hashes):
         raise ComposeError("Duplicate identities")
