@@ -26,6 +26,7 @@ from .proxy_budget import (
     V3_ADJUDICATION_PURPOSE,
     V3_EXTENDED_ADJUDICATION_PURPOSE,
     V3_LONG_ADJUDICATION_PURPOSE,
+    V3_TARGETED_FOLLOWUP_PURPOSE,
     JSONValue,
     ProxyBudget,
 )
@@ -639,6 +640,7 @@ def _build_binding(
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
             V3_LONG_ADJUDICATION_PURPOSE,
+            V3_TARGETED_FOLLOWUP_PURPOSE,
         }
     ):
         raise SolAdjudicationError("Sol budget pins do not match prompt and schema")

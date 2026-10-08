@@ -40,9 +40,7 @@ from scripts.adjudicate_persona_release import (
 )
 
 DEFAULT_BASE = Path("/tmp/danish-personas-audit/v3-private/campaign-long")
-DEFAULT_CANDIDATE = Path(
-    "/tmp/danish-personas-audit/v3-private/demographics-ready.parquet"
-)
+DEFAULT_CANDIDATE = base_campaign.CANDIDATE
 DEFAULT_ORIGINAL = Path(
     "/tmp/danish-personas-audit/hf-v2-foreign-hotfix-remote/data/train-00000-of-00001.parquet"
 )
@@ -137,6 +135,16 @@ def followup(  # noqa: C901, PLR0912
     if ids != old_frame[base_campaign.ID_FIELD].to_list():
         raise RuntimeError("Ordered identifiers do not match")
     id_hashes = [sha256_text(value) for value in ids]
+    base_inputs = base_manifest.get("input_hashes")
+    expected_base_inputs = {
+        "baseline_sha256": sha256_file(original),
+        "candidate_sha256": sha256_file(candidate),
+        "ordered_id_hashes_sha256": sha256_text(canonical_json(id_hashes)),
+    }
+    if not isinstance(base_inputs, dict) or any(
+        base_inputs.get(key) != value for key, value in expected_base_inputs.items()
+    ):
+        raise RuntimeError("Follow-up files do not match the completed campaign")
     positions = {digest: index for index, digest in enumerate(id_hashes)}
     processed = base_status.get("processed")
     if not isinstance(processed, list):
@@ -305,7 +313,6 @@ def followup(  # noqa: C901, PLR0912
         for future in concurrent.futures.as_completed(tasks):
             index, cp = tasks[future]
             digest = id_hashes[index]
-            base_item = next(x for x in selected_items if x["persona_hash"] == digest)
             try:
                 result = future.result()
                 doc = _json(cp)
@@ -316,36 +323,13 @@ def followup(  # noqa: C901, PLR0912
             except SolAdjudicationError as exc:
                 if str(exc) != "Sol response failed bounded local validation retries":
                     raise
-                _append(
-                    status_path,
-                    status,
-                    {
-                        "persona_hash": digest,
-                        "disposition": "editorial_retention_no_valid_verdict",
-                        "result_sha256": sha256_text(
-                            f"{digest}:editorial_retention_no_valid_verdict"
-                        ),
-                        "base_result_sha256": base_item.get("result_sha256"),
-                        "evidence_sha256": sha256_text(type(exc).__name__),
-                    },
-                )
+                # No valid provider result exists. Leave this row pending rather
+                # than manufacturing a successful editorial verdict.
                 continue
             except ProxyBudgetError as exc:
                 if str(exc) != "Per-row proxy attempt lifetime exhausted":
                     raise
-                _append(
-                    status_path,
-                    status,
-                    {
-                        "persona_hash": digest,
-                        "disposition": "editorial_retention_no_valid_verdict",
-                        "result_sha256": sha256_text(
-                            f"{digest}:editorial_retention_no_valid_verdict"
-                        ),
-                        "base_result_sha256": base_item.get("result_sha256"),
-                        "evidence_sha256": sha256_text(type(exc).__name__),
-                    },
-                )
+                # Exhaustion remains a release blocker, not a verified review.
                 continue
             _append(
                 status_path,

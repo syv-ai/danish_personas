@@ -48,8 +48,8 @@ JSONDocument: TypeAlias = JSONScalar | list["JSONDocument"] | dict[str, "JSONDoc
 
 ROOT = Path("/tmp/danish-personas-audit")
 ORIGINAL = ROOT / "hf-v2-foreign-hotfix-remote/data/train-00000-of-00001.parquet"
-CANDIDATE = ROOT / "v3-private/repaired-final.parquet"
-REPAIR = ROOT / "v3-private/repair-manifest-final.json"
+CANDIDATE = ROOT / "v3-private/demographics-ready.parquet"
+REPAIR = ROOT / "v3-private/demographics-ready.manifest.json"
 REVIEW = ROOT / "persona-review-v4/checkpoints"
 H90 = ROOT / "sol-h90-final/status.json"
 FOLLOWUP = ROOT / "sol-followup-pilot32/status.json"

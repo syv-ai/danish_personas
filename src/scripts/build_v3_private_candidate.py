@@ -332,21 +332,9 @@ def compose(  # noqa: C901, PLR0912
             if disposition == "privacy_blocked":
                 if follow_disposition != "privacy_blocked_local_only":
                     raise ComposeError("Privacy-blocked row was not retained locally")
-            elif follow_disposition not in {
-                "patched",
-                "consistent",
-                "unresolved",
-                "editorial_retention_no_valid_verdict",
-            }:
-                raise ComposeError("Follow-up disposition cannot be accepted")
-            if follow_disposition == "editorial_retention_no_valid_verdict":
-                if follow.get("evidence_sha256") not in {
-                    sha256_text("SolAdjudicationError"),
-                    sha256_text("ProxyBudgetError"),
-                }:
-                    raise ComposeError(
-                        "Editorial retention lacks bounded failure evidence"
-                    )
+            elif follow_disposition not in {"patched", "consistent", "unresolved"}:
+                # Invalid/no-response evidence never becomes a successful verdict.
+                raise ComposeError("Follow-up has no valid review checkpoint")
         if disposition == "validation_failed":
             campaign._verify_validation_failure(
                 output_dir=campaign_dir, digest=digest, input_hashes=inputs
