@@ -12,12 +12,6 @@ from typing import Any
 import click
 import httpx
 import polars as pl
-from adjudicate_persona_release import (
-    _check_restricted_text,
-    _check_rows_private,
-    _prepare_private_output,
-    _write_private_json,
-)
 
 from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
@@ -42,6 +36,12 @@ from danish_personas.generation.sol_adjudication import (
 from danish_personas.io import canonical_json, sha256_file, sha256_text
 from danish_personas.release.candidate_validation import validate_release_candidate
 from danish_personas.release.generated_checks import check_generated_fields
+from scripts.adjudicate_persona_release import (
+    _check_restricted_text,
+    _check_rows_private,
+    _prepare_private_output,
+    _write_private_json,
+)
 
 ROOT = Path("/tmp/danish-personas-audit")
 ORIGINAL = ROOT / "hf-v2-foreign-hotfix-remote/data/train-00000-of-00001.parquet"
@@ -941,4 +941,5 @@ def _safe_error(exc: Exception) -> str:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()

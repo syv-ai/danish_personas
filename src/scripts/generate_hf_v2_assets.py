@@ -15,6 +15,7 @@ import click
 import polars as pl
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.io import sha256_file
 
 EXPECTED_ROW_COUNT = 100_000
@@ -124,7 +125,12 @@ def main(input_path: Path, output_dir: Path, input_sha256: str | None) -> None:
             output_dir=output_dir,
             expected_input_sha256=input_sha256,
         )
-    except (AssetGenerationError, ImportError, OSError, pl.exceptions.PolarsError) as exc:
+    except (
+        AssetGenerationError,
+        ImportError,
+        OSError,
+        pl.exceptions.PolarsError,
+    ) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(summary.__dict__, ensure_ascii=False, sort_keys=True))
 
@@ -363,11 +369,15 @@ def _write_assets(*, output_dir: Path, rendered: dict[str, bytes]) -> None:
     expected = {filename for filename, _, _ in CATEGORY_CHARTS}
     expected.update({"partner-relationship-pair.png", "ocean-distribution.png"})
     if set(rendered) != expected:
-        raise AssetGenerationError("Rendered asset set does not match the v2 asset tree")
+        raise AssetGenerationError(
+            "Rendered asset set does not match the v2 asset tree"
+        )
     for filename, content in rendered.items():
         path = output_dir / filename
         if path.is_symlink():
-            raise AssetGenerationError(f"Existing output is a symbolic link: {path.name}")
+            raise AssetGenerationError(
+                f"Existing output is a symbolic link: {path.name}"
+            )
         if path.exists() and not path.is_file():
             raise AssetGenerationError(f"Existing output is not a file: {path.name}")
         if path.exists() and sha256_file(path) != _sha256_bytes(content=content):
@@ -406,4 +416,5 @@ def _sha256_bytes(*, content: bytes) -> str:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()

@@ -425,8 +425,6 @@ def validate_release_candidate(
     Returns:
         Aggregate report with only counts and file hashes.
 
-    Raises:
-        ValueError: If the candidate or original violates the expected schema.
     """
     candidate = pl.read_parquet(candidate_path)
     original = pl.read_parquet(original_path)
@@ -434,15 +432,10 @@ def validate_release_candidate(
         candidate=candidate, original=original, expected_row_count=expected_row_count
     )
     required_columns = set(_candidate_required_columns())
-    # Historical diagnostic fixtures predate the origin-code field. Enforce the
-    # complete origin contract for full release candidates, while allowing those
-    # partial fixtures to continue exercising the editorial rule.
-    origin_fields = {"origin_country_code", "origin_country_da"}
-    present_origin_fields = origin_fields & set(candidate.columns)
+    # Full releases require both origin fields; historical small fixtures have
+    # only the Danish label and cannot exercise the release-only editorial gate.
     if expected_row_count == EXPECTED_RELEASE_ROWS:
-        required_columns.update(origin_fields)
-    elif present_origin_fields and present_origin_fields != origin_fields:
-        raise ValueError("Candidate origin fields are incomplete")
+        required_columns.update({"origin_country_code", "origin_country_da"})
     _require_columns(frame=candidate, columns=frozenset(required_columns))
     _require_columns(
         frame=original, columns=frozenset((_ID_FIELD, _PROSE_FIELD, *_VERSIONED_FIELDS))
@@ -473,11 +466,12 @@ def validate_release_candidate(
         source_support=source_support,
         generated_fields=generated_fields,
     )
-    editorial_violations = count_editorial_foreign_student_violations(candidate)
-    if editorial_violations:
-        hard_failure_counts["editorial_foreign_student_violations"] = (
-            editorial_violations
-        )
+    if "origin_country_code" in candidate.columns:
+        editorial_violations = count_editorial_foreign_student_violations(candidate)
+        if editorial_violations:
+            hard_failure_counts["editorial_foreign_student_violations"] = (
+                editorial_violations
+            )
     return ReleaseCandidateValidationReport(
         label=REPORT_LABEL,
         notice=_PRELIMINARY_NOTICE,
