@@ -71,6 +71,9 @@ USER_V3_ADJUDICATION_BUDGET_PATH = (
 USER_V3_EXTENDED_ADJUDICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-v3-extended-adjudication.jsonl"
 )
+USER_V3_LONG_ADJUDICATION_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-v3-long-adjudication.jsonl"
+)
 USER_PATCH_VERIFICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
 )
@@ -86,6 +89,7 @@ EDUCATION_VERIFICATION_PURPOSE = "h90_v5_verification"
 SOL_ADJUDICATION_PURPOSE = "sol_adjudication"
 V3_ADJUDICATION_PURPOSE = "v3_adjudication"
 V3_EXTENDED_ADJUDICATION_PURPOSE = "v3_extended_adjudication"
+V3_LONG_ADJUDICATION_PURPOSE = "v3_long_adjudication"
 UNLIMITED_PURPOSES = frozenset(
     {
         PATCH_VERIFICATION_PURPOSE,
@@ -94,6 +98,7 @@ UNLIMITED_PURPOSES = frozenset(
         SOL_ADJUDICATION_PURPOSE,
         V3_ADJUDICATION_PURPOSE,
         V3_EXTENDED_ADJUDICATION_PURPOSE,
+        V3_LONG_ADJUDICATION_PURPOSE,
     }
 )
 JSONValue: TypeAlias = (
@@ -151,6 +156,7 @@ class ProxyBudget:
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
+            V3_LONG_ADJUDICATION_PURPOSE,
         }
         self.path = self._ledger_path(uncapped=uncapped, purpose=uncapped_purpose)
         self.registry_path = Path(registry_path)
@@ -180,6 +186,7 @@ class ProxyBudget:
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
+            V3_LONG_ADJUDICATION_PURPOSE,
         }:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
@@ -223,6 +230,7 @@ class ProxyBudget:
             V3_EXTENDED_ADJUDICATION_PURPOSE: (
                 USER_V3_EXTENDED_ADJUDICATION_BUDGET_PATH
             ),
+            V3_LONG_ADJUDICATION_PURPOSE: USER_V3_LONG_ADJUDICATION_BUDGET_PATH,
             PATCH_VERIFICATION_PURPOSE: USER_PATCH_VERIFICATION_BUDGET_PATH,
             EDUCATION_REVIEW_PURPOSE: USER_EDUCATION_REVIEW_BUDGET_PATH,
             EDUCATION_VERIFICATION_PURPOSE: USER_EDUCATION_VERIFICATION_BUDGET_PATH,
@@ -447,6 +455,7 @@ class ProxyBudget:
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
+            V3_LONG_ADJUDICATION_PURPOSE,
         }
 
     def reserve_attempt(
@@ -767,6 +776,7 @@ def _read_ledger(
                     SOL_ADJUDICATION_PURPOSE,
                     V3_ADJUDICATION_PURPOSE,
                     V3_EXTENDED_ADJUDICATION_PURPOSE,
+                    V3_LONG_ADJUDICATION_PURPOSE,
                 }
             ),
         ),

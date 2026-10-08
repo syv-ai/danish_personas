@@ -20,7 +20,7 @@ from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
-    V3_EXTENDED_ADJUDICATION_PURPOSE,
+    V3_LONG_ADJUDICATION_PURPOSE,
     ProxyBudget,
 )
 from danish_personas.generation.sol_adjudication import (
@@ -37,7 +37,7 @@ DEFAULT_ORIGINAL = (
 )
 DEFAULT_CANDIDATE = ROOT / "v3-private/demographics-ready.parquet"
 DEFAULT_REPAIR = ROOT / "v3-private/demographics-ready.manifest.json"
-DEFAULT_CAMPAIGN = ROOT / "v3-private/campaign-extended"
+DEFAULT_CAMPAIGN = ROOT / "v3-private/campaign-long"
 DEFAULT_OUTPUT = ROOT / "v3-private/composed-candidate.parquet"
 DEFAULT_PATCHES = ROOT / "v3-private/composed-candidate.vetted.json"
 DEFAULT_REPORT = ROOT / "v3-private/composed-candidate.report.json"
@@ -206,7 +206,7 @@ def compose(  # noqa: C901, PLR0912
             "base_url": campaign.BASE_URL,
             "model": SOL_ADJUDICATION_MODEL,
             "api_key_env": None,
-            "timeout_seconds": 360.0,
+            "timeout_seconds": 3600.0,
             "maximum_http_attempts": 5,
             "maximum_total_requests": None,
             "retry_backoff_seconds": 1.0,
@@ -233,7 +233,7 @@ def compose(  # noqa: C901, PLR0912
         max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
-        uncapped_purpose=V3_EXTENDED_ADJUDICATION_PURPOSE,
+        uncapped_purpose=V3_LONG_ADJUDICATION_PURPOSE,
     )
     original_rows, rows = original_frame.to_dicts(), candidate_frame.to_dicts()
     dispositions: Counter[str] = Counter()

@@ -21,7 +21,7 @@ from danish_personas.generation.proxy_budget import (
     BASE_URL,
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
-    V3_EXTENDED_ADJUDICATION_PURPOSE,
+    V3_LONG_ADJUDICATION_PURPOSE,
     ProxyBudget,
     ProxyBudgetError,
     require_runtime_model,
@@ -54,12 +54,12 @@ REVIEW = ROOT / "persona-review-v4/checkpoints"
 H90 = ROOT / "sol-h90-final/status.json"
 FOLLOWUP = ROOT / "sol-followup-pilot32/status.json"
 PROMPT = Path("config/persona-sol-adjudication-da.md")
-OUTPUT = ROOT / "v3-private/campaign-extended"
+OUTPUT = ROOT / "v3-private/campaign-long"
 REGISTRY = Path.home() / ".pi/agent/models-store.json"
 EXPECTED_ROWS = 100_000
 ID_FIELD = "persona_id"
 TEXT_FIELD = "persona"
-CAMPAIGN = "persona-sol-adjudication-v3-extended"
+CAMPAIGN = "persona-sol-adjudication-v3-long"
 VERSION = 1
 MAX_ROW_ATTEMPTS = 10
 LOCAL_VALIDATION_COMPLETIONS = 3
@@ -84,7 +84,7 @@ class ReviewError(Exception):
 @click.option("--prompt", type=click.Path(path_type=Path), default=PROMPT)
 @click.option("--output-dir", type=click.Path(path_type=Path), default=OUTPUT)
 @click.option("--registry", type=click.Path(path_type=Path), default=REGISTRY)
-@click.option("--workers", type=click.IntRange(min=1, max=20), default=4)
+@click.option("--workers", type=click.IntRange(min=1, max=20), default=20)
 @click.option("--run", "execute", is_flag=True, default=False)
 def main(
     original: Path,
@@ -252,7 +252,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                 "base_url": BASE_URL,
                 "model": SOL_ADJUDICATION_MODEL,
                 "api_key_env": None,
-                "timeout_seconds": 360.0,
+                "timeout_seconds": 3600.0,
                 "maximum_http_attempts": 5,
                 "maximum_total_requests": None,
                 "retry_backoff_seconds": 1.0,
@@ -328,14 +328,14 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
-        uncapped_purpose=V3_EXTENDED_ADJUDICATION_PURPOSE,
+        uncapped_purpose=V3_LONG_ADJUDICATION_PURPOSE,
     )
     config = GenerationConfig.model_validate(
         {
             "base_url": BASE_URL,
             "model": SOL_ADJUDICATION_MODEL,
             "api_key_env": None,
-            "timeout_seconds": 360.0,
+            "timeout_seconds": 3600.0,
             "maximum_http_attempts": 5,
             "maximum_total_requests": None,
             "retry_backoff_seconds": 1.0,
@@ -482,7 +482,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     }
     _write_private_json(path=status_path, value=status)
     pending = [index for index in pending if index not in blocked]
-    with httpx.Client(base_url=BASE_URL, timeout=360) as client:
+    with httpx.Client(base_url=BASE_URL, timeout=3600.0) as client:
         transport = client._transport
         row_iter = iter(pending)
         future_map: dict[futures.Future[dict[str, Any]], int] = {}
