@@ -186,6 +186,10 @@ def _transport(
         assert "max_tokens" not in body
         assert "max_completion_tokens" not in body
         assert body["reasoning_effort"] == "none"
+        assert (
+            "fact_present"
+            in json.loads(body["messages"][1]["content"])["evidence_rule"]
+        )
         return httpx.Response(
             200,
             json={

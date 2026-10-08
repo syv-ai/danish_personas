@@ -311,6 +311,13 @@ def _validated_payload(
         "candidate_facts": candidate_facts,
         "changed_fact_hints": hints,
         "adjudication_scope": "single_row_no_raw_ids_no_sensitive_identity_fields",
+        "evidence_rule": (
+            "Brug kun fact_present, hvis citatet indeholder den eksakte værdi fra "
+            "candidate_facts[field] (uden forskel på store/små bogstaver). Ved "
+            "omskrivning eller fravær skal kind være source_context eller "
+            "negative_evidence. Citatet skal forekomme præcis én gang ordret "
+            "i personateksten."
+        ),
     }
 
 
