@@ -35,6 +35,16 @@ _MAX_PROSE_CHARS = 20_000
 _MAX_FACT_VALUE_CHARS = 600
 _MAX_ROW_ATTEMPTS = 10
 _MAX_LOCAL_VALIDATION_COMPLETIONS = 3
+SolAdjudicationMode: t.TypeAlias = t.Literal["default", "unresolved_followup"]
+_UNRESOLVED_FOLLOWUP_RULE_DA = (
+    "Opfølgning på tidligere unresolved: Vælg consistent, når "
+    "kandidatprosaen ikke indeholder en konkret modsigelse af en "
+    "kildeunderstøttet fakta. Manglende omtale af en struktureret fakta er "
+    "ikke i sig selv en modsigelse. Ved konkret modsigelse må højst to "
+    "minimale, unikke og eksakt groundede rettelser foreslås. Afstå, hvis "
+    "ingen understøttet og sikker rettelse findes. Opfind aldrig fakta uden "
+    "kildestøtte."
+)
 
 SOL_ALLOWED_FACT_FIELDS = frozenset(
     {
@@ -237,6 +247,7 @@ def preflight_sol_adjudication_payload(
     prompt: str,
     changed_fact_hints: dict[str, dict[str, object]] | None = None,
     original_row: dict[str, object] | None = None,
+    adjudication_mode: SolAdjudicationMode = "default",
 ) -> None:
     """Validate one outbound Sol payload without provider I/O.
 
@@ -251,6 +262,9 @@ def preflight_sol_adjudication_payload(
             Verified old/new hints for changed allowlisted facts.
         original_row (optional):
             Original row used for row-bound hint and raw-token checks.
+        adjudication_mode (optional):
+            Use ``unresolved_followup`` to add the fixed follow-up decision
+            rule to the user payload. Defaults to ``default``.
 
     """
     _validated_payload(
@@ -259,6 +273,7 @@ def preflight_sol_adjudication_payload(
         prompt=prompt,
         changed_fact_hints=changed_fact_hints,
         original_row=original_row,
+        adjudication_mode=adjudication_mode,
     )
 
 
@@ -269,6 +284,7 @@ def _validated_payload(
     prompt: str,
     changed_fact_hints: dict[str, dict[str, object]] | None,
     original_row: dict[str, object] | None,
+    adjudication_mode: SolAdjudicationMode,
 ) -> dict[str, object]:
     if not prompt.strip() or len(prompt) > _MAX_PROMPT_CHARS:
         raise SolAdjudicationError("Prompt is missing or outside the supported range")
@@ -280,6 +296,7 @@ def _validated_payload(
         raise SolAdjudicationError(
             "Original persona prose is missing or outside the supported range"
         )
+    mode = _validated_adjudication_mode(adjudication_mode=adjudication_mode)
     _check_restricted_text(value=prompt, label="prompt")
     _check_restricted_text(value=original_persona, label="original persona prose")
     candidate_facts = _candidate_fact_payload(candidate_row=candidate_row)
@@ -288,26 +305,7 @@ def _validated_payload(
         candidate_row=candidate_row,
         original_row=original_row,
     )
-    outbound_text = [
-        original_persona,
-        prompt,
-        canonical_json(candidate_facts),
-        canonical_json(hints),
-    ]
-    for value in outbound_text:
-        _check_restricted_text(value=value, label="outbound adjudication payload")
-    protected_tokens = _protected_row_tokens(
-        candidate_row=candidate_row, original_row=original_row
-    )
-    _check_protected_tokens(
-        original_persona=original_persona,
-        candidate_facts=candidate_facts,
-        changed_fact_hints=hints,
-        candidate_row=candidate_row,
-        original_row=original_row,
-        protected_tokens=protected_tokens,
-    )
-    return {
+    payload: dict[str, object] = {
         "persona": original_persona,
         "candidate_facts": candidate_facts,
         "changed_fact_hints": hints,
@@ -320,6 +318,28 @@ def _validated_payload(
             "i personateksten."
         ),
     }
+    if mode == "unresolved_followup":
+        payload["unresolved_followup_rule"] = _UNRESOLVED_FOLLOWUP_RULE_DA
+    for value in (prompt, canonical_json(payload)):
+        _check_restricted_text(value=value, label="outbound adjudication payload")
+    protected_tokens = _protected_row_tokens(
+        candidate_row=candidate_row, original_row=original_row
+    )
+    _check_protected_tokens(
+        original_persona=original_persona,
+        candidate_facts=candidate_facts,
+        changed_fact_hints=hints,
+        candidate_row=candidate_row,
+        original_row=original_row,
+        protected_tokens=protected_tokens,
+    )
+    return payload
+
+
+def _validated_adjudication_mode(*, adjudication_mode: object) -> SolAdjudicationMode:
+    if adjudication_mode not in {"default", "unresolved_followup"}:
+        raise SolAdjudicationError("Unsupported Sol adjudication mode")
+    return t.cast(SolAdjudicationMode, adjudication_mode)
 
 
 class SolAdjudicationError(ValueError):
@@ -809,6 +829,7 @@ def run_sol_adjudication(
     transport: httpx.BaseTransport,
     changed_fact_hints: dict[str, dict[str, object]] | None = None,
     original_row: dict[str, object] | None = None,
+    adjudication_mode: SolAdjudicationMode = "default",
 ) -> SolAdjudicationResult:
     """Run or resume one private per-row Sol adjudication.
 
@@ -831,6 +852,9 @@ def run_sol_adjudication(
             Verified old/new hints for allowlisted fact fields.
         original_row (optional):
             Original structured row used only to verify changed fact hints.
+        adjudication_mode (optional):
+            Use ``unresolved_followup`` to add the fixed follow-up decision
+            rule to the user payload. Defaults to ``default``.
 
     Returns:
         Locally validated adjudication result.
@@ -842,6 +866,7 @@ def run_sol_adjudication(
         prompt=prompt,
         changed_fact_hints=changed_fact_hints,
         original_row=original_row,
+        adjudication_mode=adjudication_mode,
     )
     schema = SolAdjudicationResponse.provider_json_schema()
     binding = _build_binding(
