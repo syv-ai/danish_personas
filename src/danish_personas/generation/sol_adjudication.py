@@ -1,4 +1,4 @@
-"""Privacy-bounded per-row gpt-6-sol persona adjudication."""
+"""Privacy-bounded per-row persona adjudication."""
 
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ class SolEvidence(StrictModel):
 
 
 class SolPatch(StrictModel):
-    """One exact prose replacement proposed by gpt-6-sol."""
+    """One exact prose replacement proposed by the adjudication model."""
 
     old_excerpt: str = Field(min_length=1, max_length=1_000)
     new_excerpt: str = Field(min_length=1, max_length=1_000)
@@ -841,7 +841,7 @@ def run_sol_adjudication(
         prompt:
             Danish Sol adjudication instruction pinned by the budget ledger.
         config:
-            Pinned local ``gpt-6-sol`` OpenAI-compatible configuration.
+            Pinned private OpenAI-compatible model configuration.
         budget:
             Durable Sol ledger, configured uncapped for ``sol_adjudication``.
         checkpoint_path:

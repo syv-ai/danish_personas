@@ -112,7 +112,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
                 "openai-codex": {
                     "models": [
                         {
-                            "id": "gpt-6-luna",
+                            "id": "review-model",
                             "maxTokens": 128_000,
                             "cost": {"input": "0.1", "output": "0.5"},
                         }
@@ -169,7 +169,7 @@ def _row() -> dict[str, Any]:
 def _config(**overrides: object) -> GenerationConfig:
     values: dict[str, object] = {
         "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-luna",
+        "model": "review-model",
         "api_key_env": None,
         "timeout_seconds": 10.0,
         "maximum_http_attempts": 1,
@@ -198,7 +198,7 @@ def _transport(
             200,
             json={
                 "id": "response-1",
-                "model": "gpt-6-luna",
+                "model": "review-model",
                 "choices": [{"message": {"content": response_content}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 20},
             },

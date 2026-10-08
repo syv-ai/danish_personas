@@ -22,12 +22,14 @@ from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
+    ADJUDICATION_MODEL_ENV,
     BASE_URL,
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     SOL_ADJUDICATION_PURPOSE,
     ProxyBudget,
     ProxyBudgetError,
+    require_runtime_model,
 )
 from danish_personas.generation.sol_adjudication import (
     SOL_ALLOWED_FACT_FIELDS,
@@ -1127,6 +1129,7 @@ def _run_sol_adjudication_adapter(
     changed_fact_hints: dict[str, dict[str, object]],
     original_row: dict[str, object],
 ) -> SolAdjudicationResult:
+    require_runtime_model(ADJUDICATION_MODEL_ENV)
     return run_sol_adjudication(
         original_persona=original_persona,
         candidate_row=candidate_row,

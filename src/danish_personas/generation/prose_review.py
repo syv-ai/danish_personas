@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import typing as t
 from collections.abc import Mapping
@@ -22,7 +23,7 @@ ManualReviewReason: t.TypeAlias = t.Literal[
 EvidenceKind: t.TypeAlias = t.Literal["fact_not_stated", "new_value_present"]
 VerifiedContext: t.TypeAlias = Mapping[str, object]
 
-REVIEW_MODEL = "gpt-6-luna"
+REVIEW_MODEL = os.environ.get("DANISH_PERSONAS_REVIEW_MODEL", "review-model").strip()
 _DISPOSITIONS: tuple[str, ...] = (
     "patched",
     "unchanged_consistent",
@@ -247,7 +248,7 @@ def validate_prose_review(
     response: str | Mapping[str, object],
     verified_context: VerifiedContext | None = None,
 ) -> ProseReviewResult:
-    """Validate one gpt-6-luna prose-review response locally.
+    """Validate one prose-review response locally.
 
     Args:
         original_text:

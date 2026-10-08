@@ -117,7 +117,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
                 "openai-codex": {
                     "models": [
                         {
-                            "id": "gpt-6-sol",
+                            "id": "adjudication-model",
                             "maxTokens": proxy_budget.DEFAULT_MAX_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }
@@ -141,7 +141,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest(),
-        model="gpt-6-sol",
+        model="adjudication-model",
         input_usd_per_million="2",
         output_usd_per_million="10",
         max_tokens=proxy_budget.SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
@@ -160,7 +160,7 @@ def _checkpoint(tmp_path: Path, *, name: str = "sol.json") -> Path:
 def _config(**overrides: object) -> GenerationConfig:
     values: dict[str, object] = {
         "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-sol",
+        "model": "adjudication-model",
         "api_key_env": None,
         "timeout_seconds": 10.0,
         "maximum_http_attempts": 1,
@@ -198,7 +198,7 @@ def _sequence_transport(
         if events is not None:
             events.append("network")
         body = json.loads(request.content)
-        assert body["model"] == "gpt-6-sol"
+        assert body["model"] == "adjudication-model"
         assert "max_tokens" not in body
         assert "max_completion_tokens" not in body
         assert body["reasoning_effort"] == "none"
@@ -211,7 +211,7 @@ def _sequence_transport(
             200,
             json={
                 "id": "response-1",
-                "model": "gpt-6-sol",
+                "model": "adjudication-model",
                 "choices": [{"message": {"content": json.dumps(response_content)}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 20},
             },
@@ -863,7 +863,7 @@ def test_uncapped_sol_records_output_overage(tmp_path: Path) -> None:
             200,
             json={
                 "id": "response-overage",
-                "model": "gpt-6-sol",
+                "model": "adjudication-model",
                 "choices": [{"message": {"content": json.dumps(content)}}],
                 "usage": {
                     "prompt_tokens": 100,
