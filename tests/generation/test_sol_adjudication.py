@@ -41,6 +41,128 @@ def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     )
 
 
+def test_consistent_evidence_checkpoints_privately(tmp_path: Path) -> None:
+    """Accept exact grounded evidence and write a private checkpoint."""
+    checkpoint = _checkpoint(tmp_path)
+
+    result = run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=checkpoint,
+        transport=_transport(
+            {
+                "disposition": "consistent",
+                "reason": "Alder er nævnt i teksten.",
+                "evidence": [
+                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+                ],
+                "patches": [],
+            },
+            [],
+        ),
+    )
+
+    assert result.disposition == "consistent"
+    assert result.proposed_text == _PERSONA
+    assert stat.S_IMODE(checkpoint.stat().st_mode) == 0o600
+
+
+def _budget(tmp_path: Path) -> ProxyBudget:
+    registry = tmp_path / "models.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "models": [
+                        {
+                            "id": "gpt-6-sol",
+                            "maxTokens": 128_000,
+                            "cost": {"input": "2", "output": "10"},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return ProxyBudget(
+        ledger_path=tmp_path / "ignored.jsonl",
+        registry_path=registry,
+        campaign="synthetic-sol-test",
+        source_hash="a" * 64,
+        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
+        schema_hash=hashlib.sha256(
+            json.dumps(
+                SolAdjudicationResponse.provider_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+        model="gpt-6-sol",
+        input_usd_per_million="2",
+        output_usd_per_million="10",
+        cap_usd=Decimal("1"),
+        uncapped=True,
+        uncapped_purpose="sol_adjudication",
+    )
+
+
+def _checkpoint(tmp_path: Path, *, name: str = "sol.json") -> Path:
+    parent = tmp_path / "private-checkpoints"
+    parent.mkdir(mode=0o700, exist_ok=True)
+    return parent / name
+
+
+def _config(**overrides: object) -> GenerationConfig:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:18080/v1",
+        "model": "gpt-6-sol",
+        "api_key_env": None,
+        "timeout_seconds": 10.0,
+        "maximum_http_attempts": 1,
+        "maximum_total_requests": None,
+        "retry_backoff_seconds": 0.0,
+        "maximum_rows_per_shard": 1,
+        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
+        "enable_thinking": None,
+        "reasoning_effort": "none",
+        "prompt": Path("config/persona-sol-adjudication-da.md"),
+        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+    }
+    values.update(overrides)
+    return GenerationConfig.model_validate(values)
+
+
+def _transport(
+    response_content: dict[str, Any],
+    seen: list[httpx.Request],
+    events: list[str] | None = None,
+) -> httpx.MockTransport:
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if events is not None:
+            events.append("network")
+        body = json.loads(request.content)
+        assert body["model"] == "gpt-6-sol"
+        assert body["max_tokens"] == SOL_MAX_OUTPUT_TOKENS
+        assert body["reasoning_effort"] == "none"
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "model": "gpt-6-sol",
+                "choices": [{"message": {"content": json.dumps(response_content)}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    return httpx.MockTransport(respond)
+
+
 def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None:
     """Send only allowlisted facts and fail closed on identity terms."""
     requests: list[httpx.Request] = []
@@ -98,6 +220,75 @@ def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None
         )
 
 
+def test_rejects_nonunique_and_over_budget_patches() -> None:
+    """Reject non-mechanical and too-large provider patch proposals."""
+    with pytest.raises(SolAdjudicationError):
+        validate_sol_adjudication(
+            original_text="Hun bor i Aarhus. Hun arbejder som lærer.",
+            candidate_facts={"municipality": "Aarhus"},
+            response={
+                "disposition": "patched",
+                "reason": "Ikke entydig.",
+                "evidence": [],
+                "patches": [{"old_excerpt": "Hun", "new_excerpt": "Personen"}],
+            },
+        )
+
+    with pytest.raises(SolAdjudicationError):
+        validate_sol_adjudication(
+            original_text=(
+                "Hun bor i Aarhus og arbejder som lærer. Resten er kort neutral tekst."
+            ),
+            candidate_facts={"municipality": "Aarhus"},
+            response={
+                "disposition": "patched",
+                "reason": "For stor ændring.",
+                "evidence": [],
+                "patches": [
+                    {
+                        "old_excerpt": "Hun bor i Aarhus og arbejder som lærer.",
+                        "new_excerpt": "Hun bor i Aarhus.",
+                    }
+                ],
+            },
+        )
+
+
+def test_rejects_stale_checkpoint_binding(tmp_path: Path) -> None:
+    """Resume only when the bound candidate row is unchanged."""
+    checkpoint = _checkpoint(tmp_path)
+    run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=checkpoint,
+        transport=_transport(
+            {
+                "disposition": "consistent",
+                "reason": "Alder er nævnt.",
+                "evidence": [
+                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+                ],
+                "patches": [],
+            },
+            [],
+        ),
+    )
+
+    with pytest.raises(SolAdjudicationError):
+        run_sol_adjudication(
+            original_persona=_PERSONA,
+            candidate_row={"age": 43, "municipality": "Aarhus"},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=checkpoint,
+            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
+        )
+
+
 def test_schema_invalid_records_usage_without_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,194 +339,3 @@ def test_schema_invalid_records_usage_without_checkpoint(
     assert events == ["reserved", "network", "usage"]
     assert not checkpoint.exists()
     assert "raw-private-id" not in str(error.value)
-
-
-def test_rejects_nonunique_and_over_budget_patches() -> None:
-    """Reject non-mechanical and too-large provider patch proposals."""
-    with pytest.raises(SolAdjudicationError):
-        validate_sol_adjudication(
-            original_text="Hun bor i Aarhus. Hun arbejder som lærer.",
-            candidate_facts={"municipality": "Aarhus"},
-            response={
-                "disposition": "patched",
-                "reason": "Ikke entydig.",
-                "evidence": [],
-                "patches": [{"old_excerpt": "Hun", "new_excerpt": "Personen"}],
-            },
-        )
-
-    with pytest.raises(SolAdjudicationError):
-        validate_sol_adjudication(
-            original_text=(
-                "Hun bor i Aarhus og arbejder som lærer. Resten er kort neutral tekst."
-            ),
-            candidate_facts={"municipality": "Aarhus"},
-            response={
-                "disposition": "patched",
-                "reason": "For stor ændring.",
-                "evidence": [],
-                "patches": [
-                    {
-                        "old_excerpt": "Hun bor i Aarhus og arbejder som lærer.",
-                        "new_excerpt": "Hun bor i Aarhus.",
-                    }
-                ],
-            },
-        )
-
-
-def test_consistent_evidence_checkpoints_privately(tmp_path: Path) -> None:
-    """Accept exact grounded evidence and write a private checkpoint."""
-    checkpoint = _checkpoint(tmp_path)
-
-    result = run_sol_adjudication(
-        original_persona=_PERSONA,
-        candidate_row={"age": 42, "municipality": "Aarhus"},
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path),
-        checkpoint_path=checkpoint,
-        transport=_transport(
-            {
-                "disposition": "consistent",
-                "reason": "Alder er nævnt i teksten.",
-                "evidence": [
-                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
-                ],
-                "patches": [],
-            },
-            [],
-        ),
-    )
-
-    assert result.disposition == "consistent"
-    assert result.proposed_text == _PERSONA
-    assert stat.S_IMODE(checkpoint.stat().st_mode) == 0o600
-
-
-def test_rejects_stale_checkpoint_binding(tmp_path: Path) -> None:
-    """Resume only when the bound candidate row is unchanged."""
-    checkpoint = _checkpoint(tmp_path)
-    run_sol_adjudication(
-        original_persona=_PERSONA,
-        candidate_row={"age": 42, "municipality": "Aarhus"},
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path),
-        checkpoint_path=checkpoint,
-        transport=_transport(
-            {
-                "disposition": "consistent",
-                "reason": "Alder er nævnt.",
-                "evidence": [
-                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
-                ],
-                "patches": [],
-            },
-            [],
-        ),
-    )
-
-    with pytest.raises(SolAdjudicationError):
-        run_sol_adjudication(
-            original_persona=_PERSONA,
-            candidate_row={"age": 43, "municipality": "Aarhus"},
-            prompt=_PROMPT,
-            config=_config(),
-            budget=_budget(tmp_path),
-            checkpoint_path=checkpoint,
-            transport=httpx.MockTransport(lambda _: httpx.Response(500)),
-        )
-
-
-def _config(**overrides: object) -> GenerationConfig:
-    values: dict[str, object] = {
-        "base_url": "http://127.0.0.1:18080/v1",
-        "model": "gpt-6-sol",
-        "api_key_env": None,
-        "timeout_seconds": 10.0,
-        "maximum_http_attempts": 1,
-        "maximum_total_requests": None,
-        "retry_backoff_seconds": 0.0,
-        "maximum_rows_per_shard": 1,
-        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
-        "enable_thinking": None,
-        "reasoning_effort": "none",
-        "prompt": Path("config/persona-sol-adjudication-da.md"),
-        "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
-    }
-    values.update(overrides)
-    return GenerationConfig.model_validate(values)
-
-
-def _budget(tmp_path: Path) -> ProxyBudget:
-    registry = tmp_path / "models.json"
-    registry.write_text(
-        json.dumps(
-            {
-                "openai-codex": {
-                    "models": [
-                        {
-                            "id": "gpt-6-sol",
-                            "maxTokens": 128_000,
-                            "cost": {"input": "2", "output": "10"},
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return ProxyBudget(
-        ledger_path=tmp_path / "ignored.jsonl",
-        registry_path=registry,
-        campaign="synthetic-sol-test",
-        source_hash="a" * 64,
-        prompt_hash=hashlib.sha256(_PROMPT.encode()).hexdigest(),
-        schema_hash=hashlib.sha256(
-            json.dumps(
-                SolAdjudicationResponse.provider_json_schema(),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest(),
-        model="gpt-6-sol",
-        input_usd_per_million="2",
-        output_usd_per_million="10",
-        cap_usd=Decimal("1"),
-        uncapped=True,
-        uncapped_purpose="sol_adjudication",
-    )
-
-
-def _transport(
-    response_content: dict[str, Any],
-    seen: list[httpx.Request],
-    events: list[str] | None = None,
-) -> httpx.MockTransport:
-    def respond(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        if events is not None:
-            events.append("network")
-        body = json.loads(request.content)
-        assert body["model"] == "gpt-6-sol"
-        assert body["max_tokens"] == SOL_MAX_OUTPUT_TOKENS
-        assert body["reasoning_effort"] == "none"
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "gpt-6-sol",
-                "choices": [{"message": {"content": json.dumps(response_content)}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-            },
-        )
-
-    return httpx.MockTransport(respond)
-
-
-def _checkpoint(tmp_path: Path, *, name: str = "sol.json") -> Path:
-    parent = tmp_path / "private-checkpoints"
-    parent.mkdir(mode=0o700, exist_ok=True)
-    return parent / name

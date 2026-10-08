@@ -20,201 +20,6 @@ from danish_personas.io import sha256_file
 from scripts import adjudicate_persona_release as adjudicate
 
 
-def test_dry_run_selects_all_fixture_rows_without_http(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Dry-run covers the full ordered fixture and performs no provider I/O."""
-    paths = _fixture_paths(tmp_path, rows=7)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-
-    def fail_runner(
-        original_persona: str,
-        candidate_row: dict[str, object],
-        prompt: str,
-        config: GenerationConfig,
-        budget: ProxyBudget,
-        checkpoint_path: Path,
-        transport: httpx.BaseTransport,
-        changed_fact_hints: dict[str, dict[str, object]],
-        original_row: dict[str, object],
-    ) -> SolAdjudicationResult:
-        raise AssertionError("dry-run must not call the row runner")
-
-    summary = adjudicate.run_release_adjudication(
-        paths=paths,
-        execute=False,
-        max_rows=None,
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=7,
-        sol_runner=fail_runner,
-    )
-
-    assert summary["selected"] == 7
-    assert summary["pending"] == 7
-    assert not paths.output_dir.exists()
-
-
-def test_pilot_resume_processes_stable_prefix_then_full_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A 32-row pilot writes reusable checkpoints for a later full run."""
-    paths = _fixture_paths(tmp_path, rows=40)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    runner = _RecordingRunner()
-
-    pilot = adjudicate.run_release_adjudication(
-        paths=paths,
-        execute=True,
-        max_rows=32,
-        workers=3,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=40,
-        sol_runner=runner,
-    )
-    full = adjudicate.run_release_adjudication(
-        paths=paths,
-        execute=True,
-        max_rows=None,
-        workers=4,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=40,
-        sol_runner=runner,
-    )
-
-    assert pilot["processed"] == 32
-    assert full["processed"] == 40
-    assert len(runner.checkpoints) == 40
-    status = json.loads((paths.output_dir / "status.json").read_text())
-    assert len(status["processed"]) == 40
-    assert all("persona_id" not in record for record in status["processed"])
-
-
-def test_stale_input_and_report_fail_before_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Changed source bindings are rejected before private output is created."""
-    paths = _fixture_paths(tmp_path, rows=3)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError) as error:
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256="0" * 64,
-            expected_row_count=3,
-            sol_runner=_RecordingRunner(),
-        )
-
-    assert "raw-id" not in str(error.value)
-    assert not paths.output_dir.exists()
-
-    report = json.loads(paths.report.read_text(encoding="utf-8"))
-    report["preview_sha256"] = "1" * 64
-    paths.report.write_text(json.dumps(report), encoding="utf-8")
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=False,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=3,
-            sol_runner=_RecordingRunner(),
-        )
-
-
-def test_existing_public_output_directory_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The campaign refuses to write into a non-private directory."""
-    paths = _fixture_paths(tmp_path, rows=2)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    paths.output_dir.mkdir()
-    os.chmod(paths.output_dir, 0o755)
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=2,
-            sol_runner=_RecordingRunner(),
-        )
-
-
-def test_fatal_row_stops_without_queueing_all_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A hard row failure stops after at most the bounded in-flight window."""
-    paths = _fixture_paths(tmp_path, rows=12)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    runner = _FailingFirstRunner()
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=4,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=12,
-            sol_runner=runner,
-        )
-
-    assert 1 <= runner.calls <= 4
-
-
-def test_restricted_text_refuses_before_provider(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Sensitive identity terms in local prose fail closed before requests."""
-    paths = _fixture_paths(tmp_path, rows=2, restricted=True)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    runner = _RecordingRunner()
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=2,
-            sol_runner=runner,
-        )
-
-    assert runner.calls == 0
-    assert not paths.output_dir.exists()
-
-
-def test_no_raw_id_or_prose_in_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Failure messages do not echo private identifiers or persona prose."""
-    paths = _fixture_paths(tmp_path, rows=2, secret=True)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError) as error:
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256="f" * 64,
-            expected_row_count=2,
-            sol_runner=_RecordingRunner(),
-        )
-
-    message = str(error.value)
-    assert "raw-secret-id" not in message
-    assert "unik hemmelig prosatekst" not in message
-
-
 def test_completed_status_skips_provider_on_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -245,6 +50,43 @@ def test_completed_status_skips_provider_on_resume(
     assert first["processed"] == 2
     assert second["processed"] == 2
     assert runner.calls == 2
+
+
+class _RecordingRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.checkpoints: set[Path] = set()
+        self._lock = threading.Lock()
+
+    def __call__(
+        self,
+        original_persona: str,
+        candidate_row: dict[str, object],
+        prompt: str,
+        config: GenerationConfig,
+        budget: ProxyBudget,
+        checkpoint_path: Path,
+        transport: httpx.BaseTransport,
+        changed_fact_hints: dict[str, dict[str, object]],
+        original_row: dict[str, object],
+    ) -> SolAdjudicationResult:
+        del prompt, config, budget, transport, changed_fact_hints, original_row
+        with self._lock:
+            self.calls += 1
+            self.checkpoints.add(checkpoint_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        checkpoint_path.write_text('{"response":"ok"}\n', encoding="utf-8")
+        os.chmod(checkpoint_path, 0o600)
+        assert stat.S_IMODE(checkpoint_path.stat().st_mode) == 0o600
+        return SolAdjudicationResult(
+            disposition="consistent",
+            original_text=original_persona,
+            proposed_text=original_persona,
+            changed_fraction=0.0,
+            reason="ok",
+            evidence=(),
+            patches=(),
+        )
 
 
 def _fixture_paths(
@@ -330,14 +172,14 @@ def _patch_budget_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-class _RecordingRunner:
-    def __init__(self) -> None:
-        self.calls = 0
-        self.checkpoints: set[Path] = set()
-        self._lock = threading.Lock()
+def test_dry_run_selects_all_fixture_rows_without_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dry-run covers the full ordered fixture and performs no provider I/O."""
+    paths = _fixture_paths(tmp_path, rows=7)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
 
-    def __call__(
-        self,
+    def fail_runner(
         original_persona: str,
         candidate_row: dict[str, object],
         prompt: str,
@@ -348,23 +190,64 @@ class _RecordingRunner:
         changed_fact_hints: dict[str, dict[str, object]],
         original_row: dict[str, object],
     ) -> SolAdjudicationResult:
-        del prompt, config, budget, transport, changed_fact_hints, original_row
-        with self._lock:
-            self.calls += 1
-            self.checkpoints.add(checkpoint_path)
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        checkpoint_path.write_text('{"response":"ok"}\n', encoding="utf-8")
-        os.chmod(checkpoint_path, 0o600)
-        assert stat.S_IMODE(checkpoint_path.stat().st_mode) == 0o600
-        return SolAdjudicationResult(
-            disposition="consistent",
-            original_text=original_persona,
-            proposed_text=original_persona,
-            changed_fraction=0.0,
-            reason="ok",
-            evidence=(),
-            patches=(),
+        raise AssertionError("dry-run must not call the row runner")
+
+    summary = adjudicate.run_release_adjudication(
+        paths=paths,
+        execute=False,
+        max_rows=None,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=7,
+        sol_runner=fail_runner,
+    )
+
+    assert summary["selected"] == 7
+    assert summary["pending"] == 7
+    assert not paths.output_dir.exists()
+
+
+def test_existing_public_output_directory_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The campaign refuses to write into a non-private directory."""
+    paths = _fixture_paths(tmp_path, rows=2)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    paths.output_dir.mkdir()
+    os.chmod(paths.output_dir, 0o755)
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=2,
+            sol_runner=_RecordingRunner(),
         )
+
+
+def test_fatal_row_stops_without_queueing_all_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hard row failure stops after at most the bounded in-flight window."""
+    paths = _fixture_paths(tmp_path, rows=12)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = _FailingFirstRunner()
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=4,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=12,
+            sol_runner=runner,
+        )
+
+    assert 1 <= runner.calls <= 4
 
 
 class _FailingFirstRunner(_RecordingRunner):
@@ -398,4 +281,121 @@ class _FailingFirstRunner(_RecordingRunner):
             reason="ok",
             evidence=(),
             patches=(),
+        )
+
+
+def test_no_raw_id_or_prose_in_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure messages do not echo private identifiers or persona prose."""
+    paths = _fixture_paths(tmp_path, rows=2, secret=True)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError) as error:
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256="f" * 64,
+            expected_row_count=2,
+            sol_runner=_RecordingRunner(),
+        )
+
+    message = str(error.value)
+    assert "raw-secret-id" not in message
+    assert "unik hemmelig prosatekst" not in message
+
+
+def test_pilot_resume_processes_stable_prefix_then_full_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 32-row pilot writes reusable checkpoints for a later full run."""
+    paths = _fixture_paths(tmp_path, rows=40)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = _RecordingRunner()
+
+    pilot = adjudicate.run_release_adjudication(
+        paths=paths,
+        execute=True,
+        max_rows=32,
+        workers=3,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=40,
+        sol_runner=runner,
+    )
+    full = adjudicate.run_release_adjudication(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=4,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=40,
+        sol_runner=runner,
+    )
+
+    assert pilot["processed"] == 32
+    assert full["processed"] == 40
+    assert len(runner.checkpoints) == 40
+    status = json.loads((paths.output_dir / "status.json").read_text())
+    assert len(status["processed"]) == 40
+    assert all("persona_id" not in record for record in status["processed"])
+
+
+def test_restricted_text_refuses_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sensitive identity terms in local prose fail closed before requests."""
+    paths = _fixture_paths(tmp_path, rows=2, restricted=True)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = _RecordingRunner()
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=2,
+            sol_runner=runner,
+        )
+
+    assert runner.calls == 0
+    assert not paths.output_dir.exists()
+
+
+def test_stale_input_and_report_fail_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changed source bindings are rejected before private output is created."""
+    paths = _fixture_paths(tmp_path, rows=3)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError) as error:
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256="0" * 64,
+            expected_row_count=3,
+            sol_runner=_RecordingRunner(),
+        )
+
+    assert "raw-id" not in str(error.value)
+    assert not paths.output_dir.exists()
+
+    report = json.loads(paths.report.read_text(encoding="utf-8"))
+    report["preview_sha256"] = "1" * 64
+    paths.report.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=False,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=3,
+            sol_runner=_RecordingRunner(),
         )

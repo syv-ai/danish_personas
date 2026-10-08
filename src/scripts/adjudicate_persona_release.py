@@ -85,66 +85,6 @@ SolRunner: t.TypeAlias = c.Callable[
 ]
 
 
-@dataclass(frozen=True)
-class ReleasePaths:
-    """Private Sol campaign inputs and output paths."""
-
-    original: Path
-    candidate: Path
-    report: Path
-    prompt: Path
-    output_dir: Path
-    registry: Path
-
-
-@dataclass(frozen=True)
-class ReleaseRow:
-    """One ordered release row selected for Sol adjudication."""
-
-    index: int
-    persona_hash: str
-    original_row: dict[str, object]
-    candidate_row: dict[str, object]
-    changed_facts: dict[str, dict[str, object]]
-
-
-@dataclass(frozen=True)
-class ReleaseInputs:
-    """Loaded full-release frames and prompt text."""
-
-    original_rows: list[dict[str, object]]
-    candidate_rows: list[dict[str, object]]
-    ordered_id_hashes: list[str]
-    ordered_id_sha256: str
-    ordered_id_hashes_sha256: str
-    candidate_preview_sha256: str
-    report_sha256: str
-    prompt: str
-
-
-@dataclass(frozen=True)
-class ReleaseSelection:
-    """Deterministic full-campaign Sol selection."""
-
-    rows: list[ReleaseRow]
-    ordered_id_sha256: str
-    ordered_id_hashes_sha256: str
-    candidate_preview_sha256: str
-
-
-@dataclass(frozen=True)
-class RowResult:
-    """Sanitised result for one completed row."""
-
-    persona_hash: str
-    disposition: t.Literal["consistent", "patched", "unresolved"]
-    checkpoint: str
-
-
-class PersonaReleaseAdjudicationError(Exception):
-    """Raised when release adjudication must fail closed."""
-
-
 @click.command()
 @click.option("--original", type=click.Path(path_type=Path), default=DEFAULT_ORIGINAL)
 @click.option("--candidate", type=click.Path(path_type=Path), default=DEFAULT_CANDIDATE)
@@ -202,6 +142,28 @@ def main(
     ) as exc:
         raise click.ClickException(_safe_error_message(exc=exc)) from exc
     click.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+
+
+@dataclass(frozen=True)
+class ReleasePaths:
+    """Private Sol campaign inputs and output paths."""
+
+    original: Path
+    candidate: Path
+    report: Path
+    prompt: Path
+    output_dir: Path
+    registry: Path
+
+
+def _safe_error_message(*, exc: Exception) -> str:
+    if isinstance(exc, PersonaReleaseAdjudicationError):
+        return str(exc)
+    if isinstance(exc, ProxyBudgetError):
+        return str(exc)
+    if isinstance(exc, SolAdjudicationError):
+        return "Sol adjudication rejected a row without storing provider content"
+    return "Sol adjudication failed closed"
 
 
 def run_release_adjudication(
@@ -271,6 +233,273 @@ def run_release_adjudication(
     return summary
 
 
+class PersonaReleaseAdjudicationError(Exception):
+    """Raised when release adjudication must fail closed."""
+
+
+def _bounded_total(*, total: int, max_rows: int | None) -> int:
+    if max_rows is None:
+        return total
+    return min(total, max_rows)
+
+
+def _hash_json(value: object) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _generation_config(*, prompt_path: Path) -> GenerationConfig:
+    return GenerationConfig.model_validate(
+        {
+            "base_url": BASE_URL,
+            "model": SOL_ADJUDICATION_MODEL,
+            "api_key_env": None,
+            "timeout_seconds": 120.0,
+            "maximum_http_attempts": 5,
+            "maximum_total_requests": None,
+            "retry_backoff_seconds": 1.0,
+            "maximum_rows_per_shard": 1,
+            "max_tokens": SOL_MAX_OUTPUT_TOKENS,
+            "enable_thinking": None,
+            "reasoning_effort": "none",
+            "prompt": prompt_path,
+            "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+        }
+    )
+
+
+def _load_or_create_status(
+    *, status_path: Path, output_dir: Path, manifest: dict[str, JSONDocument]
+) -> dict[str, object]:
+    manifest_sha256 = _hash_json(manifest)
+    if not status_path.exists():
+        status: dict[str, object] = {
+            "version": STATUS_VERSION,
+            "manifest_sha256": manifest_sha256,
+            "counts": {"consistent": 0, "patched": 0, "unresolved": 0},
+            "processed": [],
+        }
+        _write_status(path=status_path, status=status)
+        return status
+    _require_private_file(path=status_path, label="status")
+    status = _load_json_object(path=status_path, label="status")
+    if status.get("version") != STATUS_VERSION:
+        raise PersonaReleaseAdjudicationError("Status version does not match")
+    if status.get("manifest_sha256") != manifest_sha256:
+        raise PersonaReleaseAdjudicationError("Status manifest binding does not match")
+    _validate_status(status=status, output_dir=output_dir)
+    return status
+
+
+def _load_json_object(*, path: Path, label: str) -> dict[str, object]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PersonaReleaseAdjudicationError(f"{label} is not readable") from exc
+    if not isinstance(document, dict):
+        raise PersonaReleaseAdjudicationError(f"{label} must be a JSON object")
+    return t.cast(dict[str, object], document)
+
+
+def _require_private_file(*, path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise PersonaReleaseAdjudicationError(f"{label} is unsafe")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode != 0o600:
+        raise PersonaReleaseAdjudicationError(f"{label} must be private")
+
+
+def _validate_status(*, status: dict[str, object], output_dir: Path) -> None:
+    processed = _processed_records(status=status)
+    seen: set[str] = set()
+    for record in processed:
+        persona_hash = record["persona_hash"]
+        if persona_hash in seen:
+            raise PersonaReleaseAdjudicationError("Status contains duplicate rows")
+        seen.add(persona_hash)
+        checkpoint = _checkpoint_path(output_dir=output_dir, persona_hash=persona_hash)
+        if not checkpoint.exists():
+            raise PersonaReleaseAdjudicationError(
+                "Status references missing checkpoint"
+            )
+        _require_private_file(path=checkpoint, label="checkpoint")
+    counts = status.get("counts")
+    if counts != _counts_from_processed(processed=processed):
+        raise PersonaReleaseAdjudicationError("Status counts are inconsistent")
+
+
+def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
+    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
+
+
+def _counts_from_processed(*, processed: list[dict[str, str]]) -> dict[str, int]:
+    counts = {"consistent": 0, "patched": 0, "unresolved": 0}
+    for record in processed:
+        counts[record["disposition"]] += 1
+    return counts
+
+
+def _processed_records(*, status: dict[str, object]) -> list[dict[str, str]]:
+    processed = status.get("processed")
+    if not isinstance(processed, list):
+        raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
+    records: list[dict[str, str]] = []
+    for item in processed:
+        if not isinstance(item, dict):
+            raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
+        persona_hash = item.get("persona_hash")
+        disposition = item.get("disposition")
+        checkpoint = item.get("checkpoint")
+        if (
+            not isinstance(persona_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", persona_hash) is None
+            or disposition not in {"consistent", "patched", "unresolved"}
+            or not isinstance(checkpoint, str)
+        ):
+            raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
+        records.append(
+            {
+                "persona_hash": persona_hash,
+                "disposition": str(disposition),
+                "checkpoint": checkpoint,
+            }
+        )
+    return records
+
+
+def _write_status(*, path: Path, status: dict[str, object]) -> None:
+    _write_private_json(path=path, value=t.cast(dict[str, JSONDocument], status))
+
+
+def _write_private_json(*, path: Path, value: dict[str, JSONDocument]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _require_private_directory(path=path.parent, label="private parent directory")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _require_private_directory(*, path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise PersonaReleaseAdjudicationError(f"{label} is unsafe")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode != 0o700:
+        raise PersonaReleaseAdjudicationError(f"{label} must be private")
+
+
+def _prepare_private_output(*, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _require_private_directory(path=output_dir, label="output directory")
+    checkpoints = output_dir / "checkpoints"
+    checkpoints.mkdir(mode=0o700, exist_ok=True)
+    _require_private_directory(path=checkpoints, label="checkpoint directory")
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if not 1 <= workers <= 4:
+        raise PersonaReleaseAdjudicationError("Worker count must be between 1 and 4")
+
+
+def _status_summary(
+    *, status: dict[str, object], max_rows: int | None, workers: int
+) -> dict[str, object]:
+    processed = _processed_records(status=status)
+    counts = _counts_from_processed(processed=processed)
+    selected_total = _status_selected_total(status=status)
+    selected = _bounded_total(total=selected_total, max_rows=max_rows)
+    processed_in_scope = min(len(processed), selected)
+    budget_summary = None
+    return {
+        "dry_run": False,
+        "campaign": CAMPAIGN,
+        "manifest_sha256": status["manifest_sha256"],
+        "selected": selected,
+        "total": selected_total,
+        "pending": max(selected - processed_in_scope, 0),
+        "processed": processed_in_scope,
+        "consistent": counts["consistent"],
+        "patched": counts["patched"],
+        "unresolved": counts["unresolved"],
+        "max_rows": max_rows,
+        "workers": workers,
+        "budget": budget_summary,
+    }
+
+
+def _status_selected_total(*, status: dict[str, object]) -> int:
+    value = status.get("selected_total")
+    if isinstance(value, int) and value >= 0:
+        return value
+    processed = _processed_records(status=status)
+    return len(processed)
+
+
+def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONDocument]) -> None:
+    if path.exists():
+        _require_private_file(path=path, label="manifest")
+        saved = _load_json_object(path=path, label="manifest")
+        if saved != manifest:
+            raise PersonaReleaseAdjudicationError("Manifest binding does not match")
+        return
+    _write_private_json(path=path, value=manifest)
+
+
+@dataclass(frozen=True)
+class ReleaseInputs:
+    """Loaded full-release frames and prompt text."""
+
+    original_rows: list[dict[str, object]]
+    candidate_rows: list[dict[str, object]]
+    ordered_id_hashes: list[str]
+    ordered_id_sha256: str
+    ordered_id_hashes_sha256: str
+    candidate_preview_sha256: str
+    report_sha256: str
+    prompt: str
+
+
+def _proxy_budget(
+    *, paths: ReleasePaths, inputs: ReleaseInputs, manifest: dict[str, JSONDocument]
+) -> ProxyBudget:
+    del manifest
+    schema_hash = sha256_text(
+        canonical_json(SolAdjudicationResponse.provider_json_schema())
+    )
+    source_hash = sha256_text(
+        canonical_json(
+            {
+                "candidate_preview_sha256": inputs.candidate_preview_sha256,
+                "ordered_id_sha256": inputs.ordered_id_sha256,
+                "ordered_id_hashes_sha256": inputs.ordered_id_hashes_sha256,
+                "report_sha256": inputs.report_sha256,
+            }
+        )
+    )
+    return ProxyBudget(
+        ledger_path=paths.output_dir / "ignored-sol-budget.jsonl",
+        registry_path=paths.registry,
+        campaign=CAMPAIGN,
+        source_hash=source_hash,
+        prompt_hash=sha256_file(paths.prompt),
+        schema_hash=schema_hash,
+        model=SOL_ADJUDICATION_MODEL,
+        input_usd_per_million="2",
+        output_usd_per_million="10",
+        cap_usd=Decimal("1"),
+        uncapped=True,
+        uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
+    )
+
+
 def load_release_inputs(
     *, paths: ReleasePaths, expected_original_sha256: str, expected_row_count: int
 ) -> ReleaseInputs:
@@ -300,9 +529,9 @@ def load_release_inputs(
 
     report = _load_json_object(path=paths.report, label="candidate report")
     preview_sha256 = _frame_hash(frame=candidate)
-    if _json_string(report, key="preview_sha256", label="candidate report") != (
-        preview_sha256
-    ):
+    if _json_string(
+        document=report, key="preview_sha256", label="candidate report"
+    ) != (preview_sha256):
         raise PersonaReleaseAdjudicationError(
             "Candidate report preview SHA-256 mismatch"
         )
@@ -335,135 +564,80 @@ def load_release_inputs(
     )
 
 
-def select_release_rows(*, inputs: ReleaseInputs) -> ReleaseSelection:
-    """Select every ordered release row for Sol adjudication.
-
-    Returns:
-        Full-campaign selection in immutable release order.
-    """
-    rows: list[ReleaseRow] = []
-    for index, (original, candidate, persona_hash) in enumerate(
-        zip(
-            inputs.original_rows,
-            inputs.candidate_rows,
-            inputs.ordered_id_hashes,
-            strict=True,
-        )
-    ):
-        rows.append(
-            ReleaseRow(
-                index=index,
-                persona_hash=persona_hash,
-                original_row=original,
-                candidate_row=candidate,
-                changed_facts=_changed_facts(original=original, candidate=candidate),
-            )
-        )
-    return ReleaseSelection(
-        rows=rows,
-        ordered_id_sha256=inputs.ordered_id_sha256,
-        ordered_id_hashes_sha256=inputs.ordered_id_hashes_sha256,
-        candidate_preview_sha256=inputs.candidate_preview_sha256,
-    )
+def _check_restricted_text(*, value: str, label: str) -> None:
+    if _RESTRICTED_TEXT.search(value):
+        raise PersonaReleaseAdjudicationError(f"{label} contains restricted text")
 
 
-def _campaign_manifest(
-    *, paths: ReleasePaths, inputs: ReleaseInputs, selection: ReleaseSelection
-) -> dict[str, JSONDocument]:
-    schema_hash = sha256_text(
-        canonical_json(SolAdjudicationResponse.provider_json_schema())
-    )
-    return {
-        "version": MANIFEST_VERSION,
-        "campaign": CAMPAIGN,
-        "inputs": {
-            "original": sha256_file(paths.original),
-            "candidate": sha256_file(paths.candidate),
-            "candidate_report": inputs.report_sha256,
-            "candidate_preview": inputs.candidate_preview_sha256,
-            "prompt": sha256_file(paths.prompt),
-            "schema": schema_hash,
-            "registry": sha256_file(paths.registry),
-        },
-        "model": SOL_ADJUDICATION_MODEL,
-        "base_url": BASE_URL,
-        "reasoning_effort": "none",
-        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
-        "maximum_http_attempts": 5,
-        "budget_purpose": SOL_ADJUDICATION_PURPOSE,
-        "allowed_facts": sorted(SOL_ALLOWED_FACT_FIELDS),
-        "selection": {
-            "ordered_rows": len(selection.rows),
-            "ordered_id_sha256": selection.ordered_id_sha256,
-            "ordered_id_hashes_sha256": selection.ordered_id_hashes_sha256,
-        },
-    }
+def _check_rows_private(
+    *, original_rows: list[dict[str, object]], candidate_rows: list[dict[str, object]]
+) -> None:
+    for original, candidate in zip(original_rows, candidate_rows, strict=True):
+        original_persona = original.get(PERSONA_FIELD)
+        candidate_persona = candidate.get(PERSONA_FIELD)
+        if not isinstance(original_persona, str) or not isinstance(
+            candidate_persona, str
+        ):
+            raise PersonaReleaseAdjudicationError("Persona prose is missing")
+        _check_restricted_text(value=original_persona, label="original persona prose")
+        _check_restricted_text(value=candidate_persona, label="candidate persona prose")
 
 
-def _dry_run_summary(
-    *,
-    manifest: dict[str, JSONDocument],
-    selection: ReleaseSelection,
-    max_rows: int | None,
-    workers: int,
-) -> dict[str, object]:
-    selected = _bounded_total(total=len(selection.rows), max_rows=max_rows)
-    return {
-        "dry_run": True,
-        "run_required": True,
-        "campaign": CAMPAIGN,
-        "manifest_sha256": _hash_json(manifest),
-        "selected": selected,
-        "total": len(selection.rows),
-        "pending": selected,
-        "consistent": 0,
-        "patched": 0,
-        "unresolved": 0,
-        "processed": 0,
-        "max_rows": max_rows,
-        "workers": workers,
-    }
+def _frame_hash(*, frame: pl.DataFrame) -> str:
+    payload = {"columns": frame.columns, "rows": _jsonable(frame.to_dicts())}
+    return sha256_text(canonical_json(payload))
 
 
-def _prepare_private_output(*, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _require_private_directory(path=output_dir, label="output directory")
-    checkpoints = output_dir / "checkpoints"
-    checkpoints.mkdir(mode=0o700, exist_ok=True)
-    _require_private_directory(path=checkpoints, label="checkpoint directory")
+def _jsonable(value: object) -> JSONDocument:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, c.Mapping):
+        return {str(key): _jsonable(child) for key, child in value.items()}
+    if isinstance(value, c.Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [_jsonable(child) for child in value]
+    return str(value)
 
 
-def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONDocument]) -> None:
-    if path.exists():
-        _require_private_file(path=path, label="manifest")
-        saved = _load_json_object(path=path, label="manifest")
-        if saved != manifest:
-            raise PersonaReleaseAdjudicationError("Manifest binding does not match")
-        return
-    _write_private_json(path=path, value=manifest)
+def _json_string(*, document: dict[str, object], key: str, label: str) -> str:
+    value = document.get(key)
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise PersonaReleaseAdjudicationError(f"{label} has invalid checksum")
+    return value
 
 
-def _load_or_create_status(
-    *, status_path: Path, output_dir: Path, manifest: dict[str, JSONDocument]
-) -> dict[str, object]:
-    manifest_sha256 = _hash_json(manifest)
-    if not status_path.exists():
-        status: dict[str, object] = {
-            "version": STATUS_VERSION,
-            "manifest_sha256": manifest_sha256,
-            "counts": {"consistent": 0, "patched": 0, "unresolved": 0},
-            "processed": [],
-        }
-        _write_status(path=status_path, status=status)
-        return status
-    _require_private_file(path=status_path, label="status")
-    status = _load_json_object(path=status_path, label="status")
-    if status.get("version") != STATUS_VERSION:
-        raise PersonaReleaseAdjudicationError("Status version does not match")
-    if status.get("manifest_sha256") != manifest_sha256:
-        raise PersonaReleaseAdjudicationError("Status manifest binding does not match")
-    _validate_status(status=status, output_dir=output_dir)
-    return t.cast(dict[str, object], status)
+def _ordered_ids(*, frame: pl.DataFrame, label: str) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in frame.get_column(ID_FIELD).to_list():
+        if not isinstance(value, str) or not value:
+            raise PersonaReleaseAdjudicationError(f"{label} frame has invalid IDs")
+        if value in seen:
+            raise PersonaReleaseAdjudicationError(f"{label} frame has duplicate IDs")
+        seen.add(value)
+        ids.append(value)
+    return ids
+
+
+def _require_columns(*, frame: pl.DataFrame, label: str) -> None:
+    missing = {ID_FIELD, PERSONA_FIELD} - set(frame.columns)
+    if missing:
+        raise PersonaReleaseAdjudicationError(f"{label} frame is missing columns")
+
+
+def _require_row_count(*, frame: pl.DataFrame, expected: int, label: str) -> None:
+    if frame.height != expected:
+        raise PersonaReleaseAdjudicationError(f"{label} frame row count mismatch")
+
+
+@dataclass(frozen=True)
+class ReleaseRow:
+    """One ordered release row selected for Sol adjudication."""
+
+    index: int
+    persona_hash: str
+    original_row: dict[str, object]
+    candidate_row: dict[str, object]
+    changed_facts: dict[str, dict[str, object]]
 
 
 def _process_pending(
@@ -530,6 +704,184 @@ def _process_pending(
         ) from stop_exc
 
 
+@dataclass(frozen=True)
+class ReleaseSelection:
+    """Deterministic full-campaign Sol selection."""
+
+    rows: list[ReleaseRow]
+    ordered_id_sha256: str
+    ordered_id_hashes_sha256: str
+    candidate_preview_sha256: str
+
+
+def _campaign_manifest(
+    *, paths: ReleasePaths, inputs: ReleaseInputs, selection: ReleaseSelection
+) -> dict[str, JSONDocument]:
+    schema_hash = sha256_text(
+        canonical_json(SolAdjudicationResponse.provider_json_schema())
+    )
+    return {
+        "version": MANIFEST_VERSION,
+        "campaign": CAMPAIGN,
+        "inputs": {
+            "original": sha256_file(paths.original),
+            "candidate": sha256_file(paths.candidate),
+            "candidate_report": inputs.report_sha256,
+            "candidate_preview": inputs.candidate_preview_sha256,
+            "prompt": sha256_file(paths.prompt),
+            "schema": schema_hash,
+            "registry": sha256_file(paths.registry),
+        },
+        "model": SOL_ADJUDICATION_MODEL,
+        "base_url": BASE_URL,
+        "reasoning_effort": "none",
+        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
+        "maximum_http_attempts": 5,
+        "budget_purpose": SOL_ADJUDICATION_PURPOSE,
+        "allowed_facts": sorted(SOL_ALLOWED_FACT_FIELDS),
+        "selection": {
+            "ordered_rows": len(selection.rows),
+            "ordered_id_sha256": selection.ordered_id_sha256,
+            "ordered_id_hashes_sha256": selection.ordered_id_hashes_sha256,
+        },
+    }
+
+
+def _dry_run_summary(
+    *,
+    manifest: dict[str, JSONDocument],
+    selection: ReleaseSelection,
+    max_rows: int | None,
+    workers: int,
+) -> dict[str, object]:
+    selected = _bounded_total(total=len(selection.rows), max_rows=max_rows)
+    return {
+        "dry_run": True,
+        "run_required": True,
+        "campaign": CAMPAIGN,
+        "manifest_sha256": _hash_json(manifest),
+        "selected": selected,
+        "total": len(selection.rows),
+        "pending": selected,
+        "consistent": 0,
+        "patched": 0,
+        "unresolved": 0,
+        "processed": 0,
+        "max_rows": max_rows,
+        "workers": workers,
+    }
+
+
+def _pending_rows(
+    *, selection: ReleaseSelection, status: dict[str, object], max_rows: int | None
+) -> list[ReleaseRow]:
+    processed = {record["persona_hash"] for record in _processed_records(status=status)}
+    rows = selection.rows[
+        : _bounded_total(total=len(selection.rows), max_rows=max_rows)
+    ]
+    status["selected_total"] = len(selection.rows)
+    return [row for row in rows if row.persona_hash not in processed]
+
+
+def select_release_rows(*, inputs: ReleaseInputs) -> ReleaseSelection:
+    """Select every ordered release row for Sol adjudication.
+
+    Returns:
+        Full-campaign selection in immutable release order.
+    """
+    rows: list[ReleaseRow] = []
+    for index, (original, candidate, persona_hash) in enumerate(
+        zip(
+            inputs.original_rows,
+            inputs.candidate_rows,
+            inputs.ordered_id_hashes,
+            strict=True,
+        )
+    ):
+        rows.append(
+            ReleaseRow(
+                index=index,
+                persona_hash=persona_hash,
+                original_row=original,
+                candidate_row=candidate,
+                changed_facts=_changed_facts(original=original, candidate=candidate),
+            )
+        )
+    return ReleaseSelection(
+        rows=rows,
+        ordered_id_sha256=inputs.ordered_id_sha256,
+        ordered_id_hashes_sha256=inputs.ordered_id_hashes_sha256,
+        candidate_preview_sha256=inputs.candidate_preview_sha256,
+    )
+
+
+def _changed_facts(
+    *, original: dict[str, object], candidate: dict[str, object]
+) -> dict[str, dict[str, object]]:
+    facts: dict[str, dict[str, object]] = {}
+    for field in sorted((set(original) & set(candidate)) & SOL_ALLOWED_FACT_FIELDS):
+        old = original[field]
+        new = candidate[field]
+        if old != new:
+            facts[field] = {"old": old, "new": new}
+    return facts
+
+
+@dataclass(frozen=True)
+class RowResult:
+    """Sanitised result for one completed row."""
+
+    persona_hash: str
+    disposition: t.Literal["consistent", "patched", "unresolved"]
+    checkpoint: str
+
+
+def _cancel_not_started(
+    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
+) -> None:
+    for future in future_map:
+        future.cancel()
+
+
+def _has_completed_future(
+    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
+) -> bool:
+    return any(future.done() for future in future_map)
+
+
+def _record_completed_future(
+    *,
+    future: futures.Future[RowResult],
+    row: ReleaseRow,
+    status: dict[str, object],
+    status_path: Path,
+) -> Exception | None:
+    try:
+        result = future.result()
+    except Exception as exc:
+        return exc
+    if result.persona_hash != row.persona_hash:
+        return PersonaReleaseAdjudicationError("Completed row binding does not match")
+    _record_status_result(status=status, result=result)
+    _write_status(path=status_path, status=status)
+    return None
+
+
+def _record_status_result(*, status: dict[str, object], result: RowResult) -> None:
+    processed = _processed_records(status=status)
+    if any(record["persona_hash"] == result.persona_hash for record in processed):
+        return
+    processed.append(
+        {
+            "persona_hash": result.persona_hash,
+            "disposition": result.disposition,
+            "checkpoint": result.checkpoint,
+        }
+    )
+    status["processed"] = processed
+    status["counts"] = _counts_from_processed(processed=processed)
+
+
 def _submit_futures(
     *,
     row_iter: c.Iterator[ReleaseRow],
@@ -594,293 +946,6 @@ def _run_one_row(
     )
 
 
-def _record_completed_future(
-    *,
-    future: futures.Future[RowResult],
-    row: ReleaseRow,
-    status: dict[str, object],
-    status_path: Path,
-) -> Exception | None:
-    try:
-        result = future.result()
-    except Exception as exc:
-        return exc
-    if result.persona_hash != row.persona_hash:
-        return PersonaReleaseAdjudicationError("Completed row binding does not match")
-    _record_status_result(status=status, result=result)
-    _write_status(path=status_path, status=status)
-    return None
-
-
-def _record_status_result(*, status: dict[str, object], result: RowResult) -> None:
-    processed = _processed_records(status=status)
-    if any(record["persona_hash"] == result.persona_hash for record in processed):
-        return
-    processed.append(
-        {
-            "persona_hash": result.persona_hash,
-            "disposition": result.disposition,
-            "checkpoint": result.checkpoint,
-        }
-    )
-    status["processed"] = processed
-    status["counts"] = _counts_from_processed(processed=processed)
-
-
-def _status_summary(
-    *, status: dict[str, object], max_rows: int | None, workers: int
-) -> dict[str, object]:
-    processed = _processed_records(status=status)
-    counts = _counts_from_processed(processed=processed)
-    selected_total = _status_selected_total(status=status)
-    selected = _bounded_total(total=selected_total, max_rows=max_rows)
-    processed_in_scope = min(len(processed), selected)
-    budget_summary = None
-    return {
-        "dry_run": False,
-        "campaign": CAMPAIGN,
-        "manifest_sha256": status["manifest_sha256"],
-        "selected": selected,
-        "total": selected_total,
-        "pending": max(selected - processed_in_scope, 0),
-        "processed": processed_in_scope,
-        "consistent": counts["consistent"],
-        "patched": counts["patched"],
-        "unresolved": counts["unresolved"],
-        "max_rows": max_rows,
-        "workers": workers,
-        "budget": budget_summary,
-    }
-
-
-def _pending_rows(
-    *, selection: ReleaseSelection, status: dict[str, object], max_rows: int | None
-) -> list[ReleaseRow]:
-    processed = {record["persona_hash"] for record in _processed_records(status=status)}
-    rows = selection.rows[
-        : _bounded_total(total=len(selection.rows), max_rows=max_rows)
-    ]
-    status["selected_total"] = len(selection.rows)
-    return [row for row in rows if row.persona_hash not in processed]
-
-
-def _generation_config(*, prompt_path: Path) -> GenerationConfig:
-    return GenerationConfig.model_validate(
-        {
-            "base_url": BASE_URL,
-            "model": SOL_ADJUDICATION_MODEL,
-            "api_key_env": None,
-            "timeout_seconds": 120.0,
-            "maximum_http_attempts": 5,
-            "maximum_total_requests": None,
-            "retry_backoff_seconds": 1.0,
-            "maximum_rows_per_shard": 1,
-            "max_tokens": SOL_MAX_OUTPUT_TOKENS,
-            "enable_thinking": None,
-            "reasoning_effort": "none",
-            "prompt": prompt_path,
-            "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
-        }
-    )
-
-
-def _proxy_budget(
-    *, paths: ReleasePaths, inputs: ReleaseInputs, manifest: dict[str, JSONDocument]
-) -> ProxyBudget:
-    del manifest
-    schema_hash = sha256_text(
-        canonical_json(SolAdjudicationResponse.provider_json_schema())
-    )
-    source_hash = sha256_text(
-        canonical_json(
-            {
-                "candidate_preview_sha256": inputs.candidate_preview_sha256,
-                "ordered_id_sha256": inputs.ordered_id_sha256,
-                "ordered_id_hashes_sha256": inputs.ordered_id_hashes_sha256,
-                "report_sha256": inputs.report_sha256,
-            }
-        )
-    )
-    return ProxyBudget(
-        ledger_path=paths.output_dir / "ignored-sol-budget.jsonl",
-        registry_path=paths.registry,
-        campaign=CAMPAIGN,
-        source_hash=source_hash,
-        prompt_hash=sha256_file(paths.prompt),
-        schema_hash=schema_hash,
-        model=SOL_ADJUDICATION_MODEL,
-        input_usd_per_million="2",
-        output_usd_per_million="10",
-        cap_usd=Decimal("1"),
-        uncapped=True,
-        uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
-    )
-
-
-def _changed_facts(
-    *, original: dict[str, object], candidate: dict[str, object]
-) -> dict[str, dict[str, object]]:
-    facts: dict[str, dict[str, object]] = {}
-    for field in sorted((set(original) & set(candidate)) & SOL_ALLOWED_FACT_FIELDS):
-        old = original[field]
-        new = candidate[field]
-        if old != new:
-            facts[field] = {"old": old, "new": new}
-    return facts
-
-
-def _require_worker_count(*, workers: int) -> None:
-    if not 1 <= workers <= 4:
-        raise PersonaReleaseAdjudicationError("Worker count must be between 1 and 4")
-
-
-def _require_columns(*, frame: pl.DataFrame, label: str) -> None:
-    missing = {ID_FIELD, PERSONA_FIELD} - set(frame.columns)
-    if missing:
-        raise PersonaReleaseAdjudicationError(f"{label} frame is missing columns")
-
-
-def _require_row_count(*, frame: pl.DataFrame, expected: int, label: str) -> None:
-    if frame.height != expected:
-        raise PersonaReleaseAdjudicationError(f"{label} frame row count mismatch")
-
-
-def _ordered_ids(*, frame: pl.DataFrame, label: str) -> list[str]:
-    ids: list[str] = []
-    seen: set[str] = set()
-    for value in frame.get_column(ID_FIELD).to_list():
-        if not isinstance(value, str) or not value:
-            raise PersonaReleaseAdjudicationError(f"{label} frame has invalid IDs")
-        if value in seen:
-            raise PersonaReleaseAdjudicationError(f"{label} frame has duplicate IDs")
-        seen.add(value)
-        ids.append(value)
-    return ids
-
-
-def _check_rows_private(
-    *, original_rows: list[dict[str, object]], candidate_rows: list[dict[str, object]]
-) -> None:
-    for original, candidate in zip(original_rows, candidate_rows, strict=True):
-        original_persona = original.get(PERSONA_FIELD)
-        candidate_persona = candidate.get(PERSONA_FIELD)
-        if not isinstance(original_persona, str) or not isinstance(
-            candidate_persona, str
-        ):
-            raise PersonaReleaseAdjudicationError("Persona prose is missing")
-        _check_restricted_text(value=original_persona, label="original persona prose")
-        _check_restricted_text(value=candidate_persona, label="candidate persona prose")
-
-
-def _check_restricted_text(*, value: str, label: str) -> None:
-    if _RESTRICTED_TEXT.search(value):
-        raise PersonaReleaseAdjudicationError(f"{label} contains restricted text")
-
-
-def _load_json_object(*, path: Path, label: str) -> dict[str, object]:
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PersonaReleaseAdjudicationError(f"{label} is not readable") from exc
-    if not isinstance(document, dict):
-        raise PersonaReleaseAdjudicationError(f"{label} must be a JSON object")
-    return t.cast(dict[str, object], document)
-
-
-def _json_string(*, document: dict[str, object], key: str, label: str) -> str:
-    value = document.get(key)
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise PersonaReleaseAdjudicationError(f"{label} has invalid checksum")
-    return value
-
-
-def _frame_hash(*, frame: pl.DataFrame) -> str:
-    payload = {"columns": frame.columns, "rows": _jsonable(frame.to_dicts())}
-    return sha256_text(canonical_json(payload))
-
-
-def _jsonable(value: object) -> JSONDocument:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, c.Mapping):
-        return {str(key): _jsonable(child) for key, child in value.items()}
-    if isinstance(value, c.Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [_jsonable(child) for child in value]
-    return str(value)
-
-
-def _validate_status(*, status: dict[str, object], output_dir: Path) -> None:
-    processed = _processed_records(status=status)
-    seen: set[str] = set()
-    for record in processed:
-        persona_hash = record["persona_hash"]
-        if persona_hash in seen:
-            raise PersonaReleaseAdjudicationError("Status contains duplicate rows")
-        seen.add(persona_hash)
-        checkpoint = _checkpoint_path(output_dir=output_dir, persona_hash=persona_hash)
-        if not checkpoint.exists():
-            raise PersonaReleaseAdjudicationError(
-                "Status references missing checkpoint"
-            )
-        _require_private_file(path=checkpoint, label="checkpoint")
-    counts = status.get("counts")
-    if counts != _counts_from_processed(processed=processed):
-        raise PersonaReleaseAdjudicationError("Status counts are inconsistent")
-
-
-def _processed_records(*, status: dict[str, object]) -> list[dict[str, str]]:
-    processed = status.get("processed")
-    if not isinstance(processed, list):
-        raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
-    records: list[dict[str, str]] = []
-    for item in processed:
-        if not isinstance(item, dict):
-            raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
-        persona_hash = item.get("persona_hash")
-        disposition = item.get("disposition")
-        checkpoint = item.get("checkpoint")
-        if (
-            not isinstance(persona_hash, str)
-            or re.fullmatch(r"[0-9a-f]{64}", persona_hash) is None
-            or disposition not in {"consistent", "patched", "unresolved"}
-            or not isinstance(checkpoint, str)
-        ):
-            raise PersonaReleaseAdjudicationError("Status processed rows are invalid")
-        records.append(
-            {
-                "persona_hash": persona_hash,
-                "disposition": str(disposition),
-                "checkpoint": checkpoint,
-            }
-        )
-    return records
-
-
-def _counts_from_processed(*, processed: list[dict[str, str]]) -> dict[str, int]:
-    counts = {"consistent": 0, "patched": 0, "unresolved": 0}
-    for record in processed:
-        counts[record["disposition"]] += 1
-    return counts
-
-
-def _status_selected_total(*, status: dict[str, object]) -> int:
-    value = status.get("selected_total")
-    if isinstance(value, int) and value >= 0:
-        return value
-    processed = _processed_records(status=status)
-    return len(processed)
-
-
-def _bounded_total(*, total: int, max_rows: int | None) -> int:
-    if max_rows is None:
-        return total
-    return min(total, max_rows)
-
-
-def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
-    return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
-
-
 def _checkpoint_reference(*, output_dir: Path, path: Path) -> str:
     try:
         return path.relative_to(output_dir).as_posix()
@@ -888,71 +953,6 @@ def _checkpoint_reference(*, output_dir: Path, path: Path) -> str:
         raise PersonaReleaseAdjudicationError(
             "Checkpoint path is outside output"
         ) from exc
-
-
-def _require_private_directory(*, path: Path, label: str) -> None:
-    if path.is_symlink() or not path.is_dir():
-        raise PersonaReleaseAdjudicationError(f"{label} is unsafe")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode != 0o700:
-        raise PersonaReleaseAdjudicationError(f"{label} must be private")
-
-
-def _require_private_file(*, path: Path, label: str) -> None:
-    if path.is_symlink() or not path.is_file():
-        raise PersonaReleaseAdjudicationError(f"{label} is unsafe")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode != 0o600:
-        raise PersonaReleaseAdjudicationError(f"{label} must be private")
-
-
-def _write_status(*, path: Path, status: dict[str, object]) -> None:
-    _write_private_json(path=path, value=t.cast(dict[str, JSONDocument], status))
-
-
-def _write_private_json(*, path: Path, value: dict[str, JSONDocument]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _require_private_directory(path=path.parent, label="private parent directory")
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _hash_json(value: object) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _has_completed_future(
-    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
-) -> bool:
-    return any(future.done() for future in future_map)
-
-
-def _cancel_not_started(
-    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
-) -> None:
-    for future in future_map:
-        future.cancel()
-
-
-def _safe_error_message(*, exc: Exception) -> str:
-    if isinstance(exc, PersonaReleaseAdjudicationError):
-        return str(exc)
-    if isinstance(exc, ProxyBudgetError):
-        return str(exc)
-    if isinstance(exc, SolAdjudicationError):
-        return "Sol adjudication rejected a row without storing provider content"
-    return "Sol adjudication failed closed"
 
 
 def _run_sol_adjudication_adapter(

@@ -90,8 +90,12 @@ _RESTRICTED_TEXT = re.compile(
 _ALLOWED_FACT_VALUE_TYPES = (str, int, float, bool, type(None))
 
 
-class SolAdjudicationError(ValueError):
-    """Raised when Sol adjudication cannot be completed safely."""
+class SolEvidence(StrictModel):
+    """Evidence binding a consistent or unresolved adjudication to the prose."""
+
+    field: str = Field(min_length=1, max_length=80)
+    kind: t.Literal["fact_present", "negative_evidence", "source_context"]
+    quote: str = Field(min_length=1, max_length=500)
 
 
 class SolPatch(StrictModel):
@@ -101,14 +105,6 @@ class SolPatch(StrictModel):
     new_excerpt: str = Field(min_length=1, max_length=1_000)
 
 
-class SolEvidence(StrictModel):
-    """Evidence binding a consistent or unresolved adjudication to the prose."""
-
-    field: str = Field(min_length=1, max_length=80)
-    kind: t.Literal["fact_present", "negative_evidence", "source_context"]
-    quote: str = Field(min_length=1, max_length=500)
-
-
 class SolAdjudicationResponse(StrictModel):
     """Strict provider response for local Sol adjudication validation."""
 
@@ -116,27 +112,6 @@ class SolAdjudicationResponse(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
     evidence: list[SolEvidence] = Field(default_factory=list, max_length=8)
     patches: list[SolPatch] = Field(default_factory=list, max_length=2)
-
-    @model_validator(mode="after")
-    def validate_disposition_contract(self) -> "SolAdjudicationResponse":
-        """Enforce cross-field disposition invariants.
-
-        Returns:
-            The validated response.
-
-        Raises:
-            ValueError:
-                If the disposition-specific fields are inconsistent.
-        """
-        if self.disposition == "consistent":
-            if self.patches or not self.evidence:
-                raise ValueError("consistent responses require evidence only")
-        elif self.disposition == "patched":
-            if not self.patches:
-                raise ValueError("patched responses require patches")
-        elif self.patches:
-            raise ValueError("unresolved responses cannot include patches")
-        return self
 
     @staticmethod
     def provider_json_schema() -> dict[str, object]:
@@ -190,6 +165,179 @@ class SolAdjudicationResponse(StrictModel):
             "required": ["disposition", "reason", "evidence", "patches"],
             "additionalProperties": False,
         }
+
+    @model_validator(mode="after")
+    def validate_disposition_contract(self) -> "SolAdjudicationResponse":
+        """Enforce cross-field disposition invariants.
+
+        Returns:
+            The validated response.
+
+        Raises:
+            ValueError:
+                If the disposition-specific fields are inconsistent.
+        """
+        if self.disposition == "consistent":
+            if self.patches or not self.evidence:
+                raise ValueError("consistent responses require evidence only")
+        elif self.disposition == "patched":
+            if not self.patches:
+                raise ValueError("patched responses require patches")
+        elif self.patches:
+            raise ValueError("unresolved responses cannot include patches")
+        return self
+
+
+def _build_binding(
+    *,
+    original_persona: str,
+    candidate_row: dict[str, object],
+    payload: dict[str, object],
+    prompt: str,
+    schema: dict[str, object],
+    budget: ProxyBudget,
+) -> dict[str, str | int]:
+    schema_hash = _sha(canonical_json(schema).encode("utf-8"))
+    prompt_hash = _sha(prompt.encode("utf-8"))
+    if (
+        budget.pins.get("model") != SOL_ADJUDICATION_MODEL
+        or budget.pins.get("base_url") != BASE_URL
+        or budget.pins.get("max_tokens") != 128_000
+        or budget.pins.get("prompt_hash") != prompt_hash
+        or budget.pins.get("schema_hash") != schema_hash
+        or budget.pins.get("uncapped") is not True
+        or budget.pins.get("uncapped_purpose") != SOL_ADJUDICATION_PURPOSE
+    ):
+        raise SolAdjudicationError("Sol budget pins do not match prompt and schema")
+    try:
+        candidate_hash = _sha(canonical_json(candidate_row).encode("utf-8"))
+        payload_hash = _sha(canonical_json(payload).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise SolAdjudicationError("Sol inputs cannot be checksum-bound") from exc
+    source_pin = budget.pins.get("source_hash")
+    return {
+        "checkpoint_version": _CHECKPOINT_VERSION,
+        "original_persona_sha256": _sha(original_persona.encode("utf-8")),
+        "candidate_row_sha256": candidate_hash,
+        "prompt_sha256": prompt_hash,
+        "schema_sha256": schema_hash,
+        "payload_sha256": payload_hash,
+        "model_sha256": _sha(SOL_ADJUDICATION_MODEL.encode("utf-8")),
+        "base_url_sha256": _sha(BASE_URL.encode("utf-8")),
+        "source_pin_sha256": str(source_pin) if isinstance(source_pin, str) else "",
+    }
+
+
+class SolAdjudicationError(ValueError):
+    """Raised when Sol adjudication cannot be completed safely."""
+
+
+def _sha(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _prepare_checkpoint_parent(*, path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink():
+        raise SolAdjudicationError("Sol checkpoint directory is unsafe")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise SolAdjudicationError("Sol checkpoint directory is not private")
+
+
+def _request_adjudication(
+    *,
+    prompt: str,
+    payload: dict[str, object],
+    schema: dict[str, object],
+    binding: dict[str, str | int],
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    transport: httpx.BaseTransport,
+) -> LLMResponse:
+    request_body = _request_body(prompt=prompt, payload=payload, schema=schema)
+    budget_transport = _BudgetedSolTransport(budget=budget, transport=transport)
+
+    def reserve(attempt: int) -> None:
+        request_id = _request_id(binding=binding, attempt=attempt)
+        budget.reserve_attempt(
+            request_id,
+            t.cast(dict[str, JSONValue], request_body),
+            max_output_tokens=SOL_MAX_OUTPUT_TOKENS,
+        )
+        budget_transport.activate_request(request_id=request_id)
+
+    client = OpenAIClient(config=config, transport=budget_transport)
+    try:
+        response = client.complete(
+            system_prompt=prompt,
+            user_payload=payload,
+            schema_name=SOL_SCHEMA_NAME,
+            json_schema=schema,
+            record_request=reserve,
+        )
+    finally:
+        client.close()
+    request_id = _request_id(binding=binding, attempt=response.request_attempts)
+    budget.record_usage(
+        request_id,
+        input_tokens=response.prompt_tokens,
+        output_tokens=response.completion_tokens,
+        response_sha256=response.raw_response_sha256,
+    )
+    if response.model != SOL_ADJUDICATION_MODEL:
+        raise SolAdjudicationError("Provider response model does not match Sol")
+    if (
+        response.prompt_tokens < 0
+        or response.completion_tokens < 0
+        or response.completion_tokens > SOL_MAX_OUTPUT_TOKENS
+    ):
+        raise SolAdjudicationError("Provider token usage exceeds Sol bounds")
+    return response
+
+
+class _BudgetedSolTransport(httpx.BaseTransport):
+    """Validate the exact HTTP body against a durable reservation."""
+
+    def __init__(self, *, budget: ProxyBudget, transport: httpx.BaseTransport) -> None:
+        self.budget = budget
+        self.transport = transport
+        self._request_id: str | None = None
+
+    def activate_request(self, *, request_id: str) -> None:
+        self._request_id = request_id
+
+    def close(self) -> None:
+        self.transport.close()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if self._request_id is None:
+            raise SolAdjudicationError("HTTP request was not reserved")
+        self.budget.validate_request_body(self._request_id, request.content)
+        return self.transport.handle_request(request)
+
+
+def _request_body(
+    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "model": SOL_ADJUDICATION_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": SOL_SCHEMA_NAME, "strict": True, "schema": schema},
+        },
+        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
+        "reasoning_effort": "none",
+    }
+
+
+def _request_id(*, binding: dict[str, str | int], attempt: int) -> str:
+    digest = _sha(canonical_json(binding).encode("utf-8"))
+    return f"sol-adjudication-{digest}-{attempt}"
 
 
 @dataclass(frozen=True)
@@ -288,6 +436,33 @@ def run_sol_adjudication(
     return result
 
 
+def _resume_checkpoint(
+    *,
+    path: Path,
+    binding: dict[str, str | int],
+    original_persona: str,
+    candidate_facts: dict[str, JSONValue],
+    changed_fact_hints: dict[str, dict[str, object]],
+) -> SolAdjudicationResult:
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SolAdjudicationError("Sol checkpoint is not readable") from exc
+    if not isinstance(saved, dict) or saved.get("binding") != binding:
+        raise SolAdjudicationError(
+            "Sol checkpoint binding does not match current inputs"
+        )
+    response = saved.get("response")
+    if not isinstance(response, str):
+        raise SolAdjudicationError("Sol checkpoint is incomplete")
+    return validate_sol_adjudication(
+        original_text=original_persona,
+        candidate_facts=candidate_facts,
+        response=response,
+        changed_fact_hints=changed_fact_hints,
+    )
+
+
 def validate_sol_adjudication(
     *,
     original_text: str,
@@ -341,6 +516,182 @@ def validate_sol_adjudication(
         evidence=tuple(review.evidence),
         patches=tuple(review.patches),
     )
+
+
+def _apply_validated_patches(
+    *,
+    original_text: str,
+    review: SolAdjudicationResponse,
+    changed_fact_hints: dict[str, dict[str, JSONValue]],
+) -> tuple[str, float]:
+    old_excerpts = [patch.old_excerpt for patch in review.patches]
+    if len(old_excerpts) != len(set(old_excerpts)):
+        raise SolAdjudicationError("Sol patches must use unique excerpts")
+    edit_budget = max(1, int(len(original_text) * 0.2))
+    changed_extent = 0
+    proposed = original_text
+    for patch in review.patches:
+        _check_restricted_text(value=patch.new_excerpt, label="Sol patch")
+        if patch.old_excerpt == patch.new_excerpt:
+            raise SolAdjudicationError("Sol patch must change text")
+        if proposed.count(patch.old_excerpt) != 1:
+            raise SolAdjudicationError("Sol patch excerpt is not unique")
+        _check_changed_hint_regression(
+            new_excerpt=patch.new_excerpt, changed_fact_hints=changed_fact_hints
+        )
+        changed_extent += max(len(patch.old_excerpt), len(patch.new_excerpt))
+        proposed = proposed.replace(patch.old_excerpt, patch.new_excerpt, 1)
+    if changed_extent > edit_budget:
+        raise SolAdjudicationError("Sol patch exceeds the local edit budget")
+    return proposed, changed_extent / len(original_text)
+
+
+def _check_changed_hint_regression(
+    *, new_excerpt: str, changed_fact_hints: dict[str, dict[str, JSONValue]]
+) -> None:
+    folded = new_excerpt.casefold()
+    for pair in changed_fact_hints.values():
+        old_values = _claim_strings(value=pair["old"])
+        new_values = _claim_strings(value=pair["new"])
+        if any(old.casefold() in folded for old in old_values) and not any(
+            new.casefold() in folded for new in new_values
+        ):
+            raise SolAdjudicationError("Sol patch reintroduces an outdated fact")
+
+
+def _claim_strings(*, value: JSONValue) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, bool):
+        return (str(value).casefold(),)
+    if isinstance(value, (int, float)):
+        return (str(value),)
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, list):
+        claims: list[str] = []
+        for item in value:
+            claims.extend(_claim_strings(value=item))
+        return tuple(claims)
+    return ()
+
+
+def _check_restricted_text(*, value: str, label: str) -> None:
+    if _RESTRICTED_TEXT.search(value):
+        raise SolAdjudicationError(f"{label} contains a restricted identity term")
+
+
+def _normalise_changed_fact_hints(
+    *,
+    changed_fact_hints: dict[str, dict[str, object]],
+    candidate_facts: dict[str, JSONValue],
+) -> dict[str, dict[str, JSONValue]]:
+    if not isinstance(changed_fact_hints, dict):
+        raise SolAdjudicationError("Changed fact hints must be a mapping")
+    normalised: dict[str, dict[str, JSONValue]] = {}
+    for field, pair in changed_fact_hints.items():
+        if field not in SOL_ALLOWED_FACT_FIELDS or field not in candidate_facts:
+            raise SolAdjudicationError("Changed fact hint uses an unsupported field")
+        if not isinstance(pair, dict) or set(pair) != {"old", "new"}:
+            raise SolAdjudicationError("Changed fact hint must contain old and new")
+        old = _safe_json_value(field=field, value=pair["old"])
+        new = _safe_json_value(field=field, value=pair["new"])
+        if old == new or new != candidate_facts[field]:
+            raise SolAdjudicationError("Changed fact hint is inconsistent")
+        normalised[field] = {"old": old, "new": new}
+    return normalised
+
+
+def _safe_json_value(*, field: str, value: object) -> JSONValue:
+    if field in _RESTRICTED_FACT_FIELDS or "sidecar" in field:
+        raise SolAdjudicationError("Candidate row contains an unsupported fact field")
+    if isinstance(value, _ALLOWED_FACT_VALUE_TYPES):
+        if isinstance(value, str):
+            if len(value) > _MAX_FACT_VALUE_CHARS:
+                raise SolAdjudicationError("Candidate fact value is outside bounds")
+            _check_restricted_text(value=value, label="candidate fact value")
+        return t.cast(JSONValue, value)
+    if isinstance(value, list):
+        if len(value) > 12:
+            raise SolAdjudicationError("Candidate fact list is outside bounds")
+        return [_safe_json_value(field=field, value=item) for item in value]
+    raise SolAdjudicationError("Candidate fact value has an unsupported type")
+
+
+def _parse_response(*, response: str | dict[str, object]) -> SolAdjudicationResponse:
+    try:
+        payload = json.loads(response) if isinstance(response, str) else response
+        if not isinstance(payload, dict):
+            raise ValueError("response is not an object")
+        return SolAdjudicationResponse.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+        raise SolAdjudicationError(
+            "Sol response failed strict local validation"
+        ) from exc
+
+
+def _validate_candidate_facts(
+    *, candidate_facts: dict[str, JSONValue]
+) -> dict[str, JSONValue]:
+    if not isinstance(candidate_facts, dict) or not candidate_facts:
+        raise SolAdjudicationError("Candidate facts are missing")
+    normalised: dict[str, JSONValue] = {}
+    for field, value in candidate_facts.items():
+        if field not in SOL_ALLOWED_FACT_FIELDS:
+            raise SolAdjudicationError("Candidate facts include an unsupported field")
+        normalised[field] = _safe_json_value(field=field, value=value)
+    return normalised
+
+
+def _validate_evidence(
+    *,
+    review: SolAdjudicationResponse,
+    original_text: str,
+    candidate_facts: dict[str, JSONValue],
+) -> None:
+    for item in review.evidence:
+        if item.field not in candidate_facts:
+            raise SolAdjudicationError("Sol evidence references an unsupported field")
+        if item.quote not in original_text or original_text.count(item.quote) != 1:
+            raise SolAdjudicationError("Sol evidence is not uniquely grounded")
+        if item.kind == "fact_present" and not _quote_supports_fact(
+            quote=item.quote, value=candidate_facts[item.field]
+        ):
+            raise SolAdjudicationError("Sol evidence does not ground the fact")
+
+
+def _quote_supports_fact(*, quote: str, value: JSONValue) -> bool:
+    folded = quote.casefold()
+    return any(claim.casefold() in folded for claim in _claim_strings(value=value))
+
+
+def _save_checkpoint(
+    *, path: Path, binding: dict[str, str | int], response: str
+) -> None:
+    _write_private_json(
+        path=path,
+        value={
+            "binding": binding,
+            "response": response,
+            "response_sha256": _sha(response.encode("utf-8")),
+        },
+    )
+
+
+def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _validate_config(*, config: GenerationConfig) -> None:
@@ -430,354 +781,3 @@ def _validated_changed_fact_hints(
         if pair["old"] != original_row[field] or pair["new"] != candidate_row[field]:
             raise SolAdjudicationError("Changed fact hint is not row-bound")
     return hints
-
-
-def _normalise_changed_fact_hints(
-    *,
-    changed_fact_hints: dict[str, dict[str, object]],
-    candidate_facts: dict[str, JSONValue],
-) -> dict[str, dict[str, JSONValue]]:
-    if not isinstance(changed_fact_hints, dict):
-        raise SolAdjudicationError("Changed fact hints must be a mapping")
-    normalised: dict[str, dict[str, JSONValue]] = {}
-    for field, pair in changed_fact_hints.items():
-        if field not in SOL_ALLOWED_FACT_FIELDS or field not in candidate_facts:
-            raise SolAdjudicationError("Changed fact hint uses an unsupported field")
-        if not isinstance(pair, dict) or set(pair) != {"old", "new"}:
-            raise SolAdjudicationError("Changed fact hint must contain old and new")
-        old = _safe_json_value(field=field, value=pair["old"])
-        new = _safe_json_value(field=field, value=pair["new"])
-        if old == new or new != candidate_facts[field]:
-            raise SolAdjudicationError("Changed fact hint is inconsistent")
-        normalised[field] = {"old": old, "new": new}
-    return normalised
-
-
-def _safe_json_value(*, field: str, value: object) -> JSONValue:
-    if field in _RESTRICTED_FACT_FIELDS or "sidecar" in field:
-        raise SolAdjudicationError("Candidate row contains an unsupported fact field")
-    if isinstance(value, _ALLOWED_FACT_VALUE_TYPES):
-        if isinstance(value, str):
-            if len(value) > _MAX_FACT_VALUE_CHARS:
-                raise SolAdjudicationError("Candidate fact value is outside bounds")
-            _check_restricted_text(value=value, label="candidate fact value")
-        return t.cast(JSONValue, value)
-    if isinstance(value, list):
-        if len(value) > 12:
-            raise SolAdjudicationError("Candidate fact list is outside bounds")
-        return [_safe_json_value(field=field, value=item) for item in value]
-    raise SolAdjudicationError("Candidate fact value has an unsupported type")
-
-
-def _request_adjudication(
-    *,
-    prompt: str,
-    payload: dict[str, object],
-    schema: dict[str, object],
-    binding: dict[str, str | int],
-    config: GenerationConfig,
-    budget: ProxyBudget,
-    transport: httpx.BaseTransport,
-) -> LLMResponse:
-    request_body = _request_body(prompt=prompt, payload=payload, schema=schema)
-    budget_transport = _BudgetedSolTransport(budget=budget, transport=transport)
-
-    def reserve(attempt: int) -> None:
-        request_id = _request_id(binding=binding, attempt=attempt)
-        budget.reserve_attempt(
-            request_id,
-            t.cast(dict[str, JSONValue], request_body),
-            max_output_tokens=SOL_MAX_OUTPUT_TOKENS,
-        )
-        budget_transport.activate_request(request_id=request_id)
-
-    client = OpenAIClient(config=config, transport=budget_transport)
-    try:
-        response = client.complete(
-            system_prompt=prompt,
-            user_payload=payload,
-            schema_name=SOL_SCHEMA_NAME,
-            json_schema=schema,
-            record_request=reserve,
-        )
-    finally:
-        client.close()
-    request_id = _request_id(binding=binding, attempt=response.request_attempts)
-    budget.record_usage(
-        request_id,
-        input_tokens=response.prompt_tokens,
-        output_tokens=response.completion_tokens,
-        response_sha256=response.raw_response_sha256,
-    )
-    if response.model != SOL_ADJUDICATION_MODEL:
-        raise SolAdjudicationError("Provider response model does not match Sol")
-    if (
-        response.prompt_tokens < 0
-        or response.completion_tokens < 0
-        or response.completion_tokens > SOL_MAX_OUTPUT_TOKENS
-    ):
-        raise SolAdjudicationError("Provider token usage exceeds Sol bounds")
-    return response
-
-
-class _BudgetedSolTransport(httpx.BaseTransport):
-    """Validate the exact HTTP body against a durable reservation."""
-
-    def __init__(self, *, budget: ProxyBudget, transport: httpx.BaseTransport) -> None:
-        self.budget = budget
-        self.transport = transport
-        self._request_id: str | None = None
-
-    def activate_request(self, *, request_id: str) -> None:
-        self._request_id = request_id
-
-    def close(self) -> None:
-        self.transport.close()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        if self._request_id is None:
-            raise SolAdjudicationError("HTTP request was not reserved")
-        self.budget.validate_request_body(self._request_id, request.content)
-        return self.transport.handle_request(request)
-
-
-def _parse_response(*, response: str | dict[str, object]) -> SolAdjudicationResponse:
-    try:
-        payload = json.loads(response) if isinstance(response, str) else response
-        if not isinstance(payload, dict):
-            raise ValueError("response is not an object")
-        return SolAdjudicationResponse.model_validate(payload)
-    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
-        raise SolAdjudicationError(
-            "Sol response failed strict local validation"
-        ) from exc
-
-
-def _validate_evidence(
-    *,
-    review: SolAdjudicationResponse,
-    original_text: str,
-    candidate_facts: dict[str, JSONValue],
-) -> None:
-    for item in review.evidence:
-        if item.field not in candidate_facts:
-            raise SolAdjudicationError("Sol evidence references an unsupported field")
-        if item.quote not in original_text or original_text.count(item.quote) != 1:
-            raise SolAdjudicationError("Sol evidence is not uniquely grounded")
-        if item.kind == "fact_present" and not _quote_supports_fact(
-            quote=item.quote, value=candidate_facts[item.field]
-        ):
-            raise SolAdjudicationError("Sol evidence does not ground the fact")
-
-
-def _apply_validated_patches(
-    *,
-    original_text: str,
-    review: SolAdjudicationResponse,
-    changed_fact_hints: dict[str, dict[str, JSONValue]],
-) -> tuple[str, float]:
-    old_excerpts = [patch.old_excerpt for patch in review.patches]
-    if len(old_excerpts) != len(set(old_excerpts)):
-        raise SolAdjudicationError("Sol patches must use unique excerpts")
-    edit_budget = max(1, int(len(original_text) * 0.2))
-    changed_extent = 0
-    proposed = original_text
-    for patch in review.patches:
-        _check_restricted_text(value=patch.new_excerpt, label="Sol patch")
-        if patch.old_excerpt == patch.new_excerpt:
-            raise SolAdjudicationError("Sol patch must change text")
-        if proposed.count(patch.old_excerpt) != 1:
-            raise SolAdjudicationError("Sol patch excerpt is not unique")
-        _check_changed_hint_regression(
-            new_excerpt=patch.new_excerpt, changed_fact_hints=changed_fact_hints
-        )
-        changed_extent += max(len(patch.old_excerpt), len(patch.new_excerpt))
-        proposed = proposed.replace(patch.old_excerpt, patch.new_excerpt, 1)
-    if changed_extent > edit_budget:
-        raise SolAdjudicationError("Sol patch exceeds the local edit budget")
-    return proposed, changed_extent / len(original_text)
-
-
-def _check_changed_hint_regression(
-    *, new_excerpt: str, changed_fact_hints: dict[str, dict[str, JSONValue]]
-) -> None:
-    folded = new_excerpt.casefold()
-    for pair in changed_fact_hints.values():
-        old_values = _claim_strings(value=pair["old"])
-        new_values = _claim_strings(value=pair["new"])
-        if any(old.casefold() in folded for old in old_values) and not any(
-            new.casefold() in folded for new in new_values
-        ):
-            raise SolAdjudicationError("Sol patch reintroduces an outdated fact")
-
-
-def _quote_supports_fact(*, quote: str, value: JSONValue) -> bool:
-    folded = quote.casefold()
-    return any(claim.casefold() in folded for claim in _claim_strings(value=value))
-
-
-def _claim_strings(*, value: JSONValue) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, bool):
-        return (str(value).casefold(),)
-    if isinstance(value, (int, float)):
-        return (str(value),)
-    if isinstance(value, str):
-        return (value,) if value else ()
-    if isinstance(value, list):
-        claims: list[str] = []
-        for item in value:
-            claims.extend(_claim_strings(value=item))
-        return tuple(claims)
-    return ()
-
-
-def _build_binding(
-    *,
-    original_persona: str,
-    candidate_row: dict[str, object],
-    payload: dict[str, object],
-    prompt: str,
-    schema: dict[str, object],
-    budget: ProxyBudget,
-) -> dict[str, str | int]:
-    schema_hash = _sha(canonical_json(schema).encode("utf-8"))
-    prompt_hash = _sha(prompt.encode("utf-8"))
-    if (
-        budget.pins.get("model") != SOL_ADJUDICATION_MODEL
-        or budget.pins.get("base_url") != BASE_URL
-        or budget.pins.get("max_tokens") != 128_000
-        or budget.pins.get("prompt_hash") != prompt_hash
-        or budget.pins.get("schema_hash") != schema_hash
-        or budget.pins.get("uncapped") is not True
-        or budget.pins.get("uncapped_purpose") != SOL_ADJUDICATION_PURPOSE
-    ):
-        raise SolAdjudicationError("Sol budget pins do not match prompt and schema")
-    try:
-        candidate_hash = _sha(canonical_json(candidate_row).encode("utf-8"))
-        payload_hash = _sha(canonical_json(payload).encode("utf-8"))
-    except (TypeError, ValueError) as exc:
-        raise SolAdjudicationError("Sol inputs cannot be checksum-bound") from exc
-    source_pin = budget.pins.get("source_hash")
-    return {
-        "checkpoint_version": _CHECKPOINT_VERSION,
-        "original_persona_sha256": _sha(original_persona.encode("utf-8")),
-        "candidate_row_sha256": candidate_hash,
-        "prompt_sha256": prompt_hash,
-        "schema_sha256": schema_hash,
-        "payload_sha256": payload_hash,
-        "model_sha256": _sha(SOL_ADJUDICATION_MODEL.encode("utf-8")),
-        "base_url_sha256": _sha(BASE_URL.encode("utf-8")),
-        "source_pin_sha256": str(source_pin) if isinstance(source_pin, str) else "",
-    }
-
-
-def _resume_checkpoint(
-    *,
-    path: Path,
-    binding: dict[str, str | int],
-    original_persona: str,
-    candidate_facts: dict[str, JSONValue],
-    changed_fact_hints: dict[str, dict[str, object]],
-) -> SolAdjudicationResult:
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SolAdjudicationError("Sol checkpoint is not readable") from exc
-    if not isinstance(saved, dict) or saved.get("binding") != binding:
-        raise SolAdjudicationError(
-            "Sol checkpoint binding does not match current inputs"
-        )
-    response = saved.get("response")
-    if not isinstance(response, str):
-        raise SolAdjudicationError("Sol checkpoint is incomplete")
-    return validate_sol_adjudication(
-        original_text=original_persona,
-        candidate_facts=candidate_facts,
-        response=response,
-        changed_fact_hints=changed_fact_hints,
-    )
-
-
-def _save_checkpoint(
-    *, path: Path, binding: dict[str, str | int], response: str
-) -> None:
-    _write_private_json(
-        path=path,
-        value={
-            "binding": binding,
-            "response": response,
-            "response_sha256": _sha(response.encode("utf-8")),
-        },
-    )
-
-
-def _prepare_checkpoint_parent(*, path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if path.is_symlink():
-        raise SolAdjudicationError("Sol checkpoint directory is unsafe")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
-        raise SolAdjudicationError("Sol checkpoint directory is not private")
-
-
-def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _request_body(
-    *, prompt: str, payload: dict[str, object], schema: dict[str, object]
-) -> dict[str, object]:
-    return {
-        "model": SOL_ADJUDICATION_MODEL,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": SOL_SCHEMA_NAME, "strict": True, "schema": schema},
-        },
-        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
-        "reasoning_effort": "none",
-    }
-
-
-def _validate_candidate_facts(
-    *, candidate_facts: dict[str, JSONValue]
-) -> dict[str, JSONValue]:
-    if not isinstance(candidate_facts, dict) or not candidate_facts:
-        raise SolAdjudicationError("Candidate facts are missing")
-    normalised: dict[str, JSONValue] = {}
-    for field, value in candidate_facts.items():
-        if field not in SOL_ALLOWED_FACT_FIELDS:
-            raise SolAdjudicationError("Candidate facts include an unsupported field")
-        normalised[field] = _safe_json_value(field=field, value=value)
-    return normalised
-
-
-def _check_restricted_text(*, value: str, label: str) -> None:
-    if _RESTRICTED_TEXT.search(value):
-        raise SolAdjudicationError(f"{label} contains a restricted identity term")
-
-
-def _request_id(*, binding: dict[str, str | int], attempt: int) -> str:
-    digest = _sha(canonical_json(binding).encode("utf-8"))
-    return f"sol-adjudication-{digest}-{attempt}"
-
-
-def _sha(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
