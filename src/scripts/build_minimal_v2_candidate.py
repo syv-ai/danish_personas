@@ -249,6 +249,9 @@ def compose_minimal_v2_candidate(
         "h90_preserved_unresolved_or_privacy_blocked": compose_report[
             "h90_preserved_unresolved_or_privacy_blocked"
         ],
+        "h90_validation_failed_preserved": compose_report[
+            "h90_validation_failed_preserved"
+        ],
         "manifest_output": manifest_output.as_posix(),
         "output": output.as_posix(),
         "report_output": report_output.as_posix(),
@@ -367,6 +370,16 @@ def _resume_h90_results(
             row = rows_by_hash.get(persona_hash)
             if row is None:
                 raise MinimalV2CandidateError("H90 status references an unknown row")
+            if disposition == "validation_failed":
+                checkpoint_path = first_pass._checkpoint_path(
+                    output_dir=output_dir, persona_hash=row.persona_hash
+                )
+                if checkpoint_path.exists():
+                    raise MinimalV2CandidateError(
+                        "H90 validation-failed row unexpectedly has a checkpoint"
+                    )
+                results[persona_hash] = None
+                continue
             checkpoint_path = first_pass._checkpoint_path(
                 output_dir=output_dir, persona_hash=row.persona_hash
             )
@@ -426,13 +439,18 @@ def _apply_h90_results(
         frame=final_frame, original_persona_by_hash=original_persona_by_hash
     )
     preserved = dispositions["unresolved"] + dispositions["privacy_blocked"]
+    validation_failed = dispositions["validation_failed"]
     return final_frame, {
         "h90_consistent_preserved": dispositions["consistent"],
         "h90_patched_applied": patched_applied,
         "h90_patched_changed_from_candidate": patched_changed_from_candidate,
         "h90_unresolved_preserved": dispositions["unresolved"],
         "h90_privacy_blocked_preserved": dispositions["privacy_blocked"],
+        "h90_validation_failed_preserved": validation_failed,
         "h90_preserved_unresolved_or_privacy_blocked": preserved,
+        "h90_preserved_unresolved_privacy_or_validation_failed": (
+            preserved + validation_failed
+        ),
         "final_changed_prose_rows": len(final_changed_hashes),
         "final_changed_persona_hashes_sha256": sha256_text(
             canonical_json(final_changed_hashes)
@@ -466,6 +484,9 @@ def _vetted_manifest(
             "h90_unresolved_preserved": compose_report["h90_unresolved_preserved"],
             "h90_privacy_blocked_preserved": compose_report[
                 "h90_privacy_blocked_preserved"
+            ],
+            "h90_validation_failed_preserved": compose_report[
+                "h90_validation_failed_preserved"
             ],
         },
         "outputs": {"candidate_sha256": candidate_sha256},
@@ -503,6 +524,7 @@ def _private_report(
     summary = t.cast(dict[str, object], campaign["summary"])
     unresolved = compose_report["h90_unresolved_preserved"]
     privacy_blocked = compose_report["h90_privacy_blocked_preserved"]
+    validation_failed = compose_report["h90_validation_failed_preserved"]
     return {
         "version": 1,
         "status": "vetted",
@@ -516,8 +538,14 @@ def _private_report(
         "h90_unresolved_or_privacy_blocked_preserved_count": (
             t.cast(int, unresolved) + t.cast(int, privacy_blocked)
         ),
+        "h90_unresolved_privacy_or_validation_failed_preserved_count": (
+            t.cast(int, unresolved)
+            + t.cast(int, privacy_blocked)
+            + t.cast(int, validation_failed)
+        ),
         "h90_unresolved_preserved_count": unresolved,
         "h90_privacy_blocked_preserved_count": privacy_blocked,
+        "h90_validation_failed_preserved_count": validation_failed,
         "counts": {
             "rows": summary["total"],
             "existing_v5_changed_prose_rows": len(candidate_changed_hashes),
@@ -531,6 +559,7 @@ def _private_report(
             ],
             "h90_unresolved_preserved": unresolved,
             "h90_privacy_blocked_preserved": privacy_blocked,
+            "h90_validation_failed_preserved": validation_failed,
         },
         "hashes": {
             "allowed_persona_hashes_sha256": sha256_text(
@@ -635,7 +664,13 @@ def _assert_only_persona_differs(*, left: pl.DataFrame, right: pl.DataFrame) -> 
 
 
 def _disposition_counts(*, status: dict[str, object]) -> dict[str, int]:
-    counts = {"consistent": 0, "patched": 0, "privacy_blocked": 0, "unresolved": 0}
+    counts = {
+        "consistent": 0,
+        "patched": 0,
+        "privacy_blocked": 0,
+        "unresolved": 0,
+        "validation_failed": 0,
+    }
     for record in h90._processed_records(status=status):
         counts[record["disposition"]] += 1
     return counts
