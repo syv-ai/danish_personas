@@ -242,21 +242,10 @@ def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None
         )
 
 
-def test_preflight_rejects_all_banned_identity_variants() -> None:
-    """Fail closed on identity variants before provider I/O."""
-    for variant in _BANNED_IDENTITY_VARIANTS:
-        with pytest.raises(SolAdjudicationError):
-            preflight_sol_adjudication_payload(
-                original_persona=f"Neutral tekst med {variant}.",
-                candidate_row={"age": 42},
-                prompt=_PROMPT,
-            )
-
-
 def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> None:
     """Raw IDs and source codes are token-matched in outbound prose and facts."""
     requests: list[httpx.Request] = []
-    blocked_rows = [
+    blocked_rows: list[dict[str, object]] = [
         {
             "persona_id": "opaque-persona-123",
             "origin_country_code": "SRC-777",
@@ -286,6 +275,10 @@ def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> Non
             original_row={"origin_country_code": "SRC-777", "job_title": "SRC-777"},
         )
 
+    def unexpected_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500)
+
     for index, row in enumerate(blocked_rows):
         with pytest.raises(SolAdjudicationError):
             run_sol_adjudication(
@@ -295,7 +288,7 @@ def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> Non
                 config=_config(),
                 budget=_budget(tmp_path),
                 checkpoint_path=_checkpoint(tmp_path, name=f"blocked-{index}.json"),
-                transport=httpx.MockTransport(lambda request: requests.append(request)),
+                transport=httpx.MockTransport(unexpected_request),
             )
 
     preflight_sol_adjudication_payload(
@@ -313,6 +306,17 @@ def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> Non
         prompt=_PROMPT,
     )
     assert not requests
+
+
+def test_preflight_rejects_all_banned_identity_variants() -> None:
+    """Fail closed on identity variants before provider I/O."""
+    for variant in _BANNED_IDENTITY_VARIANTS:
+        with pytest.raises(SolAdjudicationError):
+            preflight_sol_adjudication_payload(
+                original_persona=f"Neutral tekst med {variant}.",
+                candidate_row={"age": 42},
+                prompt=_PROMPT,
+            )
 
 
 def test_rejects_nonunique_and_over_budget_patches() -> None:

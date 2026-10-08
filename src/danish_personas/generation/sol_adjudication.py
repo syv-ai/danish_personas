@@ -227,6 +227,222 @@ class SolAdjudicationResponse(StrictModel):
         return self
 
 
+def preflight_sol_adjudication_payload(
+    *,
+    original_persona: str,
+    candidate_row: dict[str, object],
+    prompt: str,
+    changed_fact_hints: dict[str, dict[str, object]] | None = None,
+    original_row: dict[str, object] | None = None,
+) -> None:
+    """Validate one outbound Sol payload without provider I/O.
+
+    Args:
+        original_persona:
+            Persona prose that would be sent to the provider.
+        candidate_row:
+            Current structured row. Only allowlisted facts may become outbound facts.
+        prompt:
+            Sol adjudication prompt.
+        changed_fact_hints (optional):
+            Verified old/new hints for changed allowlisted facts.
+        original_row (optional):
+            Original row used for row-bound hint and raw-token checks.
+
+    """
+    _validated_payload(
+        original_persona=original_persona,
+        candidate_row=candidate_row,
+        prompt=prompt,
+        changed_fact_hints=changed_fact_hints,
+        original_row=original_row,
+    )
+
+
+def _validated_payload(
+    *,
+    original_persona: str,
+    candidate_row: dict[str, object],
+    prompt: str,
+    changed_fact_hints: dict[str, dict[str, object]] | None,
+    original_row: dict[str, object] | None,
+) -> dict[str, object]:
+    if not prompt.strip() or len(prompt) > _MAX_PROMPT_CHARS:
+        raise SolAdjudicationError("Prompt is missing or outside the supported range")
+    if (
+        not isinstance(original_persona, str)
+        or not original_persona.strip()
+        or len(original_persona) > _MAX_PROSE_CHARS
+    ):
+        raise SolAdjudicationError(
+            "Original persona prose is missing or outside the supported range"
+        )
+    _check_restricted_text(value=prompt, label="prompt")
+    _check_restricted_text(value=original_persona, label="original persona prose")
+    candidate_facts = _candidate_fact_payload(candidate_row=candidate_row)
+    hints = _validated_changed_fact_hints(
+        changed_fact_hints=changed_fact_hints or {},
+        candidate_row=candidate_row,
+        original_row=original_row,
+    )
+    outbound_text = [
+        original_persona,
+        prompt,
+        canonical_json(candidate_facts),
+        canonical_json(hints),
+    ]
+    for value in outbound_text:
+        _check_restricted_text(value=value, label="outbound adjudication payload")
+    protected_tokens = _protected_row_tokens(
+        candidate_row=candidate_row, original_row=original_row
+    )
+    _check_protected_tokens(
+        values=(
+            original_persona,
+            canonical_json(candidate_facts),
+            canonical_json(hints),
+        ),
+        protected_tokens=protected_tokens,
+    )
+    return {
+        "persona": original_persona,
+        "candidate_facts": candidate_facts,
+        "changed_fact_hints": hints,
+        "adjudication_scope": "single_row_no_raw_ids_no_sensitive_identity_fields",
+    }
+
+
+class SolAdjudicationError(ValueError):
+    """Raised when Sol adjudication cannot be completed safely."""
+
+
+def _candidate_fact_payload(
+    *, candidate_row: dict[str, object]
+) -> dict[str, JSONValue]:
+    if not isinstance(candidate_row, dict):
+        raise SolAdjudicationError("Candidate row must be a mapping")
+    facts: dict[str, JSONValue] = {}
+    for field in sorted(SOL_ALLOWED_FACT_FIELDS):
+        if field not in candidate_row:
+            continue
+        facts[field] = _safe_json_value(field=field, value=candidate_row[field])
+    if not facts:
+        raise SolAdjudicationError("Candidate row has no allowlisted facts")
+    return facts
+
+
+def _safe_json_value(*, field: str, value: object) -> JSONValue:
+    if field in _RESTRICTED_FACT_FIELDS or "sidecar" in field:
+        raise SolAdjudicationError("Candidate row contains an unsupported fact field")
+    if isinstance(value, _ALLOWED_FACT_VALUE_TYPES):
+        if isinstance(value, str):
+            if len(value) > _MAX_FACT_VALUE_CHARS:
+                raise SolAdjudicationError("Candidate fact value is outside bounds")
+            _check_restricted_text(value=value, label="candidate fact value")
+        return t.cast(JSONValue, value)
+    if isinstance(value, list):
+        if len(value) > 12:
+            raise SolAdjudicationError("Candidate fact list is outside bounds")
+        return [_safe_json_value(field=field, value=item) for item in value]
+    raise SolAdjudicationError("Candidate fact value has an unsupported type")
+
+
+def _check_restricted_text(*, value: str, label: str) -> None:
+    if _RESTRICTED_TEXT.search(value):
+        raise SolAdjudicationError(f"{label} contains a restricted identity term")
+
+
+def _check_protected_tokens(
+    *, values: tuple[str, ...], protected_tokens: frozenset[str]
+) -> None:
+    for value in values:
+        for token in protected_tokens:
+            if _token_in_text(token=token, text=value):
+                raise SolAdjudicationError(
+                    "Outbound adjudication payload contains a restricted row token"
+                )
+
+
+def _token_in_text(*, token: str, text: str) -> bool:
+    pattern = rf"(?<!{_TOKEN_BOUNDARY}){re.escape(token)}(?!{_TOKEN_BOUNDARY})"
+    return re.search(pattern, text) is not None
+
+
+def _protected_row_tokens(
+    *, candidate_row: dict[str, object], original_row: dict[str, object] | None
+) -> frozenset[str]:
+    rows = (candidate_row,) if original_row is None else (candidate_row, original_row)
+    tokens: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for field, value in row.items():
+            if _is_protected_token_field(field=str(field)):
+                tokens.update(_string_tokens(value=value))
+    return frozenset(tokens)
+
+
+def _is_protected_token_field(*, field: str) -> bool:
+    return field in {"persona_id", "id"} or field.endswith("_code")
+
+
+def _string_tokens(*, value: object) -> set[str]:
+    if isinstance(value, str):
+        token = value.strip()
+        return {token} if len(token) >= 3 else set()
+    if isinstance(value, int) and not isinstance(value, bool):
+        token = str(value)
+        return {token} if len(token) >= 3 else set()
+    if isinstance(value, list):
+        return {token for item in value for token in _string_tokens(value=item)}
+    if isinstance(value, dict):
+        return {
+            token for item in value.values() for token in _string_tokens(value=item)
+        }
+    return set()
+
+
+def _validated_changed_fact_hints(
+    *,
+    changed_fact_hints: dict[str, dict[str, object]],
+    candidate_row: dict[str, object],
+    original_row: dict[str, object] | None,
+) -> dict[str, dict[str, JSONValue]]:
+    hints = _normalise_changed_fact_hints(
+        changed_fact_hints=changed_fact_hints,
+        candidate_facts=_candidate_fact_payload(candidate_row=candidate_row),
+    )
+    if original_row is None:
+        return hints
+    for field, pair in hints.items():
+        if field not in original_row or field not in candidate_row:
+            raise SolAdjudicationError("Changed fact hint is not row-bound")
+        if pair["old"] != original_row[field] or pair["new"] != candidate_row[field]:
+            raise SolAdjudicationError("Changed fact hint is not row-bound")
+    return hints
+
+
+def _normalise_changed_fact_hints(
+    *,
+    changed_fact_hints: dict[str, dict[str, object]],
+    candidate_facts: dict[str, JSONValue],
+) -> dict[str, dict[str, JSONValue]]:
+    if not isinstance(changed_fact_hints, dict):
+        raise SolAdjudicationError("Changed fact hints must be a mapping")
+    normalised: dict[str, dict[str, JSONValue]] = {}
+    for field, pair in changed_fact_hints.items():
+        if field not in SOL_ALLOWED_FACT_FIELDS or field not in candidate_facts:
+            raise SolAdjudicationError("Changed fact hint uses an unsupported field")
+        if not isinstance(pair, dict) or set(pair) != {"old", "new"}:
+            raise SolAdjudicationError("Changed fact hint must contain old and new")
+        old = _safe_json_value(field=field, value=pair["old"])
+        new = _safe_json_value(field=field, value=pair["new"])
+        if old == new or new != candidate_facts[field]:
+            raise SolAdjudicationError("Changed fact hint is inconsistent")
+        normalised[field] = {"old": old, "new": new}
+    return normalised
+
+
 def _build_binding(
     *,
     original_persona: str,
@@ -265,10 +481,6 @@ def _build_binding(
         "base_url_sha256": _sha(BASE_URL.encode("utf-8")),
         "source_pin_sha256": str(source_pin) if isinstance(source_pin, str) else "",
     }
-
-
-class SolAdjudicationError(ValueError):
-    """Raised when Sol adjudication cannot be completed safely."""
 
 
 def _sha(value: bytes) -> str:
@@ -560,38 +772,6 @@ def validate_sol_adjudication(
     )
 
 
-def preflight_sol_adjudication_payload(
-    *,
-    original_persona: str,
-    candidate_row: dict[str, object],
-    prompt: str,
-    changed_fact_hints: dict[str, dict[str, object]] | None = None,
-    original_row: dict[str, object] | None = None,
-) -> None:
-    """Validate one outbound Sol payload without provider I/O.
-
-    Args:
-        original_persona:
-            Persona prose that would be sent to the provider.
-        candidate_row:
-            Current structured row. Only allowlisted facts may become outbound facts.
-        prompt:
-            Sol adjudication prompt.
-        changed_fact_hints (optional):
-            Verified old/new hints for changed allowlisted facts.
-        original_row (optional):
-            Original row used for row-bound hint and raw-token checks.
-
-    """
-    _validated_payload(
-        original_persona=original_persona,
-        candidate_row=candidate_row,
-        prompt=prompt,
-        changed_fact_hints=changed_fact_hints,
-        original_row=original_row,
-    )
-
-
 def _apply_validated_patches(
     *,
     original_text: str,
@@ -648,98 +828,6 @@ def _claim_strings(*, value: JSONValue) -> tuple[str, ...]:
             claims.extend(_claim_strings(value=item))
         return tuple(claims)
     return ()
-
-
-def _check_restricted_text(*, value: str, label: str) -> None:
-    if _RESTRICTED_TEXT.search(value):
-        raise SolAdjudicationError(f"{label} contains a restricted identity term")
-
-
-def _protected_row_tokens(
-    *, candidate_row: dict[str, object], original_row: dict[str, object] | None
-) -> frozenset[str]:
-    rows = (candidate_row,) if original_row is None else (candidate_row, original_row)
-    tokens: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        for field, value in row.items():
-            if _is_protected_token_field(field=str(field)):
-                tokens.update(_string_tokens(value=value))
-    return frozenset(tokens)
-
-
-def _is_protected_token_field(*, field: str) -> bool:
-    return field in {"persona_id", "id"} or field.endswith("_code")
-
-
-def _string_tokens(*, value: object) -> set[str]:
-    if isinstance(value, str):
-        token = value.strip()
-        return {token} if len(token) >= 3 else set()
-    if isinstance(value, int) and not isinstance(value, bool):
-        token = str(value)
-        return {token} if len(token) >= 3 else set()
-    if isinstance(value, list):
-        return {token for item in value for token in _string_tokens(value=item)}
-    if isinstance(value, dict):
-        return {
-            token for item in value.values() for token in _string_tokens(value=item)
-        }
-    return set()
-
-
-def _check_protected_tokens(
-    *, values: tuple[str, ...], protected_tokens: frozenset[str]
-) -> None:
-    for value in values:
-        for token in protected_tokens:
-            if _token_in_text(token=token, text=value):
-                raise SolAdjudicationError(
-                    "Outbound adjudication payload contains a restricted row token"
-                )
-
-
-def _token_in_text(*, token: str, text: str) -> bool:
-    pattern = rf"(?<!{_TOKEN_BOUNDARY}){re.escape(token)}(?!{_TOKEN_BOUNDARY})"
-    return re.search(pattern, text) is not None
-
-
-def _normalise_changed_fact_hints(
-    *,
-    changed_fact_hints: dict[str, dict[str, object]],
-    candidate_facts: dict[str, JSONValue],
-) -> dict[str, dict[str, JSONValue]]:
-    if not isinstance(changed_fact_hints, dict):
-        raise SolAdjudicationError("Changed fact hints must be a mapping")
-    normalised: dict[str, dict[str, JSONValue]] = {}
-    for field, pair in changed_fact_hints.items():
-        if field not in SOL_ALLOWED_FACT_FIELDS or field not in candidate_facts:
-            raise SolAdjudicationError("Changed fact hint uses an unsupported field")
-        if not isinstance(pair, dict) or set(pair) != {"old", "new"}:
-            raise SolAdjudicationError("Changed fact hint must contain old and new")
-        old = _safe_json_value(field=field, value=pair["old"])
-        new = _safe_json_value(field=field, value=pair["new"])
-        if old == new or new != candidate_facts[field]:
-            raise SolAdjudicationError("Changed fact hint is inconsistent")
-        normalised[field] = {"old": old, "new": new}
-    return normalised
-
-
-def _safe_json_value(*, field: str, value: object) -> JSONValue:
-    if field in _RESTRICTED_FACT_FIELDS or "sidecar" in field:
-        raise SolAdjudicationError("Candidate row contains an unsupported fact field")
-    if isinstance(value, _ALLOWED_FACT_VALUE_TYPES):
-        if isinstance(value, str):
-            if len(value) > _MAX_FACT_VALUE_CHARS:
-                raise SolAdjudicationError("Candidate fact value is outside bounds")
-            _check_restricted_text(value=value, label="candidate fact value")
-        return t.cast(JSONValue, value)
-    if isinstance(value, list):
-        if len(value) > 12:
-            raise SolAdjudicationError("Candidate fact list is outside bounds")
-        return [_safe_json_value(field=field, value=item) for item in value]
-    raise SolAdjudicationError("Candidate fact value has an unsupported type")
 
 
 def _parse_response(*, response: str | dict[str, object]) -> SolAdjudicationResponse:
@@ -828,91 +916,3 @@ def _validate_config(*, config: GenerationConfig) -> None:
         or not 1 <= config.maximum_http_attempts <= 5
     ):
         raise SolAdjudicationError("Generation configuration is not pinned for Sol")
-
-
-def _validated_payload(
-    *,
-    original_persona: str,
-    candidate_row: dict[str, object],
-    prompt: str,
-    changed_fact_hints: dict[str, dict[str, object]] | None,
-    original_row: dict[str, object] | None,
-) -> dict[str, object]:
-    if not prompt.strip() or len(prompt) > _MAX_PROMPT_CHARS:
-        raise SolAdjudicationError("Prompt is missing or outside the supported range")
-    if (
-        not isinstance(original_persona, str)
-        or not original_persona.strip()
-        or len(original_persona) > _MAX_PROSE_CHARS
-    ):
-        raise SolAdjudicationError(
-            "Original persona prose is missing or outside the supported range"
-        )
-    _check_restricted_text(value=prompt, label="prompt")
-    _check_restricted_text(value=original_persona, label="original persona prose")
-    candidate_facts = _candidate_fact_payload(candidate_row=candidate_row)
-    hints = _validated_changed_fact_hints(
-        changed_fact_hints=changed_fact_hints or {},
-        candidate_row=candidate_row,
-        original_row=original_row,
-    )
-    outbound_text = [
-        original_persona,
-        prompt,
-        canonical_json(candidate_facts),
-        canonical_json(hints),
-    ]
-    for value in outbound_text:
-        _check_restricted_text(value=value, label="outbound adjudication payload")
-    protected_tokens = _protected_row_tokens(
-        candidate_row=candidate_row, original_row=original_row
-    )
-    _check_protected_tokens(
-        values=(
-            original_persona,
-            canonical_json(candidate_facts),
-            canonical_json(hints),
-        ),
-        protected_tokens=protected_tokens,
-    )
-    return {
-        "persona": original_persona,
-        "candidate_facts": candidate_facts,
-        "changed_fact_hints": hints,
-        "adjudication_scope": "single_row_no_raw_ids_no_sensitive_identity_fields",
-    }
-
-
-def _candidate_fact_payload(
-    *, candidate_row: dict[str, object]
-) -> dict[str, JSONValue]:
-    if not isinstance(candidate_row, dict):
-        raise SolAdjudicationError("Candidate row must be a mapping")
-    facts: dict[str, JSONValue] = {}
-    for field in sorted(SOL_ALLOWED_FACT_FIELDS):
-        if field not in candidate_row:
-            continue
-        facts[field] = _safe_json_value(field=field, value=candidate_row[field])
-    if not facts:
-        raise SolAdjudicationError("Candidate row has no allowlisted facts")
-    return facts
-
-
-def _validated_changed_fact_hints(
-    *,
-    changed_fact_hints: dict[str, dict[str, object]],
-    candidate_row: dict[str, object],
-    original_row: dict[str, object] | None,
-) -> dict[str, dict[str, JSONValue]]:
-    hints = _normalise_changed_fact_hints(
-        changed_fact_hints=changed_fact_hints,
-        candidate_facts=_candidate_fact_payload(candidate_row=candidate_row),
-    )
-    if original_row is None:
-        return hints
-    for field, pair in hints.items():
-        if field not in original_row or field not in candidate_row:
-            raise SolAdjudicationError("Changed fact hint is not row-bound")
-        if pair["old"] != original_row[field] or pair["new"] != candidate_row[field]:
-            raise SolAdjudicationError("Changed fact hint is not row-bound")
-    return hints

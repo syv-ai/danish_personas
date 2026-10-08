@@ -296,10 +296,6 @@ def _hash_json(value: object) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _is_sha256(*, value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-
-
 def _generation_config(*, prompt_path: Path) -> GenerationConfig:
     return GenerationConfig.model_validate(
         {
@@ -341,51 +337,6 @@ def _load_or_create_status(
         raise PersonaReleaseAdjudicationError("Status manifest binding does not match")
     _validate_status(status=status, output_dir=output_dir)
     return status
-
-
-def _validate_processed_checkpoints(
-    *,
-    selection: ReleaseSelection,
-    status: dict[str, object],
-    output_dir: Path,
-    prompt: str,
-    config: GenerationConfig,
-    budget: ProxyBudget,
-) -> None:
-    rows_by_hash = {row.persona_hash: row for row in selection.rows}
-    transport = _failing_transport()
-    try:
-        for record in _processed_records(status=status):
-            row = rows_by_hash.get(record["persona_hash"])
-            if row is None:
-                raise PersonaReleaseAdjudicationError(
-                    "Status references a row outside the current selection"
-                )
-            checkpoint_path = _checkpoint_path(
-                output_dir=output_dir, persona_hash=row.persona_hash
-            )
-            try:
-                result = run_sol_adjudication(
-                    original_persona=str(row.candidate_row[PERSONA_FIELD]),
-                    candidate_row=row.candidate_row,
-                    prompt=prompt,
-                    config=config,
-                    budget=budget,
-                    checkpoint_path=checkpoint_path,
-                    transport=transport,
-                    changed_fact_hints=row.changed_facts,
-                    original_row=row.original_row,
-                )
-            except (RuntimeError, SolAdjudicationError) as exc:
-                raise PersonaReleaseAdjudicationError(
-                    "Processed Sol checkpoint does not match current inputs"
-                ) from exc
-            if result.disposition != record["disposition"]:
-                raise PersonaReleaseAdjudicationError(
-                    "Processed Sol checkpoint disposition does not match status"
-                )
-    finally:
-        transport.close()
 
 
 def _load_json_object(*, path: Path, label: str) -> dict[str, object]:
@@ -441,11 +392,13 @@ def _checkpoint_path(*, output_dir: Path, persona_hash: str) -> Path:
     return output_dir / "checkpoints" / persona_hash[:2] / f"{persona_hash}.json"
 
 
-def _failing_transport() -> httpx.MockTransport:
-    def respond(_request: httpx.Request) -> httpx.Response:
-        raise RuntimeError("checkpoint resume attempted network I/O")
-
-    return httpx.MockTransport(respond)
+def _checkpoint_reference(*, output_dir: Path, path: Path) -> str:
+    try:
+        return path.relative_to(output_dir).as_posix()
+    except ValueError as exc:
+        raise PersonaReleaseAdjudicationError(
+            "Checkpoint path is outside output"
+        ) from exc
 
 
 def _checkpoint_response_hash(*, path: Path) -> str:
@@ -454,6 +407,10 @@ def _checkpoint_response_hash(*, path: Path) -> str:
     if not _is_sha256(value=response_sha256):
         raise PersonaReleaseAdjudicationError("Checkpoint response hash is invalid")
     return str(response_sha256)
+
+
+def _is_sha256(*, value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _counts_from_processed(*, processed: list[dict[str, str]]) -> dict[str, int]:
@@ -572,6 +529,13 @@ def _status_selected_total(*, status: dict[str, object]) -> int:
         return value
     processed = _processed_records(status=status)
     return len(processed)
+
+
+def _failing_transport() -> httpx.MockTransport:
+    def respond(_request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("checkpoint resume attempted network I/O")
+
+    return httpx.MockTransport(respond)
 
 
 def _write_or_check_manifest(*, path: Path, manifest: dict[str, JSONDocument]) -> None:
@@ -771,6 +735,22 @@ class ReleaseRow:
     changed_facts: dict[str, dict[str, object]]
 
 
+def _preflight_selected_rows(*, rows: list[ReleaseRow], prompt: str) -> None:
+    for row in rows:
+        try:
+            preflight_sol_adjudication_payload(
+                original_persona=str(row.candidate_row[PERSONA_FIELD]),
+                candidate_row=row.candidate_row,
+                prompt=prompt,
+                changed_fact_hints=row.changed_facts,
+                original_row=row.original_row,
+            )
+        except SolAdjudicationError as exc:
+            raise PersonaReleaseAdjudicationError(
+                "Selected Sol row is privacy-unsafe for outbound adjudication"
+            ) from exc
+
+
 def _process_pending(
     *,
     rows: list[ReleaseRow],
@@ -903,6 +883,15 @@ def _dry_run_summary(
     }
 
 
+def _pending_rows(
+    *, selection: ReleaseSelection, status: dict[str, object], max_rows: int | None
+) -> list[ReleaseRow]:
+    processed = {record["persona_hash"] for record in _processed_records(status=status)}
+    rows = _scoped_rows(selection=selection, max_rows=max_rows)
+    status["selected_total"] = len(selection.rows)
+    return [row for row in rows if row.persona_hash not in processed]
+
+
 def _scoped_rows(
     *, selection: ReleaseSelection, max_rows: int | None
 ) -> list[ReleaseRow]:
@@ -911,29 +900,49 @@ def _scoped_rows(
     ]
 
 
-def _preflight_selected_rows(*, rows: list[ReleaseRow], prompt: str) -> None:
-    for row in rows:
-        try:
-            preflight_sol_adjudication_payload(
-                original_persona=str(row.candidate_row[PERSONA_FIELD]),
-                candidate_row=row.candidate_row,
-                prompt=prompt,
-                changed_fact_hints=row.changed_facts,
-                original_row=row.original_row,
+def _validate_processed_checkpoints(
+    *,
+    selection: ReleaseSelection,
+    status: dict[str, object],
+    output_dir: Path,
+    prompt: str,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+) -> None:
+    rows_by_hash = {row.persona_hash: row for row in selection.rows}
+    transport = _failing_transport()
+    try:
+        for record in _processed_records(status=status):
+            row = rows_by_hash.get(record["persona_hash"])
+            if row is None:
+                raise PersonaReleaseAdjudicationError(
+                    "Status references a row outside the current selection"
+                )
+            checkpoint_path = _checkpoint_path(
+                output_dir=output_dir, persona_hash=row.persona_hash
             )
-        except SolAdjudicationError as exc:
-            raise PersonaReleaseAdjudicationError(
-                "Selected Sol row is privacy-unsafe for outbound adjudication"
-            ) from exc
-
-
-def _pending_rows(
-    *, selection: ReleaseSelection, status: dict[str, object], max_rows: int | None
-) -> list[ReleaseRow]:
-    processed = {record["persona_hash"] for record in _processed_records(status=status)}
-    rows = _scoped_rows(selection=selection, max_rows=max_rows)
-    status["selected_total"] = len(selection.rows)
-    return [row for row in rows if row.persona_hash not in processed]
+            try:
+                result = run_sol_adjudication(
+                    original_persona=str(row.candidate_row[PERSONA_FIELD]),
+                    candidate_row=row.candidate_row,
+                    prompt=prompt,
+                    config=config,
+                    budget=budget,
+                    checkpoint_path=checkpoint_path,
+                    transport=transport,
+                    changed_fact_hints=row.changed_facts,
+                    original_row=row.original_row,
+                )
+            except (RuntimeError, SolAdjudicationError) as exc:
+                raise PersonaReleaseAdjudicationError(
+                    "Processed Sol checkpoint does not match current inputs"
+                ) from exc
+            if result.disposition != record["disposition"]:
+                raise PersonaReleaseAdjudicationError(
+                    "Processed Sol checkpoint disposition does not match status"
+                )
+    finally:
+        transport.close()
 
 
 def select_release_rows(*, inputs: ReleaseInputs) -> ReleaseSelection:
@@ -1103,15 +1112,6 @@ def _run_one_row(
         checkpoint_sha256=sha256_file(checkpoint_path),
         response_sha256=_checkpoint_response_hash(path=checkpoint_path),
     )
-
-
-def _checkpoint_reference(*, output_dir: Path, path: Path) -> str:
-    try:
-        return path.relative_to(output_dir).as_posix()
-    except ValueError as exc:
-        raise PersonaReleaseAdjudicationError(
-            "Checkpoint path is outside output"
-        ) from exc
 
 
 def _run_sol_adjudication_adapter(

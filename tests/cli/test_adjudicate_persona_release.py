@@ -56,46 +56,6 @@ def test_completed_status_skips_provider_on_resume(
     assert runner.calls == 2
 
 
-def test_tampered_checkpoint_with_intact_status_fails_before_new_requests(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Every processed checkpoint is revalidated before pending rows run."""
-    paths = _fixture_paths(tmp_path, rows=4)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    runner = _RecordingRunner()
-    adjudicate.run_release_adjudication(
-        paths=paths,
-        execute=True,
-        max_rows=2,
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=4,
-        sol_runner=runner,
-    )
-    ledger = paths.output_dir / "ignored-sol-budget.jsonl"
-    assert _reservation_count(path=ledger) == 2
-    status = json.loads((paths.output_dir / "status.json").read_text())
-    checkpoint = paths.output_dir / status["processed"][0]["checkpoint"]
-    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
-    saved["response"] = saved["response"].replace("ok", "changed", 1)
-    checkpoint.write_text(json.dumps(saved), encoding="utf-8")
-    os.chmod(checkpoint, 0o600)
-
-    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
-        adjudicate.run_release_adjudication(
-            paths=paths,
-            execute=True,
-            max_rows=None,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=4,
-            sol_runner=runner,
-        )
-
-    assert runner.calls == 2
-    assert _reservation_count(path=ledger) == 2
-
-
 class _RecordingRunner:
     def __init__(self) -> None:
         self.calls = 0
@@ -253,14 +213,6 @@ def _patch_budget_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _reservation_count(*, path: Path) -> int:
-    return sum(
-        1
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if json.loads(line).get("type") == "reservation"
-    )
-
-
 def test_dry_run_selects_all_fixture_rows_without_http(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -412,7 +364,7 @@ def test_pilot_resume_processes_stable_prefix_then_full_run(
         expected_row_count=40,
         sol_runner=runner,
     )
-    assert _reservation_count(path=paths.output_dir / "ignored-sol-budget.jsonl") == 32
+    assert _reservation_count(path=tmp_path / "sol-budget.jsonl") == 32
     full = adjudicate.run_release_adjudication(
         paths=paths,
         execute=True,
@@ -426,10 +378,18 @@ def test_pilot_resume_processes_stable_prefix_then_full_run(
     assert pilot["processed"] == 32
     assert full["processed"] == 40
     assert len(runner.checkpoints) == 40
-    assert _reservation_count(path=paths.output_dir / "ignored-sol-budget.jsonl") == 40
+    assert _reservation_count(path=tmp_path / "sol-budget.jsonl") == 40
     status = json.loads((paths.output_dir / "status.json").read_text())
     assert len(status["processed"]) == 40
     assert all("persona_id" not in record for record in status["processed"])
+
+
+def _reservation_count(*, path: Path) -> int:
+    return sum(
+        1
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("type") == "reservation"
+    )
 
 
 def test_restricted_text_refuses_before_provider(
@@ -520,3 +480,43 @@ def test_stale_input_and_report_fail_before_output(
             expected_row_count=3,
             sol_runner=_RecordingRunner(),
         )
+
+
+def test_tampered_checkpoint_with_intact_status_fails_before_new_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every processed checkpoint is revalidated before pending rows run."""
+    paths = _fixture_paths(tmp_path, rows=4)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    runner = _RecordingRunner()
+    adjudicate.run_release_adjudication(
+        paths=paths,
+        execute=True,
+        max_rows=2,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=4,
+        sol_runner=runner,
+    )
+    ledger = tmp_path / "sol-budget.jsonl"
+    assert _reservation_count(path=ledger) == 2
+    status = json.loads((paths.output_dir / "status.json").read_text())
+    checkpoint = paths.output_dir / status["processed"][0]["checkpoint"]
+    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+    saved["response"] = saved["response"].replace("ok", "changed", 1)
+    checkpoint.write_text(json.dumps(saved), encoding="utf-8")
+    os.chmod(checkpoint, 0o600)
+
+    with pytest.raises(adjudicate.PersonaReleaseAdjudicationError):
+        adjudicate.run_release_adjudication(
+            paths=paths,
+            execute=True,
+            max_rows=None,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=4,
+            sol_runner=runner,
+        )
+
+    assert runner.calls == 2
+    assert _reservation_count(path=ledger) == 2
