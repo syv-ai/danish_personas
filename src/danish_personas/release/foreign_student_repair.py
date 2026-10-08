@@ -160,14 +160,22 @@ def repair_published_v2(  # noqa: C901, PLR0912
     origin_source = pl.read_parquet(
         bundle_dir / "normalized" / "folk2_origin_country_marginal.parquet"
     )
-    _require_columns(origin_source, ("origin_country_code",))
-    supported_origins = set(
-        origin_source.filter(pl.col("eligible_for_sampling").fill_null(False))[
-            "origin_country_code"
-        ]
-        .cast(pl.String)
-        .to_list()
+    _require_columns(
+        origin_source,
+        (
+            "origin_country_code",
+            "origin_country",
+            "origin_country_da",
+            "eligible_for_sampling",
+        ),
     )
+    supported_origin_tuples = {
+        (row["origin_country_code"], row["origin_country"], row["origin_country_da"])
+        for row in origin_source.filter(
+            pl.col("eligible_for_sampling").fill_null(False)
+        ).to_dicts()
+    }
+    supported_origins = {item[0] for item in supported_origin_tuples}
 
     if _HOME_CODE not in supported_origins:
         raise ValueError("Editorial origin category lacks FOLK2 support")
@@ -179,7 +187,8 @@ def repair_published_v2(  # noqa: C901, PLR0912
             i
             for i in unused
             if _origin_tuple(rows[i], origins) != _origin_tuple(target, origins)
-            and _origin_tuple(rows[i], origins)[0] in supported_origins
+            and _origin_source_tuple(rows[i]) in supported_origin_tuples
+            and _origin_source_tuple(target) in supported_origin_tuples
         ]
         if not choices:
             raise ValueError("No source-supported origin exchange is feasible")
@@ -203,6 +212,11 @@ def repair_published_v2(  # noqa: C901, PLR0912
             origins, donor_origin, target_origin, strict=True
         ):
             target[field], donor[field] = target_value, donor_value
+        if (
+            _origin_source_tuple(target) not in supported_origin_tuples
+            or _origin_source_tuple(donor) not in supported_origin_tuples
+        ):
+            raise ValueError("Changed origin tuple lacks FOLK2 support")
         pairs.append((target_index, donor_index))
 
     repaired = pl.DataFrame(rows, schema=hotfix.schema)
@@ -308,6 +322,10 @@ def _require_columns(frame: pl.DataFrame, columns: Sequence[str]) -> None:
 
 def _origin_tuple(row: dict[str, Any], fields: list[str]) -> tuple[Any, ...]:
     return tuple(row[field] for field in fields)
+
+
+def _origin_source_tuple(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (row["origin_country_code"], row["origin_country"], row["origin_country_da"])
 
 
 def _editorial_violation(frame: pl.DataFrame) -> bool:
