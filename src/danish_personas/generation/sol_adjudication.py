@@ -32,6 +32,7 @@ _CHECKPOINT_VERSION = 1
 _MAX_PROMPT_CHARS = 10_000
 _MAX_PROSE_CHARS = 20_000
 _MAX_FACT_VALUE_CHARS = 600
+_MAX_ROW_ATTEMPTS = 10
 
 SOL_ALLOWED_FACT_FIELDS = frozenset(
     {
@@ -596,7 +597,7 @@ def _build_binding(
     if (
         budget.pins.get("model") != SOL_ADJUDICATION_MODEL
         or budget.pins.get("base_url") != BASE_URL
-        or budget.pins.get("max_tokens") != 128_000
+        or budget.pins.get("max_tokens") != SOL_MAX_OUTPUT_TOKENS
         or budget.pins.get("prompt_hash") != prompt_hash
         or budget.pins.get("schema_hash") != schema_hash
         or budget.pins.get("uncapped") is not True
@@ -648,12 +649,19 @@ def _request_adjudication(
     request_body = _request_body(prompt=prompt, payload=payload, schema=schema)
     budget_transport = _BudgetedSolTransport(budget=budget, transport=transport)
 
+    request_id_prefix = _request_id_prefix(binding=binding)
+    attempt_map: dict[int, int] = {}
+
     def reserve(attempt: int) -> None:
-        request_id = _request_id(binding=binding, attempt=attempt)
-        budget.reserve_attempt(
-            request_id,
+        global_attempt = budget.reserve_next_attempt(
+            request_id_prefix,
             t.cast(dict[str, JSONValue], request_body),
             max_output_tokens=SOL_MAX_OUTPUT_TOKENS,
+            max_attempts=_MAX_ROW_ATTEMPTS,
+        )
+        attempt_map[attempt] = global_attempt
+        request_id = _request_id_from_prefix(
+            prefix=request_id_prefix, attempt=global_attempt
         )
         budget_transport.activate_request(request_id=request_id)
 
@@ -668,6 +676,10 @@ def _request_adjudication(
         )
     finally:
         client.close()
+    global_attempt = attempt_map.get(response.request_attempts)
+    if global_attempt is None:
+        raise SolAdjudicationError("Sol response attempt was not reserved")
+    response = response.model_copy(update={"request_attempts": global_attempt})
     request_id = _request_id(binding=binding, attempt=response.request_attempts)
     budget.record_usage(
         request_id,
@@ -677,12 +689,8 @@ def _request_adjudication(
     )
     if response.model != SOL_ADJUDICATION_MODEL:
         raise SolAdjudicationError("Provider response model does not match Sol")
-    if (
-        response.prompt_tokens < 0
-        or response.completion_tokens < 0
-        or response.completion_tokens > SOL_MAX_OUTPUT_TOKENS
-    ):
-        raise SolAdjudicationError("Provider token usage exceeds Sol bounds")
+    if response.prompt_tokens < 0 or response.completion_tokens < 0:
+        raise SolAdjudicationError("Provider token usage is invalid")
     return response
 
 
@@ -720,14 +728,23 @@ def _request_body(
             "type": "json_schema",
             "json_schema": {"name": SOL_SCHEMA_NAME, "strict": True, "schema": schema},
         },
-        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
         "reasoning_effort": "none",
     }
 
 
 def _request_id(*, binding: dict[str, str | int], attempt: int) -> str:
+    return _request_id_from_prefix(
+        prefix=_request_id_prefix(binding=binding), attempt=attempt
+    )
+
+
+def _request_id_from_prefix(*, prefix: str, attempt: int) -> str:
+    return f"{prefix}-{attempt}"
+
+
+def _request_id_prefix(*, binding: dict[str, str | int]) -> str:
     digest = _sha(canonical_json(binding).encode("utf-8"))
-    return f"sol-adjudication-{digest}-{attempt}"
+    return f"sol-adjudication-{digest}"
 
 
 @dataclass(frozen=True)
@@ -1049,7 +1066,7 @@ def _validate_config(*, config: GenerationConfig) -> None:
     if (
         config.base_url != BASE_URL
         or config.model != SOL_ADJUDICATION_MODEL
-        or config.max_tokens != SOL_MAX_OUTPUT_TOKENS
+        or config.max_tokens is not None
         or config.reasoning_effort != "none"
         or config.enable_thinking is not None
         or not 1 <= config.maximum_http_attempts <= 5

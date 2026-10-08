@@ -7,7 +7,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TypeAlias, TypeVar
@@ -21,6 +21,7 @@ MODEL = "gpt-6-luna"
 SOL_ADJUDICATION_MODEL = "gpt-6-sol"
 BASE_URL = "http://127.0.0.1:18080/v1"
 DEFAULT_MAX_TOKENS = 128_000
+SOL_ADJUDICATION_LEDGER_MAX_TOKENS = 1_024
 HARD_CAP_USD = Decimal("100")
 INTERNAL_CAP_USD = Decimal("90")
 USER_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-budget.jsonl"
@@ -133,10 +134,12 @@ class ProxyBudget:
         self.cap = Decimal(cap_usd)
         self.overhead = request_overhead_bytes
         expected_model = MODEL
+        expected_max_tokens = DEFAULT_MAX_TOKENS
         expected_input_price = Decimal("0.1")
         expected_output_price = Decimal("0.5")
         if uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
             expected_model = SOL_ADJUDICATION_MODEL
+            expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
             expected_input_price = Decimal("2")
             expected_output_price = Decimal("10")
         try:
@@ -149,7 +152,7 @@ class ProxyBudget:
         if (
             model != expected_model
             or base_url != BASE_URL
-            or max_tokens != DEFAULT_MAX_TOKENS
+            or max_tokens != expected_max_tokens
             or input_price != expected_input_price
             or output_price != expected_output_price
             or (not uncapped and not Decimal("0") < self.cap <= INTERNAL_CAP_USD)
@@ -340,17 +343,23 @@ class ProxyBudget:
                 raise ProxyBudgetError(
                     "Usage references a reservation without token bounds"
                 )
-            if input_tokens > input_bound or output_tokens > output_bound:
+            if input_tokens > input_bound:
                 raise ProxyBudgetError("Observed token usage exceeds reserved bounds")
-            self._append(
-                {
-                    "type": "usage",
-                    "request_id": request_id,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "response_sha256": response_sha256,
-                }
-            )
+            output_overage = output_tokens - output_bound
+            if output_overage > 0 and not self._records_unbounded_sol_output():
+                raise ProxyBudgetError("Observed token usage exceeds reserved bounds")
+            usage: dict[str, JSONValue] = {
+                "type": "usage",
+                "request_id": request_id,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "response_sha256": response_sha256,
+            }
+            if output_overage > 0:
+                usage["unbounded_output"] = True
+                usage["reserved_output_tokens"] = output_bound
+                usage["output_tokens_over_reserved"] = output_overage
+            self._append(usage)
 
         self._locked(operation)
 
@@ -367,6 +376,9 @@ class ProxyBudget:
                 os.fsync(fd)
         finally:
             os.close(fd)
+
+    def _records_unbounded_sol_output(self) -> bool:
+        return self.uncapped and self.uncapped_purpose == SOL_ADJUDICATION_PURPOSE
 
     def reserve_attempt(
         self,
@@ -441,6 +453,77 @@ class ProxyBudget:
         ):
             raise ProxyBudgetError("Response token bound is outside pinned policy")
         return max_output_tokens
+
+    def reserve_next_attempt(
+        self,
+        request_id_prefix: str,
+        request: dict[str, JSONValue],
+        *,
+        max_output_tokens: int | None = None,
+        max_attempts: int,
+    ) -> int:
+        """Reserve the next durable per-row attempt suffix.
+
+        Args:
+            request_id_prefix:
+                Stable request ID prefix without the trailing attempt suffix.
+            request:
+                JSON-compatible provider request payload.
+            max_output_tokens (optional):
+                Smaller response-token bound to reserve.
+            max_attempts:
+                Maximum lifetime attempts for the row.
+
+        Returns:
+            Reserved one-based attempt suffix.
+
+        Raises:
+            ProxyBudgetError:
+                If all lifetime attempts are already reserved or the reservation is
+                invalid.
+        """
+        if not request_id_prefix or not isinstance(request_id_prefix, str):
+            raise ProxyBudgetError("Request ID prefix must be a non-empty string")
+        if not isinstance(max_attempts, int) or max_attempts <= 0:
+            raise ProxyBudgetError("Maximum attempt count must be positive")
+        output_bound = self._normalise_output_bound(max_output_tokens)
+        request_bytes = len(_canonical_json(request)) + self.overhead
+        input_tokens = request_bytes
+        per_request = (
+            Decimal(input_tokens) * Decimal(str(self.pins["input_usd_per_million"]))
+            + Decimal(output_bound) * Decimal(str(self.pins["output_usd_per_million"]))
+        ) / Decimal(1_000_000)
+
+        def operation() -> int:
+            header, records = self._load()
+            self._check_header(header)
+            reservations = {
+                str(r["request_id"]): Decimal(str(r["usd"]))
+                for r in records
+                if r["type"] == "reservation"
+            }
+            attempt = _next_attempt_suffix(
+                request_ids=reservations.keys(),
+                prefix=request_id_prefix,
+                max_attempts=max_attempts,
+            )
+            total = sum(reservations.values(), Decimal(0))
+            if not self.uncapped and (
+                total + per_request > self.cap or total + per_request > HARD_CAP_USD
+            ):
+                raise ProxyBudgetError("Proxy campaign budget cap exhausted")
+            self._append(
+                {
+                    "type": "reservation",
+                    "request_id": f"{request_id_prefix}-{attempt}",
+                    "usd": str(per_request),
+                    "input_byte_bound": request_bytes,
+                    "max_output_tokens": output_bound,
+                }
+            )
+            return attempt
+
+        return self._locked(operation)
 
     def usage_summary(self) -> dict[str, JSONValue]:
         """Return aggregate usage and an unverified billing estimate.
@@ -572,6 +655,23 @@ def _locked_path(path: Path, function: Callable[[], Result]) -> Result:
         os.close(fd)
 
 
+def _next_attempt_suffix(
+    *, request_ids: Iterable[str], prefix: str, max_attempts: int
+) -> int:
+    used: set[int] = set()
+    marker = f"{prefix}-"
+    for request_id in request_ids:
+        if not isinstance(request_id, str) or not request_id.startswith(marker):
+            continue
+        suffix = request_id.removeprefix(marker)
+        if suffix.isdecimal():
+            used.add(int(suffix))
+    for attempt in range(1, max_attempts + 1):
+        if attempt not in used:
+            return attempt
+    raise ProxyBudgetError("Per-row proxy attempt lifetime exhausted")
+
+
 def _read_ledger(
     path: Path, *, enforce_hard_cap: bool = True
 ) -> tuple[dict[str, JSONValue], list[dict[str, JSONValue]], bytes]:
@@ -588,13 +688,23 @@ def _read_ledger(
         raise ValueError("missing header")
     return (
         header,
-        _validate_records(records[1:], enforce_hard_cap=enforce_hard_cap),
+        _validate_records(
+            records[1:],
+            enforce_hard_cap=enforce_hard_cap,
+            allow_unbounded_output=(
+                header.get("uncapped") is True
+                and header.get("uncapped_purpose") == SOL_ADJUDICATION_PURPOSE
+            ),
+        ),
         contents,
     )
 
 
 def _validate_records(
-    records: list[object], *, enforce_hard_cap: bool = True
+    records: list[object],
+    *,
+    enforce_hard_cap: bool = True,
+    allow_unbounded_output: bool = False,
 ) -> list[dict[str, JSONValue]]:
     """Validate ledger events and optionally enforce the immutable hard cap.
 
@@ -602,6 +712,8 @@ def _validate_records(
         records: Decoded JSON lines after the header.
         enforce_hard_cap: Whether reservations must remain below the capped
             ledger's immutable hard cap.
+        allow_unbounded_output: Whether usage may record output above the
+            reserved response bound with explicit overage fields.
 
     Returns:
         Validated reservation and usage records.
@@ -631,7 +743,10 @@ def _validate_records(
             total += amount
         else:
             _validate_usage(
-                record=record, identifier=identifier, reservations=reservations
+                record=record,
+                identifier=identifier,
+                reservations=reservations,
+                allow_unbounded_output=allow_unbounded_output,
             )
         validated.append(record)
     if enforce_hard_cap and total > HARD_CAP_USD:
@@ -671,14 +786,23 @@ def _validate_usage(
     record: dict[str, JSONValue],
     identifier: str,
     reservations: dict[str, dict[str, JSONValue]],
+    allow_unbounded_output: bool,
 ) -> None:
-    if set(record) != {
+    required_fields = {
         "type",
         "request_id",
         "input_tokens",
         "output_tokens",
         "response_sha256",
-    }:
+    }
+    allowed_fields = set(required_fields)
+    if allow_unbounded_output:
+        allowed_fields |= {
+            "unbounded_output",
+            "reserved_output_tokens",
+            "output_tokens_over_reserved",
+        }
+    if not required_fields <= set(record) or set(record) - allowed_fields:
         raise ValueError("invalid usage record")
     reservation = reservations.get(identifier)
     if reservation is None:
@@ -699,8 +823,24 @@ def _validate_usage(
     output_bound = reservation.get("max_output_tokens")
     if not isinstance(input_bound, int) or not isinstance(output_bound, int):
         raise ValueError("usage references unbounded reservation")
-    if input_tokens > input_bound or output_tokens > output_bound:
+    if input_tokens > input_bound:
         raise ValueError("usage exceeds reserved bounds")
+    output_overage = output_tokens - output_bound
+    overage_fields = {
+        "unbounded_output",
+        "reserved_output_tokens",
+        "output_tokens_over_reserved",
+    }
+    if output_overage <= 0:
+        if set(record) & overage_fields:
+            raise ValueError("usage overage accounting is invalid")
+        return
+    if (
+        record.get("unbounded_output") is not True
+        or record.get("reserved_output_tokens") != output_bound
+        or record.get("output_tokens_over_reserved") != output_overage
+    ):
+        raise ValueError("usage overage accounting is invalid")
 
 
 def _usage_token_count(*, record: dict[str, JSONValue], key: str) -> int:
