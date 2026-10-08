@@ -208,7 +208,7 @@ merged output, a pilot manifest, and shard references. They do not contain perso
 or pilot validation reports.
 
 Manifests bind outputs to input/config/prompt/schema checksums, row order, and request
-accounting. The current versions are prepared bundle 8, sampler 8, frozen sample 5, and
+accounting. The current versions are prepared bundle 9, sampler 8, frozen sample 5, and
 generation 6.
 Deterministic run IDs derive from bundle/config/row/seed inputs; LLM run IDs include the
 frozen input and generation context. Existing checksum failures must fail loudly, not be

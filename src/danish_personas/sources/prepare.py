@@ -975,10 +975,17 @@ def _pool_ras209(
         "higher_education": "H40-H80",
         "not_stated": "H90",
     }
-    eligible = frame.filter(pl.col("education_source_code") != "H90")
+    h90_positive_unsuppressed = (
+        (pl.col("education_source_code") == "H90")
+        & (pl.col("count") > 0)
+        & ~pl.col("suppressed")
+    )
+    eligible = frame.filter(
+        (pl.col("education_source_code") != "H90") | h90_positive_unsuppressed
+    )
     total = float(eligible.get_column("count").sum())
     if total <= 0:
-        raise ValueError("RAS209 has no eligible education rows after H90 exclusion")
+        raise ValueError("RAS209 has no eligible education rows")
     threshold = (
         0
         if "municipality_code" in eligible.columns

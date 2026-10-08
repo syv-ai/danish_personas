@@ -13,7 +13,7 @@ dataset can span multiple shards. Generated responses are constrained by the Pyd
 JSON schema and parsed locally once; no semantic content or completed-run validation is
 performed.
 
-Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
+Future runs use prepared-bundle schema 9, sampler schema 8, frozen-sample schema 5,
 and generation contract 6. The default frozen sample mode is population-proportional;
 stratified round-robin remains an explicit alternative. Existing generation IDs and
 checkpoints are historical and are not resumable under generation contract 6.
