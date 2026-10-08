@@ -756,6 +756,35 @@ def _request_id_prefix(*, binding: dict[str, str | int]) -> str:
     return f"sol-adjudication-{digest}"
 
 
+def _save_checkpoint(
+    *, path: Path, binding: dict[str, str | int], response: str
+) -> None:
+    _write_private_json(
+        path=path,
+        value={
+            "binding": binding,
+            "response": response,
+            "response_sha256": _sha(response.encode("utf-8")),
+        },
+    )
+
+
+def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @dataclass(frozen=True)
 class SolAdjudicationResult:
     """Locally validated adjudication for one persona row."""
@@ -845,36 +874,6 @@ def run_sol_adjudication(
         budget=budget,
         checkpoint_path=checkpoint_path,
         transport=transport,
-    )
-
-
-def _resume_checkpoint(
-    *,
-    path: Path,
-    binding: dict[str, str | int],
-    original_persona: str,
-    candidate_facts: dict[str, JSONValue],
-    changed_fact_hints: dict[str, dict[str, object]],
-) -> SolAdjudicationResult:
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SolAdjudicationError("Sol checkpoint is not readable") from exc
-    if not isinstance(saved, dict) or saved.get("binding") != binding:
-        raise SolAdjudicationError(
-            "Sol checkpoint binding does not match current inputs"
-        )
-    response = saved.get("response")
-    response_sha256 = saved.get("response_sha256")
-    if not isinstance(response, str) or not isinstance(response_sha256, str):
-        raise SolAdjudicationError("Sol checkpoint is incomplete")
-    if response_sha256 != _sha(response.encode("utf-8")):
-        raise SolAdjudicationError("Sol checkpoint response hash does not match")
-    return validate_sol_adjudication(
-        original_text=original_persona,
-        candidate_facts=candidate_facts,
-        response=response,
-        changed_fact_hints=changed_fact_hints,
     )
 
 
@@ -1082,33 +1081,34 @@ def _quote_supports_fact(*, quote: str, value: JSONValue) -> bool:
     return any(claim.casefold() in folded for claim in _claim_strings(value=value))
 
 
-def _save_checkpoint(
-    *, path: Path, binding: dict[str, str | int], response: str
-) -> None:
-    _write_private_json(
-        path=path,
-        value={
-            "binding": binding,
-            "response": response,
-            "response_sha256": _sha(response.encode("utf-8")),
-        },
-    )
-
-
-def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _resume_checkpoint(
+    *,
+    path: Path,
+    binding: dict[str, str | int],
+    original_persona: str,
+    candidate_facts: dict[str, JSONValue],
+    changed_fact_hints: dict[str, dict[str, object]],
+) -> SolAdjudicationResult:
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, ensure_ascii=False, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-    finally:
-        temporary.unlink(missing_ok=True)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SolAdjudicationError("Sol checkpoint is not readable") from exc
+    if not isinstance(saved, dict) or saved.get("binding") != binding:
+        raise SolAdjudicationError(
+            "Sol checkpoint binding does not match current inputs"
+        )
+    response = saved.get("response")
+    response_sha256 = saved.get("response_sha256")
+    if not isinstance(response, str) or not isinstance(response_sha256, str):
+        raise SolAdjudicationError("Sol checkpoint is incomplete")
+    if response_sha256 != _sha(response.encode("utf-8")):
+        raise SolAdjudicationError("Sol checkpoint response hash does not match")
+    return validate_sol_adjudication(
+        original_text=original_persona,
+        candidate_facts=candidate_facts,
+        response=response,
+        changed_fact_hints=changed_fact_hints,
+    )
 
 
 def _validate_config(*, config: GenerationConfig) -> None:
