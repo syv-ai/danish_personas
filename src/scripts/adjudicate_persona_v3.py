@@ -1,0 +1,517 @@
+"""Run privacy-safe, resumable private Sol review for the v3 candidate."""
+
+from __future__ import annotations
+
+import concurrent.futures as futures
+import json
+from pathlib import Path
+from typing import Any
+
+import click
+import httpx
+import polars as pl
+from adjudicate_persona_release import (
+    _check_restricted_text,
+    _check_rows_private,
+    _prepare_private_output,
+    _write_private_json,
+)
+
+from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
+from danish_personas.generation.models import GenerationConfig
+from danish_personas.generation.proxy_budget import (
+    ADJUDICATION_MODEL_ENV,
+    BASE_URL,
+    SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
+    SOL_ADJUDICATION_MODEL,
+    SOL_ADJUDICATION_PURPOSE,
+    ProxyBudget,
+    ProxyBudgetError,
+    require_runtime_model,
+)
+from danish_personas.generation.sol_adjudication import (
+    SOL_ALLOWED_FACT_FIELDS,
+    SolAdjudicationError,
+    SolAdjudicationResponse,
+    preflight_sol_adjudication_payload,
+    run_sol_adjudication,
+)
+from danish_personas.io import canonical_json, sha256_file, sha256_text
+from danish_personas.release.generated_checks import check_generated_fields
+
+ROOT = Path("/tmp/danish-personas-audit")
+ORIGINAL = ROOT / "hf-v2-foreign-hotfix-remote/data/train-00000-of-00001.parquet"
+CANDIDATE = ROOT / "v3-private/repaired-final.parquet"
+REPAIR = ROOT / "v3-private/repair-manifest-final.json"
+REVIEW = ROOT / "persona-review-v4/checkpoints"
+H90 = ROOT / "sol-h90-final/status.json"
+FOLLOWUP = ROOT / "sol-followup-pilot32/status.json"
+PROMPT = Path("config/persona-sol-adjudication-da.md")
+OUTPUT = ROOT / "sol-adjudication-v3-final"
+REGISTRY = Path.home() / ".pi/agent/models-store.json"
+EXPECTED_ROWS = 100_000
+ID_FIELD = "persona_id"
+TEXT_FIELD = "persona"
+CAMPAIGN = "persona-sol-adjudication-v3"
+VERSION = 1
+
+
+class ReviewError(Exception):
+    """A safe-to-report v3 campaign failure."""
+
+
+@click.command()
+@click.option("--original", type=click.Path(path_type=Path), default=ORIGINAL)
+@click.option("--candidate", type=click.Path(path_type=Path), default=CANDIDATE)
+@click.option("--repair-manifest", type=click.Path(path_type=Path), default=REPAIR)
+@click.option("--review-checkpoints", type=click.Path(path_type=Path), default=REVIEW)
+@click.option("--h90-status", type=click.Path(path_type=Path), default=H90)
+@click.option("--followup-status", type=click.Path(path_type=Path), default=FOLLOWUP)
+@click.option("--prompt", type=click.Path(path_type=Path), default=PROMPT)
+@click.option("--output-dir", type=click.Path(path_type=Path), default=OUTPUT)
+@click.option("--registry", type=click.Path(path_type=Path), default=REGISTRY)
+@click.option("--workers", type=click.IntRange(min=1, max=4), default=1)
+@click.option("--run", "execute", is_flag=True, default=False)
+def main(
+    original: Path,
+    candidate: Path,
+    repair_manifest: Path,
+    review_checkpoints: Path,
+    h90_status: Path,
+    followup_status: Path,
+    prompt: Path,
+    output_dir: Path,
+    registry: Path,
+    workers: int,
+    execute: bool,
+) -> None:
+    """Dry-run by default; ``--run`` enables calls to the configured local proxy.
+
+    Raises:
+        click.ClickException: If an input or private campaign boundary is invalid.
+    """
+    configure_cli_logging()
+    load_repository_environment()
+    try:
+        summary = run_campaign(
+            original=original,
+            candidate=candidate,
+            repair_path=repair_manifest,
+            review_path=review_checkpoints,
+            h90_path=h90_status,
+            followup_path=followup_status,
+            prompt_path=prompt,
+            output_dir=output_dir,
+            registry=registry,
+            workers=workers,
+            execute=execute,
+        )
+    except (
+        ReviewError,
+        OSError,
+        ValueError,
+        ProxyBudgetError,
+        SolAdjudicationError,
+    ) as exc:
+        raise click.ClickException(_safe_error(exc)) from exc
+    click.echo(json.dumps(summary, sort_keys=True))
+
+
+def run_campaign(  # noqa: C901, PLR0912, PLR0915
+    *,
+    original: Path,
+    candidate: Path,
+    repair_path: Path,
+    review_path: Path,
+    h90_path: Path,
+    followup_path: Path,
+    prompt_path: Path,
+    output_dir: Path,
+    registry: Path,
+    workers: int,
+    execute: bool,
+) -> dict[str, object]:
+    """Validate pinned inputs, build the sorted queue and optionally run.
+
+    Returns:
+        Aggregate campaign progress without row identifiers or persona text.
+
+    Raises:
+        ReviewError: If pinned inputs or durable resume state are invalid.
+    """
+    if workers not in range(1, 5):
+        raise ReviewError("Worker count is outside the supported range")
+    base = pl.read_parquet(original)
+    frame = pl.read_parquet(candidate)
+    if base.height != EXPECTED_ROWS or frame.height != EXPECTED_ROWS:
+        raise ReviewError("Input row count mismatch")
+    if ID_FIELD not in base.columns or ID_FIELD not in frame.columns:
+        raise ReviewError("Input identifier column missing")
+    ids = base[ID_FIELD].to_list()
+    candidate_ids = frame[ID_FIELD].to_list()
+    if ids != candidate_ids or any(not isinstance(value, str) for value in ids):
+        raise ReviewError("Ordered input identifiers do not match")
+    id_hashes = [sha256_text(value) for value in ids]
+    ordered_hash = sha256_text(canonical_json(id_hashes))
+    base_rows, candidate_rows = base.to_dicts(), frame.to_dicts()
+    _check_rows_private(original_rows=base_rows, candidate_rows=candidate_rows)
+    repair = _json_object(repair_path)
+    if repair.get("private") is not True or repair.get(
+        "published_sha256"
+    ) != sha256_file(original):
+        raise ReviewError(
+            "Repair manifest is not bound to the immutable published input"
+        )
+    changed_indexes = repair.get("changed_row_indexes")
+    if not isinstance(changed_indexes, list) or any(
+        not isinstance(i, int) or i < 0 or i >= EXPECTED_ROWS for i in changed_indexes
+    ):
+        raise ReviewError("Repair row index list is invalid")
+    actual_changed = [
+        index
+        for index, (before, after) in enumerate(
+            zip(base_rows, candidate_rows, strict=True)
+        )
+        if before != after
+    ]
+    if sorted(changed_indexes) != actual_changed:
+        raise ReviewError("Repair row indexes do not match the candidate changes")
+    reasons: dict[int, set[str]] = {}
+    for index in changed_indexes:
+        reasons.setdefault(index, set()).add("v3_demographic_repair")
+    checkpoint_by_hash: dict[str, dict[str, Any]] = {}
+    for path in sorted(review_path.glob("*/*.json")):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            digest = path.stem
+            if len(digest) == 64 and doc.get("disposition") == "needs_manual_review":
+                checkpoint_by_hash[digest] = doc
+        except OSError, json.JSONDecodeError:
+            raise ReviewError("Prior review checkpoint is unreadable") from None
+    positions = {digest: i for i, digest in enumerate(id_hashes)}
+    for digest in checkpoint_by_hash:
+        if digest in positions:
+            reasons.setdefault(positions[digest], set()).add("prior_manual_review")
+    generated = check_generated_fields(frame)
+    unsafe_ids = {
+        finding.persona_id
+        for finding in generated.review_flags
+        if finding.check == "unsafe_or_forbidden_pattern"
+    }
+    for persona_id in unsafe_ids:
+        digest = sha256_text(persona_id)
+        if digest in positions:
+            reasons.setdefault(positions[digest], set()).add(
+                "unsafe_or_forbidden_pattern"
+            )
+    unmatched_status_records = {
+        "h90": _unmatched_status_count(
+            h90_path, positions, {"unresolved", "validation_failed"}
+        ),
+        "followup": _unmatched_status_count(followup_path, positions, {"unresolved"}),
+    }
+    _add_status_reasons(
+        h90_path,
+        positions,
+        reasons,
+        "h90_unresolved",
+        {"unresolved", "validation_failed"},
+    )
+    _add_status_reasons(
+        followup_path, positions, reasons, "followup_unresolved", {"unresolved"}
+    )
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    _check_restricted_text(value=prompt_text, label="prompt")
+    selected = sorted(reasons)
+    reason_counts: dict[str, int] = {}
+    for labels in reasons.values():
+        for label in labels:
+            reason_counts[label] = reason_counts.get(label, 0) + 1
+
+    input_hashes = {
+        "baseline_sha256": sha256_file(original),
+        "candidate_sha256": sha256_file(candidate),
+        "repair_sha256": sha256_file(repair_path),
+        "h90_status_sha256": sha256_file(h90_path),
+        "followup_status_sha256": sha256_file(followup_path),
+        "ordered_id_hashes_sha256": ordered_hash,
+        "prompt_sha256": sha256_file(prompt_path),
+        "queue_sha256": sha256_text(canonical_json(selected)),
+    }
+    manifest = {
+        "campaign": CAMPAIGN,
+        "version": VERSION,
+        "input_hashes": input_hashes,
+        "selected_total": len(selected),
+        "reason_counts": reason_counts,
+    }
+    if not execute:
+        return {
+            "campaign": CAMPAIGN,
+            "dry_run": True,
+            "selected_total": len(selected),
+            "reason_counts": reason_counts,
+            "unmatched_prior_status_records": unmatched_status_records,
+            "ordered_id_hashes_sha256": ordered_hash,
+        }
+    if any(unmatched_status_records.values()):
+        raise ReviewError(
+            "Prior unresolved status contains rows not bound to this release"
+        )
+
+    require_runtime_model(ADJUDICATION_MODEL_ENV)
+    _prepare_private_output(output_dir=output_dir)
+    manifest_path = output_dir / "manifest.json"
+    _write_or_verify(manifest_path, manifest)
+    prompt_hash = input_hashes["prompt_sha256"]
+    schema_hash = sha256_text(
+        canonical_json(SolAdjudicationResponse.provider_json_schema())
+    )
+    source_hash = sha256_text(canonical_json(input_hashes))
+    budget = ProxyBudget(
+        ledger_path=output_dir / "ignored-sol-budget.jsonl",
+        registry_path=registry,
+        campaign=CAMPAIGN,
+        source_hash=source_hash,
+        prompt_hash=prompt_hash,
+        schema_hash=schema_hash,
+        model=SOL_ADJUDICATION_MODEL,
+        input_usd_per_million="2",
+        output_usd_per_million="10",
+        max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
+        cap_usd=None,
+        uncapped=True,
+        uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
+    )
+    config = GenerationConfig.model_validate(
+        {
+            "base_url": BASE_URL,
+            "model": SOL_ADJUDICATION_MODEL,
+            "api_key_env": None,
+            "timeout_seconds": 120.0,
+            "maximum_http_attempts": 5,
+            "maximum_total_requests": None,
+            "retry_backoff_seconds": 1.0,
+            "maximum_rows_per_shard": 1,
+            "max_tokens": None,
+            "enable_thinking": None,
+            "reasoning_effort": "none",
+            "prompt": prompt_path,
+            "origin_label_contract": Path("config/folk2-ieland-labels-da.yaml"),
+        }
+    )
+    status_path = output_dir / "status.json"
+    status = _load_status(status_path, input_hashes, len(selected))
+    selected_hashes = {id_hashes[index] for index in selected}
+    done: set[str] = set()
+    for item in status["processed"]:
+        digest = item.get("persona_hash")
+        disposition = item.get("disposition")
+        if (
+            not isinstance(digest, str)
+            or digest not in selected_hashes
+            or digest in done
+            or disposition
+            not in {"consistent", "patched", "unresolved", "validation_failed"}
+            or item.get("result_sha256") != sha256_text(f"{digest}:{disposition}")
+        ):
+            raise ReviewError("Existing status contains an invalid row disposition")
+        done.add(digest)
+    pending = [index for index in selected if id_hashes[index] not in done]
+    with httpx.Client(base_url=BASE_URL, timeout=120) as client:
+        transport = client._transport
+        # Bound outstanding work; each worker writes only a hash-named checkpoint.
+        with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, result in zip(
+                pending,
+                pool.map(
+                    lambda i: _process_row(
+                        i,
+                        candidate_rows,
+                        base_rows,
+                        reasons,
+                        id_hashes,
+                        prompt_text,
+                        prompt_path,
+                        config,
+                        budget,
+                        output_dir,
+                        transport,
+                    ),
+                    pending,
+                    chunksize=1,
+                ),
+                strict=True,
+            ):
+                status["processed"].append(result)
+                status["processed"].sort(key=lambda item: item["persona_hash"])
+                status["counts"] = _count_dispositions(status["processed"])
+                status["progress"] = {
+                    "completed": len(status["processed"]),
+                    "total": len(selected),
+                    "pending": len(selected) - len(status["processed"]),
+                }
+                _write_private_json(path=status_path, value=status)
+    return {
+        "campaign": CAMPAIGN,
+        "dry_run": False,
+        "selected_total": len(selected),
+        "counts": status["counts"],
+        "progress": status["progress"],
+    }
+
+
+def _process_row(
+    index: int,
+    candidate_rows: list[dict[str, Any]],
+    base_rows: list[dict[str, Any]],
+    reasons: dict[int, set[str]],
+    id_hashes: list[str],
+    prompt: str,
+    prompt_path: Path,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    output_dir: Path,
+    transport: httpx.BaseTransport,
+) -> dict[str, Any]:
+    row = candidate_rows[index]
+    old = base_rows[index]
+    hints = {
+        field: {"old": old[field], "new": row[field]}
+        for field in sorted((set(old) & set(row)) & SOL_ALLOWED_FACT_FIELDS)
+        if old[field] != row[field]
+    }
+    # Existing prose is the baseline for these adjudications; facts are the v3 row.
+    try:
+        preflight_sol_adjudication_payload(
+            original_persona=row[TEXT_FIELD],
+            candidate_row=row,
+            prompt=prompt,
+            changed_fact_hints=hints,
+            original_row=old,
+        )
+        result = run_sol_adjudication(
+            original_persona=row[TEXT_FIELD],
+            candidate_row=row,
+            prompt=prompt,
+            config=config,
+            budget=budget,
+            checkpoint_path=output_dir
+            / "checkpoints"
+            / id_hashes[index][:2]
+            / f"{id_hashes[index]}.json",
+            transport=transport,
+            changed_fact_hints=hints,
+            original_row=old,
+        )
+        # Proposed prose is retained only inside the private checkpoint by the runner.
+        terminal = result.disposition
+    except Exception:
+        terminal = "validation_failed"
+    return {
+        "persona_hash": id_hashes[index],
+        "disposition": terminal,
+        "result_sha256": sha256_text(f"{id_hashes[index]}:{terminal}"),
+    }
+
+
+def _unmatched_status_count(
+    path: Path, positions: dict[str, int], dispositions: set[str]
+) -> int:
+    """Count prior terminal rows that cannot be bound to this ordered release.
+
+    Returns:
+        Number of unmatched terminal rows, without exposing their identifiers.
+
+    Raises:
+        ReviewError: If the prior status document has an invalid shape.
+    """
+    processed = _json_object(path).get("processed")
+    if not isinstance(processed, list):
+        raise ReviewError("Prior status shape is invalid")
+    return sum(
+        1
+        for item in processed
+        if isinstance(item, dict)
+        and item.get("disposition") in dispositions
+        and item.get("persona_hash") not in positions
+    )
+
+
+def _add_status_reasons(
+    path: Path,
+    positions: dict[str, int],
+    reasons: dict[int, set[str]],
+    reason: str,
+    dispositions: set[str],
+) -> None:
+    doc = _json_object(path)
+    processed = doc.get("processed")
+    if not isinstance(processed, list):
+        raise ReviewError("Prior status shape is invalid")
+    for item in processed:
+        if isinstance(item, dict) and item.get("disposition") in dispositions:
+            digest = item.get("persona_hash")
+            if isinstance(digest, str) and digest in positions:
+                reasons.setdefault(positions[digest], set()).add(reason)
+
+
+def _json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        raise ReviewError("Private input JSON is unreadable") from None
+    if not isinstance(value, dict):
+        raise ReviewError("Private input JSON has invalid shape")
+    return value
+
+
+def _write_or_verify(path: Path, value: dict[str, Any]) -> None:
+    if path.exists():
+        if _json_object(path) != value:
+            raise ReviewError("Existing campaign manifest does not match inputs")
+    else:
+        _write_private_json(path=path, value=value)
+
+
+def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "version": VERSION,
+            "campaign": CAMPAIGN,
+            "input_hashes": hashes,
+            "selected_total": total,
+            "processed": [],
+            "counts": {},
+            "progress": {"completed": 0, "total": total, "pending": total},
+        }
+    status = _json_object(path)
+    if status.get("input_hashes") != hashes or status.get("selected_total") != total:
+        raise ReviewError("Existing status is bound to different inputs")
+    if not isinstance(status.get("processed"), list):
+        raise ReviewError("Existing status shape is invalid")
+    return status
+
+
+def _count_dispositions(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        disposition = item.get("disposition")
+        counts[disposition] = counts.get(disposition, 0) + 1
+    return counts
+
+
+def _safe_error(exc: Exception) -> str:
+    if isinstance(exc, (ProxyBudgetError, SolAdjudicationError)):
+        return (
+            "Private adjudication stopped safely; inspect local configuration "
+            "and private logs."
+        )
+    if isinstance(exc, ReviewError):
+        return str(exc)
+    return "Private adjudication stopped safely due to an input or filesystem error."
+
+
+if __name__ == "__main__":
+    main()
