@@ -90,6 +90,7 @@ SOL_ADJUDICATION_PURPOSE = "sol_adjudication"
 V3_ADJUDICATION_PURPOSE = "v3_adjudication"
 V3_EXTENDED_ADJUDICATION_PURPOSE = "v3_extended_adjudication"
 V3_LONG_ADJUDICATION_PURPOSE = "v3_long_adjudication"
+V3_TARGETED_FOLLOWUP_PURPOSE = "v3_targeted_followup"
 UNLIMITED_PURPOSES = frozenset(
     {
         PATCH_VERIFICATION_PURPOSE,
@@ -99,6 +100,7 @@ UNLIMITED_PURPOSES = frozenset(
         V3_ADJUDICATION_PURPOSE,
         V3_EXTENDED_ADJUDICATION_PURPOSE,
         V3_LONG_ADJUDICATION_PURPOSE,
+        V3_TARGETED_FOLLOWUP_PURPOSE,
     }
 )
 JSONValue: TypeAlias = (
@@ -157,6 +159,7 @@ class ProxyBudget:
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
             V3_LONG_ADJUDICATION_PURPOSE,
+            V3_TARGETED_FOLLOWUP_PURPOSE,
         }
         self.path = self._ledger_path(uncapped=uncapped, purpose=uncapped_purpose)
         self.registry_path = Path(registry_path)
@@ -187,6 +190,7 @@ class ProxyBudget:
             V3_ADJUDICATION_PURPOSE,
             V3_EXTENDED_ADJUDICATION_PURPOSE,
             V3_LONG_ADJUDICATION_PURPOSE,
+            V3_TARGETED_FOLLOWUP_PURPOSE,
         }:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
@@ -231,6 +235,8 @@ class ProxyBudget:
                 USER_V3_EXTENDED_ADJUDICATION_BUDGET_PATH
             ),
             V3_LONG_ADJUDICATION_PURPOSE: USER_V3_LONG_ADJUDICATION_BUDGET_PATH,
+            V3_TARGETED_FOLLOWUP_PURPOSE: Path.home()
+            / ".danish-personas/proxy-v3-targeted-followup.jsonl",
             PATCH_VERIFICATION_PURPOSE: USER_PATCH_VERIFICATION_BUDGET_PATH,
             EDUCATION_REVIEW_PURPOSE: USER_EDUCATION_REVIEW_BUDGET_PATH,
             EDUCATION_VERIFICATION_PURPOSE: USER_EDUCATION_VERIFICATION_BUDGET_PATH,
