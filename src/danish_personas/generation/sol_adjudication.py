@@ -336,12 +336,6 @@ def _validated_payload(
     return payload
 
 
-def _validated_adjudication_mode(*, adjudication_mode: object) -> SolAdjudicationMode:
-    if adjudication_mode not in {"default", "unresolved_followup"}:
-        raise SolAdjudicationError("Unsupported Sol adjudication mode")
-    return t.cast(SolAdjudicationMode, adjudication_mode)
-
-
 class SolAdjudicationError(ValueError):
     """Raised when Sol adjudication cannot be completed safely."""
 
@@ -569,6 +563,12 @@ def _protected_row_tokens(
             candidate_row=candidate_row, original_row=original_row
         )
     )
+
+
+def _validated_adjudication_mode(*, adjudication_mode: object) -> SolAdjudicationMode:
+    if adjudication_mode not in {"default", "unresolved_followup"}:
+        raise SolAdjudicationError("Unsupported Sol adjudication mode")
+    return t.cast(SolAdjudicationMode, adjudication_mode)
 
 
 def _validated_changed_fact_hints(

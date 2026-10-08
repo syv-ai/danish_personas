@@ -109,104 +109,6 @@ def test_consistent_evidence_checkpoints_privately(tmp_path: Path) -> None:
     assert stat.S_IMODE(checkpoint.stat().st_mode) == 0o600
 
 
-def test_default_payload_hash_keeps_followup_rule_absent(tmp_path: Path) -> None:
-    """Keep first-pass payload binding unchanged by the optional mode."""
-    seen: list[httpx.Request] = []
-
-    run_sol_adjudication(
-        original_persona=_PERSONA,
-        candidate_row={"age": 42, "municipality": "Aarhus"},
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path),
-        checkpoint_path=_checkpoint(tmp_path),
-        transport=_transport(
-            {
-                "disposition": "consistent",
-                "reason": "Alder er nævnt i teksten.",
-                "evidence": [
-                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
-                ],
-                "patches": [],
-            },
-            seen,
-        ),
-    )
-
-    body = json.loads(seen[0].content)
-    user_payload = json.loads(body["messages"][1]["content"])
-    payload_hash = hashlib.sha256(canonical_json(user_payload).encode()).hexdigest()
-
-    assert "unresolved_followup_rule" not in user_payload
-    assert payload_hash == _DEFAULT_PAYLOAD_SHA256
-
-
-def test_unresolved_followup_changes_payload_binding(tmp_path: Path) -> None:
-    """Bind follow-up requests and checkpoints to the fixed extra rule."""
-    checkpoint = _checkpoint(tmp_path)
-    seen: list[httpx.Request] = []
-
-    run_sol_adjudication(
-        original_persona=_PERSONA,
-        candidate_row={"age": 42, "municipality": "Aarhus"},
-        prompt=_PROMPT,
-        config=_config(),
-        budget=_budget(tmp_path),
-        checkpoint_path=checkpoint,
-        transport=_transport(
-            {
-                "disposition": "consistent",
-                "reason": "Der er ingen konkret modsigelse.",
-                "evidence": [
-                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
-                ],
-                "patches": [],
-            },
-            seen,
-        ),
-        adjudication_mode="unresolved_followup",
-    )
-
-    body = json.loads(seen[0].content)
-    user_payload = json.loads(body["messages"][1]["content"])
-    payload_hash = hashlib.sha256(canonical_json(user_payload).encode()).hexdigest()
-    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
-
-    assert "unresolved_followup_rule" in user_payload
-    assert payload_hash != _DEFAULT_PAYLOAD_SHA256
-    assert saved["binding"]["payload_sha256"] == payload_hash
-
-
-def test_followup_context_cannot_be_caller_injected() -> None:
-    """Reject non-fixed follow-up modes before building a provider request."""
-    invalid_mode: Any = "unresolved_followup sexual orientation"
-
-    with pytest.raises(SolAdjudicationError, match="Unsupported Sol adjudication mode"):
-        preflight_sol_adjudication_payload(
-            original_persona=_PERSONA,
-            candidate_row={"age": 42},
-            prompt=_PROMPT,
-            adjudication_mode=invalid_mode,
-        )
-
-
-def test_followup_rule_is_outbound_privacy_scanned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Scan the fixed follow-up context with the normal outbound guard."""
-    monkeypatch.setattr(
-        sol_module, "_UNRESOLVED_FOLLOWUP_RULE_DA", "sexual orientation"
-    )
-
-    with pytest.raises(SolAdjudicationError, match="prohibited identity text"):
-        preflight_sol_adjudication_payload(
-            original_persona=_PERSONA,
-            candidate_row={"age": 42},
-            prompt=_PROMPT,
-            adjudication_mode="unresolved_followup",
-        )
-
-
 def _budget(tmp_path: Path) -> ProxyBudget:
     registry = tmp_path / "models.json"
     registry.write_text(
@@ -316,6 +218,68 @@ def _sequence_transport(
         )
 
     return httpx.MockTransport(respond)
+
+
+def test_default_payload_hash_keeps_followup_rule_absent(tmp_path: Path) -> None:
+    """Keep first-pass payload binding unchanged by the optional mode."""
+    seen: list[httpx.Request] = []
+
+    run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=_checkpoint(tmp_path),
+        transport=_transport(
+            {
+                "disposition": "consistent",
+                "reason": "Alder er nævnt i teksten.",
+                "evidence": [
+                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+                ],
+                "patches": [],
+            },
+            seen,
+        ),
+    )
+
+    body = json.loads(seen[0].content)
+    user_payload = json.loads(body["messages"][1]["content"])
+    payload_hash = hashlib.sha256(canonical_json(user_payload).encode()).hexdigest()
+
+    assert "unresolved_followup_rule" not in user_payload
+    assert payload_hash == _DEFAULT_PAYLOAD_SHA256
+
+
+def test_followup_context_cannot_be_caller_injected() -> None:
+    """Reject non-fixed follow-up modes before building a provider request."""
+    invalid_mode: Any = "unresolved_followup sexual orientation"
+
+    with pytest.raises(SolAdjudicationError, match="Unsupported Sol adjudication mode"):
+        preflight_sol_adjudication_payload(
+            original_persona=_PERSONA,
+            candidate_row={"age": 42},
+            prompt=_PROMPT,
+            adjudication_mode=invalid_mode,
+        )
+
+
+def test_followup_rule_is_outbound_privacy_scanned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scan the fixed follow-up context with the normal outbound guard."""
+    monkeypatch.setattr(
+        sol_module, "_UNRESOLVED_FOLLOWUP_RULE_DA", "sexual orientation"
+    )
+
+    with pytest.raises(SolAdjudicationError, match="restricted identity term"):
+        preflight_sol_adjudication_payload(
+            original_persona=_PERSONA,
+            candidate_row={"age": 42},
+            prompt=_PROMPT,
+            adjudication_mode="unresolved_followup",
+        )
 
 
 def test_local_invalid_retries_then_checkpoints_valid_response(
@@ -928,3 +892,39 @@ def test_uncapped_sol_records_output_overage(tmp_path: Path) -> None:
     assert usage["reserved_output_tokens"] == SOL_MAX_OUTPUT_TOKENS
     assert usage["output_tokens_over_reserved"] == 17
     assert usage["unbounded_output"] is True
+
+
+def test_unresolved_followup_changes_payload_binding(tmp_path: Path) -> None:
+    """Bind follow-up requests and checkpoints to the fixed extra rule."""
+    checkpoint = _checkpoint(tmp_path)
+    seen: list[httpx.Request] = []
+
+    run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=_budget(tmp_path),
+        checkpoint_path=checkpoint,
+        transport=_transport(
+            {
+                "disposition": "consistent",
+                "reason": "Der er ingen konkret modsigelse.",
+                "evidence": [
+                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+                ],
+                "patches": [],
+            },
+            seen,
+        ),
+        adjudication_mode="unresolved_followup",
+    )
+
+    body = json.loads(seen[0].content)
+    user_payload = json.loads(body["messages"][1]["content"])
+    payload_hash = hashlib.sha256(canonical_json(user_payload).encode()).hexdigest()
+    saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+
+    assert "unresolved_followup_rule" in user_payload
+    assert payload_hash != _DEFAULT_PAYLOAD_SHA256
+    assert saved["binding"]["payload_sha256"] == payload_hash
