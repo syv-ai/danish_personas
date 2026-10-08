@@ -133,19 +133,11 @@ sends frozen aggregate-derived records to the configured OpenAI-compatible endpo
 The request includes a strict JSON schema and the response is parsed against the same
 Pydantic model. Generated content is not otherwise checked.
 
-All model settings live in Hydra
-[`config/config.yaml`](config/config.yaml). Its defaults are:
-
-```yaml
-llm:
-  base_url: http://127.0.0.1:18080/v1
-  model: gpt-5.6-sol
-  api_key_env: null
-```
-
-Edit the `llm` section or use a Hydra override when changing providers or models. If
-authentication is required, set `llm.api_key_env` to the environment-variable name
-containing the bearer token; never put the token itself in `config/config.yaml`.
+All model settings live in Hydra [`config/config.yaml`](config/config.yaml).
+Configure `llm.base_url`, `llm.model`, and `llm.api_key_env` there or with Hydra
+overrides. If authentication is required, set `llm.api_key_env` to the name of the
+environment variable containing the bearer token; never put the token itself in
+the configuration file.
 Generation commands execute immediately and can consume paid requests. Each command
 persists the resolved, secret-free flat generation configuration below its output area
 and uses that immutable snapshot for generation provenance.
