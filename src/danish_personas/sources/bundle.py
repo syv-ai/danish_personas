@@ -1081,7 +1081,7 @@ def _verify_origin_contract_binding(
     manifest: BundleManifest,
     checksum_policy: ChecksumValidationPolicy = ChecksumValidationPolicy.STRICT,
 ) -> None:
-    """Verify the repository contract bound into a schema-8 bundle.
+    """Verify the repository contract bound into a current bundle.
 
     Raises:
         ValueError: If contract identity, bytes, or source binding changed.
@@ -1164,7 +1164,7 @@ def _verify_origin_snapshot_binding(
 def _verify_source_preparation_report(
     *, capture: _BundleCapture, manifest: BundleManifest
 ) -> None:
-    """Verify the bound source report and its schema-8 origin eligibility gate.
+    """Verify the bound source report and current origin eligibility gate.
 
     Raises:
         ValueError:

@@ -15,7 +15,7 @@ SAMPLER_SCHEMA_VERSION: int = 8
 # Increment when prepared source artefacts or their interpretation changes.
 # The bundle identity includes this value so incompatible historical bundles cannot
 # be silently reused.
-PREPARED_BUNDLE_SCHEMA_VERSION: int = 8
+PREPARED_BUNDLE_SCHEMA_VERSION: int = 9
 FROZEN_SAMPLE_SCHEMA_VERSION: int = 5
 GENERATION_SCHEMA_VERSION: int = 6
 SUPPORTED_SAMPLING_CONFIG_VERSIONS: frozenset[int] = frozenset({4})
@@ -426,7 +426,7 @@ class BundleManifest(StrictModel):
     def validate_origin_contract_binding(
         self, info: ValidationInfo
     ) -> "BundleManifest":
-        """Require origin-label provenance for source-backed schema-8 bundles.
+        """Require origin-label provenance for current source-backed bundles.
 
         Returns:
             The validated bundle manifest.

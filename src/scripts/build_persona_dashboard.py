@@ -19,7 +19,7 @@ from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
 from danish_personas.hydra_cli import enable_hydra_cli
 from danish_personas.io import load_yaml_model
-from danish_personas.models import CategoryConfig
+from danish_personas.models import PREPARED_BUNDLE_SCHEMA_VERSION, CategoryConfig
 from danish_personas.script_config import PersonaDashboardConfig, load_script_config
 
 LOGGER = logging.getLogger(__name__)
@@ -1036,9 +1036,10 @@ def _dashboard_origin_threshold(*, bundle_path: Path) -> int:
     if not isinstance(payload, dict):
         raise ValueError("Origin dashboard bundle manifest is malformed")
     schema = payload.get("prepared_bundle_schema_version")
-    if schema != 8:
+    if schema != PREPARED_BUNDLE_SCHEMA_VERSION:
         raise ValueError(
-            f"Origin dashboard data requires prepared bundle schema 8; found {schema!r}"
+            "Origin dashboard data requires prepared bundle schema "
+            f"{PREPARED_BUNDLE_SCHEMA_VERSION}; found {schema!r}"
         )
     threshold = payload.get("minimum_source_count")
     if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:

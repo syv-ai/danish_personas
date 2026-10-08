@@ -36,7 +36,7 @@ citizenship, residence, or appearance. Origin cannot drive culture, religion, jo
 interests, personality, or visual traits. RAS209 remains locked to all 99 official
 level-3 areas, including Christiansø.
 
-Future runs use prepared-bundle schema 8, sampler schema 8, frozen-sample schema 5,
+Future runs use prepared-bundle schema 9, sampler schema 8, frozen-sample schema 5,
 and generation contract 6. Generated persona responses receive schema parsing only;
 there is no semantic content or completed-run validation. Both frozen-sample modes first
 preserve the eligible origin marginal; population-proportional is the default

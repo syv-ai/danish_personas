@@ -114,41 +114,6 @@ def test_ras209_municipality_sets_must_be_exact() -> None:
         )
 
 
-def test_ras209_pooling_excludes_h90_but_unpooled_rows_remain_auditable() -> None:
-    """H90 is excluded only from the eligible pooled sampling universe."""
-    frame = pl.DataFrame(
-        {
-            "municipality_code": ["101", "101"],
-            "municipality": ["København", "København"],
-            "region_code": ["084", "084"],
-            "region": ["Region Hovedstaden", "Region Hovedstaden"],
-            "age_band": ["20-24", "20-24"],
-            "sex": ["male", "male"],
-            "education_source_code": ["H10", "H90"],
-            "education_level": ["primary", "not_stated"],
-            "labour_market_status": ["employed", "employed"],
-            "count": [100, 25],
-            "suppressed": [False, False],
-        }
-    )
-
-    pooled = _pool_ras209(
-        frame=frame,
-        education_pooling={
-            "primary": "primary",
-            "secondary_or_vocational": "secondary_or_vocational",
-            "higher_education": "higher_education",
-            "not_stated": "not_stated",
-        },
-        release_rows=100_000,
-        minimum_source_count=50,
-        minimum_expected_release_count=5,
-    )
-
-    assert pooled.get_column("count").sum() == 100
-    assert pooled.get_column("education_source_code").to_list() == ["H10"]
-
-
 def test_ras209_pooling_keeps_municipalities_in_the_joint() -> None:
     """Pooling must not collapse two municipalities sharing a region."""
     frame = pl.DataFrame(
@@ -182,3 +147,78 @@ def test_ras209_pooling_keeps_municipalities_in_the_joint() -> None:
 
     assert sorted(pooled.get_column("municipality_code").to_list()) == ["101", "147"]
     assert pooled.get_column("count").sum() == 300
+
+
+def test_ras209_pooling_keeps_positive_unsuppressed_h90_cells() -> None:
+    """Only positive, unsuppressed H90 cells enter the pooled joint."""
+    frame = pl.DataFrame(
+        {
+            "municipality_code": ["101"] * 5,
+            "municipality": ["København"] * 5,
+            "region_code": ["084"] * 5,
+            "region": ["Region Hovedstaden"] * 5,
+            "age_band": ["20-24", "20-24", "67-", "30-34", "50-54"],
+            "sex": ["male"] * 5,
+            "education_source_code": ["H10", "H90", "H90", "H90", "H90"],
+            "education_level": [
+                "primary",
+                "not_stated",
+                "not_stated",
+                "not_stated",
+                "not_stated",
+            ],
+            "labour_market_status": [
+                "employed",
+                "employed",
+                "retired",
+                "unemployed",
+                "other",
+            ],
+            "count": [100, 25, 30, 0, 10],
+            "suppressed": [False, False, False, False, True],
+        }
+    )
+
+    pooled = _pool_ras209(
+        frame=frame,
+        education_pooling={
+            "primary": "primary",
+            "secondary_or_vocational": "secondary_or_vocational",
+            "higher_education": "higher_education",
+            "not_stated": "not_stated",
+        },
+        release_rows=100_000,
+        minimum_source_count=50,
+        minimum_expected_release_count=5,
+    )
+
+    rows = pooled.sort(["education_source_code", "age_band", "labour_market_status"])
+    assert rows.select(
+        "education_source_code",
+        "education_level",
+        "age_band",
+        "labour_market_status",
+        "count",
+    ).to_dicts() == [
+        {
+            "education_source_code": "H10",
+            "education_level": "primary",
+            "age_band": "18-29",
+            "labour_market_status": "employed",
+            "count": 100,
+        },
+        {
+            "education_source_code": "H90",
+            "education_level": "not_stated",
+            "age_band": "18-29",
+            "labour_market_status": "employed",
+            "count": 25,
+        },
+        {
+            "education_source_code": "H90",
+            "education_level": "not_stated",
+            "age_band": "67+",
+            "labour_market_status": "retired",
+            "count": 30,
+        },
+    ]
