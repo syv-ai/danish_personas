@@ -144,32 +144,16 @@ class FollowupPaths:
     registry: Path
 
 
-@dataclass(frozen=True)
-class ParentState:
-    """Validated first-pass artefact state."""
-
-    inputs: first_pass.ReleaseInputs
-    selection: first_pass.ReleaseSelection
-    manifest: dict[str, object]
-    manifest_sha256: str
-    status: dict[str, object]
-    status_sha256: str
-    processed: list[dict[str, str]]
+def _safe_error_message(*, exc: Exception) -> str:
+    if isinstance(exc, FollowupAdjudicationError):
+        return _scrub_private_text(value=str(exc))
+    return first_pass._safe_error_message(exc=exc)
 
 
-@dataclass(frozen=True)
-class FollowupSelection:
-    """Unresolved parent rows selected for follow-up adjudication."""
-
-    rows: list[first_pass.ReleaseRow]
-    row_bindings: list[dict[str, str | int]]
-    ordered_input_hashes: list[str]
-    ordered_id_sha256: str
-    ordered_id_hashes_sha256: str
-
-
-class FollowupAdjudicationError(Exception):
-    """Raised when follow-up adjudication must fail closed."""
+def _scrub_private_text(*, value: str) -> str:
+    scrubbed = re.sub(r"[0-9a-f]{64}", "[hash]", value)
+    scrubbed = re.sub(r"raw[-_][A-Za-z0-9_.:-]+", "[id]", scrubbed)
+    return scrubbed
 
 
 def run_unresolved_followup(
@@ -269,6 +253,60 @@ def run_unresolved_followup(
     return summary
 
 
+class FollowupAdjudicationError(Exception):
+    """Raised when follow-up adjudication must fail closed."""
+
+
+def _source_hash(*, inputs: first_pass.ReleaseInputs) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "candidate_preview_sha256": inputs.candidate_preview_sha256,
+                "ordered_id_sha256": inputs.ordered_id_sha256,
+                "ordered_id_hashes_sha256": inputs.ordered_id_hashes_sha256,
+                "report_sha256": inputs.report_sha256,
+            }
+        )
+    )
+
+
+def _load_or_create_status(
+    *, status_path: Path, output_dir: Path, manifest: dict[str, JSONDocument]
+) -> dict[str, object]:
+    manifest_sha256 = first_pass._hash_json(manifest)
+    if not status_path.exists():
+        status: dict[str, object] = {
+            "version": STATUS_VERSION,
+            "campaign": CAMPAIGN,
+            "manifest_sha256": manifest_sha256,
+            "counts": {"consistent": 0, "patched": 0, "unresolved": 0},
+            "processed": [],
+        }
+        first_pass._write_status(path=status_path, status=status)
+        return status
+    first_pass._require_private_file(path=status_path, label="status")
+    status = first_pass._load_json_object(path=status_path, label="status")
+    if status.get("version") != STATUS_VERSION or status.get("campaign") != CAMPAIGN:
+        raise FollowupAdjudicationError("Status version does not match")
+    if status.get("manifest_sha256") != manifest_sha256:
+        raise FollowupAdjudicationError("Status manifest binding does not match")
+    first_pass._validate_status(status=status, output_dir=output_dir)
+    return status
+
+
+@dataclass(frozen=True)
+class ParentState:
+    """Validated first-pass artefact state."""
+
+    inputs: first_pass.ReleaseInputs
+    selection: first_pass.ReleaseSelection
+    manifest: dict[str, object]
+    manifest_sha256: str
+    status: dict[str, object]
+    status_sha256: str
+    processed: list[dict[str, str]]
+
+
 def _load_validated_parent_state(
     *, paths: FollowupPaths, expected_original_sha256: str, expected_row_count: int
 ) -> ParentState:
@@ -325,44 +363,70 @@ def _load_validated_parent_state(
     )
 
 
-def _select_unresolved_rows(*, parent: ParentState) -> FollowupSelection:
-    parent_rows = {row.persona_hash: row for row in parent.selection.rows}
-    rows: list[first_pass.ReleaseRow] = []
-    bindings: list[dict[str, str | int]] = []
-    for record in parent.processed:
-        if record["disposition"] != "unresolved":
-            continue
-        parent_row = parent_rows.get(record["persona_hash"])
-        if parent_row is None:
-            raise FollowupAdjudicationError(
-                "Parent status references a row outside the release inputs"
-            )
-        followup_id = _followup_checkpoint_id(parent_record=record)
-        rows.append(
-            first_pass.ReleaseRow(
-                index=parent_row.index,
-                persona_hash=followup_id,
-                original_row=parent_row.original_row,
-                candidate_row=parent_row.candidate_row,
-                changed_facts=parent_row.changed_facts,
-            )
-        )
-        bindings.append(
-            {
-                "row_index": parent_row.index,
-                "row_hash": record["persona_hash"],
-                "first_pass_checkpoint_sha256": record["checkpoint_sha256"],
-                "first_pass_response_sha256": record["response_sha256"],
-                "followup_checkpoint_id": followup_id,
-            }
-        )
-    return FollowupSelection(
-        rows=rows,
-        row_bindings=bindings,
-        ordered_input_hashes=list(parent.inputs.ordered_id_hashes),
-        ordered_id_sha256=parent.inputs.ordered_id_sha256,
-        ordered_id_hashes_sha256=parent.inputs.ordered_id_hashes_sha256,
+def _release_paths(
+    *, paths: FollowupPaths, output_dir: Path
+) -> first_pass.ReleasePaths:
+    return first_pass.ReleasePaths(
+        original=paths.original,
+        candidate=paths.candidate,
+        report=paths.report,
+        prompt=paths.prompt,
+        output_dir=output_dir,
+        registry=paths.registry,
     )
+
+
+def _record_failure_status(
+    *, status: dict[str, object], status_path: Path, selected: int, message: str
+) -> None:
+    processed = len(first_pass._processed_records(status=status))
+    status["last_failure"] = {
+        "message": _scrub_private_text(value=message),
+        "processed": min(processed, selected),
+        "pending": max(selected - min(processed, selected), 0),
+    }
+    first_pass._write_status(path=status_path, status=status)
+
+
+def _require_worker_count(*, workers: int) -> None:
+    if workers not in {1, 2}:
+        raise FollowupAdjudicationError("Worker count must be one or two")
+
+
+@dataclass(frozen=True)
+class FollowupSelection:
+    """Unresolved parent rows selected for follow-up adjudication."""
+
+    rows: list[first_pass.ReleaseRow]
+    row_bindings: list[dict[str, str | int]]
+    ordered_input_hashes: list[str]
+    ordered_id_sha256: str
+    ordered_id_hashes_sha256: str
+
+
+def _dry_run_summary(
+    *,
+    selection: FollowupSelection,
+    manifest: dict[str, JSONDocument],
+    max_rows: int | None,
+    workers: int,
+) -> dict[str, object]:
+    selected = first_pass._bounded_total(total=len(selection.rows), max_rows=max_rows)
+    return {
+        "dry_run": True,
+        "run_required": True,
+        "campaign": CAMPAIGN,
+        "manifest_sha256": first_pass._hash_json(manifest),
+        "selected": selected,
+        "total": len(selection.rows),
+        "pending": selected,
+        "consistent": 0,
+        "patched": 0,
+        "unresolved": 0,
+        "processed": 0,
+        "max_rows": max_rows,
+        "workers": workers,
+    }
 
 
 def _followup_manifest(
@@ -410,28 +474,88 @@ def _followup_manifest(
     }
 
 
-def _load_or_create_status(
-    *, status_path: Path, output_dir: Path, manifest: dict[str, JSONDocument]
+def _pending_rows(
+    *, selection: FollowupSelection, status: dict[str, object], max_rows: int | None
+) -> list[first_pass.ReleaseRow]:
+    processed = {
+        record["persona_hash"]
+        for record in first_pass._processed_records(status=status)
+    }
+    rows = _scoped_rows(selection=selection, max_rows=max_rows)
+    status["selected_total"] = len(selection.rows)
+    return [row for row in rows if row.persona_hash not in processed]
+
+
+def _scoped_rows(
+    *, selection: FollowupSelection, max_rows: int | None
+) -> list[first_pass.ReleaseRow]:
+    return selection.rows[
+        : first_pass._bounded_total(total=len(selection.rows), max_rows=max_rows)
+    ]
+
+
+def _select_unresolved_rows(*, parent: ParentState) -> FollowupSelection:
+    parent_rows = {row.persona_hash: row for row in parent.selection.rows}
+    rows: list[first_pass.ReleaseRow] = []
+    bindings: list[dict[str, str | int]] = []
+    for record in parent.processed:
+        if record["disposition"] != "unresolved":
+            continue
+        parent_row = parent_rows.get(record["persona_hash"])
+        if parent_row is None:
+            raise FollowupAdjudicationError(
+                "Parent status references a row outside the release inputs"
+            )
+        followup_id = _followup_checkpoint_id(parent_record=record)
+        rows.append(
+            first_pass.ReleaseRow(
+                index=parent_row.index,
+                persona_hash=followup_id,
+                original_row=parent_row.original_row,
+                candidate_row=parent_row.candidate_row,
+                changed_facts=parent_row.changed_facts,
+            )
+        )
+        bindings.append(
+            {
+                "row_index": parent_row.index,
+                "row_hash": record["persona_hash"],
+                "first_pass_checkpoint_sha256": record["checkpoint_sha256"],
+                "first_pass_response_sha256": record["response_sha256"],
+                "followup_checkpoint_id": followup_id,
+            }
+        )
+    return FollowupSelection(
+        rows=rows,
+        row_bindings=bindings,
+        ordered_input_hashes=list(parent.inputs.ordered_id_hashes),
+        ordered_id_sha256=parent.inputs.ordered_id_sha256,
+        ordered_id_hashes_sha256=parent.inputs.ordered_id_hashes_sha256,
+    )
+
+
+def _followup_checkpoint_id(*, parent_record: dict[str, str]) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "campaign": CAMPAIGN,
+                "mode": FOLLOWUP_MODE,
+                "row_hash": parent_record["persona_hash"],
+                "first_pass_checkpoint_sha256": parent_record["checkpoint_sha256"],
+                "first_pass_response_sha256": parent_record["response_sha256"],
+            }
+        )
+    )
+
+
+def _status_summary(
+    *, status: dict[str, object], max_rows: int | None, workers: int
 ) -> dict[str, object]:
-    manifest_sha256 = first_pass._hash_json(manifest)
-    if not status_path.exists():
-        status: dict[str, object] = {
-            "version": STATUS_VERSION,
-            "campaign": CAMPAIGN,
-            "manifest_sha256": manifest_sha256,
-            "counts": {"consistent": 0, "patched": 0, "unresolved": 0},
-            "processed": [],
-        }
-        first_pass._write_status(path=status_path, status=status)
-        return status
-    first_pass._require_private_file(path=status_path, label="status")
-    status = first_pass._load_json_object(path=status_path, label="status")
-    if status.get("version") != STATUS_VERSION or status.get("campaign") != CAMPAIGN:
-        raise FollowupAdjudicationError("Status version does not match")
-    if status.get("manifest_sha256") != manifest_sha256:
-        raise FollowupAdjudicationError("Status manifest binding does not match")
-    first_pass._validate_status(status=status, output_dir=output_dir)
-    return status
+    summary = first_pass._status_summary(
+        status=status, max_rows=max_rows, workers=workers
+    )
+    summary["campaign"] = CAMPAIGN
+    return summary
 
 
 def _validate_processed_followup_checkpoints(
@@ -478,130 +602,6 @@ def _validate_processed_followup_checkpoints(
                 )
     finally:
         transport.close()
-
-
-def _pending_rows(
-    *, selection: FollowupSelection, status: dict[str, object], max_rows: int | None
-) -> list[first_pass.ReleaseRow]:
-    processed = {
-        record["persona_hash"]
-        for record in first_pass._processed_records(status=status)
-    }
-    rows = _scoped_rows(selection=selection, max_rows=max_rows)
-    status["selected_total"] = len(selection.rows)
-    return [row for row in rows if row.persona_hash not in processed]
-
-
-def _dry_run_summary(
-    *,
-    selection: FollowupSelection,
-    manifest: dict[str, JSONDocument],
-    max_rows: int | None,
-    workers: int,
-) -> dict[str, object]:
-    selected = first_pass._bounded_total(total=len(selection.rows), max_rows=max_rows)
-    return {
-        "dry_run": True,
-        "run_required": True,
-        "campaign": CAMPAIGN,
-        "manifest_sha256": first_pass._hash_json(manifest),
-        "selected": selected,
-        "total": len(selection.rows),
-        "pending": selected,
-        "consistent": 0,
-        "patched": 0,
-        "unresolved": 0,
-        "processed": 0,
-        "max_rows": max_rows,
-        "workers": workers,
-    }
-
-
-def _status_summary(
-    *, status: dict[str, object], max_rows: int | None, workers: int
-) -> dict[str, object]:
-    summary = first_pass._status_summary(
-        status=status, max_rows=max_rows, workers=workers
-    )
-    summary["campaign"] = CAMPAIGN
-    return summary
-
-
-def _record_failure_status(
-    *, status: dict[str, object], status_path: Path, selected: int, message: str
-) -> None:
-    processed = len(first_pass._processed_records(status=status))
-    status["last_failure"] = {
-        "message": _scrub_private_text(value=message),
-        "processed": min(processed, selected),
-        "pending": max(selected - min(processed, selected), 0),
-    }
-    first_pass._write_status(path=status_path, status=status)
-
-
-def _scoped_rows(
-    *, selection: FollowupSelection, max_rows: int | None
-) -> list[first_pass.ReleaseRow]:
-    return selection.rows[
-        : first_pass._bounded_total(total=len(selection.rows), max_rows=max_rows)
-    ]
-
-
-def _source_hash(*, inputs: first_pass.ReleaseInputs) -> str:
-    return sha256_text(
-        canonical_json(
-            {
-                "candidate_preview_sha256": inputs.candidate_preview_sha256,
-                "ordered_id_sha256": inputs.ordered_id_sha256,
-                "ordered_id_hashes_sha256": inputs.ordered_id_hashes_sha256,
-                "report_sha256": inputs.report_sha256,
-            }
-        )
-    )
-
-
-def _release_paths(
-    *, paths: FollowupPaths, output_dir: Path
-) -> first_pass.ReleasePaths:
-    return first_pass.ReleasePaths(
-        original=paths.original,
-        candidate=paths.candidate,
-        report=paths.report,
-        prompt=paths.prompt,
-        output_dir=output_dir,
-        registry=paths.registry,
-    )
-
-
-def _followup_checkpoint_id(*, parent_record: dict[str, str]) -> str:
-    return sha256_text(
-        canonical_json(
-            {
-                "campaign": CAMPAIGN,
-                "mode": FOLLOWUP_MODE,
-                "row_hash": parent_record["persona_hash"],
-                "first_pass_checkpoint_sha256": parent_record["checkpoint_sha256"],
-                "first_pass_response_sha256": parent_record["response_sha256"],
-            }
-        )
-    )
-
-
-def _require_worker_count(*, workers: int) -> None:
-    if workers not in {1, 2}:
-        raise FollowupAdjudicationError("Worker count must be one or two")
-
-
-def _safe_error_message(*, exc: Exception) -> str:
-    if isinstance(exc, FollowupAdjudicationError):
-        return _scrub_private_text(value=str(exc))
-    return first_pass._safe_error_message(exc=exc)
-
-
-def _scrub_private_text(*, value: str) -> str:
-    scrubbed = re.sub(r"[0-9a-f]{64}", "[hash]", value)
-    scrubbed = re.sub(r"raw[-_][A-Za-z0-9_.:-]+", "[id]", scrubbed)
-    return scrubbed
 
 
 def _run_sol_followup_adapter(

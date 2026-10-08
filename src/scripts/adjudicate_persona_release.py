@@ -564,7 +564,7 @@ class ReleaseInputs:
 
 
 def _proxy_budget(
-    *, paths: ReleasePaths, inputs: ReleaseInputs, manifest: dict[str, JSONDocument]
+    *, paths: ReleasePaths, inputs: ReleaseInputs, manifest: c.Mapping[str, object]
 ) -> ProxyBudget:
     del manifest
     schema_hash = sha256_text(

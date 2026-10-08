@@ -50,191 +50,6 @@ def test_dry_run_selects_only_processed_unresolved_rows(
     assert not paths.output_dir.exists()
 
 
-def test_parent_manifest_tamper_rejected_before_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Parent manifest changes fail closed before any follow-up request."""
-    paths = _fixture_paths(tmp_path, rows=4)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    _create_parent(paths=paths, dispositions=["unresolved", "consistent"])
-    manifest_path = paths.parent_output_dir / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["selection"]["ordered_rows"] = 999
-    _write_private_json(path=manifest_path, value=manifest)
-    runner = _DispositionRunner(mode="unresolved_followup")
-
-    with pytest.raises(followup.FollowupAdjudicationError):
-        followup.run_unresolved_followup(
-            paths=paths,
-            execute=True,
-            max_rows=1,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=4,
-            sol_runner=runner,
-        )
-
-    assert runner.calls == 0
-    assert not paths.output_dir.exists()
-
-
-def test_tampered_parent_checkpoint_rejected_before_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Every processed parent checkpoint is revalidated before requests."""
-    paths = _fixture_paths(tmp_path, rows=4)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    _create_parent(paths=paths, dispositions=["unresolved", "consistent"])
-    status = first_pass._load_json_object(
-        path=paths.parent_output_dir / "status.json", label="status"
-    )
-    record = first_pass._processed_records(status=status)[0]
-    checkpoint_path = paths.parent_output_dir / record["checkpoint"]
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["response_sha256"] = "0" * 64
-    _write_private_json(path=checkpoint_path, value=checkpoint)
-    runner = _DispositionRunner(mode="unresolved_followup")
-
-    with pytest.raises(followup.FollowupAdjudicationError):
-        followup.run_unresolved_followup(
-            paths=paths,
-            execute=True,
-            max_rows=1,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=4,
-            sol_runner=runner,
-        )
-
-    assert runner.calls == 0
-    assert not paths.output_dir.exists()
-
-
-def test_pilot_resume_processes_remaining_without_duplicates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A nine-row pilot can resume to all unresolved without touching the parent."""
-    paths = _fixture_paths(tmp_path, rows=6)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    _create_parent(
-        paths=paths,
-        dispositions=["unresolved", "unresolved", "unresolved", "unresolved"],
-    )
-    before = _tree_hashes(paths.parent_output_dir)
-    runner = _DispositionRunner(mode="unresolved_followup")
-
-    pilot = followup.run_unresolved_followup(
-        paths=paths,
-        execute=True,
-        max_rows=2,
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=6,
-        sol_runner=runner,
-    )
-    resumed = followup.run_unresolved_followup(
-        paths=paths,
-        execute=True,
-        max_rows=None,
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=6,
-        sol_runner=runner,
-    )
-
-    assert pilot["processed"] == 2
-    assert resumed["processed"] == 4
-    assert runner.calls == 4
-    assert _tree_hashes(paths.parent_output_dir) == before
-    status = first_pass._load_json_object(
-        path=paths.output_dir / "status.json", label="status"
-    )
-    assert stat.S_IMODE(paths.output_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE((paths.output_dir / "manifest.json").stat().st_mode) == 0o600
-    assert stat.S_IMODE((paths.output_dir / "status.json").stat().st_mode) == 0o600
-    assert len(first_pass._processed_records(status=status)) == 4
-
-
-def test_unresolved_followup_result_is_recorded_not_promoted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A second unresolved decision stays unresolved in follow-up status."""
-    paths = _fixture_paths(tmp_path, rows=3)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    _create_parent(paths=paths, dispositions=["unresolved"])
-
-    summary = followup.run_unresolved_followup(
-        paths=paths,
-        execute=True,
-        max_rows=1,
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=3,
-        sol_runner=_DispositionRunner(
-            mode="unresolved_followup", dispositions=["unresolved"]
-        ),
-    )
-
-    status = first_pass._load_json_object(
-        path=paths.output_dir / "status.json", label="status"
-    )
-    [record] = first_pass._processed_records(status=status)
-    assert summary["unresolved"] == 1
-    assert summary["consistent"] == 0
-    assert record["disposition"] == "unresolved"
-
-
-def test_failure_status_is_clear_and_private(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Local validation failures record a generic status without prose or raw IDs."""
-    paths = _fixture_paths(tmp_path, rows=2, secret=True)
-    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
-    _create_parent(paths=paths, dispositions=["unresolved"])
-    runner = _DispositionRunner(mode="unresolved_followup", invalid=True)
-
-    with pytest.raises(followup.FollowupAdjudicationError) as error:
-        followup.run_unresolved_followup(
-            paths=paths,
-            execute=True,
-            max_rows=1,
-            workers=1,
-            expected_original_sha256=sha256_file(paths.original),
-            expected_row_count=2,
-            sol_runner=runner,
-        )
-
-    status = first_pass._load_json_object(
-        path=paths.output_dir / "status.json", label="status"
-    )
-    failure = status["last_failure"]
-    assert isinstance(failure, dict)
-    assert failure["processed"] == 0
-    assert failure["pending"] == 1
-    message = json.dumps(failure, ensure_ascii=False) + str(error.value)
-    assert "raw-secret-id" not in message
-    assert "unik hemmelig prosatekst" not in message
-
-
-def _create_parent(paths: followup.FollowupPaths, dispositions: list[str]) -> None:
-    first_pass.run_release_adjudication(
-        paths=first_pass.ReleasePaths(
-            original=paths.original,
-            candidate=paths.candidate,
-            report=paths.report,
-            prompt=paths.prompt,
-            output_dir=paths.parent_output_dir,
-            registry=paths.registry,
-        ),
-        execute=True,
-        max_rows=len(dispositions),
-        workers=1,
-        expected_original_sha256=sha256_file(paths.original),
-        expected_row_count=_row_count(path=paths.original),
-        sol_runner=_DispositionRunner(dispositions=dispositions, mode="default"),
-    )
-
-
 class _DispositionRunner:
     def __init__(
         self,
@@ -319,6 +134,10 @@ def _sol_transport(
     return httpx.MockTransport(respond)
 
 
+def _invalid_response() -> dict[str, object]:
+    return {"disposition": "consistent", "reason": "ok", "evidence": [], "patches": []}
+
+
 def _response_content(*, original_persona: str, disposition: str) -> dict[str, object]:
     if disposition == "unresolved":
         return {
@@ -337,8 +156,27 @@ def _response_content(*, original_persona: str, disposition: str) -> dict[str, o
     }
 
 
-def _invalid_response() -> dict[str, object]:
-    return {"disposition": "consistent", "reason": "ok", "evidence": [], "patches": []}
+def _create_parent(paths: followup.FollowupPaths, dispositions: list[str]) -> None:
+    first_pass.run_release_adjudication(
+        paths=first_pass.ReleasePaths(
+            original=paths.original,
+            candidate=paths.candidate,
+            report=paths.report,
+            prompt=paths.prompt,
+            output_dir=paths.parent_output_dir,
+            registry=paths.registry,
+        ),
+        execute=True,
+        max_rows=len(dispositions),
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=_row_count(path=paths.original),
+        sol_runner=_DispositionRunner(dispositions=dispositions, mode="default"),
+    )
+
+
+def _row_count(*, path: Path) -> int:
+    return pl.read_parquet(path).height
 
 
 def _fixture_paths(
@@ -410,14 +248,70 @@ def _frame(*, rows: int, candidate: bool, secret: bool) -> pl.DataFrame:
     )
 
 
-def _row_count(*, path: Path) -> int:
-    return pl.read_parquet(path).height
-
-
 def _patch_budget_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         proxy_budget, "USER_SOL_ADJUDICATION_BUDGET_PATH", tmp_path / "sol-budget.jsonl"
     )
+
+
+def test_failure_status_is_clear_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local validation failures record a generic status without prose or raw IDs."""
+    paths = _fixture_paths(tmp_path, rows=2, secret=True)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    _create_parent(paths=paths, dispositions=["unresolved"])
+    runner = _DispositionRunner(mode="unresolved_followup", invalid=True)
+
+    with pytest.raises(followup.FollowupAdjudicationError) as error:
+        followup.run_unresolved_followup(
+            paths=paths,
+            execute=True,
+            max_rows=1,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=2,
+            sol_runner=runner,
+        )
+
+    status = first_pass._load_json_object(
+        path=paths.output_dir / "status.json", label="status"
+    )
+    failure = status["last_failure"]
+    assert isinstance(failure, dict)
+    assert failure["processed"] == 0
+    assert failure["pending"] == 1
+    message = json.dumps(failure, ensure_ascii=False) + str(error.value)
+    assert "raw-secret-id" not in message
+    assert "unik hemmelig prosatekst" not in message
+
+
+def test_parent_manifest_tamper_rejected_before_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parent manifest changes fail closed before any follow-up request."""
+    paths = _fixture_paths(tmp_path, rows=4)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    _create_parent(paths=paths, dispositions=["unresolved", "consistent"])
+    manifest_path = paths.parent_output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["selection"]["ordered_rows"] = 999
+    _write_private_json(path=manifest_path, value=manifest)
+    runner = _DispositionRunner(mode="unresolved_followup")
+
+    with pytest.raises(followup.FollowupAdjudicationError):
+        followup.run_unresolved_followup(
+            paths=paths,
+            execute=True,
+            max_rows=1,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=4,
+            sol_runner=runner,
+        )
+
+    assert runner.calls == 0
+    assert not paths.output_dir.exists()
 
 
 def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
@@ -427,9 +321,115 @@ def _write_private_json(*, path: Path, value: dict[str, object]) -> None:
     path.chmod(0o600)
 
 
+def test_pilot_resume_processes_remaining_without_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nine-row pilot can resume to all unresolved without touching the parent."""
+    paths = _fixture_paths(tmp_path, rows=6)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    _create_parent(
+        paths=paths,
+        dispositions=["unresolved", "unresolved", "unresolved", "unresolved"],
+    )
+    before = _tree_hashes(paths.parent_output_dir)
+    runner = _DispositionRunner(mode="unresolved_followup")
+
+    pilot = followup.run_unresolved_followup(
+        paths=paths,
+        execute=True,
+        max_rows=2,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=6,
+        sol_runner=runner,
+    )
+    resumed = followup.run_unresolved_followup(
+        paths=paths,
+        execute=True,
+        max_rows=None,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=6,
+        sol_runner=runner,
+    )
+
+    assert pilot["processed"] == 2
+    assert resumed["processed"] == 4
+    assert runner.calls == 4
+    assert _tree_hashes(paths.parent_output_dir) == before
+    status = first_pass._load_json_object(
+        path=paths.output_dir / "status.json", label="status"
+    )
+    assert stat.S_IMODE(paths.output_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((paths.output_dir / "manifest.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((paths.output_dir / "status.json").stat().st_mode) == 0o600
+    assert len(first_pass._processed_records(status=status)) == 4
+
+
 def _tree_hashes(root: Path) -> dict[str, str]:
     return {
         str(path.relative_to(root)): sha256_file(path)
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def test_tampered_parent_checkpoint_rejected_before_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every processed parent checkpoint is revalidated before requests."""
+    paths = _fixture_paths(tmp_path, rows=4)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    _create_parent(paths=paths, dispositions=["unresolved", "consistent"])
+    status = first_pass._load_json_object(
+        path=paths.parent_output_dir / "status.json", label="status"
+    )
+    record = first_pass._processed_records(status=status)[0]
+    checkpoint_path = paths.parent_output_dir / record["checkpoint"]
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["response_sha256"] = "0" * 64
+    _write_private_json(path=checkpoint_path, value=checkpoint)
+    runner = _DispositionRunner(mode="unresolved_followup")
+
+    with pytest.raises(followup.FollowupAdjudicationError):
+        followup.run_unresolved_followup(
+            paths=paths,
+            execute=True,
+            max_rows=1,
+            workers=1,
+            expected_original_sha256=sha256_file(paths.original),
+            expected_row_count=4,
+            sol_runner=runner,
+        )
+
+    assert runner.calls == 0
+    assert not paths.output_dir.exists()
+
+
+def test_unresolved_followup_result_is_recorded_not_promoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second unresolved decision stays unresolved in follow-up status."""
+    paths = _fixture_paths(tmp_path, rows=3)
+    _patch_budget_path(tmp_path=tmp_path, monkeypatch=monkeypatch)
+    _create_parent(paths=paths, dispositions=["unresolved"])
+
+    summary = followup.run_unresolved_followup(
+        paths=paths,
+        execute=True,
+        max_rows=1,
+        workers=1,
+        expected_original_sha256=sha256_file(paths.original),
+        expected_row_count=3,
+        sol_runner=_DispositionRunner(
+            mode="unresolved_followup", dispositions=["unresolved"]
+        ),
+    )
+
+    status = first_pass._load_json_object(
+        path=paths.output_dir / "status.json", label="status"
+    )
+    [record] = first_pass._processed_records(status=status)
+    assert summary["unresolved"] == 1
+    assert summary["consistent"] == 0
+    assert record["disposition"] == "unresolved"
