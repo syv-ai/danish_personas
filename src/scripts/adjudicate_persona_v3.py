@@ -21,7 +21,7 @@ from danish_personas.generation.proxy_budget import (
     BASE_URL,
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
-    V3_ADJUDICATION_PURPOSE,
+    V3_EXTENDED_ADJUDICATION_PURPOSE,
     ProxyBudget,
     ProxyBudgetError,
     require_runtime_model,
@@ -51,12 +51,12 @@ REVIEW = ROOT / "persona-review-v4/checkpoints"
 H90 = ROOT / "sol-h90-final/status.json"
 FOLLOWUP = ROOT / "sol-followup-pilot32/status.json"
 PROMPT = Path("config/persona-sol-adjudication-da.md")
-OUTPUT = ROOT / "sol-adjudication-v3-final"
+OUTPUT = ROOT / "v3-private/campaign-extended"
 REGISTRY = Path.home() / ".pi/agent/models-store.json"
 EXPECTED_ROWS = 100_000
 ID_FIELD = "persona_id"
 TEXT_FIELD = "persona"
-CAMPAIGN = "persona-sol-adjudication-v3"
+CAMPAIGN = "persona-sol-adjudication-v3-extended"
 VERSION = 1
 MAX_ROW_ATTEMPTS = 10
 LOCAL_VALIDATION_COMPLETIONS = 3
@@ -325,7 +325,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
-        uncapped_purpose=V3_ADJUDICATION_PURPOSE,
+        uncapped_purpose=V3_EXTENDED_ADJUDICATION_PURPOSE,
     )
     config = GenerationConfig.model_validate(
         {

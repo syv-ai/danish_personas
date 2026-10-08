@@ -68,6 +68,9 @@ USER_SOL_ADJUDICATION_BUDGET_PATH = (
 USER_V3_ADJUDICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-v3-adjudication.jsonl"
 )
+USER_V3_EXTENDED_ADJUDICATION_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-v3-extended-adjudication.jsonl"
+)
 USER_PATCH_VERIFICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
 )
@@ -82,6 +85,7 @@ EDUCATION_REVIEW_PURPOSE = "h90_v5"
 EDUCATION_VERIFICATION_PURPOSE = "h90_v5_verification"
 SOL_ADJUDICATION_PURPOSE = "sol_adjudication"
 V3_ADJUDICATION_PURPOSE = "v3_adjudication"
+V3_EXTENDED_ADJUDICATION_PURPOSE = "v3_extended_adjudication"
 UNLIMITED_PURPOSES = frozenset(
     {
         PATCH_VERIFICATION_PURPOSE,
@@ -89,6 +93,7 @@ UNLIMITED_PURPOSES = frozenset(
         EDUCATION_VERIFICATION_PURPOSE,
         SOL_ADJUDICATION_PURPOSE,
         V3_ADJUDICATION_PURPOSE,
+        V3_EXTENDED_ADJUDICATION_PURPOSE,
     }
 )
 JSONValue: TypeAlias = (
@@ -145,6 +150,7 @@ class ProxyBudget:
         self._requires_capped_ledger = uncapped and uncapped_purpose not in {
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
+            V3_EXTENDED_ADJUDICATION_PURPOSE,
         }
         self.path = self._ledger_path(uncapped=uncapped, purpose=uncapped_purpose)
         self.registry_path = Path(registry_path)
@@ -170,7 +176,11 @@ class ProxyBudget:
         expected_max_tokens = DEFAULT_MAX_TOKENS
         expected_input_price = Decimal("0.1")
         expected_output_price = Decimal("0.5")
-        if uncapped_purpose in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}:
+        if uncapped_purpose in {
+            SOL_ADJUDICATION_PURPOSE,
+            V3_ADJUDICATION_PURPOSE,
+            V3_EXTENDED_ADJUDICATION_PURPOSE,
+        }:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
             if uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
@@ -210,6 +220,9 @@ class ProxyBudget:
         purpose_paths = {
             SOL_ADJUDICATION_PURPOSE: USER_SOL_ADJUDICATION_BUDGET_PATH,
             V3_ADJUDICATION_PURPOSE: USER_V3_ADJUDICATION_BUDGET_PATH,
+            V3_EXTENDED_ADJUDICATION_PURPOSE: (
+                USER_V3_EXTENDED_ADJUDICATION_BUDGET_PATH
+            ),
             PATCH_VERIFICATION_PURPOSE: USER_PATCH_VERIFICATION_BUDGET_PATH,
             EDUCATION_REVIEW_PURPOSE: USER_EDUCATION_REVIEW_BUDGET_PATH,
             EDUCATION_VERIFICATION_PURPOSE: USER_EDUCATION_VERIFICATION_BUDGET_PATH,
@@ -433,6 +446,7 @@ class ProxyBudget:
         return self.uncapped and self.uncapped_purpose in {
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
+            V3_EXTENDED_ADJUDICATION_PURPOSE,
         }
 
     def reserve_attempt(
@@ -749,7 +763,11 @@ def _read_ledger(
             allow_unbounded_output=(
                 header.get("uncapped") is True
                 and header.get("uncapped_purpose")
-                in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}
+                in {
+                    SOL_ADJUDICATION_PURPOSE,
+                    V3_ADJUDICATION_PURPOSE,
+                    V3_EXTENDED_ADJUDICATION_PURPOSE,
+                }
             ),
         ),
         contents,
