@@ -146,18 +146,7 @@ class ProxyBudget:
             SOL_ADJUDICATION_PURPOSE,
             V3_ADJUDICATION_PURPOSE,
         }
-        if uncapped and uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
-            self.path = USER_SOL_ADJUDICATION_BUDGET_PATH
-        elif uncapped and uncapped_purpose == V3_ADJUDICATION_PURPOSE:
-            self.path = USER_V3_ADJUDICATION_BUDGET_PATH
-        elif uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
-            self.path = USER_PATCH_VERIFICATION_BUDGET_PATH
-        elif uncapped and uncapped_purpose == EDUCATION_REVIEW_PURPOSE:
-            self.path = USER_EDUCATION_REVIEW_BUDGET_PATH
-        elif uncapped and uncapped_purpose == EDUCATION_VERIFICATION_PURPOSE:
-            self.path = USER_EDUCATION_VERIFICATION_BUDGET_PATH
-        else:
-            self.path = USER_UNCAPPED_BUDGET_PATH if uncapped else USER_BUDGET_PATH
+        self.path = self._ledger_path(uncapped=uncapped, purpose=uncapped_purpose)
         self.registry_path = Path(registry_path)
         self.pins: dict[str, JSONValue] = {
             "type": "header",
@@ -181,10 +170,7 @@ class ProxyBudget:
         expected_max_tokens = DEFAULT_MAX_TOKENS
         expected_input_price = Decimal("0.1")
         expected_output_price = Decimal("0.5")
-        if uncapped_purpose in {
-            SOL_ADJUDICATION_PURPOSE,
-            V3_ADJUDICATION_PURPOSE,
-        }:
+        if uncapped_purpose in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
             expected_input_price = Decimal("2")
@@ -215,6 +201,19 @@ class ProxyBudget:
             )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._locked(self._initialise)
+
+    @staticmethod
+    def _ledger_path(*, uncapped: bool, purpose: str | None) -> Path:
+        if not uncapped:
+            return USER_BUDGET_PATH
+        purpose_paths = {
+            SOL_ADJUDICATION_PURPOSE: USER_SOL_ADJUDICATION_BUDGET_PATH,
+            V3_ADJUDICATION_PURPOSE: USER_V3_ADJUDICATION_BUDGET_PATH,
+            PATCH_VERIFICATION_PURPOSE: USER_PATCH_VERIFICATION_BUDGET_PATH,
+            EDUCATION_REVIEW_PURPOSE: USER_EDUCATION_REVIEW_BUDGET_PATH,
+            EDUCATION_VERIFICATION_PURPOSE: USER_EDUCATION_VERIFICATION_BUDGET_PATH,
+        }
+        return purpose_paths.get(purpose, USER_UNCAPPED_BUDGET_PATH)
 
     def _locked(self, function: Callable[[], Result]) -> Result:
         if self._requires_capped_ledger:
