@@ -177,6 +177,17 @@ def _transport(
     seen: list[httpx.Request],
     events: list[str] | None = None,
 ) -> httpx.MockTransport:
+    return _sequence_transport([response_content], seen=seen, events=events)
+
+
+def _sequence_transport(
+    response_contents: list[dict[str, Any]],
+    *,
+    seen: list[httpx.Request],
+    events: list[str] | None = None,
+) -> httpx.MockTransport:
+    attempts = iter(response_contents)
+
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         if events is not None:
@@ -190,6 +201,7 @@ def _transport(
             "fact_present"
             in json.loads(body["messages"][1]["content"])["evidence_rule"]
         )
+        response_content = next(attempts, response_contents[-1])
         return httpx.Response(
             200,
             json={
@@ -546,11 +558,13 @@ def test_rejects_stale_checkpoint_binding(tmp_path: Path) -> None:
         )
 
 
-def test_schema_invalid_records_usage_without_checkpoint(
+def test_local_invalid_retries_then_checkpoints_valid_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Record successful HTTP usage before rejecting invalid JSON content."""
+    """Record usage for invalid local responses before retrying."""
     events: list[str] = []
+    seen: list[httpx.Request] = []
+    invalid_marker = "raw-invalid-sol-response"
     budget = _budget(tmp_path)
     original_reserve = budget.reserve_next_attempt
     original_validate = budget.validate_request_body
@@ -593,20 +607,142 @@ def test_schema_invalid_records_usage_without_checkpoint(
     monkeypatch.setattr(budget, "record_usage", usage)
     checkpoint = _checkpoint(tmp_path)
 
+    result = run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=checkpoint,
+        transport=_sequence_transport(
+            [
+                {
+                    "disposition": "consistent",
+                    "reason": invalid_marker,
+                    "evidence": [],
+                    "patches": [],
+                },
+                {
+                    "disposition": "consistent",
+                    "reason": "Alder er nævnt i teksten.",
+                    "evidence": [
+                        {
+                            "field": "age",
+                            "kind": "fact_present",
+                            "quote": "Hun er 42 år",
+                        }
+                    ],
+                    "patches": [],
+                },
+            ],
+            seen=seen,
+            events=events,
+        ),
+    )
+
+    assert result.disposition == "consistent"
+    assert events == [
+        "reserved",
+        "body",
+        "network",
+        "usage",
+        "reserved",
+        "body",
+        "network",
+        "usage",
+    ]
+    assert len(seen) == 2
+    assert invalid_marker not in checkpoint.read_text(encoding="utf-8")
+    assert invalid_marker not in budget.path.read_text(encoding="utf-8")
+
+
+def test_repeated_local_validation_failures_are_bounded(tmp_path: Path) -> None:
+    """Fail closed without checkpointing after bounded local retries."""
+    budget = _budget(tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+    invalid_marker = "raw-invalid-sol-response"
+    seen: list[httpx.Request] = []
+
     with pytest.raises(SolAdjudicationError) as error:
         run_sol_adjudication(
             original_persona=_PERSONA,
-            candidate_row={"persona_id": "raw-private-id", "age": 42},
+            candidate_row={"age": 42, "municipality": "Aarhus"},
             prompt=_PROMPT,
             config=_config(),
             budget=budget,
             checkpoint_path=checkpoint,
-            transport=_transport({"disposition": "consistent"}, [], events),
+            transport=_transport(
+                {
+                    "disposition": "consistent",
+                    "reason": invalid_marker,
+                    "evidence": [
+                        {
+                            "field": "age",
+                            "kind": "fact_present",
+                            "quote": invalid_marker,
+                        }
+                    ],
+                    "patches": [],
+                },
+                seen,
+            ),
         )
 
-    assert events == ["reserved", "body", "network", "usage"]
+    records = [
+        json.loads(line)
+        for line in budget.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(seen) == 3
+    assert sum(record["type"] == "reservation" for record in records) == 3
+    assert sum(record["type"] == "usage" for record in records) == 3
     assert not checkpoint.exists()
-    assert "raw-private-id" not in str(error.value)
+    assert invalid_marker not in str(error.value)
+
+
+def test_local_validation_retries_respect_lifetime_cap_after_restart(
+    tmp_path: Path,
+) -> None:
+    """Keep the durable per-row attempt cap across budget instances."""
+    checkpoint = _checkpoint(tmp_path)
+    invalid = {
+        "disposition": "consistent",
+        "reason": "Ugrundet svar.",
+        "evidence": [
+            {"field": "age", "kind": "fact_present", "quote": "ikke i teksten"}
+        ],
+        "patches": [],
+    }
+
+    for _ in range(3):
+        with pytest.raises(SolAdjudicationError):
+            run_sol_adjudication(
+                original_persona=_PERSONA,
+                candidate_row={"age": 42, "municipality": "Aarhus"},
+                prompt=_PROMPT,
+                config=_config(),
+                budget=_budget(tmp_path),
+                checkpoint_path=checkpoint,
+                transport=_transport(invalid, []),
+            )
+
+    with pytest.raises(proxy_budget.ProxyBudgetError, match="lifetime exhausted"):
+        run_sol_adjudication(
+            original_persona=_PERSONA,
+            candidate_row={"age": 42, "municipality": "Aarhus"},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=_budget(tmp_path),
+            checkpoint_path=checkpoint,
+            transport=_transport(invalid, []),
+        )
+
+    records = [
+        json.loads(line)
+        for line in _budget(tmp_path).path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert sum(record["type"] == "reservation" for record in records) == 10
+    assert sum(record["type"] == "usage" for record in records) == 10
+    assert not checkpoint.exists()
 
 
 def test_sol_row_lifetime_attempts_are_bounded(tmp_path: Path) -> None:

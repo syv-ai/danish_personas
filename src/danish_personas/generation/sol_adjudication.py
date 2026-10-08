@@ -34,6 +34,7 @@ _MAX_PROMPT_CHARS = 10_000
 _MAX_PROSE_CHARS = 20_000
 _MAX_FACT_VALUE_CHARS = 600
 _MAX_ROW_ATTEMPTS = 10
+_MAX_LOCAL_VALIDATION_COMPLETIONS = 3
 
 SOL_ALLOWED_FACT_FIELDS = frozenset(
     {
@@ -832,23 +833,19 @@ def run_sol_adjudication(
             candidate_facts=t.cast(dict[str, JSONValue], payload["candidate_facts"]),
             changed_fact_hints=changed_fact_hints or {},
         )
-    response = _request_adjudication(
+    return _request_validated_adjudication(
+        original_persona=original_persona,
+        candidate_facts=t.cast(dict[str, JSONValue], payload["candidate_facts"]),
+        changed_fact_hints=changed_fact_hints or {},
         prompt=prompt,
         payload=payload,
         schema=schema,
         binding=binding,
         config=config,
         budget=budget,
+        checkpoint_path=checkpoint_path,
         transport=transport,
     )
-    result = validate_sol_adjudication(
-        original_text=original_persona,
-        candidate_facts=t.cast(dict[str, JSONValue], payload["candidate_facts"]),
-        response=response.content,
-        changed_fact_hints=changed_fact_hints or {},
-    )
-    _save_checkpoint(path=checkpoint_path, binding=binding, response=response.content)
-    return result
 
 
 def _resume_checkpoint(
@@ -879,6 +876,50 @@ def _resume_checkpoint(
         response=response,
         changed_fact_hints=changed_fact_hints,
     )
+
+
+def _request_validated_adjudication(
+    *,
+    original_persona: str,
+    candidate_facts: dict[str, JSONValue],
+    changed_fact_hints: dict[str, dict[str, object]],
+    prompt: str,
+    payload: dict[str, object],
+    schema: dict[str, object],
+    binding: dict[str, str | int],
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    checkpoint_path: Path,
+    transport: httpx.BaseTransport,
+) -> SolAdjudicationResult:
+    for completion_attempt in range(_MAX_LOCAL_VALIDATION_COMPLETIONS):
+        response = _request_adjudication(
+            prompt=prompt,
+            payload=payload,
+            schema=schema,
+            binding=binding,
+            config=config,
+            budget=budget,
+            transport=transport,
+        )
+        try:
+            result = validate_sol_adjudication(
+                original_text=original_persona,
+                candidate_facts=candidate_facts,
+                response=response.content,
+                changed_fact_hints=changed_fact_hints,
+            )
+        except SolAdjudicationError:
+            if completion_attempt + 1 == _MAX_LOCAL_VALIDATION_COMPLETIONS:
+                message = "Sol response failed bounded local validation retries"
+                raise SolAdjudicationError(message) from None
+            continue
+        _save_checkpoint(
+            path=checkpoint_path, binding=binding, response=response.content
+        )
+        return result
+    message = "Sol response failed bounded local validation retries"
+    raise SolAdjudicationError(message)
 
 
 def validate_sol_adjudication(
