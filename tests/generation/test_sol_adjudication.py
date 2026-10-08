@@ -113,7 +113,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
                     "models": [
                         {
                             "id": "gpt-6-sol",
-                            "maxTokens": SOL_MAX_OUTPUT_TOKENS,
+                            "maxTokens": proxy_budget.DEFAULT_MAX_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }
                     ]

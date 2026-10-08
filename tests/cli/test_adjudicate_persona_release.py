@@ -16,7 +16,6 @@ import danish_personas.generation.proxy_budget as proxy_budget
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import ProxyBudget
 from danish_personas.generation.sol_adjudication import (
-    SOL_MAX_OUTPUT_TOKENS,
     SolAdjudicationResult,
     run_sol_adjudication,
 )
@@ -170,7 +169,7 @@ def _fixture_paths(
                     "models": [
                         {
                             "id": "gpt-6-sol",
-                            "maxTokens": SOL_MAX_OUTPUT_TOKENS,
+                            "maxTokens": proxy_budget.DEFAULT_MAX_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }
                     ]
