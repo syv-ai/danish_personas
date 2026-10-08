@@ -35,10 +35,12 @@ def repair_published_v2(  # noqa: C901, PLR0912
     """Create a minimally changed release repair, failing closed on ambiguity.
 
     The published and pinned pre-hotfix files must have identical ordered IDs and
-    differ only in detailed-status code/label. The exact-age status edits are
-    restored from that baseline. Each remaining editorial-rule target exchanges
-    its complete origin field group with an age/sex-matched non-Danish candidate
-    in another broad status. The private manifest contains row indexes and field
+    differ only in detailed-status code/label. Since the hotfix's row-level
+    cross-age attribution is not reconstructible, a deterministic subset matching
+    the aggregate restoration quotas is restored from the baseline. Each remaining
+    editorial-rule target exchanges its complete origin field group with an
+    age/sex-matched non-Danish candidate in another broad status. The private
+    manifest contains row indexes and field
     names only, never IDs or generated text; protect its filesystem permissions.
 
     Args:
@@ -75,17 +77,30 @@ def repair_published_v2(  # noqa: C901, PLR0912
 
     rows = hotfix.to_dicts()
     original_rows = baseline.to_dicts()
-    restore_indices = [
+    age20_restore_candidates = [
         i
-        for i, row in enumerate(rows)
-        if row[_STATUS_CODE] != original_rows[i][_STATUS_CODE]
-        or row[_STATUS_LABEL] != original_rows[i][_STATUS_LABEL]
+        for i, (row, original) in enumerate(zip(rows, original_rows, strict=True))
+        if row["age"] == 20
+        and row["sex"] == "female"
+        and str(original[_STATUS_CODE]) == "160"
+        and str(row[_STATUS_CODE]) == "154"
+        and str(row[_CODE]) == _HOME_CODE
     ]
-    if len(restore_indices) != 22 or any(
-        original_rows[i]["age"] not in (20, 22) or original_rows[i]["sex"] != "female"
-        for i in restore_indices
-    ):
-        raise ValueError("Expected 11 exact-age swaps do not reconcile uniquely")
+    age22_restore_candidates = [
+        i
+        for i, (row, original) in enumerate(zip(rows, original_rows, strict=True))
+        if row["age"] == 22
+        and row["sex"] == "female"
+        and str(original[_STATUS_CODE]) == "154"
+        and str(row[_STATUS_CODE]) == "160"
+        and row[_CODE] is not None
+        and str(row[_CODE]) != _HOME_CODE
+    ]
+    if len(age20_restore_candidates) < 11 or len(age22_restore_candidates) < 11:
+        raise ValueError("Status changes do not provide the required restoration quota")
+    restore_indices = sorted(
+        age20_restore_candidates[:11] + age22_restore_candidates[:11]
+    )
     for i in restore_indices:
         rows[i][_STATUS_CODE] = original_rows[i][_STATUS_CODE]
         rows[i][_STATUS_LABEL] = original_rows[i][_STATUS_LABEL]
@@ -192,9 +207,22 @@ def repair_published_v2(  # noqa: C901, PLR0912
         ]
         if not choices:
             raise ValueError("No source-supported origin exchange is feasible")
+        target_origin = _origin_tuple(target, origins)
         donor_index = min(
             choices,
             key=lambda i: (
+                _origin_literal_conflicts(
+                    target,
+                    _origin_tuple(rows[i], origins),
+                    origins,
+                    supported_origin_tuples,
+                )
+                + _origin_literal_conflicts(
+                    rows[i],
+                    target_origin,
+                    origins,
+                    supported_origin_tuples,
+                ),
                 rows[i]["labour_market_status"] == target["labour_market_status"],
                 rows[i][_STATUS_CODE] == target[_STATUS_CODE],
                 sum(rows[i][field] != target[field] for field in origins),
@@ -239,6 +267,7 @@ def repair_published_v2(  # noqa: C901, PLR0912
         zip(
             baseline["age"],
             baseline["sex"],
+            baseline["labour_market_status"],
             baseline[_STATUS_CODE],
             baseline[_STATUS_LABEL],
             strict=True,
@@ -248,6 +277,7 @@ def repair_published_v2(  # noqa: C901, PLR0912
         zip(
             repaired["age"],
             repaired["sex"],
+            repaired["labour_market_status"],
             repaired[_STATUS_CODE],
             repaired[_STATUS_LABEL],
             strict=True,
@@ -322,6 +352,43 @@ def _require_columns(frame: pl.DataFrame, columns: Sequence[str]) -> None:
 
 def _origin_tuple(row: dict[str, Any], fields: list[str]) -> tuple[Any, ...]:
     return tuple(row[field] for field in fields)
+
+
+def _origin_literal_conflicts(
+    row: dict[str, Any],
+    proposed_origin: tuple[Any, ...],
+    origin_fields: list[str],
+    supported_origins: set[tuple[Any, Any, Any]],
+) -> int:
+    """Count supported country labels contradicted by a row's text attributes."""
+    proposed = dict(zip(origin_fields, proposed_origin, strict=True))
+    expected_labels = {
+        proposed.get("origin_country"),
+        proposed.get("origin_country_da"),
+    }
+    text_values = [
+        value.casefold()
+        for field, value in row.items()
+        if isinstance(value, str)
+        and field not in origin_fields
+        and field != _ID
+        and field not in {
+            "sex",
+            "labour_market_status",
+            _STATUS_CODE,
+            _STATUS_LABEL,
+        }
+    ]
+    conflicts = 0
+    for _, english, danish in supported_origins:
+        for label in (english, danish):
+            if (
+                isinstance(label, str)
+                and label not in expected_labels
+                and any(label.casefold() in text for text in text_values)
+            ):
+                conflicts += 1
+    return conflicts
 
 
 def _origin_source_tuple(row: dict[str, Any]) -> tuple[Any, Any, Any]:
