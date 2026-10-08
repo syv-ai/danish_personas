@@ -7,6 +7,7 @@ import json
 import os
 from collections import Counter
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -328,7 +329,9 @@ def compose(  # noqa: C901, PLR0912
     ):
         raise ComposeError("Non-prose candidate field changed")
     _check_pinned_marginals(original_frame, candidate_frame, final, prehotfix_frame)
-    parquet = final.write_parquet()
+    buffer = BytesIO()
+    final.write_parquet(file=buffer)
+    parquet = buffer.getvalue()
     candidate_hash = hashlib.sha256(parquet).hexdigest()
     allowed = sorted(
         sha256_text(i)
