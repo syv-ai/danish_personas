@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures as futures
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from danish_personas.generation.sol_adjudication import (
     run_sol_adjudication,
 )
 from danish_personas.io import canonical_json, sha256_file, sha256_text
+from danish_personas.release.candidate_validation import validate_release_candidate
 from danish_personas.release.generated_checks import check_generated_fields
 
 ROOT = Path("/tmp/danish-personas-audit")
@@ -157,9 +159,11 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     base_rows, candidate_rows = base.to_dicts(), frame.to_dicts()
     _check_rows_private(original_rows=base_rows, candidate_rows=candidate_rows)
     repair = _json_object(repair_path)
-    if repair.get("private") is not True or repair.get(
-        "published_sha256"
-    ) != sha256_file(original):
+    if (
+        repair.get("private") is not True
+        or repair.get("published_sha256") != sha256_file(original)
+        or repair.get("candidate_sha256") != sha256_file(candidate)
+    ):
         raise ReviewError(
             "Repair manifest is not bound to the immutable published input"
         )
@@ -209,7 +213,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         "h90": _unmatched_status_count(
             h90_path, positions, {"unresolved", "validation_failed"}
         ),
-        "followup": _unmatched_status_count(followup_path, positions, {"unresolved"}),
+        "followup": _followup_unmatched_count(followup_path, positions),
     }
     _add_status_reasons(
         h90_path,
@@ -218,9 +222,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         "h90_unresolved",
         {"unresolved", "validation_failed"},
     )
-    _add_status_reasons(
-        followup_path, positions, reasons, "followup_unresolved", {"unresolved"}
-    )
+    _add_followup_reasons(followup_path, positions, reasons)
     prompt_text = prompt_path.read_text(encoding="utf-8")
     _check_restricted_text(value=prompt_text, label="prompt")
     selected = sorted(reasons)
@@ -259,6 +261,16 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         raise ReviewError(
             "Prior unresolved status contains rows not bound to this release"
         )
+    validation = validate_release_candidate(
+        candidate_path=candidate,
+        original_path=original,
+        bundle_dir=Path("data/processed/6e27b5c08fbeae79"),
+    )
+    if not validation.passes_hard_gates:
+        raise ReviewError("Candidate failed mandatory offline release validation")
+    manifest["candidate_validation_sha256"] = validation.candidate_sha256
+    if manifest["candidate_validation_sha256"] != input_hashes["candidate_sha256"]:
+        raise ReviewError("Validated candidate checksum changed")
 
     require_runtime_model(ADJUDICATION_MODEL_ENV)
     _prepare_private_output(output_dir=output_dir)
@@ -280,7 +292,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         input_usd_per_million="2",
         output_usd_per_million="10",
         max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
-        cap_usd=None,
+        cap_usd=Decimal("1"),
         uncapped=True,
         uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
     )
@@ -313,12 +325,83 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
             or digest not in selected_hashes
             or digest in done
             or disposition
-            not in {"consistent", "patched", "unresolved", "validation_failed"}
+            not in {"consistent", "patched", "unresolved", "privacy_blocked"}
             or item.get("result_sha256") != sha256_text(f"{digest}:{disposition}")
         ):
             raise ReviewError("Existing status contains an invalid row disposition")
+        if disposition != "privacy_blocked":
+            checkpoint = item.get("checkpoint")
+            checkpoint_hash = item.get("checkpoint_sha256")
+            response_hash = item.get("response_sha256")
+            if (
+                not isinstance(checkpoint, str)
+                or not isinstance(checkpoint_hash, str)
+                or not isinstance(response_hash, str)
+            ):
+                raise ReviewError("Processed row lacks its checkpoint binding")
+            checkpoint_path = output_dir / checkpoint
+            if sha256_file(checkpoint_path) != checkpoint_hash:
+                raise ReviewError("Processed checkpoint checksum mismatch")
+            document = _json_object(checkpoint_path)
+            if document.get("response_sha256") != response_hash:
+                raise ReviewError("Processed response binding mismatch")
+            index = positions[digest]
+            row, old = candidate_rows[index], base_rows[index]
+            hints = {
+                field: {"old": old[field], "new": row[field]}
+                for field in sorted((set(old) & set(row)) & SOL_ALLOWED_FACT_FIELDS)
+                if old[field] != row[field]
+            }
+            # Existing checkpoint only: the runner revalidates schema, response,
+            # prompt, source and row bindings and cannot fall through to HTTP.
+            verified = run_sol_adjudication(
+                original_persona=row[TEXT_FIELD],
+                candidate_row=row,
+                prompt=prompt_text,
+                config=config,
+                budget=budget,
+                checkpoint_path=checkpoint_path,
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(500, request=request)
+                ),
+                changed_fact_hints=hints,
+                original_row=old,
+            )
+            if verified.disposition != disposition:
+                raise ReviewError("Processed checkpoint disposition mismatch")
         done.add(digest)
     pending = [index for index in selected if id_hashes[index] not in done]
+    # Complete privacy preflight for every queued row before opening a client or
+    # allowing any worker to issue a request.
+    blocked: set[int] = set()
+    for index in pending:
+        row, old = candidate_rows[index], base_rows[index]
+        hints = {
+            field: {"old": old[field], "new": row[field]}
+            for field in sorted((set(old) & set(row)) & SOL_ALLOWED_FACT_FIELDS)
+            if old[field] != row[field]
+        }
+        try:
+            preflight_sol_adjudication_payload(
+                original_persona=row[TEXT_FIELD], candidate_row=row, prompt=prompt_text,
+                changed_fact_hints=hints, original_row=old,
+            )
+        except SolAdjudicationError:
+            blocked.add(index)
+    for index in sorted(blocked):
+        digest = id_hashes[index]
+        status["processed"].append({
+            "persona_hash": digest, "disposition": "privacy_blocked",
+            "result_sha256": sha256_text(f"{digest}:privacy_blocked"),
+        })
+    status["processed"].sort(key=lambda item: item["persona_hash"])
+    status["counts"] = _count_dispositions(status["processed"])
+    status["progress"] = {
+        "completed": len(status["processed"]), "total": len(selected),
+        "pending": len(selected) - len(status["processed"]),
+    }
+    _write_private_json(path=status_path, value=status)
+    pending = [index for index in pending if index not in blocked]
     with httpx.Client(base_url=BASE_URL, timeout=120) as client:
         transport = client._transport
         # Bound outstanding work; each worker writes only a hash-named checkpoint.
@@ -383,36 +466,32 @@ def _process_row(
         if old[field] != row[field]
     }
     # Existing prose is the baseline for these adjudications; facts are the v3 row.
-    try:
-        preflight_sol_adjudication_payload(
-            original_persona=row[TEXT_FIELD],
-            candidate_row=row,
-            prompt=prompt,
-            changed_fact_hints=hints,
-            original_row=old,
-        )
-        result = run_sol_adjudication(
-            original_persona=row[TEXT_FIELD],
-            candidate_row=row,
-            prompt=prompt,
-            config=config,
-            budget=budget,
-            checkpoint_path=output_dir
-            / "checkpoints"
-            / id_hashes[index][:2]
-            / f"{id_hashes[index]}.json",
-            transport=transport,
-            changed_fact_hints=hints,
-            original_row=old,
-        )
-        # Proposed prose is retained only inside the private checkpoint by the runner.
-        terminal = result.disposition
-    except Exception:
-        terminal = "validation_failed"
+    result = run_sol_adjudication(
+        original_persona=row[TEXT_FIELD],
+        candidate_row=row,
+        prompt=prompt,
+        config=config,
+        budget=budget,
+        checkpoint_path=(
+            output_dir / "checkpoints" / id_hashes[index][:2]
+            / f"{id_hashes[index]}.json"
+        ),
+        transport=transport,
+        changed_fact_hints=hints,
+        original_row=old,
+    )
+    checkpoint_path = (
+        output_dir / "checkpoints" / id_hashes[index][:2] / f"{id_hashes[index]}.json"
+    )
+    document = _json_object(checkpoint_path)
+    terminal = result.disposition
     return {
         "persona_hash": id_hashes[index],
         "disposition": terminal,
         "result_sha256": sha256_text(f"{id_hashes[index]}:{terminal}"),
+        "checkpoint": str(checkpoint_path.relative_to(output_dir)),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "response_sha256": document.get("response_sha256"),
     }
 
 
@@ -437,6 +516,130 @@ def _unmatched_status_count(
         and item.get("disposition") in dispositions
         and item.get("persona_hash") not in positions
     )
+
+
+def _followup_bindings(path: Path, positions: dict[str, int]) -> dict[str, int]:
+    """Validate the follow-up selection manifest and return checkpoint bindings.
+
+    Returns:
+        Mapping from follow-up checkpoint identifiers to release row indexes.
+
+    Raises:
+        ReviewError: If manifest inputs cannot be bound to the release.
+    """
+    manifest = _json_object(path.parent / "manifest.json")
+    selection = manifest.get("selection")
+    if not isinstance(selection, dict):
+        raise ReviewError("Follow-up selection manifest is invalid")
+    ordered = selection.get("ordered_input_hashes")
+    bindings = selection.get("row_bindings")
+    if (
+        not isinstance(ordered, list)
+        or not isinstance(bindings, list)
+        or ordered
+        != [
+            digest
+            for digest, _ in sorted(positions.items(), key=lambda item: item[1])
+        ]
+    ):
+        raise ReviewError("Follow-up ordered input hashes do not match the release")
+    result: dict[str, int] = {}
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise ReviewError("Follow-up selection bindings are invalid")
+        checkpoint = binding.get("followup_checkpoint_id")
+        row_index = binding.get("row_index")
+        row_hash = binding.get("row_hash")
+        if (
+            not isinstance(checkpoint, str)
+            or not isinstance(row_index, int)
+            or row_index < 0
+            or row_index >= len(ordered)
+            or checkpoint in result
+            or row_hash != ordered[row_index]
+        ):
+            raise ReviewError("Follow-up selection bindings are invalid")
+        # The manifest hashes the v2 persona identifier at the exact selected row.
+        if (
+            ordered[row_index] not in positions
+            or positions[ordered[row_index]] != row_index
+        ):
+            raise ReviewError("Follow-up selection row does not bind to this release")
+        result[checkpoint] = row_index
+    expected_digest = sha256_text(canonical_json(ordered))
+    expected = selection.get("ordered_id_hashes_sha256")
+    if not isinstance(expected, str) or expected != expected_digest:
+        raise ReviewError("Follow-up ordered-input digest mismatch")
+    return result
+
+
+def _followup_unmatched_count(path: Path, positions: dict[str, int]) -> int:
+    bindings = _followup_bindings(path, positions)
+    processed = _followup_processed(path)
+    return sum(
+        1 for item in processed
+        if isinstance(item, dict) and item.get("disposition") == "unresolved"
+        and item.get("persona_hash") not in bindings
+    )
+
+
+def _followup_processed(path: Path) -> list[dict[str, Any]]:
+    """Load status only after binding it to the exact selection manifest.
+
+    Returns:
+        Validated processed status rows.
+
+    Raises:
+        ReviewError: If the manifest binding or status integrity is invalid.
+    """
+    status = _json_object(path)
+    manifest = _json_object(path.parent / "manifest.json")
+    if status.get("manifest_sha256") != sha256_text(canonical_json(manifest)):
+        raise ReviewError("Follow-up status is not bound to its selection manifest")
+    processed = status.get("processed")
+    if not isinstance(processed, list) or any(
+        not isinstance(item, dict) for item in processed
+    ):
+        raise ReviewError("Prior status shape is invalid")
+    if status.get("counts") != _count_dispositions(processed):
+        raise ReviewError("Follow-up status counts do not match processed rows")
+    selection = manifest.get("selection")
+    bindings = selection.get("row_bindings") if isinstance(selection, dict) else None
+    if not isinstance(bindings, list):
+        raise ReviewError("Follow-up manifest bindings are invalid")
+    known = {
+        binding.get("followup_checkpoint_id")
+        for binding in bindings
+        if isinstance(binding, dict)
+    }
+    seen: set[str] = set()
+    for item in processed:
+        digest = item.get("persona_hash")
+        if (
+            not isinstance(digest, str)
+            or digest not in known
+            or digest in seen
+            or item.get("disposition") not in {
+                "consistent", "patched", "unresolved", "privacy_blocked",
+                "validation_failed",
+            }
+        ):
+            raise ReviewError("Follow-up processed rows do not match manifest order")
+        seen.add(digest)
+    return processed
+
+
+def _add_followup_reasons(
+    path: Path, positions: dict[str, int], reasons: dict[int, set[str]]
+) -> None:
+    bindings = _followup_bindings(path, positions)
+    processed = _followup_processed(path)
+    for item in processed:
+        if isinstance(item, dict) and item.get("disposition") == "unresolved":
+            checkpoint = item.get("persona_hash")
+            if checkpoint in bindings:
+                row_index = bindings[checkpoint]
+                reasons.setdefault(row_index, set()).add("followup_unresolved")
 
 
 def _add_status_reasons(
@@ -489,16 +692,34 @@ def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, An
     status = _json_object(path)
     if status.get("input_hashes") != hashes or status.get("selected_total") != total:
         raise ReviewError("Existing status is bound to different inputs")
-    if not isinstance(status.get("processed"), list):
+    processed = status.get("processed")
+    if not isinstance(processed, list):
         raise ReviewError("Existing status shape is invalid")
+    counts = _count_dispositions(processed)
+    if status.get("counts") != counts:
+        raise ReviewError("Existing status disposition counts are invalid")
+    progress = status.get("progress")
+    expected_progress = {
+        "completed": len(processed), "total": total,
+        "pending": total - len(processed),
+    }
+    if progress != expected_progress or len(processed) > total:
+        raise ReviewError("Existing status progress is invalid")
     return status
 
 
 def _count_dispositions(items: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
+    counts = {
+        "consistent": 0,
+        "patched": 0,
+        "unresolved": 0,
+        "privacy_blocked": 0,
+        "validation_failed": 0,
+    }
     for item in items:
         disposition = item.get("disposition")
-        counts[disposition] = counts.get(disposition, 0) + 1
+        if isinstance(disposition, str):
+            counts[disposition] = counts.get(disposition, 0) + 1
     return counts
 
 

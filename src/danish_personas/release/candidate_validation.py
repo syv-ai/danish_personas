@@ -424,13 +424,26 @@ def validate_release_candidate(
 
     Returns:
         Aggregate report with only counts and file hashes.
+
+    Raises:
+        ValueError: If the candidate or original violates the expected schema.
     """
     candidate = pl.read_parquet(candidate_path)
     original = pl.read_parquet(original_path)
     _require_matching_counts(
         candidate=candidate, original=original, expected_row_count=expected_row_count
     )
-    _require_columns(frame=candidate, columns=_candidate_required_columns())
+    required_columns = set(_candidate_required_columns())
+    # Historical diagnostic fixtures predate the origin-code field. Enforce the
+    # complete origin contract for full release candidates, while allowing those
+    # partial fixtures to continue exercising the editorial rule.
+    origin_fields = {"origin_country_code", "origin_country_da"}
+    present_origin_fields = origin_fields & set(candidate.columns)
+    if expected_row_count == EXPECTED_RELEASE_ROWS:
+        required_columns.update(origin_fields)
+    elif present_origin_fields and present_origin_fields != origin_fields:
+        raise ValueError("Candidate origin fields are incomplete")
+    _require_columns(frame=candidate, columns=frozenset(required_columns))
     _require_columns(
         frame=original, columns=frozenset((_ID_FIELD, _PROSE_FIELD, *_VERSIONED_FIELDS))
     )

@@ -7,6 +7,8 @@ presentation rule, not a statistical impossibility inferred from RAS202 or FOLK2
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -287,11 +289,11 @@ def repair_published_v2(  # noqa: C901, PLR0912
         raise ValueError(
             "Exact-age/sex detailed-status distribution differs from baseline"
         )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    repaired.write_parquet(output_path)
-    output_path.chmod(0o600)
+    output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _write_private_parquet(path=output_path, frame=repaired)
     manifest = {
         "published_sha256": sha256_file(published_v2_path),
+        "candidate_sha256": sha256_file(output_path),
         "baseline_sha256": sha256_file(pre_hotfix_v2_path),
         "source_status_rows": len(restore_indices),
         "origin_exchange_pairs": len(pairs),
@@ -305,11 +307,11 @@ def repair_published_v2(  # noqa: C901, PLR0912
         ),
         "private": True,
     }
-    private_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    private_manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    private_manifest_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _write_private_text(
+        path=private_manifest_path,
+        content=json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     )
-    private_manifest_path.chmod(0o600)
     return {
         "output_sha256": sha256_file(output_path),
         "rows": repaired.height,
@@ -333,6 +335,40 @@ def count_editorial_foreign_student_violations(frame: pl.DataFrame) -> int:
         (pl.col("detailed_status_code").cast(pl.String) == "160")
         & (pl.col("origin_country_code").cast(pl.String) == _HOME_CODE)
     ).height
+
+
+def _write_private_parquet(*, path: Path, frame: pl.DataFrame) -> None:
+    """Atomically create a mode-0600 Parquet file without a permissive window."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.close(descriptor)
+        frame.write_parquet(temporary)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        os.close(descriptor) if descriptor >= 0 else None
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_private_text(*, path: Path, content: str) -> None:
+    """Atomically create a mode-0600 private text file."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _age_key(value: str | int) -> int:
@@ -360,7 +396,11 @@ def _origin_literal_conflicts(
     origin_fields: list[str],
     supported_origins: set[tuple[Any, Any, Any]],
 ) -> int:
-    """Count supported country labels contradicted by a row's text attributes."""
+    """Count supported country labels contradicted by a row's text attributes.
+
+    Returns:
+        Number of conflicting supported labels.
+    """
     proposed = dict(zip(origin_fields, proposed_origin, strict=True))
     expected_labels = {
         proposed.get("origin_country"),
