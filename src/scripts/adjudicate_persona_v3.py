@@ -26,7 +26,7 @@ from danish_personas.generation.proxy_budget import (
     BASE_URL,
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
-    SOL_ADJUDICATION_PURPOSE,
+    V3_ADJUDICATION_PURPOSE,
     ProxyBudget,
     ProxyBudgetError,
     require_runtime_model,
@@ -294,7 +294,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
-        uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
+        uncapped_purpose=V3_ADJUDICATION_PURPOSE,
     )
     config = GenerationConfig.model_validate(
         {
@@ -389,7 +389,9 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                 changed_fact_hints=hints,
                 original_row=old,
             )
-        except SolAdjudicationError:
+        except SolAdjudicationError as exc:
+            if "contains a restricted identity term" not in str(exc):
+                raise
             blocked.add(index)
     for index in sorted(blocked):
         digest = id_hashes[index]

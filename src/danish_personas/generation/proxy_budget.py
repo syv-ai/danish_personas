@@ -65,6 +65,9 @@ USER_UNCAPPED_BUDGET_PATH = Path.home() / ".danish-personas" / "proxy-uncapped.j
 USER_SOL_ADJUDICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-sol-adjudication.jsonl"
 )
+USER_V3_ADJUDICATION_BUDGET_PATH = (
+    Path.home() / ".danish-personas" / "proxy-v3-adjudication.jsonl"
+)
 USER_PATCH_VERIFICATION_BUDGET_PATH = (
     Path.home() / ".danish-personas" / "proxy-patch-verification.jsonl"
 )
@@ -78,12 +81,14 @@ PATCH_VERIFICATION_PURPOSE = "patch_verification"
 EDUCATION_REVIEW_PURPOSE = "h90_v5"
 EDUCATION_VERIFICATION_PURPOSE = "h90_v5_verification"
 SOL_ADJUDICATION_PURPOSE = "sol_adjudication"
+V3_ADJUDICATION_PURPOSE = "v3_adjudication"
 UNLIMITED_PURPOSES = frozenset(
     {
         PATCH_VERIFICATION_PURPOSE,
         EDUCATION_REVIEW_PURPOSE,
         EDUCATION_VERIFICATION_PURPOSE,
         SOL_ADJUDICATION_PURPOSE,
+        V3_ADJUDICATION_PURPOSE,
     }
 )
 JSONValue: TypeAlias = (
@@ -132,16 +137,19 @@ class ProxyBudget:
         Raises:
             ProxyBudgetError: If configuration or pinned model metadata is invalid.
         """
-        # ``ledger_path`` is accepted for source compatibility, but never selects
-        # the ledger: all proxy campaigns share the same user-level budget.
+        # Purpose-specific ledgers are private and durable; callers cannot redirect
+        # uncapped campaigns to an arbitrary ledger path.
         del ledger_path
         self.uncapped = uncapped
         self.uncapped_purpose = uncapped_purpose
-        self._requires_capped_ledger = (
-            uncapped and uncapped_purpose != SOL_ADJUDICATION_PURPOSE
-        )
+        self._requires_capped_ledger = uncapped and uncapped_purpose not in {
+            SOL_ADJUDICATION_PURPOSE,
+            V3_ADJUDICATION_PURPOSE,
+        }
         if uncapped and uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
             self.path = USER_SOL_ADJUDICATION_BUDGET_PATH
+        elif uncapped and uncapped_purpose == V3_ADJUDICATION_PURPOSE:
+            self.path = USER_V3_ADJUDICATION_BUDGET_PATH
         elif uncapped and uncapped_purpose == PATCH_VERIFICATION_PURPOSE:
             self.path = USER_PATCH_VERIFICATION_BUDGET_PATH
         elif uncapped and uncapped_purpose == EDUCATION_REVIEW_PURPOSE:
@@ -173,7 +181,10 @@ class ProxyBudget:
         expected_max_tokens = DEFAULT_MAX_TOKENS
         expected_input_price = Decimal("0.1")
         expected_output_price = Decimal("0.5")
-        if uncapped_purpose == SOL_ADJUDICATION_PURPOSE:
+        if uncapped_purpose in {
+            SOL_ADJUDICATION_PURPOSE,
+            V3_ADJUDICATION_PURPOSE,
+        }:
             expected_model = SOL_ADJUDICATION_MODEL
             expected_max_tokens = SOL_ADJUDICATION_LEDGER_MAX_TOKENS
             expected_input_price = Decimal("2")
@@ -419,7 +430,10 @@ class ProxyBudget:
             os.close(fd)
 
     def _records_unbounded_sol_output(self) -> bool:
-        return self.uncapped and self.uncapped_purpose == SOL_ADJUDICATION_PURPOSE
+        return self.uncapped and self.uncapped_purpose in {
+            SOL_ADJUDICATION_PURPOSE,
+            V3_ADJUDICATION_PURPOSE,
+        }
 
     def reserve_attempt(
         self,
@@ -734,7 +748,8 @@ def _read_ledger(
             enforce_hard_cap=enforce_hard_cap,
             allow_unbounded_output=(
                 header.get("uncapped") is True
-                and header.get("uncapped_purpose") == SOL_ADJUDICATION_PURPOSE
+                and header.get("uncapped_purpose")
+                in {SOL_ADJUDICATION_PURPOSE, V3_ADJUDICATION_PURPOSE}
             ),
         ),
         contents,
