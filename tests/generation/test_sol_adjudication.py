@@ -30,6 +30,18 @@ _PERSONA = (
     "Hun arbejder som lærer og beskrives i en rolig, hverdagsnær tekst. "
     "Personen har en stabil hverdag med kolleger, familie og fritidsinteresser."
 )
+
+
+@pytest.fixture(autouse=True)
+def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep Sol adjudication tests on an isolated user-level ledger."""
+    monkeypatch.setattr(
+        proxy_budget,
+        "USER_SOL_ADJUDICATION_BUDGET_PATH",
+        tmp_path / "sol-adjudication.jsonl",
+    )
+
+
 _BANNED_IDENTITY_VARIANTS = (
     "seksuel orientering",
     "sexual orientation",
@@ -101,7 +113,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
                     "models": [
                         {
                             "id": "gpt-6-sol",
-                            "maxTokens": 128_000,
+                            "maxTokens": SOL_MAX_OUTPUT_TOKENS,
                             "cost": {"input": "2", "output": "10"},
                         }
                     ]
@@ -127,6 +139,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
         model="gpt-6-sol",
         input_usd_per_million="2",
         output_usd_per_million="10",
+        max_tokens=SOL_MAX_OUTPUT_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
         uncapped_purpose="sol_adjudication",
@@ -149,7 +162,7 @@ def _config(**overrides: object) -> GenerationConfig:
         "maximum_total_requests": None,
         "retry_backoff_seconds": 0.0,
         "maximum_rows_per_shard": 1,
-        "max_tokens": SOL_MAX_OUTPUT_TOKENS,
+        "max_tokens": None,
         "enable_thinking": None,
         "reasoning_effort": "none",
         "prompt": Path("config/persona-sol-adjudication-da.md"),
@@ -170,7 +183,8 @@ def _transport(
             events.append("network")
         body = json.loads(request.content)
         assert body["model"] == "gpt-6-sol"
-        assert body["max_tokens"] == SOL_MAX_OUTPUT_TOKENS
+        assert "max_tokens" not in body
+        assert "max_completion_tokens" not in body
         assert body["reasoning_effort"] == "none"
         return httpx.Response(
             200,
@@ -240,6 +254,65 @@ def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None
             checkpoint_path=_checkpoint(tmp_path, name="blocked.json"),
             transport=httpx.MockTransport(lambda _: httpx.Response(500)),
         )
+
+
+def test_permanent_http_400_resume_uses_unique_attempt_suffix(tmp_path: Path) -> None:
+    """A failed reservation is kept and the resumed row uses the next suffix."""
+    budget = _budget(tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+
+    def reject(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "max_tokens" not in body
+        assert "max_completion_tokens" not in body
+        return httpx.Response(
+            400,
+            json={"error": {"message": "unsupported_parameter: max_tokens"}},
+            request=request,
+        )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        run_sol_adjudication(
+            original_persona=_PERSONA,
+            candidate_row={"age": 42, "municipality": "Aarhus"},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=budget,
+            checkpoint_path=checkpoint,
+            transport=httpx.MockTransport(reject),
+        )
+
+    run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=checkpoint,
+        transport=_transport(
+            {
+                "disposition": "consistent",
+                "reason": "Alder er nævnt i teksten.",
+                "evidence": [
+                    {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+                ],
+                "patches": [],
+            },
+            [],
+        ),
+    )
+
+    records = [
+        json.loads(line)
+        for line in budget.path.read_text(encoding="utf-8").splitlines()
+    ]
+    reservations = [record for record in records if record["type"] == "reservation"]
+    usages = [record for record in records if record["type"] == "usage"]
+
+    assert [
+        record["request_id"].rsplit("-", maxsplit=1)[1] for record in reservations
+    ] == ["1", "2"]
+    assert usages[0]["request_id"] == reservations[1]["request_id"]
 
 
 def test_preflight_allows_municipality_code_age_collision() -> None:
@@ -475,20 +548,30 @@ def test_schema_invalid_records_usage_without_checkpoint(
     """Record successful HTTP usage before rejecting invalid JSON content."""
     events: list[str] = []
     budget = _budget(tmp_path)
-    original_reserve = budget.reserve_attempt
+    original_reserve = budget.reserve_next_attempt
+    original_validate = budget.validate_request_body
     original_usage = budget.record_usage
 
     def reserve(
-        request_id: str,
+        request_id_prefix: str,
         request: dict[str, JSONValue],
         *,
         max_output_tokens: int | None = None,
-    ) -> Decimal:
+        max_attempts: int,
+    ) -> int:
         assert max_output_tokens == SOL_MAX_OUTPUT_TOKENS
+        assert max_attempts == 10
         events.append("reserved")
         return original_reserve(
-            request_id, request, max_output_tokens=max_output_tokens
+            request_id_prefix,
+            request,
+            max_output_tokens=max_output_tokens,
+            max_attempts=max_attempts,
         )
+
+    def validate_body(request_id: str, body: bytes) -> None:
+        events.append("body")
+        original_validate(request_id, body)
 
     def usage(
         request_id: str, *, input_tokens: int, output_tokens: int, response_sha256: str
@@ -501,7 +584,8 @@ def test_schema_invalid_records_usage_without_checkpoint(
             response_sha256=response_sha256,
         )
 
-    monkeypatch.setattr(budget, "reserve_attempt", reserve)
+    monkeypatch.setattr(budget, "reserve_next_attempt", reserve)
+    monkeypatch.setattr(budget, "validate_request_body", validate_body)
     monkeypatch.setattr(budget, "record_usage", usage)
     checkpoint = _checkpoint(tmp_path)
 
@@ -516,6 +600,88 @@ def test_schema_invalid_records_usage_without_checkpoint(
             transport=_transport({"disposition": "consistent"}, [], events),
         )
 
-    assert events == ["reserved", "network", "usage"]
+    assert events == ["reserved", "body", "network", "usage"]
     assert not checkpoint.exists()
     assert "raw-private-id" not in str(error.value)
+
+
+def test_sol_row_lifetime_attempts_are_bounded(tmp_path: Path) -> None:
+    """Stop retrying one row after the durable lifetime attempt limit."""
+    budget = _budget(tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+
+    def reject(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "permanent"}, request=request)
+
+    for _ in range(10):
+        with pytest.raises(httpx.HTTPStatusError):
+            run_sol_adjudication(
+                original_persona=_PERSONA,
+                candidate_row={"age": 42, "municipality": "Aarhus"},
+                prompt=_PROMPT,
+                config=_config(),
+                budget=budget,
+                checkpoint_path=checkpoint,
+                transport=httpx.MockTransport(reject),
+            )
+
+    with pytest.raises(proxy_budget.ProxyBudgetError, match="lifetime exhausted"):
+        run_sol_adjudication(
+            original_persona=_PERSONA,
+            candidate_row={"age": 42, "municipality": "Aarhus"},
+            prompt=_PROMPT,
+            config=_config(),
+            budget=budget,
+            checkpoint_path=checkpoint,
+            transport=httpx.MockTransport(reject),
+        )
+
+
+def test_uncapped_sol_records_output_overage(tmp_path: Path) -> None:
+    """Record actual Sol output usage even when it exceeds the reservation."""
+    budget = _budget(tmp_path)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "max_tokens" not in body
+        content = {
+            "disposition": "consistent",
+            "reason": "Alder er nævnt i teksten.",
+            "evidence": [
+                {"field": "age", "kind": "fact_present", "quote": "Hun er 42 år"}
+            ],
+            "patches": [],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-overage",
+                "model": "gpt-6-sol",
+                "choices": [{"message": {"content": json.dumps(content)}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": SOL_MAX_OUTPUT_TOKENS + 17,
+                },
+            },
+            request=request,
+        )
+
+    run_sol_adjudication(
+        original_persona=_PERSONA,
+        candidate_row={"age": 42, "municipality": "Aarhus"},
+        prompt=_PROMPT,
+        config=_config(),
+        budget=budget,
+        checkpoint_path=_checkpoint(tmp_path),
+        transport=httpx.MockTransport(respond),
+    )
+
+    records = [
+        json.loads(line)
+        for line in budget.path.read_text(encoding="utf-8").splitlines()
+    ]
+    usage = next(record for record in records if record["type"] == "usage")
+    assert usage["output_tokens"] == SOL_MAX_OUTPUT_TOKENS + 17
+    assert usage["reserved_output_tokens"] == SOL_MAX_OUTPUT_TOKENS
+    assert usage["output_tokens_over_reserved"] == 17
+    assert usage["unbounded_output"] is True

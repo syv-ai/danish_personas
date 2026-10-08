@@ -80,6 +80,7 @@ def _registry(
     price: str = "0.1",
     output_price: str = "0.5",
     model: str = "gpt-6-luna",
+    max_tokens: int = 128_000,
 ) -> Path:
     path.write_text(
         json.dumps(
@@ -88,7 +89,7 @@ def _registry(
                     "models": [
                         {
                             "id": model,
-                            "maxTokens": 128_000,
+                            "maxTokens": max_tokens,
                             "cost": {"input": price, "output": output_price},
                         }
                     ]
@@ -466,6 +467,7 @@ def _sol_adjudication_budget(
         base_url=base_url,
         input_usd_per_million="2",
         output_usd_per_million="10",
+        max_tokens=proxy_budget.SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         request_overhead_bytes=request_overhead_bytes,
         uncapped=True,
         uncapped_purpose=proxy_budget.SOL_ADJUDICATION_PURPOSE,
@@ -478,7 +480,32 @@ def _sol_registry(path: Path, *, price: str = "2", output_price: str = "10") -> 
         price=price,
         output_price=output_price,
         model=proxy_budget.SOL_ADJUDICATION_MODEL,
+        max_tokens=proxy_budget.SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     )
+
+
+def test_sol_adjudication_records_unbounded_output_overage(tmp_path: Path) -> None:
+    """Uncapped Sol usage records actual output over the reservation."""
+    sol = _sol_adjudication_budget(tmp_path, request_overhead_bytes=0)
+    sol.reserve_attempt("sol-attempt-1", {"x": 1}, max_output_tokens=5)
+    sol.record_usage(
+        "sol-attempt-1", input_tokens=1, output_tokens=8, response_sha256="c" * 64
+    )
+    restarted = _sol_adjudication_budget(tmp_path, request_overhead_bytes=0)
+    summary = restarted.usage_summary()
+    records = [
+        json.loads(line)
+        for line in proxy_budget.USER_SOL_ADJUDICATION_BUDGET_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    usage = next(record for record in records if record["type"] == "usage")
+
+    assert summary["recorded_output_tokens"] == 8
+    assert usage["output_tokens"] == 8
+    assert usage["reserved_output_tokens"] == 5
+    assert usage["output_tokens_over_reserved"] == 3
+    assert usage["unbounded_output"] is True
 
 
 def test_sol_adjudication_rejects_mismatched_registry_and_pins(tmp_path: Path) -> None:
@@ -496,6 +523,39 @@ def test_sol_adjudication_rejects_mismatched_registry_and_pins(tmp_path: Path) -
         _sol_adjudication_budget(tmp_path, model="gpt-6-luna")
     with pytest.raises(ProxyBudgetError, match="pinned policy"):
         _sol_adjudication_budget(tmp_path, base_url="https://api.openai.com/v1")
+
+
+def test_sol_adjudication_reserves_next_attempt_suffix(tmp_path: Path) -> None:
+    """Sol rows resume with a new durable attempt suffix."""
+    sol = _sol_adjudication_budget(tmp_path)
+    assert (
+        sol.reserve_next_attempt(
+            "sol-row", {"x": 1}, max_output_tokens=9, max_attempts=3
+        )
+        == 1
+    )
+    assert (
+        sol.reserve_next_attempt(
+            "sol-row", {"x": 1}, max_output_tokens=9, max_attempts=3
+        )
+        == 2
+    )
+    assert (
+        sol.reserve_next_attempt(
+            "other-row", {"x": 1}, max_output_tokens=9, max_attempts=3
+        )
+        == 1
+    )
+    assert (
+        sol.reserve_next_attempt(
+            "sol-row", {"x": 1}, max_output_tokens=9, max_attempts=3
+        )
+        == 3
+    )
+    with pytest.raises(ProxyBudgetError, match="lifetime exhausted"):
+        sol.reserve_next_attempt(
+            "sol-row", {"x": 1}, max_output_tokens=9, max_attempts=3
+        )
 
 
 def test_sol_adjudication_restart_and_summary_are_safe(tmp_path: Path) -> None:
@@ -691,20 +751,17 @@ def test_usage_rejects_invalid_response_digest(tmp_path: Path) -> None:
 
 
 def test_usage_rejects_values_that_exceed_reserved_bounds(tmp_path: Path) -> None:
-    """Recorded usage must stay within the reserved body and response bounds."""
-    budget = _sol_adjudication_budget(tmp_path, request_overhead_bytes=0)
-    budget.reserve_attempt("sol-attempt-1", {"x": 1}, max_output_tokens=5)
-    budget.validate_request_body("sol-attempt-1", b'{"x":1}')
+    """Capped usage must stay within the reserved body and response bounds."""
+    budget = _budget(tmp_path, cap="1")
+    budget.reserve_attempt("attempt-1", {"x": 1}, max_output_tokens=5)
+    budget.validate_request_body("attempt-1", b'{"x":1}')
     with pytest.raises(ProxyBudgetError, match="request body exceeds reserved bounds"):
-        budget.validate_request_body("sol-attempt-1", b"x" * 10_000)
+        budget.validate_request_body("attempt-1", b"x" * 10_000)
     with pytest.raises(ProxyBudgetError, match="exceeds reserved bounds"):
         budget.record_usage(
-            "sol-attempt-1", input_tokens=1, output_tokens=6, response_sha256="c" * 64
+            "attempt-1", input_tokens=1, output_tokens=6, response_sha256="c" * 64
         )
     with pytest.raises(ProxyBudgetError, match="exceeds reserved bounds"):
         budget.record_usage(
-            "sol-attempt-1",
-            input_tokens=10_000,
-            output_tokens=5,
-            response_sha256="c" * 64,
+            "attempt-1", input_tokens=10_000, output_tokens=5, response_sha256="c" * 64
         )
