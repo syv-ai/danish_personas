@@ -297,11 +297,11 @@ def _validated_payload(
         candidate_row=candidate_row, original_row=original_row
     )
     _check_protected_tokens(
-        values=(
-            original_persona,
-            canonical_json(candidate_facts),
-            canonical_json(hints),
-        ),
+        original_persona=original_persona,
+        candidate_facts=candidate_facts,
+        changed_fact_hints=hints,
+        candidate_row=candidate_row,
+        original_row=original_row,
         protected_tokens=protected_tokens,
     )
     return {
@@ -353,33 +353,70 @@ def _check_restricted_text(*, value: str, label: str) -> None:
 
 
 def _check_protected_tokens(
-    *, values: tuple[str, ...], protected_tokens: frozenset[str]
+    *,
+    original_persona: str,
+    candidate_facts: dict[str, JSONValue],
+    changed_fact_hints: dict[str, dict[str, JSONValue]],
+    candidate_row: dict[str, object],
+    original_row: dict[str, object] | None,
+    protected_tokens: frozenset[str],
 ) -> None:
-    for value in values:
-        for token in protected_tokens:
-            if _token_in_text(token=token, text=value):
-                raise SolAdjudicationError(
-                    "Outbound adjudication payload contains a restricted row token"
-                )
+    allowed_age_tokens = _allowed_municipality_age_tokens(
+        candidate_row=candidate_row, original_row=original_row
+    )
+    for token in protected_tokens:
+        if token in allowed_age_tokens:
+            _check_municipality_age_token(
+                token=token,
+                original_persona=original_persona,
+                candidate_facts=candidate_facts,
+                changed_fact_hints=changed_fact_hints,
+            )
+            continue
+        _reject_protected_token(
+            token=token,
+            values=(
+                original_persona,
+                canonical_json(candidate_facts),
+                canonical_json(changed_fact_hints),
+            ),
+        )
 
 
-def _token_in_text(*, token: str, text: str) -> bool:
-    pattern = rf"(?<!{_TOKEN_BOUNDARY}){re.escape(token)}(?!{_TOKEN_BOUNDARY})"
-    return re.search(pattern, text) is not None
-
-
-def _protected_row_tokens(
+def _allowed_municipality_age_tokens(
     *, candidate_row: dict[str, object], original_row: dict[str, object] | None
 ) -> frozenset[str]:
+    if original_row is None:
+        return frozenset()
+    token_fields = _protected_row_token_fields(
+        candidate_row=candidate_row, original_row=original_row
+    )
+    allowed_tokens: set[str] = set()
+    for token, fields in token_fields.items():
+        if fields != {"municipality_code"} or not token.isdecimal():
+            continue
+        if not _row_ages_match_token(
+            token=token, candidate_row=candidate_row, original_row=original_row
+        ):
+            continue
+        allowed_tokens.add(token)
+    return frozenset(allowed_tokens)
+
+
+def _protected_row_token_fields(
+    *, candidate_row: dict[str, object], original_row: dict[str, object] | None
+) -> dict[str, frozenset[str]]:
     rows = (candidate_row,) if original_row is None else (candidate_row, original_row)
-    tokens: set[str] = set()
+    token_fields: dict[str, set[str]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         for field, value in row.items():
-            if _is_protected_token_field(field=str(field)):
-                tokens.update(_string_tokens(value=value))
-    return frozenset(tokens)
+            field_name = str(field)
+            if _is_protected_token_field(field=field_name):
+                for token in _string_tokens(value=value):
+                    token_fields.setdefault(token, set()).add(field_name)
+    return {token: frozenset(fields) for token, fields in token_fields.items()}
 
 
 def _is_protected_token_field(*, field: str) -> bool:
@@ -400,6 +437,108 @@ def _string_tokens(*, value: object) -> set[str]:
             token for item in value.values() for token in _string_tokens(value=item)
         }
     return set()
+
+
+def _row_ages_match_token(
+    *, token: str, candidate_row: dict[str, object], original_row: dict[str, object]
+) -> bool:
+    return _age_value_matches_token(
+        value=original_row.get("age"), token=token
+    ) and _age_value_matches_token(value=candidate_row.get("age"), token=token)
+
+
+def _age_value_matches_token(*, value: object, token: str) -> bool:
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and str(value) == token
+    )
+
+
+def _check_municipality_age_token(
+    *,
+    token: str,
+    original_persona: str,
+    candidate_facts: dict[str, JSONValue],
+    changed_fact_hints: dict[str, dict[str, JSONValue]],
+) -> None:
+    if not _all_prose_token_occurrences_are_age(token=token, text=original_persona):
+        raise SolAdjudicationError(
+            "Outbound adjudication payload contains a restricted row token"
+        )
+    for field, value in candidate_facts.items():
+        if not _fact_allows_age_token(field=field, value=value, token=token):
+            raise SolAdjudicationError(
+                "Outbound adjudication payload contains a restricted row token"
+            )
+    for field, pair in changed_fact_hints.items():
+        if not _hint_allows_age_token(field=field, pair=pair, token=token):
+            raise SolAdjudicationError(
+                "Outbound adjudication payload contains a restricted row token"
+            )
+
+
+def _all_prose_token_occurrences_are_age(*, token: str, text: str) -> bool:
+    for match in _token_occurrences(token=token, text=text):
+        suffix = text[match.end() :]
+        if not re.match(r"(?:\s|-)?år(?:ig)?(?![A-Za-zÆØÅæøå])", suffix):
+            return False
+    return True
+
+
+def _token_occurrences(*, token: str, text: str) -> list[re.Match[str]]:
+    pattern = rf"(?<!{_TOKEN_BOUNDARY}){re.escape(token)}(?!{_TOKEN_BOUNDARY})"
+    return list(re.finditer(pattern, text))
+
+
+def _fact_allows_age_token(*, field: str, value: JSONValue, token: str) -> bool:
+    if not _json_value_contains_token(value=value, token=token):
+        return True
+    return field == "age" and _json_value_is_numeric_token(value=value, token=token)
+
+
+def _json_value_contains_token(*, value: JSONValue, token: str) -> bool:
+    return _token_in_text(token=token, text=canonical_json(value))
+
+
+def _token_in_text(*, token: str, text: str) -> bool:
+    return bool(_token_occurrences(token=token, text=text))
+
+
+def _json_value_is_numeric_token(*, value: JSONValue, token: str) -> bool:
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and str(value) == token
+    )
+
+
+def _hint_allows_age_token(
+    *, field: str, pair: dict[str, JSONValue], token: str
+) -> bool:
+    if not _json_value_contains_token(value=pair, token=token):
+        return True
+    if field != "age":
+        return False
+    return all(
+        _json_value_is_numeric_token(value=value, token=token)
+        for value in pair.values()
+        if _json_value_contains_token(value=value, token=token)
+    )
+
+
+def _reject_protected_token(*, token: str, values: tuple[str, ...]) -> None:
+    for value in values:
+        if _token_in_text(token=token, text=value):
+            raise SolAdjudicationError(
+                "Outbound adjudication payload contains a restricted row token"
+            )
+
+
+def _protected_row_tokens(
+    *, candidate_row: dict[str, object], original_row: dict[str, object] | None
+) -> frozenset[str]:
+    return frozenset(
+        _protected_row_token_fields(
+            candidate_row=candidate_row, original_row=original_row
+        )
+    )
 
 
 def _validated_changed_fact_hints(

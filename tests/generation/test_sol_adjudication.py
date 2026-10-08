@@ -242,6 +242,26 @@ def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None
         )
 
 
+def test_preflight_allows_municipality_code_age_collision() -> None:
+    """Permit a protected municipality code only as verified age text."""
+    preflight_sol_adjudication_payload(
+        original_persona="Hun er 101 år og bor i en dansk kommune.",
+        candidate_row={
+            "municipality_code": "101",
+            "age": 101,
+            "municipality": "København",
+            "job_title": "lærer",
+        },
+        original_row={
+            "municipality_code": "101",
+            "age": 101,
+            "municipality": "København",
+            "job_title": "lærer",
+        },
+        prompt=_PROMPT,
+    )
+
+
 def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> None:
     """Raw IDs and source codes are token-matched in outbound prose and facts."""
     requests: list[httpx.Request] = []
@@ -317,6 +337,67 @@ def test_preflight_rejects_all_banned_identity_variants() -> None:
                 candidate_row={"age": 42},
                 prompt=_PROMPT,
             )
+
+
+def test_preflight_rejects_municipality_age_collision_near_misses() -> None:
+    """Keep protected codes blocked outside verified age representations."""
+    base_candidate: dict[str, object] = {
+        "municipality_code": "101",
+        "age": 101,
+        "municipality": "København",
+        "job_title": "lærer",
+    }
+    base_original: dict[str, object] = {
+        "municipality_code": "101",
+        "age": 101,
+        "municipality": "København",
+        "job_title": "lærer",
+    }
+
+    with pytest.raises(SolAdjudicationError):
+        preflight_sol_adjudication_payload(
+            original_persona="Kommune 101 er nævnt i teksten.",
+            candidate_row=base_candidate,
+            original_row=base_original,
+            prompt=_PROMPT,
+        )
+
+    with pytest.raises(SolAdjudicationError):
+        preflight_sol_adjudication_payload(
+            original_persona="Hun er 101 år og bor i en dansk kommune.",
+            candidate_row=base_candidate,
+            original_row={**base_original, "age": 100},
+            prompt=_PROMPT,
+        )
+
+    with pytest.raises(SolAdjudicationError):
+        preflight_sol_adjudication_payload(
+            original_persona="Hun er 101 år og bor i en dansk kommune.",
+            candidate_row={**base_candidate, "origin_country_code": "101"},
+            original_row=base_original,
+            prompt=_PROMPT,
+        )
+
+
+def test_preflight_rejects_municipality_code_in_unrelated_fact() -> None:
+    """Reject the same numeric token when another fact carries it."""
+    with pytest.raises(SolAdjudicationError):
+        preflight_sol_adjudication_payload(
+            original_persona="Hun er 101 år og bor i en dansk kommune.",
+            candidate_row={
+                "municipality_code": "101",
+                "age": 101,
+                "municipality": "København",
+                "job_title": "lærer 101",
+            },
+            original_row={
+                "municipality_code": "101",
+                "age": 101,
+                "municipality": "København",
+                "job_title": "lærer",
+            },
+            prompt=_PROMPT,
+        )
 
 
 def test_rejects_nonunique_and_over_budget_patches() -> None:
