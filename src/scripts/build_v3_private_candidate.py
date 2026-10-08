@@ -14,6 +14,7 @@ import click
 import httpx
 import polars as pl
 
+from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
     SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
@@ -21,7 +22,10 @@ from danish_personas.generation.proxy_budget import (
     V3_ADJUDICATION_PURPOSE,
     ProxyBudget,
 )
-from danish_personas.generation.sol_adjudication import run_sol_adjudication
+from danish_personas.generation.sol_adjudication import (
+    SolAdjudicationResponse,
+    run_sol_adjudication,
+)
 from danish_personas.io import canonical_json, sha256_file, sha256_text
 from danish_personas.release.candidate_validation import validate_release_candidate
 from scripts import adjudicate_persona_v3 as campaign
@@ -36,7 +40,8 @@ DEFAULT_CAMPAIGN = ROOT / "v3-private/campaign"
 DEFAULT_OUTPUT = ROOT / "v3-private/composed-candidate.parquet"
 DEFAULT_PATCHES = ROOT / "v3-private/composed-candidate.vetted.json"
 DEFAULT_REPORT = ROOT / "v3-private/composed-candidate.report.json"
-BUNDLE = Path("data/processed/6e27b5c08fbeae79")
+DEFAULT_PREHOTFIX = ROOT / "hf-v2-final-verify/data/train-00000-of-00001.parquet"
+PREHOTFIX_SHA256 = "02d96101eaa0d4e21485e7ef788489a86d45e06933910d32e205175a40cc675b"
 
 
 class ComposeError(RuntimeError):
@@ -57,6 +62,17 @@ class ComposeError(RuntimeError):
     "--patch-manifest", type=click.Path(path_type=Path), default=DEFAULT_PATCHES
 )
 @click.option("--report", type=click.Path(path_type=Path), default=DEFAULT_REPORT)
+@click.option(
+    "--bundle",
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    required=True,
+)
+@click.option(
+    "--prehotfix",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_PREHOTFIX,
+    show_default=True,
+)
 def main(
     original: Path,
     candidate: Path,
@@ -65,6 +81,8 @@ def main(
     output: Path,
     patch_manifest: Path,
     report: Path,
+    bundle: Path,
+    prehotfix: Path,
 ) -> None:
     """Compose after review completes.
 
@@ -80,6 +98,8 @@ def main(
             output,
             patch_manifest,
             report,
+            bundle,
+            prehotfix,
         )
     except (ComposeError, OSError, ValueError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -94,6 +114,8 @@ def compose(  # noqa: C901, PLR0912
     output: Path,
     patch_path: Path,
     report_path: Path,
+    bundle_dir: Path,
+    prehotfix_path: Path,
 ) -> dict[str, object]:
     """Validate campaign evidence and write a private release candidate.
 
@@ -106,10 +128,16 @@ def compose(  # noqa: C901, PLR0912
     paths = (output, patch_path, report_path)
     if len(set(paths)) != len(paths) or any(path.exists() for path in paths):
         raise ComposeError("Output paths must be distinct and not already exist")
-    original_frame, candidate_frame = (
+    if not bundle_dir.is_dir():
+        raise ComposeError("Source bundle path is unavailable")
+    if sha256_file(prehotfix_path) != PREHOTFIX_SHA256:
+        raise ComposeError("Pinned pre-hotfix v2 baseline checksum mismatch")
+    original_frame, candidate_frame, prehotfix_frame = (
         pl.read_parquet(original),
         pl.read_parquet(candidate),
+        pl.read_parquet(prehotfix_path),
     )
+    _check_prehotfix_alignment(original_frame, prehotfix_frame)
     if (
         original_frame.height != campaign.EXPECTED_ROWS
         or candidate_frame.height != campaign.EXPECTED_ROWS
@@ -195,7 +223,9 @@ def compose(  # noqa: C901, PLR0912
         campaign=campaign.CAMPAIGN,
         source_hash=sha256_text(canonical_json(inputs)),
         prompt_hash=inputs["prompt_sha256"],
-        schema_hash=inputs["schema_sha256"],
+        schema_hash=sha256_text(
+            canonical_json(SolAdjudicationResponse.provider_json_schema())
+        ),
         model=SOL_ADJUDICATION_MODEL,
         input_usd_per_million="0.1",
         output_usd_per_million="0.5",
@@ -297,7 +327,7 @@ def compose(  # noqa: C901, PLR0912
         != {k: v for k, v in b.items() if k != campaign.TEXT_FIELD}
     ):
         raise ComposeError("Non-prose candidate field changed")
-    _check_pinned_marginals(original_frame, candidate_frame, final)
+    _check_pinned_marginals(original_frame, candidate_frame, final, prehotfix_frame)
     parquet = final.write_parquet()
     candidate_hash = hashlib.sha256(parquet).hexdigest()
     allowed = sorted(
@@ -322,7 +352,7 @@ def compose(  # noqa: C901, PLR0912
     validation = validate_release_candidate(
         candidate_path=output,
         original_path=original,
-        bundle_dir=BUNDLE,
+        bundle_dir=bundle_dir,
         vetted_patch_manifest_path=patch_path,
     )
     if not validation.passes_hard_gates:
@@ -342,22 +372,51 @@ def compose(  # noqa: C901, PLR0912
     return summary
 
 
-def _check_pinned_marginals(
-    original: pl.DataFrame, candidate: pl.DataFrame, final: pl.DataFrame
+def _check_prehotfix_alignment(
+    published: pl.DataFrame, prehotfix: pl.DataFrame
 ) -> None:
+    if (
+        published.height != campaign.EXPECTED_ROWS
+        or prehotfix.height != campaign.EXPECTED_ROWS
+    ):
+        raise ComposeError("Pre-hotfix baseline row count mismatch")
+    allowed = {"detailed_status_code", "detailed_status"}
+    published_rows, prehotfix_rows = published.to_dicts(), prehotfix.to_dicts()
+    if any(
+        {key: value for key, value in old.items() if key not in allowed}
+        != {key: value for key, value in new.items() if key not in allowed}
+        for old, new in zip(published_rows, prehotfix_rows, strict=True)
+    ):
+        raise ComposeError("Pre-hotfix baseline differs beyond detailed status fields")
+
+
+def _check_pinned_marginals(
+    original: pl.DataFrame,
+    candidate: pl.DataFrame,
+    final: pl.DataFrame,
+    prehotfix: pl.DataFrame,
+) -> None:
+    fields = (
+        "age",
+        "sex",
+        "labour_market_status",
+        "detailed_status_code",
+        "detailed_status",
+    )
+    if any(field not in prehotfix.columns for field in fields):
+        raise ComposeError("Pre-hotfix detailed status marginals are unavailable")
+    baseline_counts = Counter(
+        tuple(row[field] for field in fields) for row in prehotfix.to_dicts()
+    )
     for frame in (candidate, final):
-        counts = Counter(
-            (row["age"], row["labour_market_status"])
-            for row in frame.to_dicts()
-            if row.get("age") in (20, 22)
-        )
-        base = Counter(
-            (row["age"], row["labour_market_status"])
-            for row in original.to_dicts()
-            if row.get("age") in (20, 22)
-        )
-        if counts != base:
-            raise ComposeError("Pinned exact-age status totals drifted")
+        if (
+            any(field not in frame.columns for field in fields)
+            or Counter(
+                tuple(row[field] for field in fields) for row in frame.to_dicts()
+            )
+            != baseline_counts
+        ):
+            raise ComposeError("Pinned exact-age detailed status totals drifted")
     if "origin_country_code" not in original.columns or "sex" not in original.columns:
         raise ComposeError("Published origin marginal fields are unavailable")
     if "age" not in original.columns:
@@ -403,4 +462,5 @@ def _write_new(path: Path, content: bytes) -> None:
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()
