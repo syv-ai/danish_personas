@@ -98,7 +98,7 @@ def main(
     click.echo(json.dumps(result, sort_keys=True))
 
 
-def followup(  # noqa: C901
+def followup(  # noqa: C901, PLR0912
     *,
     base_dir: Path,
     candidate: Path,
@@ -264,7 +264,24 @@ def followup(  # noqa: C901
                     changed_fact_hints=hints,
                     original_row=prior,
                 )
-            except SolAdjudicationError:
+            except SolAdjudicationError as exc:
+                digest = id_hashes[index]
+                _append(
+                    status_path,
+                    status,
+                    {
+                        "persona_hash": digest,
+                        "disposition": "preflight_failed",
+                        "result_sha256": sha256_text(f"{digest}:preflight_failed"),
+                        "base_result_sha256": next(
+                            x["result_sha256"]
+                            for x in selected_items
+                            if x["persona_hash"] == digest
+                        ),
+                        "evidence_sha256": sha256_text(str(exc)),
+                    },
+                )
+                done.add(digest)
                 continue
             digest = id_hashes[index]
             cp = output_dir / "checkpoints" / digest[:2] / f"{digest}.json"
@@ -285,9 +302,24 @@ def followup(  # noqa: C901
             ] = (index, cp)
         for future in concurrent.futures.as_completed(tasks):
             index, cp = tasks[future]
-            result = future.result()
             digest = id_hashes[index]
-            doc = _json(cp)
+            base_item = next(x for x in selected_items if x["persona_hash"] == digest)
+            try:
+                result = future.result()
+                doc = _json(cp)
+            except Exception as exc:
+                _append(
+                    status_path,
+                    status,
+                    {
+                        "persona_hash": digest,
+                        "disposition": "request_failed",
+                        "result_sha256": sha256_text(f"{digest}:request_failed"),
+                        "base_result_sha256": base_item.get("result_sha256"),
+                        "evidence_sha256": sha256_text(type(exc).__name__),
+                    },
+                )
+                continue
             _append(
                 status_path,
                 status,
@@ -305,6 +337,17 @@ def followup(  # noqa: C901
                     ),
                 },
             )
+    if status["progress"]["pending"] != 0 or status["progress"]["completed"] != len(
+        selection
+    ):
+        raise RuntimeError("Follow-up has pending rows; refusing successful completion")
+    expected_counts: dict[str, int] = {}
+    for item in status["processed"]:
+        expected_counts[item["disposition"]] = (
+            expected_counts.get(item["disposition"], 0) + 1
+        )
+    if status.get("counts") != expected_counts:
+        raise RuntimeError("Follow-up disposition totals mismatch")
     return {
         "campaign": FOLLOWUP_CAMPAIGN,
         "dry_run": False,
@@ -328,7 +371,9 @@ def _write_bound(path: Path, value: dict[str, Any]) -> None:
     _write_private_json(path=path, value=value)
 
 
-def _resume_status(path: Path, manifest: dict[str, Any], total: int) -> dict[str, Any]:
+def _resume_status(  # noqa: C901, PLR0912
+    path: Path, manifest: dict[str, Any], total: int
+) -> dict[str, Any]:
     if path.exists():
         status = _json(path)
         if status.get("input_hashes") != manifest["input_hashes"]:
@@ -336,11 +381,46 @@ def _resume_status(path: Path, manifest: dict[str, Any], total: int) -> dict[str
         processed = status.get("processed")
         if not isinstance(processed, list):
             raise RuntimeError("Follow-up status is invalid")
+        if (
+            status.get("campaign") != FOLLOWUP_CAMPAIGN
+            or status.get("version") != 1
+            or status.get("selected_total") != total
+            or status.get("progress")
+            != {
+                "completed": len(processed),
+                "total": total,
+                "pending": total - len(processed),
+            }
+            or len({row.get("persona_hash") for row in processed}) != len(processed)
+        ):
+            raise RuntimeError(
+                "Follow-up status progress or identity binding is invalid"
+            )
+        counts: dict[str, int] = {}
         for item in processed:
             if item.get("result_sha256") != sha256_text(
                 f"{item.get('persona_hash')}:{item.get('disposition')}"
             ):
                 raise RuntimeError("Follow-up result digest mismatch")
+            if item.get("disposition") in {"patched", "consistent", "unresolved"}:
+                checkpoint = item.get("checkpoint")
+                cp = (
+                    path.parent / checkpoint
+                    if isinstance(checkpoint, str)
+                    else Path("/")
+                )
+                if (
+                    not cp.is_relative_to(path.parent)
+                    or not cp.is_file()
+                    or sha256_file(cp) != item.get("checkpoint_sha256")
+                ):
+                    raise RuntimeError("Follow-up checkpoint binding mismatch")
+                doc = _json(cp)
+                if doc.get("response_sha256") != item.get("response_sha256"):
+                    raise RuntimeError("Follow-up response binding mismatch")
+            counts[item["disposition"]] = counts.get(item["disposition"], 0) + 1
+        if status.get("counts") != counts:
+            raise RuntimeError("Follow-up disposition totals mismatch")
         return status
     return {
         "campaign": FOLLOWUP_CAMPAIGN,
