@@ -629,8 +629,6 @@ def _run_sol_followup_adapter(
     )
 
 
-load_repository_environment()
-
-
 if __name__ == "__main__":
+    load_repository_environment()
     main()
