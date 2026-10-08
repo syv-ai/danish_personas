@@ -247,8 +247,13 @@ class ProxyBudget:
             model = matching_models[0]
             cost = model["cost"]
             inputs, outputs = cost["input"], cost["output"]
+            registry_token_limit = (
+                DEFAULT_MAX_TOKENS
+                if self.pins["model"] == SOL_ADJUDICATION_MODEL
+                else self.pins["max_tokens"]
+            )
             if (
-                model["maxTokens"] != self.pins["max_tokens"]
+                model["maxTokens"] != registry_token_limit
                 or Decimal(str(inputs))
                 != Decimal(str(self.pins["input_usd_per_million"]))
                 or Decimal(str(outputs))

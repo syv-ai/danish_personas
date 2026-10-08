@@ -480,7 +480,7 @@ def _sol_registry(path: Path, *, price: str = "2", output_price: str = "10") -> 
         price=price,
         output_price=output_price,
         model=proxy_budget.SOL_ADJUDICATION_MODEL,
-        max_tokens=proxy_budget.SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
+        max_tokens=proxy_budget.DEFAULT_MAX_TOKENS,
     )
 
 
