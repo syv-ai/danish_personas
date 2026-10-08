@@ -7,7 +7,7 @@ import json
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias, cast
 
 import click
 import httpx
@@ -42,6 +42,9 @@ from scripts.adjudicate_persona_release import (
     _prepare_private_output,
     _write_private_json,
 )
+
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONDocument: TypeAlias = JSONScalar | list["JSONDocument"] | dict[str, "JSONDocument"]
 
 ROOT = Path("/tmp/danish-personas-audit")
 ORIGINAL = ROOT / "hf-v2-foreign-hotfix-remote/data/train-00000-of-00001.parquet"
@@ -879,7 +882,7 @@ def _record_validation_failure(
         "batches": batches,
     }
     path = _validation_evidence_path(output_dir=output_dir, digest=digest)
-    _write_private_json(path=path, value=evidence)
+    _write_private_json(path=path, value=cast(dict[str, JSONDocument], evidence))
     return {
         "persona_hash": digest,
         "disposition": "validation_failed",
