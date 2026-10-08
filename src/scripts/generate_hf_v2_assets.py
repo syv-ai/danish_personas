@@ -286,7 +286,7 @@ def _ocean_chart_png(*, frame: pl.DataFrame) -> bytes:
 
     fig, axes = plt.subplots(nrows=5, ncols=1, figsize=(10.5, 12.0), sharex=True)
     for axis, (field, label) in zip(axes, OCEAN_FIELDS, strict=True):
-        values = [float(value) for value in frame.get_column(field).drop_null()]
+        values = [float(value) for value in frame.get_column(field).drop_nulls()]
         axis.hist(values, bins=12, color="#386cb0", edgecolor="white")
         axis.set_ylabel("Records")
         axis.set_title(label)
