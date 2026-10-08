@@ -62,8 +62,15 @@ SolRunner: t.TypeAlias = c.Callable[
     SolAdjudicationResult,
 ]
 Disposition: t.TypeAlias = t.Literal[
-    "consistent", "patched", "unresolved", "privacy_blocked"
+    "consistent", "patched", "unresolved", "privacy_blocked", "validation_failed"
 ]
+LOCAL_VALIDATION_FAILURE = "Sol response failed bounded local validation retries"
+ROW_ATTEMPT_LIFETIME_EXHAUSTED = "Per-row proxy attempt lifetime exhausted"
+MAX_ROW_ATTEMPTS = 10
+LOCAL_VALIDATION_COMPLETIONS = 3
+MAX_LOCAL_VALIDATION_BATCHES = (
+    MAX_ROW_ATTEMPTS + LOCAL_VALIDATION_COMPLETIONS - 1
+) // LOCAL_VALIDATION_COMPLETIONS
 
 
 @click.command()
@@ -557,6 +564,7 @@ def _dry_run_summary(
         "patched": 0,
         "unresolved": 0,
         "privacy_blocked": len(selection.privacy_blocked_hashes),
+        "validation_failed": 0,
         "workers": workers,
     }
 
@@ -598,6 +606,12 @@ def _validate_status(*, status: dict[str, object], output_dir: Path) -> None:
         checkpoint = first_pass._checkpoint_path(
             output_dir=output_dir, persona_hash=persona_hash
         )
+        if record["disposition"] == "validation_failed":
+            if checkpoint.exists():
+                raise H90AdjudicationError(
+                    "Status validation-failed row unexpectedly has a checkpoint"
+                )
+            continue
         if record.get("checkpoint") != first_pass._checkpoint_reference(
             output_dir=output_dir, path=checkpoint
         ):
@@ -611,7 +625,10 @@ def _validate_status(*, status: dict[str, object], output_dir: Path) -> None:
             "response_sha256"
         ):
             raise H90AdjudicationError("Status response hash does not match")
-    if status.get("counts") != _counts_from_processed(processed=processed):
+    if not _status_counts_match(
+        observed=status.get("counts"),
+        expected=_counts_from_processed(processed=processed),
+    ):
         raise H90AdjudicationError("Status counts are inconsistent")
 
 
@@ -668,6 +685,15 @@ def _validate_processed_checkpoints(
                 raise H90AdjudicationError(
                     "Status references a row outside the provider selection"
                 )
+            if record["disposition"] == "validation_failed":
+                checkpoint_path = first_pass._checkpoint_path(
+                    output_dir=output_dir, persona_hash=row.persona_hash
+                )
+                if checkpoint_path.exists():
+                    raise H90AdjudicationError(
+                        "Validation-failed Sol row unexpectedly has a checkpoint"
+                    )
+                continue
             checkpoint_path = first_pass._checkpoint_path(
                 output_dir=output_dir, persona_hash=row.persona_hash
             )
@@ -813,27 +839,48 @@ def _run_one_row(
         output_dir=output_dir, persona_hash=row.persona_hash
     )
     try:
-        result = sol_runner(
-            str(row.candidate_row[first_pass.PERSONA_FIELD]),
-            row.candidate_row,
-            prompt,
-            config,
-            budget,
-            checkpoint_path,
-            transport,
-            row.changed_facts,
-            row.original_row,
-        )
+        for batch in range(MAX_LOCAL_VALIDATION_BATCHES):
+            try:
+                result = sol_runner(
+                    str(row.candidate_row[first_pass.PERSONA_FIELD]),
+                    row.candidate_row,
+                    prompt,
+                    config,
+                    budget,
+                    checkpoint_path,
+                    transport,
+                    row.changed_facts,
+                    row.original_row,
+                )
+            except SolAdjudicationError as exc:
+                if not _is_local_validation_failure(exc=exc):
+                    raise
+                if batch + 1 == MAX_LOCAL_VALIDATION_BATCHES:
+                    return _validation_failed_result(
+                        persona_hash=row.persona_hash, checkpoint_path=checkpoint_path
+                    )
+                continue
+            except ProxyBudgetError as exc:
+                if _is_row_attempt_lifetime_exhausted(exc=exc):
+                    return _validation_failed_result(
+                        persona_hash=row.persona_hash, checkpoint_path=checkpoint_path
+                    )
+                raise
+            return H90RowResult(
+                persona_hash=row.persona_hash,
+                disposition=result.disposition,
+                checkpoint=first_pass._checkpoint_reference(
+                    output_dir=output_dir, path=checkpoint_path
+                ),
+                checkpoint_sha256=sha256_file(checkpoint_path),
+                response_sha256=first_pass._checkpoint_response_hash(
+                    path=checkpoint_path
+                ),
+            )
     finally:
         transport.close()
-    return H90RowResult(
-        persona_hash=row.persona_hash,
-        disposition=result.disposition,
-        checkpoint=first_pass._checkpoint_reference(
-            output_dir=output_dir, path=checkpoint_path
-        ),
-        checkpoint_sha256=sha256_file(checkpoint_path),
-        response_sha256=first_pass._checkpoint_response_hash(path=checkpoint_path),
+    return _validation_failed_result(
+        persona_hash=row.persona_hash, checkpoint_path=checkpoint_path
     )
 
 
@@ -863,7 +910,7 @@ def _record_status_result(*, status: dict[str, object], result: H90RowResult) ->
         "persona_hash": result.persona_hash,
         "disposition": result.disposition,
     }
-    if result.disposition != "privacy_blocked":
+    if result.disposition not in {"privacy_blocked", "validation_failed"}:
         if (
             result.checkpoint is None
             or result.checkpoint_sha256 is None
@@ -901,6 +948,7 @@ def _status_summary(
         "patched": counts["patched"],
         "unresolved": counts["unresolved"],
         "privacy_blocked": counts["privacy_blocked"],
+        "validation_failed": counts["validation_failed"],
         "workers": workers,
         "budget": None,
     }
@@ -923,10 +971,16 @@ def _processed_records(*, status: dict[str, object]) -> list[dict[str, str]]:
             "patched",
             "unresolved",
             "privacy_blocked",
+            "validation_failed",
         }:
             raise H90AdjudicationError("Status processed rows are invalid")
         record = {"persona_hash": persona_hash, "disposition": str(disposition)}
-        if disposition == "privacy_blocked":
+        if disposition in {"privacy_blocked", "validation_failed"}:
+            if disposition == "validation_failed" and any(
+                key in item
+                for key in ("checkpoint", "checkpoint_sha256", "response_sha256")
+            ):
+                raise H90AdjudicationError("Status processed rows are invalid")
             records.append(record)
             continue
         checkpoint = item.get("checkpoint")
@@ -958,7 +1012,41 @@ def _counts_from_processed(*, processed: list[dict[str, str]]) -> dict[str, int]
 
 
 def _zero_counts() -> dict[str, int]:
-    return {"consistent": 0, "patched": 0, "unresolved": 0, "privacy_blocked": 0}
+    return {
+        "consistent": 0,
+        "patched": 0,
+        "unresolved": 0,
+        "privacy_blocked": 0,
+        "validation_failed": 0,
+    }
+
+
+def _status_counts_match(*, observed: object, expected: dict[str, int]) -> bool:
+    if observed == expected:
+        return True
+    if expected["validation_failed"] != 0 or not isinstance(observed, dict):
+        return False
+    legacy_expected = dict(expected)
+    legacy_expected.pop("validation_failed")
+    return observed == legacy_expected
+
+
+def _is_local_validation_failure(*, exc: SolAdjudicationError) -> bool:
+    return str(exc) == LOCAL_VALIDATION_FAILURE
+
+
+def _is_row_attempt_lifetime_exhausted(*, exc: ProxyBudgetError) -> bool:
+    return str(exc) == ROW_ATTEMPT_LIFETIME_EXHAUSTED
+
+
+def _validation_failed_result(
+    *, persona_hash: str, checkpoint_path: Path
+) -> H90RowResult:
+    if checkpoint_path.exists():
+        raise H90AdjudicationError(
+            "Validation-failed Sol row unexpectedly has a checkpoint"
+        )
+    return H90RowResult(persona_hash=persona_hash, disposition="validation_failed")
 
 
 def _is_sha256(*, value: object) -> bool:
