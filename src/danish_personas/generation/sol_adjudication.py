@@ -20,6 +20,7 @@ from .client import OpenAIClient
 from .models import GenerationConfig, LLMResponse
 from .proxy_budget import (
     BASE_URL,
+    SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     SOL_ADJUDICATION_PURPOSE,
     JSONValue,
@@ -597,7 +598,7 @@ def _build_binding(
     if (
         budget.pins.get("model") != SOL_ADJUDICATION_MODEL
         or budget.pins.get("base_url") != BASE_URL
-        or budget.pins.get("max_tokens") != SOL_MAX_OUTPUT_TOKENS
+        or budget.pins.get("max_tokens") != SOL_ADJUDICATION_LEDGER_MAX_TOKENS
         or budget.pins.get("prompt_hash") != prompt_hash
         or budget.pins.get("schema_hash") != schema_hash
         or budget.pins.get("uncapped") is not True
