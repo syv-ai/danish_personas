@@ -78,15 +78,6 @@ def test_merge_excludes_stale_v4_overlap_and_preserves_original_h90_prose() -> N
     assert preview.drop("persona").to_dicts() == v5_h90.drop("persona").to_dicts()
 
 
-def _row(persona_id: str, persona: str, job_title: str) -> dict[str, object]:
-    return {
-        "persona_id": persona_id,
-        "persona": persona,
-        "job_title": job_title,
-        "age": 41,
-    }
-
-
 def _first_record(
     *,
     persona_id: str,
@@ -106,6 +97,15 @@ def _first_record(
         "proposed_text": proposed_text,
         "patches": [{"old_excerpt": old, "new_excerpt": new}],
         "changed_facts": {"job_title": {"old": old, "new": new}},
+    }
+
+
+def _row(persona_id: str, persona: str, job_title: str) -> dict[str, object]:
+    return {
+        "persona_id": persona_id,
+        "persona": persona,
+        "job_title": job_title,
+        "age": 41,
     }
 
 

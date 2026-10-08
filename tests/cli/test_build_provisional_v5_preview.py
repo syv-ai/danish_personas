@@ -27,48 +27,6 @@ from tests.cli.test_verify_persona_patches import (
 )
 
 
-class _FakeBudget:
-    """Minimal patch-verification budget with stable binding pins."""
-
-    overhead = 0
-
-    def __init__(self, **kwargs: object) -> None:
-        self.uncapped = bool(kwargs["uncapped"])
-        self.uncapped_purpose = str(kwargs["uncapped_purpose"])
-        self.pins: dict[str, object] = {
-            "type": "header",
-            "model": verify.MODEL,
-            "base_url": verify.BASE_URL,
-            "max_tokens": 128_000,
-            "input_usd_per_million": "0.1",
-            "output_usd_per_million": "0.5",
-            "campaign": kwargs["campaign"],
-            "source_hash": kwargs["source_hash"],
-            "prompt_hash": kwargs["prompt_hash"],
-            "schema_hash": kwargs["schema_hash"],
-            "uncapped": True,
-            "uncapped_purpose": kwargs["uncapped_purpose"],
-        }
-
-    def record_usage(
-        self,
-        request_id: str,
-        *,
-        input_tokens: int,
-        output_tokens: int,
-        response_sha256: str,
-    ) -> None:
-        assert request_id
-        assert input_tokens >= 0
-        assert output_tokens >= 0
-        assert len(response_sha256) == 64
-
-    def reserve_attempt(self, request_id: str, request: dict[str, object]) -> Decimal:
-        assert request_id
-        assert request
-        return Decimal("0")
-
-
 def test_build_dry_run_and_write_preserve_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -98,51 +56,10 @@ def test_build_dry_run_and_write_preserve_permissions(
     assert "analytiker" in _persona(frame=frame, persona_id="patched-row")
 
 
-def test_stale_h90_checkpoint_fails_closed_before_provider(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Changed checkpoint bindings are rejected rather than regenerated."""
-    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
-    paths = _write_complete_fixture(tmp_path)
-    status = json.loads(paths.h90_second_status.read_text(encoding="utf-8"))
-    persona_hash = status["processed_persona_hashes"][0]
-    checkpoint = verify._checkpoint_path(
-        output_dir=paths.h90_second_checkpoint_root, persona_hash=persona_hash
-    )
-    document = json.loads(checkpoint.read_text(encoding="utf-8"))
-    document["accepted"] = False
-    checkpoint.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
-    checkpoint.chmod(0o600)
-
-    output = tmp_path / "private-output" / "merged-v5-PROVISIONAL.parquet"
-    with pytest.raises(
-        preview.ProvisionalV5PreviewError, match="checkpoint validation failed"
-    ) as exc_info:
-        _build(paths=paths, output=output, write_output=False)
-
-    assert isinstance(
-        exc_info.value.__cause__, v4_candidate.ProvisionalProseCandidateError
-    )
-    assert "patched-row" not in str(exc_info.value)
-    assert not output.exists()
-
-
-def test_refuses_overwrite_and_publication_like_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Unsafe write targets fail before any provider or checkpoint work."""
-    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
-    paths = _write_complete_fixture(tmp_path)
-    existing = tmp_path / "safe" / "merged-v5-PROVISIONAL.parquet"
-    existing.parent.mkdir()
-    existing.write_text("exists", encoding="utf-8")
-
-    with pytest.raises(preview.ProvisionalV5PreviewError, match="overwrite"):
-        _build(paths=paths, output=existing, write_output=True)
-    with pytest.raises(preview.ProvisionalV5PreviewError, match="publication-like"):
-        _build(
-            paths=paths, output=tmp_path / "publication-v1.parquet", write_output=True
-        )
+def _persona(*, frame: pl.DataFrame, persona_id: str) -> str:
+    value = frame.filter(pl.col("persona_id") == persona_id)["persona"].item()
+    assert isinstance(value, str)
+    return value
 
 
 class _AllPaths(t.NamedTuple):
@@ -294,10 +211,6 @@ def _write_h90_first_campaign(
     return paths
 
 
-def _write_v4_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
-    _write_second_campaign(paths=paths, accepted=accepted, h90=False)
-
-
 def _write_h90_second_campaign(*, paths: FixturePaths) -> None:
     _write_second_campaign(paths=paths, accepted=True, h90=True)
 
@@ -364,6 +277,48 @@ def _write_second_campaign(*, paths: FixturePaths, accepted: bool, h90: bool) ->
     _write_json(paths.output_dir / "status.json", status)
 
 
+class _FakeBudget:
+    """Minimal patch-verification budget with stable binding pins."""
+
+    overhead = 0
+
+    def __init__(self, **kwargs: object) -> None:
+        self.uncapped = bool(kwargs["uncapped"])
+        self.uncapped_purpose = str(kwargs["uncapped_purpose"])
+        self.pins: dict[str, object] = {
+            "type": "header",
+            "model": verify.MODEL,
+            "base_url": verify.BASE_URL,
+            "max_tokens": 128_000,
+            "input_usd_per_million": "0.1",
+            "output_usd_per_million": "0.5",
+            "campaign": kwargs["campaign"],
+            "source_hash": kwargs["source_hash"],
+            "prompt_hash": kwargs["prompt_hash"],
+            "schema_hash": kwargs["schema_hash"],
+            "uncapped": True,
+            "uncapped_purpose": kwargs["uncapped_purpose"],
+        }
+
+    def record_usage(
+        self,
+        request_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        response_sha256: str,
+    ) -> None:
+        assert request_id
+        assert input_tokens >= 0
+        assert output_tokens >= 0
+        assert len(response_sha256) == 64
+
+    def reserve_attempt(self, request_id: str, request: dict[str, object]) -> Decimal:
+        assert request_id
+        assert request
+        return Decimal("0")
+
+
 def _review(*, row: verify.VerifyRow, accepted: bool) -> str:
     if not accepted:
         return json.dumps(
@@ -401,7 +356,52 @@ def _transport(response_content: str) -> httpx.MockTransport:
     return httpx.MockTransport(respond)
 
 
-def _persona(*, frame: pl.DataFrame, persona_id: str) -> str:
-    value = frame.filter(pl.col("persona_id") == persona_id)["persona"].item()
-    assert isinstance(value, str)
-    return value
+def _write_v4_second_campaign(*, paths: FixturePaths, accepted: bool) -> None:
+    _write_second_campaign(paths=paths, accepted=accepted, h90=False)
+
+
+def test_refuses_overwrite_and_publication_like_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unsafe write targets fail before any provider or checkpoint work."""
+    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
+    paths = _write_complete_fixture(tmp_path)
+    existing = tmp_path / "safe" / "merged-v5-PROVISIONAL.parquet"
+    existing.parent.mkdir()
+    existing.write_text("exists", encoding="utf-8")
+
+    with pytest.raises(preview.ProvisionalV5PreviewError, match="overwrite"):
+        _build(paths=paths, output=existing, write_output=True)
+    with pytest.raises(preview.ProvisionalV5PreviewError, match="publication-like"):
+        _build(
+            paths=paths, output=tmp_path / "publication-v1.parquet", write_output=True
+        )
+
+
+def test_stale_h90_checkpoint_fails_closed_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changed checkpoint bindings are rejected rather than regenerated."""
+    monkeypatch.setattr(verify, "ProxyBudget", _FakeBudget)
+    paths = _write_complete_fixture(tmp_path)
+    status = json.loads(paths.h90_second_status.read_text(encoding="utf-8"))
+    persona_hash = status["processed_persona_hashes"][0]
+    checkpoint = verify._checkpoint_path(
+        output_dir=paths.h90_second_checkpoint_root, persona_hash=persona_hash
+    )
+    document = json.loads(checkpoint.read_text(encoding="utf-8"))
+    document["accepted"] = False
+    checkpoint.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+
+    output = tmp_path / "private-output" / "merged-v5-PROVISIONAL.parquet"
+    with pytest.raises(
+        preview.ProvisionalV5PreviewError, match="checkpoint validation failed"
+    ) as exc_info:
+        _build(paths=paths, output=output, write_output=False)
+
+    assert isinstance(
+        exc_info.value.__cause__, v4_candidate.ProvisionalProseCandidateError
+    )
+    assert "patched-row" not in str(exc_info.value)
+    assert not output.exists()
