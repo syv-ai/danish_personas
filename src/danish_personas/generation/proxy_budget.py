@@ -299,44 +299,6 @@ class ProxyBudget:
         ) as exc:
             raise ProxyBudgetError("Budget ledger is malformed or truncated") from exc
 
-    def usage_summary(self) -> dict[str, JSONValue]:
-        """Return aggregate usage and an unverified billing estimate.
-
-        The estimate is derived only from durable ledger records and pinned list
-        prices. It is not a provider invoice or a confirmation of billed spend.
-        """
-
-        def operation() -> dict[str, JSONValue]:
-            header, records = self._load()
-            self._check_header(header)
-            reservations = [r for r in records if r["type"] == "reservation"]
-            usages = [r for r in records if r["type"] == "usage"]
-            reserved_usd = sum(
-                (Decimal(str(r["usd"])) for r in reservations), Decimal(0)
-            )
-            input_tokens = sum(int(r["input_tokens"]) for r in usages)
-            output_tokens = sum(int(r["output_tokens"]) for r in usages)
-            input_price = Decimal(str(self.pins["input_usd_per_million"]))
-            output_price = Decimal(str(self.pins["output_usd_per_million"]))
-            usage_estimate = (
-                Decimal(input_tokens) * input_price
-                + Decimal(output_tokens) * output_price
-            ) / Decimal(1_000_000)
-            return {
-                "ledger_path": str(self.path),
-                "model": str(self.pins["model"]),
-                "uncapped": self.uncapped,
-                "reservation_count": len(reservations),
-                "usage_count": len(usages),
-                "recorded_input_tokens": input_tokens,
-                "recorded_output_tokens": output_tokens,
-                "reserved_usd": str(reserved_usd),
-                "estimated_recorded_usage_usd": str(usage_estimate),
-                "invoice_verified": False,
-            }
-
-        return self._locked(operation)
-
     def record_usage(
         self,
         request_id: str,
@@ -362,9 +324,7 @@ class ProxyBudget:
             header, records = self._load()
             self._check_header(header)
             reservations = {
-                str(r["request_id"]): r
-                for r in records
-                if r["type"] == "reservation"
+                str(r["request_id"]): r for r in records if r["type"] == "reservation"
             }
             reservation = reservations.get(request_id)
             if reservation is None:
@@ -391,40 +351,6 @@ class ProxyBudget:
                     "response_sha256": response_sha256,
                 }
             )
-
-        self._locked(operation)
-
-    def validate_request_body(self, request_id: str, body: bytes) -> None:
-        """Ensure an actual HTTP body fits a durable reservation.
-
-        Callers should reserve an attempt and then validate the exact request
-        body immediately before I/O. This check does not reserve, refund, or
-        mutate ledger state.
-        """
-        if not isinstance(body, bytes):
-            raise ProxyBudgetError("HTTP request body must be bytes")
-
-        def operation() -> None:
-            header, records = self._load()
-            self._check_header(header)
-            reservation = next(
-                (
-                    r
-                    for r in records
-                    if r["type"] == "reservation"
-                    and r.get("request_id") == request_id
-                ),
-                None,
-            )
-            if reservation is None:
-                raise ProxyBudgetError("Body check references an unknown request ID")
-            input_bound = reservation.get("input_byte_bound")
-            if not isinstance(input_bound, int):
-                raise ProxyBudgetError(
-                    "Body check references a reservation without input bounds"
-                )
-            if len(body) > input_bound:
-                raise ProxyBudgetError("HTTP request body exceeds reserved bounds")
 
         self._locked(operation)
 
@@ -515,6 +441,85 @@ class ProxyBudget:
         ):
             raise ProxyBudgetError("Response token bound is outside pinned policy")
         return max_output_tokens
+
+    def usage_summary(self) -> dict[str, JSONValue]:
+        """Return aggregate usage and an unverified billing estimate.
+
+        The estimate is derived only from durable ledger records and pinned list
+        prices. It is not a provider invoice or a confirmation of billed spend.
+        """
+
+        def operation() -> dict[str, JSONValue]:
+            header, records = self._load()
+            self._check_header(header)
+            reservations = [r for r in records if r["type"] == "reservation"]
+            usages = [r for r in records if r["type"] == "usage"]
+            reserved_usd = sum(
+                (Decimal(str(r["usd"])) for r in reservations), Decimal(0)
+            )
+            input_tokens = sum(
+                _usage_token_count(record=r, key="input_tokens") for r in usages
+            )
+            output_tokens = sum(
+                _usage_token_count(record=r, key="output_tokens") for r in usages
+            )
+            input_price = Decimal(str(self.pins["input_usd_per_million"]))
+            output_price = Decimal(str(self.pins["output_usd_per_million"]))
+            usage_estimate = (
+                Decimal(input_tokens) * input_price
+                + Decimal(output_tokens) * output_price
+            ) / Decimal(1_000_000)
+            return {
+                "ledger_path": str(self.path),
+                "model": str(self.pins["model"]),
+                "uncapped": self.uncapped,
+                "reservation_count": len(reservations),
+                "usage_count": len(usages),
+                "recorded_input_tokens": input_tokens,
+                "recorded_output_tokens": output_tokens,
+                "reserved_usd": str(reserved_usd),
+                "estimated_recorded_usage_usd": str(usage_estimate),
+                "invoice_verified": False,
+            }
+
+        return self._locked(operation)
+
+    def validate_request_body(self, request_id: str, body: bytes) -> None:
+        """Ensure an actual HTTP body fits a durable reservation.
+
+        Callers should reserve an attempt and then validate the exact request
+        body immediately before I/O. This check does not reserve, refund, or
+        mutate ledger state.
+
+        Raises:
+            ProxyBudgetError:
+                If the body or reservation is invalid.
+        """
+        if not isinstance(body, bytes):
+            raise ProxyBudgetError("HTTP request body must be bytes")
+
+        def operation() -> None:
+            header, records = self._load()
+            self._check_header(header)
+            reservation = next(
+                (
+                    r
+                    for r in records
+                    if r["type"] == "reservation" and r.get("request_id") == request_id
+                ),
+                None,
+            )
+            if reservation is None:
+                raise ProxyBudgetError("Body check references an unknown request ID")
+            input_bound = reservation.get("input_byte_bound")
+            if not isinstance(input_bound, int):
+                raise ProxyBudgetError(
+                    "Body check references a reservation without input bounds"
+                )
+            if len(body) > input_bound:
+                raise ProxyBudgetError("HTTP request body exceeds reserved bounds")
+
+        self._locked(operation)
 
 
 class ProxyBudgetError(RuntimeError):
@@ -696,3 +701,19 @@ def _validate_usage(
         raise ValueError("usage references unbounded reservation")
     if input_tokens > input_bound or output_tokens > output_bound:
         raise ValueError("usage exceeds reserved bounds")
+
+
+def _usage_token_count(*, record: dict[str, JSONValue], key: str) -> int:
+    """Reject malformed usage tokens rather than coercing ledger values.
+
+    Returns:
+        The recorded non-negative token count.
+
+    Raises:
+        ProxyBudgetError:
+            If the ledger token count is malformed.
+    """
+    value = record.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ProxyBudgetError("Usage ledger token count is malformed")
+    return value
