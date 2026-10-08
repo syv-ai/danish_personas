@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 import polars as pl
 
+from danish_personas.environment import load_repository_environment
 from danish_personas.release.foreign_student_repair import repair_published_v2
 
 LOGGER = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ def main(
     Raises:
         click.ClickException: If inputs fail a release repair gate.
     """
+    load_repository_environment()
     try:
         summary = repair_published_v2(
             published_v2_path=published_v2,
