@@ -16,6 +16,7 @@ from pathlib import Path
 import polars as pl
 
 from ..io import sha256_file, sha256_text
+from .foreign_student_repair import count_editorial_foreign_student_violations
 from .generated_checks import check_generated_fields
 from .source_repair import assess_release_support
 
@@ -459,6 +460,11 @@ def validate_release_candidate(
         source_support=source_support,
         generated_fields=generated_fields,
     )
+    editorial_violations = count_editorial_foreign_student_violations(candidate)
+    if editorial_violations:
+        hard_failure_counts["editorial_foreign_student_violations"] = (
+            editorial_violations
+        )
     return ReleaseCandidateValidationReport(
         label=REPORT_LABEL,
         notice=_PRELIMINARY_NOTICE,
