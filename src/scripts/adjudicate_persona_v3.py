@@ -487,6 +487,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         row_iter = iter(pending)
         future_map: dict[futures.Future[dict[str, Any]], int] = {}
         pool = futures.ThreadPoolExecutor(max_workers=workers)
+        transient_failures = 0
         try:
             _submit_rows(
                 row_iter=row_iter,
@@ -511,16 +512,22 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                 )
                 future = next(iter(completed))
                 future_map.pop(future)
-                result = future.result()
-                status["processed"].append(result)
-                status["processed"].sort(key=lambda item: item["persona_hash"])
-                status["counts"] = _count_dispositions(status["processed"])
-                status["progress"] = {
-                    "completed": len(status["processed"]),
-                    "total": len(selected),
-                    "pending": len(selected) - len(status["processed"]),
-                }
-                _write_private_json(path=status_path, value=status)
+                try:
+                    result = future.result()
+                except httpx.TransportError:
+                    # Do not certify a timed-out row. Its durable attempt remains
+                    # in the ledger and it will be retried on verified resume.
+                    transient_failures += 1
+                else:
+                    status["processed"].append(result)
+                    status["processed"].sort(key=lambda item: item["persona_hash"])
+                    status["counts"] = _count_dispositions(status["processed"])
+                    status["progress"] = {
+                        "completed": len(status["processed"]),
+                        "total": len(selected),
+                        "pending": len(selected) - len(status["processed"]),
+                    }
+                    _write_private_json(path=status_path, value=status)
                 _submit_rows(
                     row_iter=row_iter,
                     future_map=future_map,
@@ -545,6 +552,10 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
             raise
         else:
             pool.shutdown(wait=True)
+    if transient_failures:
+        raise ReviewError(
+            "Provider transport failures left rows pending; resume with the same pins"
+        )
     return {
         "campaign": CAMPAIGN,
         "dry_run": False,
