@@ -8,7 +8,6 @@ import json
 import re
 import typing as t
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 
 import click
@@ -20,7 +19,6 @@ from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
     BASE_URL,
-    SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     SOL_ADJUDICATION_PURPOSE,
     ProxyBudget,
@@ -525,38 +523,20 @@ def _campaign_manifest(
 def _proxy_budget(
     *, paths: H90Paths, state: H90State, selection: H90Selection
 ) -> ProxyBudget:
-    schema_hash = sha256_text(
-        canonical_json(SolAdjudicationResponse.provider_json_schema())
-    )
-    source_hash = sha256_text(
-        canonical_json(
-            {
-                "campaign": CAMPAIGN,
-                "candidate_preview_sha256": state.inputs.candidate_preview_sha256,
-                "h90_status_json_sha256": state.status_json_sha256,
-                "h90_status_sha256": state.status_sha256,
-                "ordered_id_hashes_sha256": state.inputs.ordered_id_hashes_sha256,
-                "ordered_id_sha256": state.inputs.ordered_id_sha256,
-                "processed_hashes_sha256": state.processed_hashes_sha256,
-                "report_sha256": state.inputs.report_sha256,
-                "selected_hashes_sha256": selection.selected_hashes_sha256,
-            }
-        )
-    )
-    return ProxyBudget(
-        ledger_path=paths.output_dir / "ignored-sol-budget.jsonl",
-        registry_path=paths.registry,
-        campaign=CAMPAIGN,
-        source_hash=source_hash,
-        prompt_hash=sha256_file(paths.prompt),
-        schema_hash=schema_hash,
-        model=SOL_ADJUDICATION_MODEL,
-        input_usd_per_million="2",
-        output_usd_per_million="10",
-        max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
-        cap_usd=Decimal("1"),
-        uncapped=True,
-        uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
+    del selection
+    # The Sol ledger is immutable and shared with the first-pass campaign;
+    # the H90 selection is pinned separately by its private manifest.
+    return first_pass._proxy_budget(
+        paths=first_pass.ReleasePaths(
+            original=paths.original,
+            candidate=paths.candidate,
+            report=paths.report,
+            prompt=paths.prompt,
+            output_dir=paths.output_dir,
+            registry=paths.registry,
+        ),
+        inputs=state.inputs,
+        manifest={},
     )
 
 
