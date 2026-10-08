@@ -17,6 +17,7 @@ from pathlib import Path
 import polars as pl
 
 from danish_personas.cli_logging import configure_cli_logging
+from danish_personas.environment import load_repository_environment
 from danish_personas.io import canonical_json, sha256_file, sha256_text
 
 LOGGER = logging.getLogger(__name__)
@@ -836,4 +837,5 @@ code { background: #eee2cf; padding: .1rem .25rem; border-radius: .25rem; }
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    load_repository_environment()
+    main()
