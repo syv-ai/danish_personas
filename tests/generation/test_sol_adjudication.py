@@ -19,6 +19,7 @@ from danish_personas.generation.sol_adjudication import (
     SOL_MAX_OUTPUT_TOKENS,
     SolAdjudicationError,
     SolAdjudicationResponse,
+    preflight_sol_adjudication_payload,
     run_sol_adjudication,
     validate_sol_adjudication,
 )
@@ -28,6 +29,27 @@ _PERSONA = (
     "Hun er 42 år og bor i Aarhus. "
     "Hun arbejder som lærer og beskrives i en rolig, hverdagsnær tekst. "
     "Personen har en stabil hverdag med kolleger, familie og fritidsinteresser."
+)
+_BANNED_IDENTITY_VARIANTS = (
+    "seksuel orientering",
+    "sexual orientation",
+    "nonbinær",
+    "non-binaer",
+    "nonbinary",
+    "panseksuel",
+    "pansexual",
+    "aseksuel",
+    "asexual",
+    "kønsidentitet",
+    "koensidentitet",
+    "gender identity",
+    "transperson",
+    "trans man",
+    "transkvinde",
+    "trans woman",
+    "interkøn",
+    "intersex",
+    "variation in sex characteristics",
 )
 
 
@@ -218,6 +240,79 @@ def test_omits_private_fields_and_rejects_forbidden_text(tmp_path: Path) -> None
             checkpoint_path=_checkpoint(tmp_path, name="blocked.json"),
             transport=httpx.MockTransport(lambda _: httpx.Response(500)),
         )
+
+
+def test_preflight_rejects_all_banned_identity_variants() -> None:
+    """Fail closed on identity variants before provider I/O."""
+    for variant in _BANNED_IDENTITY_VARIANTS:
+        with pytest.raises(SolAdjudicationError):
+            preflight_sol_adjudication_payload(
+                original_persona=f"Neutral tekst med {variant}.",
+                candidate_row={"age": 42},
+                prompt=_PROMPT,
+            )
+
+
+def test_preflight_blocks_embedded_raw_id_and_source_code(tmp_path: Path) -> None:
+    """Raw IDs and source codes are token-matched in outbound prose and facts."""
+    requests: list[httpx.Request] = []
+    blocked_rows = [
+        {
+            "persona_id": "opaque-persona-123",
+            "origin_country_code": "SRC-777",
+            "age": 42,
+            "municipality": "Aarhus",
+            "persona": "Neutral tekst med opaque-persona-123 som fejl.",
+        },
+        {
+            "persona_id": "opaque-persona-123",
+            "origin_country_code": "SRC-777",
+            "age": 42,
+            "municipality": "Aarhus",
+            "job_title": "lærer SRC-777",
+        },
+    ]
+    with pytest.raises(SolAdjudicationError):
+        preflight_sol_adjudication_payload(
+            original_persona=_PERSONA,
+            candidate_row={
+                "persona_id": "opaque-persona-123",
+                "origin_country_code": "SRC-777",
+                "age": 42,
+                "job_title": "lærer",
+            },
+            prompt=_PROMPT,
+            changed_fact_hints={"job_title": {"old": "SRC-777", "new": "lærer"}},
+            original_row={"origin_country_code": "SRC-777", "job_title": "SRC-777"},
+        )
+
+    for index, row in enumerate(blocked_rows):
+        with pytest.raises(SolAdjudicationError):
+            run_sol_adjudication(
+                original_persona=str(row.get("persona", _PERSONA)),
+                candidate_row=row,
+                prompt=_PROMPT,
+                config=_config(),
+                budget=_budget(tmp_path),
+                checkpoint_path=_checkpoint(tmp_path, name=f"blocked-{index}.json"),
+                transport=httpx.MockTransport(lambda request: requests.append(request)),
+            )
+
+    preflight_sol_adjudication_payload(
+        original_persona=_PERSONA,
+        candidate_row={
+            "persona_id": "opaque-persona-123",
+            "origin_country_code": "SRC-777",
+            "sexual_orientation": "pansexual",
+            "transgender_status": "trans man",
+            "sex_characteristics_variation": "intersex",
+            "age": 42,
+            "municipality": "Aarhus",
+            "job_title": "lærer",
+        },
+        prompt=_PROMPT,
+    )
+    assert not requests
 
 
 def test_rejects_nonunique_and_over_budget_patches() -> None:

@@ -78,15 +78,54 @@ _RESTRICTED_FACT_FIELDS = frozenset(
         "partner_gender",
     }
 )
-_RESTRICTED_TEXT = re.compile(
-    r"\b(?:sexual\s+orientation|seksuel\s+orientering|seksual\s+orientation|"
-    r"homoseksuel|homosexual|biseksuel|bisexual|heteroseksuel|heterosexual|"
-    r"lesbisk|lesbian|queer|lgbtq?|transkønnet|transkoennet|transseksuel|"
-    r"transgender|interkønnet|interkoennet|intersex|same[-\s]+sex|samkønnet|"
-    r"samkoennet|sex[-\s]+characteristics|kønskarakteristika|"
-    r"koenskarakteristika|variation\s+in\s+sex\s+characteristics)\b",
-    re.IGNORECASE,
+_RESTRICTED_IDENTITY_TERMS = (
+    r"sexual\s+orientation",
+    r"seksu(?:el|al)\s+orientering",
+    r"seksualitet",
+    r"sexuality",
+    r"homoseksuel",
+    r"homosexual",
+    r"biseksuel",
+    r"bisexual",
+    r"panseksuel",
+    r"pansexual",
+    r"aseksuel",
+    r"asexual",
+    r"heteroseksuel",
+    r"heterosexual",
+    r"lesbisk",
+    r"lesbian",
+    r"gay",
+    r"queer",
+    r"lgbtq?i?a?\+?",
+    r"same[-\s]+sex",
+    r"samkønnet",
+    r"samkoennet",
+    r"kønsidentitet",
+    r"koensidentitet",
+    r"gender\s+identity",
+    r"transkønnet",
+    r"transkoennet",
+    r"transseksuel",
+    r"transsexual",
+    r"transgender",
+    r"transperson",
+    r"trans[-\s]?(?:mand|kvinde|man|woman)",
+    r"non[-\s]?(?:binær|binaer|binary)",
+    r"interkøn(?:net)?",
+    r"interkoen(?:net)?",
+    r"intersex",
+    r"sex[-\s]+characteristics",
+    r"kønskarakteristika",
+    r"koenskarakteristika",
+    r"variation\s+in\s+sex\s+characteristics",
+    r"variation(?:er)?\s+i\s+kønskarakteristika",
+    r"variation(?:er)?\s+i\s+koenskarakteristika",
 )
+_RESTRICTED_TEXT = re.compile(
+    rf"(?<![\w])(?:{'|'.join(_RESTRICTED_IDENTITY_TERMS)})(?![\w])", re.IGNORECASE
+)
+_TOKEN_BOUNDARY = r"[0-9A-Za-zÆØÅæøå]"
 _ALLOWED_FACT_VALUE_TYPES = (str, int, float, bool, type(None))
 
 
@@ -453,8 +492,11 @@ def _resume_checkpoint(
             "Sol checkpoint binding does not match current inputs"
         )
     response = saved.get("response")
-    if not isinstance(response, str):
+    response_sha256 = saved.get("response_sha256")
+    if not isinstance(response, str) or not isinstance(response_sha256, str):
         raise SolAdjudicationError("Sol checkpoint is incomplete")
+    if response_sha256 != _sha(response.encode("utf-8")):
+        raise SolAdjudicationError("Sol checkpoint response hash does not match")
     return validate_sol_adjudication(
         original_text=original_persona,
         candidate_facts=candidate_facts,
@@ -515,6 +557,38 @@ def validate_sol_adjudication(
         reason=review.reason,
         evidence=tuple(review.evidence),
         patches=tuple(review.patches),
+    )
+
+
+def preflight_sol_adjudication_payload(
+    *,
+    original_persona: str,
+    candidate_row: dict[str, object],
+    prompt: str,
+    changed_fact_hints: dict[str, dict[str, object]] | None = None,
+    original_row: dict[str, object] | None = None,
+) -> None:
+    """Validate one outbound Sol payload without provider I/O.
+
+    Args:
+        original_persona:
+            Persona prose that would be sent to the provider.
+        candidate_row:
+            Current structured row. Only allowlisted facts may become outbound facts.
+        prompt:
+            Sol adjudication prompt.
+        changed_fact_hints (optional):
+            Verified old/new hints for changed allowlisted facts.
+        original_row (optional):
+            Original row used for row-bound hint and raw-token checks.
+
+    """
+    _validated_payload(
+        original_persona=original_persona,
+        candidate_row=candidate_row,
+        prompt=prompt,
+        changed_fact_hints=changed_fact_hints,
+        original_row=original_row,
     )
 
 
@@ -579,6 +653,56 @@ def _claim_strings(*, value: JSONValue) -> tuple[str, ...]:
 def _check_restricted_text(*, value: str, label: str) -> None:
     if _RESTRICTED_TEXT.search(value):
         raise SolAdjudicationError(f"{label} contains a restricted identity term")
+
+
+def _protected_row_tokens(
+    *, candidate_row: dict[str, object], original_row: dict[str, object] | None
+) -> frozenset[str]:
+    rows = (candidate_row,) if original_row is None else (candidate_row, original_row)
+    tokens: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for field, value in row.items():
+            if _is_protected_token_field(field=str(field)):
+                tokens.update(_string_tokens(value=value))
+    return frozenset(tokens)
+
+
+def _is_protected_token_field(*, field: str) -> bool:
+    return field in {"persona_id", "id"} or field.endswith("_code")
+
+
+def _string_tokens(*, value: object) -> set[str]:
+    if isinstance(value, str):
+        token = value.strip()
+        return {token} if len(token) >= 3 else set()
+    if isinstance(value, int) and not isinstance(value, bool):
+        token = str(value)
+        return {token} if len(token) >= 3 else set()
+    if isinstance(value, list):
+        return {token for item in value for token in _string_tokens(value=item)}
+    if isinstance(value, dict):
+        return {
+            token for item in value.values() for token in _string_tokens(value=item)
+        }
+    return set()
+
+
+def _check_protected_tokens(
+    *, values: tuple[str, ...], protected_tokens: frozenset[str]
+) -> None:
+    for value in values:
+        for token in protected_tokens:
+            if _token_in_text(token=token, text=value):
+                raise SolAdjudicationError(
+                    "Outbound adjudication payload contains a restricted row token"
+                )
+
+
+def _token_in_text(*, token: str, text: str) -> bool:
+    pattern = rf"(?<!{_TOKEN_BOUNDARY}){re.escape(token)}(?!{_TOKEN_BOUNDARY})"
+    return re.search(pattern, text) is not None
 
 
 def _normalise_changed_fact_hints(
@@ -740,6 +864,17 @@ def _validated_payload(
     ]
     for value in outbound_text:
         _check_restricted_text(value=value, label="outbound adjudication payload")
+    protected_tokens = _protected_row_tokens(
+        candidate_row=candidate_row, original_row=original_row
+    )
+    _check_protected_tokens(
+        values=(
+            original_persona,
+            canonical_json(candidate_facts),
+            canonical_json(hints),
+        ),
+        protected_tokens=protected_tokens,
+    )
     return {
         "persona": original_persona,
         "candidate_facts": candidate_facts,
