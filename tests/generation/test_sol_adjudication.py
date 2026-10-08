@@ -139,7 +139,7 @@ def _budget(tmp_path: Path) -> ProxyBudget:
         model="gpt-6-sol",
         input_usd_per_million="2",
         output_usd_per_million="10",
-        max_tokens=SOL_MAX_OUTPUT_TOKENS,
+        max_tokens=proxy_budget.SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
         uncapped_purpose="sol_adjudication",

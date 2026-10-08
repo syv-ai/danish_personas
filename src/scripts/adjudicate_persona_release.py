@@ -23,6 +23,7 @@ from danish_personas.environment import load_repository_environment
 from danish_personas.generation.models import GenerationConfig
 from danish_personas.generation.proxy_budget import (
     BASE_URL,
+    SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
     SOL_ADJUDICATION_MODEL,
     SOL_ADJUDICATION_PURPOSE,
     ProxyBudget,
@@ -589,7 +590,7 @@ def _proxy_budget(
         model=SOL_ADJUDICATION_MODEL,
         input_usd_per_million="2",
         output_usd_per_million="10",
-        max_tokens=SOL_MAX_OUTPUT_TOKENS,
+        max_tokens=SOL_ADJUDICATION_LEDGER_MAX_TOKENS,
         cap_usd=Decimal("1"),
         uncapped=True,
         uncapped_purpose=SOL_ADJUDICATION_PURPOSE,
