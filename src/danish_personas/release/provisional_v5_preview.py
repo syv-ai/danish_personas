@@ -76,7 +76,7 @@ def build_provisional_v5_preview(
     expected_h90_changed_count: int = EXPECTED_H90_CHANGED_ROWS,
     expected_v4_accepted_count: int = EXPECTED_V4_ACCEPTED_PATCHES,
     expected_h90_accepted_count: int = EXPECTED_H90_ACCEPTED_PATCHES,
-    h90_changed_fields: c.AbstractSet[str] = H90_CHANGED_FIELDS,
+    h90_changed_fields: c.Set[str] = H90_CHANGED_FIELDS,
 ) -> dict[str, JSONValue]:
     """Build or dry-run the merged v5 provisional preview without provider I/O.
 
@@ -398,11 +398,16 @@ def _revalidate_v4_preview(
     )
     if actual_manifest != expected_manifest:
         raise ProvisionalV5PreviewError("V4 second-pass manifest pins do not match")
-    status = v4_candidate._load_second_status(
-        path=second_status,
-        manifest=t.cast(dict[str, v4_candidate.JSONValue], actual_manifest),
-        first_patched_count=len(loaded.rows),
-    )
+    try:
+        status = v4_candidate._load_second_status(
+            path=second_status,
+            manifest=t.cast(dict[str, v4_candidate.JSONValue], actual_manifest),
+            first_patched_count=len(loaded.rows),
+        )
+    except v4_candidate.ProvisionalProseCandidateError as exc:
+        raise ProvisionalV5PreviewError(
+            "V4 second-pass status validation failed"
+        ) from exc
     first_records = v4_candidate._first_pass_records(
         loaded=loaded, original_frame=pl.read_parquet(original)
     )
@@ -478,11 +483,16 @@ def _h90_records(
     )
     if actual_manifest != expected_manifest:
         raise ProvisionalV5PreviewError("H90 second-pass manifest pins do not match")
-    status = v4_candidate._load_second_status(
-        path=second_status,
-        manifest=t.cast(dict[str, v4_candidate.JSONValue], actual_manifest),
-        first_patched_count=len(loaded.rows),
-    )
+    try:
+        status = v4_candidate._load_second_status(
+            path=second_status,
+            manifest=t.cast(dict[str, v4_candidate.JSONValue], actual_manifest),
+            first_patched_count=len(loaded.rows),
+        )
+    except v4_candidate.ProvisionalProseCandidateError as exc:
+        raise ProvisionalV5PreviewError(
+            "H90 second-pass status validation failed"
+        ) from exc
     available = _status_int(status=status, key="available")
     processed = _status_int(status=status, key="processed")
     pending = _status_int(status=status, key="pending")
@@ -531,7 +541,15 @@ def _accepted_second_pass_records(
         checkpoint_path = verify._checkpoint_path(
             output_dir=second_checkpoint_root, persona_hash=persona_hash
         )
-        if not v4_candidate._checkpoint_is_accepted(path=checkpoint_path):
+        try:
+            checkpoint_accepted = v4_candidate._checkpoint_is_accepted(
+                path=checkpoint_path
+            )
+        except v4_candidate.ProvisionalProseCandidateError as exc:
+            raise ProvisionalV5PreviewError(
+                "Second-pass checkpoint validation failed"
+            ) from exc
+        if not checkpoint_accepted:
             rejected_count += 1
             continue
         row = row_index[persona_hash]
@@ -602,7 +620,7 @@ def _validate_h90_structured_delta(
     v5_frame: pl.DataFrame,
     h90_report: dict[str, JSONValue],
     expected_count: int,
-    allowed_fields: c.AbstractSet[str],
+    allowed_fields: c.Set[str],
 ) -> list[str]:
     report_hashes = _report_hashes(report=h90_report)
     actual_hashes: list[str] = []

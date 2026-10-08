@@ -114,12 +114,17 @@ def test_stale_h90_checkpoint_fails_closed_before_provider(
     checkpoint.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
     checkpoint.chmod(0o600)
 
-    with pytest.raises(preview.ProvisionalV5PreviewError, match="checksum"):
-        _build(
-            paths=paths,
-            output=tmp_path / "private-output" / "merged-v5-PROVISIONAL.parquet",
-            write_output=False,
-        )
+    output = tmp_path / "private-output" / "merged-v5-PROVISIONAL.parquet"
+    with pytest.raises(
+        preview.ProvisionalV5PreviewError, match="checkpoint validation failed"
+    ) as exc_info:
+        _build(paths=paths, output=output, write_output=False)
+
+    assert isinstance(
+        exc_info.value.__cause__, v4_candidate.ProvisionalProseCandidateError
+    )
+    assert "patched-row" not in str(exc_info.value)
+    assert not output.exists()
 
 
 def test_refuses_overwrite_and_publication_like_output(
