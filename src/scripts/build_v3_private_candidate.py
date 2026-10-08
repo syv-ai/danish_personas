@@ -558,14 +558,12 @@ def compose(  # noqa: C901, PLR0912
     )
     followup_counts = Counter(item["disposition"] for item in followup_items)
     summary = {
-        "campaign_dispositions": dict(dispositions),
-        "followup_evidence": dict(followup_counts),
-        "fixed_rows": fixed_rows,
-        "good_rows": final.height - fixed_rows,
-        "patched_rows": text_changes,
-        "preserved_unresolved": dispositions["unresolved"],
-        "preserved_privacy_blocked": dispositions["privacy_blocked"],
-        "preserved_validation_failed": dispositions["validation_failed"],
+        "final_outcomes": {"good": final.height - fixed_rows, "fixed": fixed_rows},
+        "historical_review_evidence": {
+            "initial_dispositions": dict(dispositions),
+            "followup_dispositions": dict(followup_counts),
+        },
+        "prose_patched_rows": text_changes,
         "candidate_sha256": candidate_hash,
         "validation_passes_hard_gates": validation.passes_hard_gates,
     }
