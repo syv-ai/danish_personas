@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures as futures
 import json
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,13 @@ ID_FIELD = "persona_id"
 TEXT_FIELD = "persona"
 CAMPAIGN = "persona-sol-adjudication-v3"
 VERSION = 1
+MAX_ROW_ATTEMPTS = 10
+LOCAL_VALIDATION_COMPLETIONS = 3
+MAX_LOCAL_VALIDATION_BATCHES = (
+    MAX_ROW_ATTEMPTS + LOCAL_VALIDATION_COMPLETIONS - 1
+) // LOCAL_VALIDATION_COMPLETIONS
+LOCAL_VALIDATION_FAILURE = "Sol response failed bounded local validation retries"
+ROW_ATTEMPT_LIFETIME_EXHAUSTED = "Per-row proxy attempt lifetime exhausted"
 
 
 class ReviewError(Exception):
@@ -141,6 +149,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
 
     Raises:
         ReviewError: If pinned inputs or durable resume state are invalid.
+        SolAdjudicationError: If local request validation or adjudication fails.
     """
     if workers not in range(1, 5):
         raise ReviewError("Worker count is outside the supported range")
@@ -231,6 +240,29 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         for label in labels:
             reason_counts[label] = reason_counts.get(label, 0) + 1
 
+    schema_hash = sha256_text(
+        canonical_json(SolAdjudicationResponse.provider_json_schema())
+    )
+    config_hash = sha256_text(
+        canonical_json(
+            {
+                "base_url": BASE_URL,
+                "model": SOL_ADJUDICATION_MODEL,
+                "api_key_env": None,
+                "timeout_seconds": 120.0,
+                "maximum_http_attempts": 5,
+                "maximum_total_requests": None,
+                "retry_backoff_seconds": 1.0,
+                "maximum_rows_per_shard": 1,
+                "max_tokens": None,
+                "enable_thinking": None,
+                "reasoning_effort": "none",
+                "origin_label_contract_sha256": sha256_file(
+                    Path("config/folk2-ieland-labels-da.yaml")
+                ),
+            }
+        )
+    )
     input_hashes = {
         "baseline_sha256": sha256_file(original),
         "candidate_sha256": sha256_file(candidate),
@@ -239,6 +271,8 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         "followup_status_sha256": sha256_file(followup_path),
         "ordered_id_hashes_sha256": ordered_hash,
         "prompt_sha256": sha256_file(prompt_path),
+        "schema_sha256": schema_hash,
+        "config_sha256": config_hash,
         "queue_sha256": sha256_text(canonical_json(selected)),
     }
     manifest = {
@@ -277,9 +311,6 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     manifest_path = output_dir / "manifest.json"
     _write_or_verify(manifest_path, manifest)
     prompt_hash = input_hashes["prompt_sha256"]
-    schema_hash = sha256_text(
-        canonical_json(SolAdjudicationResponse.provider_json_schema())
-    )
     source_hash = sha256_text(canonical_json(input_hashes))
     budget = ProxyBudget(
         ledger_path=output_dir / "ignored-sol-budget.jsonl",
@@ -325,11 +356,21 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
             or digest not in selected_hashes
             or digest in done
             or disposition
-            not in {"consistent", "patched", "unresolved", "privacy_blocked"}
+            not in {
+                "consistent",
+                "patched",
+                "unresolved",
+                "privacy_blocked",
+                "validation_failed",
+            }
             or item.get("result_sha256") != sha256_text(f"{digest}:{disposition}")
         ):
             raise ReviewError("Existing status contains an invalid row disposition")
-        if disposition != "privacy_blocked":
+        if disposition == "validation_failed":
+            _verify_validation_failure(
+                output_dir=output_dir, digest=digest, input_hashes=input_hashes
+            )
+        elif disposition != "privacy_blocked":
             checkpoint = item.get("checkpoint")
             checkpoint_hash = item.get("checkpoint_sha256")
             response_hash = item.get("response_sha256")
@@ -413,29 +454,34 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     pending = [index for index in pending if index not in blocked]
     with httpx.Client(base_url=BASE_URL, timeout=120) as client:
         transport = client._transport
-        # Bound outstanding work; each worker writes only a hash-named checkpoint.
-        with futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, result in zip(
-                pending,
-                pool.map(
-                    lambda i: _process_row(
-                        i,
-                        candidate_rows,
-                        base_rows,
-                        reasons,
-                        id_hashes,
-                        prompt_text,
-                        prompt_path,
-                        config,
-                        budget,
-                        output_dir,
-                        transport,
-                    ),
-                    pending,
-                    chunksize=1,
-                ),
-                strict=True,
-            ):
+        row_iter = iter(pending)
+        future_map: dict[futures.Future[dict[str, Any]], int] = {}
+        pool = futures.ThreadPoolExecutor(max_workers=workers)
+        try:
+            _submit_rows(
+                row_iter=row_iter,
+                future_map=future_map,
+                pool=pool,
+                workers=workers,
+                candidate_rows=candidate_rows,
+                base_rows=base_rows,
+                reasons=reasons,
+                id_hashes=id_hashes,
+                prompt=prompt_text,
+                prompt_path=prompt_path,
+                config=config,
+                budget=budget,
+                output_dir=output_dir,
+                transport=transport,
+                input_hashes=input_hashes,
+            )
+            while future_map:
+                completed, _ = futures.wait(
+                    future_map, return_when=futures.FIRST_COMPLETED
+                )
+                future = next(iter(completed))
+                future_map.pop(future)
+                result = future.result()
                 status["processed"].append(result)
                 status["processed"].sort(key=lambda item: item["persona_hash"])
                 status["counts"] = _count_dispositions(status["processed"])
@@ -445,6 +491,30 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                     "pending": len(selected) - len(status["processed"]),
                 }
                 _write_private_json(path=status_path, value=status)
+                _submit_rows(
+                    row_iter=row_iter,
+                    future_map=future_map,
+                    pool=pool,
+                    workers=workers,
+                    candidate_rows=candidate_rows,
+                    base_rows=base_rows,
+                    reasons=reasons,
+                    id_hashes=id_hashes,
+                    prompt=prompt_text,
+                    prompt_path=prompt_path,
+                    config=config,
+                    budget=budget,
+                    output_dir=output_dir,
+                    transport=transport,
+                    input_hashes=input_hashes,
+                )
+        except BaseException:
+            for future in future_map:
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
     return {
         "campaign": CAMPAIGN,
         "dry_run": False,
@@ -452,6 +522,48 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
         "counts": status["counts"],
         "progress": status["progress"],
     }
+
+
+def _submit_rows(  # noqa: PLR0913
+    *,
+    row_iter: Iterator[int],
+    future_map: dict[futures.Future[dict[str, Any]], int],
+    pool: futures.ThreadPoolExecutor,
+    workers: int,
+    candidate_rows: list[dict[str, Any]],
+    base_rows: list[dict[str, Any]],
+    reasons: dict[int, set[str]],
+    id_hashes: list[str],
+    prompt: str,
+    prompt_path: Path,
+    config: GenerationConfig,
+    budget: ProxyBudget,
+    output_dir: Path,
+    transport: httpx.BaseTransport,
+    input_hashes: dict[str, str],
+) -> None:
+    while len(future_map) < workers:
+        try:
+            index = next(row_iter)
+        except StopIteration:
+            return
+        future_map[
+            pool.submit(
+                _process_row,
+                index,
+                candidate_rows,
+                base_rows,
+                reasons,
+                id_hashes,
+                prompt,
+                prompt_path,
+                config,
+                budget,
+                output_dir,
+                transport,
+                input_hashes,
+            )
+        ] = index
 
 
 def _process_row(
@@ -466,6 +578,7 @@ def _process_row(
     budget: ProxyBudget,
     output_dir: Path,
     transport: httpx.BaseTransport,
+    input_hashes: dict[str, str],
 ) -> dict[str, Any]:
     row = candidate_rows[index]
     old = base_rows[index]
@@ -475,25 +588,46 @@ def _process_row(
         if old[field] != row[field]
     }
     # Existing prose is the baseline for these adjudications; facts are the v3 row.
-    result = run_sol_adjudication(
-        original_persona=row[TEXT_FIELD],
-        candidate_row=row,
-        prompt=prompt,
-        config=config,
-        budget=budget,
-        checkpoint_path=(
-            output_dir
-            / "checkpoints"
-            / id_hashes[index][:2]
-            / f"{id_hashes[index]}.json"
-        ),
-        transport=transport,
-        changed_fact_hints=hints,
-        original_row=old,
-    )
-    checkpoint_path = (
-        output_dir / "checkpoints" / id_hashes[index][:2] / f"{id_hashes[index]}.json"
-    )
+    digest = id_hashes[index]
+    checkpoint_path = output_dir / "checkpoints" / digest[:2] / f"{digest}.json"
+    for batch in range(MAX_LOCAL_VALIDATION_BATCHES):
+        try:
+            result = run_sol_adjudication(
+                original_persona=row[TEXT_FIELD],
+                candidate_row=row,
+                prompt=prompt,
+                config=config,
+                budget=budget,
+                checkpoint_path=checkpoint_path,
+                transport=transport,
+                changed_fact_hints=hints,
+                original_row=old,
+            )
+        except SolAdjudicationError as exc:
+            if str(exc) != LOCAL_VALIDATION_FAILURE:
+                raise
+            if batch + 1 == MAX_LOCAL_VALIDATION_BATCHES:
+                return _record_validation_failure(
+                    output_dir=output_dir,
+                    digest=digest,
+                    checkpoint_path=checkpoint_path,
+                    input_hashes=input_hashes,
+                    failure=LOCAL_VALIDATION_FAILURE,
+                    batches=batch + 1,
+                )
+            continue
+        except ProxyBudgetError as exc:
+            if str(exc) != ROW_ATTEMPT_LIFETIME_EXHAUSTED:
+                raise
+            return _record_validation_failure(
+                output_dir=output_dir,
+                digest=digest,
+                checkpoint_path=checkpoint_path,
+                input_hashes=input_hashes,
+                failure=ROW_ATTEMPT_LIFETIME_EXHAUSTED,
+                batches=batch + 1,
+            )
+        break
     document = _json_object(checkpoint_path)
     terminal = result.disposition
     return {
@@ -693,6 +827,60 @@ def _write_or_verify(path: Path, value: dict[str, Any]) -> None:
             raise ReviewError("Existing campaign manifest does not match inputs")
     else:
         _write_private_json(path=path, value=value)
+
+
+def _validation_evidence_path(*, output_dir: Path, digest: str) -> Path:
+    return output_dir / "validation-failed" / digest[:2] / f"{digest}.json"
+
+
+def _record_validation_failure(
+    *,
+    output_dir: Path,
+    digest: str,
+    checkpoint_path: Path,
+    input_hashes: dict[str, str],
+    failure: str,
+    batches: int,
+) -> dict[str, Any]:
+    if checkpoint_path.exists():
+        raise ReviewError("Validation-failed row unexpectedly has a checkpoint")
+    evidence = {
+        "campaign": CAMPAIGN,
+        "persona_hash": digest,
+        "input_hashes": input_hashes,
+        "failure": failure,
+        "batches": batches,
+    }
+    path = _validation_evidence_path(output_dir=output_dir, digest=digest)
+    _write_private_json(path=path, value=evidence)
+    return {
+        "persona_hash": digest,
+        "disposition": "validation_failed",
+        "result_sha256": sha256_text(f"{digest}:validation_failed"),
+    }
+
+
+def _verify_validation_failure(
+    *, output_dir: Path, digest: str, input_hashes: dict[str, str]
+) -> None:
+    checkpoint = output_dir / "checkpoints" / digest[:2] / f"{digest}.json"
+    if checkpoint.exists():
+        raise ReviewError("Validation-failed row unexpectedly has a checkpoint")
+    evidence = _json_object(
+        _validation_evidence_path(output_dir=output_dir, digest=digest)
+    )
+    if (
+        set(evidence)
+        != {"campaign", "persona_hash", "input_hashes", "failure", "batches"}
+        or evidence.get("campaign") != CAMPAIGN
+        or evidence.get("persona_hash") != digest
+        or evidence.get("input_hashes") != input_hashes
+        or evidence.get("failure")
+        not in {LOCAL_VALIDATION_FAILURE, ROW_ATTEMPT_LIFETIME_EXHAUSTED}
+        or not isinstance(evidence.get("batches"), int)
+        or not 1 <= evidence["batches"] <= MAX_LOCAL_VALIDATION_BATCHES
+    ):
+        raise ReviewError("Validation-failed evidence is not bound to this campaign")
 
 
 def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, Any]:
