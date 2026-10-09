@@ -153,6 +153,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     Raises:
         ReviewError: If pinned inputs or durable resume state are invalid.
         SolAdjudicationError: If local request validation or adjudication fails.
+        httpx.HTTPStatusError: If the provider rejects a request permanently.
     """
     if workers not in range(1, 21):
         raise ReviewError("Worker count is outside the supported range")
@@ -518,6 +519,14 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
                     # Do not certify a timed-out row. Its durable attempt remains
                     # in the ledger and it will be retried on verified resume.
                     transient_failures += 1
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 429 and not (
+                        500 <= exc.response.status_code <= 599
+                    ):
+                        raise
+                    # Bounded HTTP retries were exhausted for this row. Keep it
+                    # pending rather than stopping unrelated reviews.
+                    transient_failures += 1
                 else:
                     status["processed"].append(result)
                     status["processed"].sort(key=lambda item: item["persona_hash"])
@@ -554,7 +563,7 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
             pool.shutdown(wait=True)
     if transient_failures:
         raise ReviewError(
-            "Provider transport failures left rows pending; resume with the same pins"
+            "Transient provider failures left rows pending; resume with the same pins"
         )
     return {
         "campaign": CAMPAIGN,
