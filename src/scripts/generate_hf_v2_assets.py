@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+import matplotlib
+import matplotlib.pyplot as plt
 import polars as pl
+from matplotlib.figure import Figure
+
+matplotlib.use("Agg", force=True)
 
 from danish_personas.cli_logging import configure_cli_logging
 from danish_personas.environment import load_repository_environment
@@ -72,6 +77,10 @@ REQUIRED_COLUMNS: tuple[str, ...] = tuple(
 )
 
 
+class AssetGenerationError(Exception):
+    """Raised when Hugging Face v2 release assets cannot be generated safely."""
+
+
 @dataclass(frozen=True)
 class AssetSummary:
     """Summary of generated release assets."""
@@ -81,10 +90,6 @@ class AssetSummary:
     output_dir: str
     rows: int
     charts: list[str]
-
-
-class AssetGenerationError(Exception):
-    """Raised when Hugging Face v2 release assets cannot be generated safely."""
 
 
 CategoryChart = tuple[str, str, str]
@@ -119,7 +124,6 @@ def main(input_path: Path, output_dir: Path, input_sha256: str | None) -> None:
     """
     configure_cli_logging()
     try:
-        _prepare_matplotlib()
         summary = generate_hf_v2_assets(
             input_path=input_path,
             output_dir=output_dir,
@@ -146,7 +150,8 @@ def generate_hf_v2_assets(
         output_dir:
             Private directory that receives PNG assets.
         expected_input_sha256 (optional):
-            Expected lower-case SHA-256 for the input Parquet file. Defaults to ``None``.
+            Expected lower-case SHA-256 for the input Parquet file. Defaults to
+            ``None``.
 
     Returns:
         Generated asset summary.
@@ -167,33 +172,17 @@ def generate_hf_v2_assets(
     )
 
 
-def _prepare_matplotlib() -> None:
-    try:
-        import matplotlib
-    except ImportError as exc:
-        raise ImportError(
-            "matplotlib is required; run with "
-            "`uv run --with matplotlib python src/scripts/"
-            "generate_hf_v2_assets.py ...`"
-        ) from exc
-    matplotlib.use("Agg", force=True)
-
-
-def _validate_input_file(*, input_path: Path, expected_sha256: str | None) -> str:
-    if "://" in str(input_path):
-        raise AssetGenerationError("Input must be a local Parquet path, not a URL")
-    if not input_path.is_file():
-        raise AssetGenerationError("Input Parquet path is missing or not a file")
-    if input_path.suffix.casefold() != ".parquet":
-        raise AssetGenerationError("Input must be a Parquet file")
-    digest = sha256_file(input_path)
-    if expected_sha256 is not None:
-        expected = expected_sha256.strip().casefold()
-        if not re.fullmatch(r"[0-9a-f]{64}", expected):
-            raise AssetGenerationError("Expected input SHA-256 is not valid hex")
-        if digest != expected:
-            raise AssetGenerationError("Input Parquet SHA-256 does not match")
-    return digest
+def _prepare_output_dir(*, output_dir: Path) -> None:
+    existed = output_dir.exists()
+    if output_dir.is_symlink():
+        raise AssetGenerationError("Output directory must not be a symbolic link")
+    if existed and not output_dir.is_dir():
+        raise AssetGenerationError("Output path exists and is not a directory")
+    if not existed:
+        output_dir.mkdir(parents=True, mode=0o700)
+        os.chmod(output_dir, 0o700)
+    if output_dir.stat().st_mode & 0o077:
+        raise AssetGenerationError("Output directory must be private")
 
 
 def _read_guarded_frame(*, input_path: Path) -> pl.DataFrame:
@@ -229,6 +218,47 @@ def _render_assets(*, frame: pl.DataFrame) -> dict[str, bytes]:
     return rendered
 
 
+def _category_chart_png(
+    *, title: str, counts: CountItems, collapse_high_cardinality: bool
+) -> bytes:
+    collapsed, horizontal = _collapse_counts(
+        counts=counts, collapse_high_cardinality=collapse_high_cardinality
+    )
+    labels = [label for label, _ in collapsed] or ["No records"]
+    values = [count for _, count in collapsed] or [0]
+    height = max(4.0, 0.34 * len(labels) + 1.4) if horizontal else 5.2
+    fig, ax = plt.subplots(figsize=(10.5, height))
+    if horizontal:
+        ax.barh(labels, values, color="#386cb0")
+        ax.invert_yaxis()
+        ax.set_xlabel("Records")
+    else:
+        ax.bar(labels, values, color="#386cb0")
+        ax.set_ylabel("Records")
+        ax.tick_params(axis="x", labelrotation=45)
+    ax.set_title(title)
+    ax.grid(axis="x" if horizontal else "y", alpha=0.25)
+    fig.tight_layout()
+    return _figure_png(fig=fig)
+
+
+def _collapse_counts(
+    *, counts: CountItems, collapse_high_cardinality: bool
+) -> tuple[CountItems, bool]:
+    if not collapse_high_cardinality or len(counts) <= TOP_CATEGORY_LIMIT:
+        return counts, False
+    top = counts[:TOP_CATEGORY_LIMIT]
+    other = sum(count for _, count in counts[TOP_CATEGORY_LIMIT:])
+    return [*top, ("Other", other)], True
+
+
+def _figure_png(*, fig: Figure) -> bytes:
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=PNG_DPI, metadata={"Software": "matplotlib"})
+    plt.close(fig)
+    return buffer.getvalue()
+
+
 def _category_counts(*, frame: pl.DataFrame, field: str) -> CountItems:
     values = [_normalise_category(value=value) for value in frame.get_column(field)]
     counts = collections.Counter(values)
@@ -237,6 +267,43 @@ def _category_counts(*, frame: pl.DataFrame, field: str) -> CountItems:
     if field == "age_band":
         return sorted(counts.items(), key=lambda item: _age_band_key(value=item[0]))
     return sorted(counts.items(), key=lambda item: (-item[1], item[0].casefold()))
+
+
+def _age_band_key(*, value: str) -> tuple[int, str]:
+    match = re.search(r"\d+", value)
+    if match is None:
+        return 10_000, value
+    return int(match.group(0)), value
+
+
+def _age_key(*, value: str) -> tuple[int, str]:
+    try:
+        return int(value), value
+    except ValueError:
+        return 10_000, value
+
+
+def _normalise_category(*, value: object) -> str:
+    if value is None:
+        return MISSING_LABEL
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    label = str(value).strip()
+    return label or MISSING_LABEL
+
+
+def _ocean_chart_png(*, frame: pl.DataFrame) -> bytes:
+    fig, axes = plt.subplots(nrows=5, ncols=1, figsize=(10.5, 12.0), sharex=True)
+    for axis, (field, label) in zip(axes, OCEAN_FIELDS, strict=True):
+        values = [float(value) for value in frame.get_column(field).drop_nulls()]
+        axis.hist(values, bins=12, color="#386cb0", edgecolor="white")
+        axis.set_ylabel("Records")
+        axis.set_title(label)
+        axis.grid(axis="y", alpha=0.25)
+    axes[-1].set_xlabel("Score")
+    fig.suptitle("OCEAN score distributions")
+    fig.tight_layout()
+    return _figure_png(fig=fig)
 
 
 def _relationship_pair_counts(*, frame: pl.DataFrame) -> CountItems:
@@ -261,74 +328,6 @@ def _relationship_pair_counts(*, frame: pl.DataFrame) -> CountItems:
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
-def _category_chart_png(
-    *, title: str, counts: CountItems, collapse_high_cardinality: bool
-) -> bytes:
-    import matplotlib.pyplot as plt
-
-    collapsed, horizontal = _collapse_counts(
-        counts=counts, collapse_high_cardinality=collapse_high_cardinality
-    )
-    labels = [label for label, _ in collapsed] or ["No records"]
-    values = [count for _, count in collapsed] or [0]
-    height = max(4.0, 0.34 * len(labels) + 1.4) if horizontal else 5.2
-    fig, ax = plt.subplots(figsize=(10.5, height))
-    if horizontal:
-        ax.barh(labels, values, color="#386cb0")
-        ax.invert_yaxis()
-        ax.set_xlabel("Records")
-    else:
-        ax.bar(labels, values, color="#386cb0")
-        ax.set_ylabel("Records")
-        ax.tick_params(axis="x", labelrotation=45)
-    ax.set_title(title)
-    ax.grid(axis="x" if horizontal else "y", alpha=0.25)
-    fig.tight_layout()
-    return _figure_png(fig=fig, pyplot=plt)
-
-
-def _ocean_chart_png(*, frame: pl.DataFrame) -> bytes:
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(nrows=5, ncols=1, figsize=(10.5, 12.0), sharex=True)
-    for axis, (field, label) in zip(axes, OCEAN_FIELDS, strict=True):
-        values = [float(value) for value in frame.get_column(field).drop_nulls()]
-        axis.hist(values, bins=12, color="#386cb0", edgecolor="white")
-        axis.set_ylabel("Records")
-        axis.set_title(label)
-        axis.grid(axis="y", alpha=0.25)
-    axes[-1].set_xlabel("Score")
-    fig.suptitle("OCEAN score distributions")
-    fig.tight_layout()
-    return _figure_png(fig=fig, pyplot=plt)
-
-
-def _collapse_counts(
-    *, counts: CountItems, collapse_high_cardinality: bool
-) -> tuple[CountItems, bool]:
-    if not collapse_high_cardinality or len(counts) <= TOP_CATEGORY_LIMIT:
-        return counts, False
-    top = counts[:TOP_CATEGORY_LIMIT]
-    other = sum(count for _, count in counts[TOP_CATEGORY_LIMIT:])
-    return [*top, ("Other", other)], True
-
-
-def _figure_png(*, fig: object, pyplot: object) -> bytes:
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=PNG_DPI, metadata={"Software": "matplotlib"})
-    pyplot.close(fig)
-    return buffer.getvalue()
-
-
-def _normalise_category(*, value: object) -> str:
-    if value is None:
-        return MISSING_LABEL
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    label = str(value).strip()
-    return label or MISSING_LABEL
-
-
 def _gender_label(*, value: object) -> str | None:
     normalised = _normalise_category(value=value).casefold()
     if normalised in {"male", "man", "m", "mand"}:
@@ -338,31 +337,21 @@ def _gender_label(*, value: object) -> str | None:
     return None
 
 
-def _age_key(*, value: str) -> tuple[int, str]:
-    try:
-        return int(value), value
-    except ValueError:
-        return 10_000, value
-
-
-def _age_band_key(*, value: str) -> tuple[int, str]:
-    match = re.search(r"\d+", value)
-    if match is None:
-        return 10_000, value
-    return int(match.group(0)), value
-
-
-def _prepare_output_dir(*, output_dir: Path) -> None:
-    existed = output_dir.exists()
-    if output_dir.is_symlink():
-        raise AssetGenerationError("Output directory must not be a symbolic link")
-    if existed and not output_dir.is_dir():
-        raise AssetGenerationError("Output path exists and is not a directory")
-    if not existed:
-        output_dir.mkdir(parents=True, mode=0o700)
-        os.chmod(output_dir, 0o700)
-    if output_dir.stat().st_mode & 0o077:
-        raise AssetGenerationError("Output directory must be private")
+def _validate_input_file(*, input_path: Path, expected_sha256: str | None) -> str:
+    if "://" in str(input_path):
+        raise AssetGenerationError("Input must be a local Parquet path, not a URL")
+    if not input_path.is_file():
+        raise AssetGenerationError("Input Parquet path is missing or not a file")
+    if input_path.suffix.casefold() != ".parquet":
+        raise AssetGenerationError("Input must be a Parquet file")
+    digest = sha256_file(input_path)
+    if expected_sha256 is not None:
+        expected = expected_sha256.strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise AssetGenerationError("Expected input SHA-256 is not valid hex")
+        if digest != expected:
+            raise AssetGenerationError("Input Parquet SHA-256 does not match")
+    return digest
 
 
 def _write_assets(*, output_dir: Path, rendered: dict[str, bytes]) -> None:
@@ -384,6 +373,10 @@ def _write_assets(*, output_dir: Path, rendered: dict[str, bytes]) -> None:
             raise AssetGenerationError(f"Existing output differs: {path.name}")
     for filename, content in rendered.items():
         _write_private_bytes(path=output_dir / filename, content=content)
+
+
+def _sha256_bytes(*, content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 def _write_private_bytes(*, path: Path, content: bytes) -> None:
@@ -409,10 +402,6 @@ def _write_private_bytes(*, path: Path, content: bytes) -> None:
         os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _sha256_bytes(*, content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
 
 
 if __name__ == "__main__":

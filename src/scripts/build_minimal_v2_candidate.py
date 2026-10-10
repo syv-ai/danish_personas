@@ -86,7 +86,12 @@ def main(
     manifest_output: Path,
     report_output: Path,
 ) -> None:
-    """Compose the final private candidate without provider or upload access."""
+    """Compose the final private candidate without provider or upload access.
+
+    Raises:
+        click.ClickException:
+            If the candidate cannot be composed safely.
+    """
     configure_cli_logging()
     try:
         summary = compose_minimal_v2_candidate(
@@ -113,10 +118,6 @@ def main(
     ) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-
-
-class MinimalV2CandidateError(RuntimeError):
-    """Raised when the minimal v2 candidate cannot be composed safely."""
 
 
 def compose_minimal_v2_candidate(
@@ -173,6 +174,10 @@ def compose_minimal_v2_candidate(
 
     Returns:
         Summary containing only paths, counts, and checksums.
+
+    Raises:
+        MinimalV2CandidateError:
+            If the candidate does not satisfy the release integrity checks.
     """
     _guard_output_paths(paths=(output, manifest_output, report_output))
     campaign = _load_completed_h90_campaign(
@@ -256,6 +261,118 @@ def compose_minimal_v2_candidate(
         "output": output.as_posix(),
         "report_output": report_output.as_posix(),
     }
+
+
+class MinimalV2CandidateError(RuntimeError):
+    """Raised when the minimal v2 candidate cannot be composed safely."""
+
+
+def _apply_h90_results(
+    *,
+    candidate_frame: pl.DataFrame,
+    original_persona_by_hash: dict[str, str],
+    campaign: dict[str, object],
+) -> tuple[pl.DataFrame, dict[str, JSONDocument]]:
+    selection = t.cast(h90.H90Selection, campaign["selection"])
+    status = t.cast(dict[str, object], campaign["status"])
+    results = t.cast(dict[str, SolAdjudicationResult | None], campaign["results"])
+    rows = candidate_frame.to_dicts()
+    selected_by_hash = {row.persona_hash: row for row in selection.rows}
+    dispositions = _disposition_counts(status=status)
+    patched_applied = 0
+    patched_changed_from_candidate = 0
+    for persona_hash, result in results.items():
+        if result is None or result.disposition != "patched":
+            continue
+        row = selected_by_hash[persona_hash]
+        if rows[row.index] != row.candidate_row:
+            raise MinimalV2CandidateError(
+                "Candidate row binding changed during compose"
+            )
+        current = rows[row.index][first_pass.PERSONA_FIELD]
+        first_pass._check_restricted_text(
+            value=result.proposed_text, label="patched persona prose"
+        )
+        rows[row.index][first_pass.PERSONA_FIELD] = result.proposed_text
+        patched_applied += 1
+        if result.proposed_text != current:
+            patched_changed_from_candidate += 1
+    final_frame = pl.DataFrame(rows, schema=candidate_frame.schema)
+    final_changed_hashes = _changed_prose_hashes(
+        frame=final_frame, original_persona_by_hash=original_persona_by_hash
+    )
+    preserved = dispositions["unresolved"] + dispositions["privacy_blocked"]
+    validation_failed = dispositions["validation_failed"]
+    return final_frame, {
+        "h90_consistent_preserved": dispositions["consistent"],
+        "h90_patched_applied": patched_applied,
+        "h90_patched_changed_from_candidate": patched_changed_from_candidate,
+        "h90_unresolved_preserved": dispositions["unresolved"],
+        "h90_privacy_blocked_preserved": dispositions["privacy_blocked"],
+        "h90_validation_failed_preserved": validation_failed,
+        "h90_preserved_unresolved_or_privacy_blocked": preserved,
+        "h90_preserved_unresolved_privacy_or_validation_failed": (
+            preserved + validation_failed
+        ),
+        "final_changed_prose_rows": len(final_changed_hashes),
+        "final_changed_persona_hashes_sha256": sha256_text(
+            canonical_json(final_changed_hashes)
+        ),
+    }
+
+
+def _changed_prose_hashes(
+    *, frame: pl.DataFrame, original_persona_by_hash: dict[str, str]
+) -> list[str]:
+    changed: list[str] = []
+    for row in frame.select([first_pass.ID_FIELD, first_pass.PERSONA_FIELD]).iter_rows(
+        named=True
+    ):
+        persona_id = (
+            str(row[first_pass.ID_FIELD])
+            if row[first_pass.ID_FIELD] is not None
+            else ""
+        )
+        persona_hash = sha256_text(persona_id)
+        original_persona = original_persona_by_hash.get(persona_hash)
+        if original_persona is None:
+            raise MinimalV2CandidateError("Candidate contains an unknown persona ID")
+        if row[first_pass.PERSONA_FIELD] != original_persona:
+            changed.append(persona_hash)
+    return sorted(changed)
+
+
+def _disposition_counts(*, status: dict[str, object]) -> dict[str, int]:
+    counts = {
+        "consistent": 0,
+        "patched": 0,
+        "privacy_blocked": 0,
+        "unresolved": 0,
+        "validation_failed": 0,
+    }
+    for record in h90._processed_records(status=status):
+        counts[record["disposition"]] += 1
+    return counts
+
+
+def _assert_only_persona_differs(*, left: pl.DataFrame, right: pl.DataFrame) -> None:
+    if left.schema != right.schema or left.height != right.height:
+        raise MinimalV2CandidateError("Final candidate schema changed")
+    for column in left.columns:
+        if column == first_pass.PERSONA_FIELD:
+            continue
+        if left.get_column(column).to_list() != right.get_column(column).to_list():
+            raise MinimalV2CandidateError("Final candidate changed non-prose fields")
+
+
+def _guard_output_paths(*, paths: tuple[Path, ...]) -> None:
+    if len(set(paths)) != len(paths):
+        raise MinimalV2CandidateError("Output paths must be distinct")
+    for path in paths:
+        if path.is_symlink():
+            raise MinimalV2CandidateError("Output path must not be a symlink")
+        if path.exists() and not path.is_file():
+            raise MinimalV2CandidateError("Output path must be a regular file")
 
 
 def _load_completed_h90_campaign(
@@ -404,105 +521,30 @@ def _resume_h90_results(
     return results
 
 
-def _apply_h90_results(
-    *,
-    candidate_frame: pl.DataFrame,
-    original_persona_by_hash: dict[str, str],
-    campaign: dict[str, object],
-) -> tuple[pl.DataFrame, dict[str, JSONDocument]]:
-    selection = t.cast(h90.H90Selection, campaign["selection"])
-    status = t.cast(dict[str, object], campaign["status"])
-    results = t.cast(dict[str, SolAdjudicationResult | None], campaign["results"])
-    rows = candidate_frame.to_dicts()
-    selected_by_hash = {row.persona_hash: row for row in selection.rows}
-    dispositions = _disposition_counts(status=status)
-    patched_applied = 0
-    patched_changed_from_candidate = 0
-    for persona_hash, result in results.items():
-        if result is None or result.disposition != "patched":
-            continue
-        row = selected_by_hash[persona_hash]
-        if rows[row.index] != row.candidate_row:
-            raise MinimalV2CandidateError(
-                "Candidate row binding changed during compose"
-            )
-        current = rows[row.index][first_pass.PERSONA_FIELD]
-        first_pass._check_restricted_text(
-            value=result.proposed_text, label="patched persona prose"
+def _parquet_bytes(*, frame: pl.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    frame.write_parquet(buffer)
+    return buffer.getvalue()
+
+
+def _persona_by_hash(*, frame: pl.DataFrame) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for row in frame.select([first_pass.ID_FIELD, first_pass.PERSONA_FIELD]).iter_rows(
+        named=True
+    ):
+        persona_id = (
+            str(row[first_pass.ID_FIELD])
+            if row[first_pass.ID_FIELD] is not None
+            else ""
         )
-        rows[row.index][first_pass.PERSONA_FIELD] = result.proposed_text
-        patched_applied += 1
-        if result.proposed_text != current:
-            patched_changed_from_candidate += 1
-    final_frame = pl.DataFrame(rows, schema=candidate_frame.schema)
-    final_changed_hashes = _changed_prose_hashes(
-        frame=final_frame, original_persona_by_hash=original_persona_by_hash
-    )
-    preserved = dispositions["unresolved"] + dispositions["privacy_blocked"]
-    validation_failed = dispositions["validation_failed"]
-    return final_frame, {
-        "h90_consistent_preserved": dispositions["consistent"],
-        "h90_patched_applied": patched_applied,
-        "h90_patched_changed_from_candidate": patched_changed_from_candidate,
-        "h90_unresolved_preserved": dispositions["unresolved"],
-        "h90_privacy_blocked_preserved": dispositions["privacy_blocked"],
-        "h90_validation_failed_preserved": validation_failed,
-        "h90_preserved_unresolved_or_privacy_blocked": preserved,
-        "h90_preserved_unresolved_privacy_or_validation_failed": (
-            preserved + validation_failed
-        ),
-        "final_changed_prose_rows": len(final_changed_hashes),
-        "final_changed_persona_hashes_sha256": sha256_text(
-            canonical_json(final_changed_hashes)
-        ),
-    }
-
-
-def _vetted_manifest(
-    *,
-    allowed_hashes: list[str],
-    original: Path,
-    candidate: Path,
-    candidate_report: Path,
-    h90_status: Path,
-    h90_output_dir: Path,
-    source_bundle: Path,
-    candidate_sha256: str,
-    campaign: dict[str, object],
-    compose_report: dict[str, JSONDocument],
-) -> dict[str, JSONDocument]:
-    return {
-        "version": 1,
-        "status": "vetted",
-        "review_basis": (
-            "automated_source_and_exact_patch_checks_no_human_semantic_certification"
-        ),
-        "allowed_persona_id_hashes": allowed_hashes,
-        "counts": {
-            "allowed_changed_prose_rows": len(allowed_hashes),
-            "h90_patched_applied": compose_report["h90_patched_applied"],
-            "h90_unresolved_preserved": compose_report["h90_unresolved_preserved"],
-            "h90_privacy_blocked_preserved": compose_report[
-                "h90_privacy_blocked_preserved"
-            ],
-            "h90_validation_failed_preserved": compose_report[
-                "h90_validation_failed_preserved"
-            ],
-        },
-        "outputs": {"candidate_sha256": candidate_sha256},
-        "source_hashes": {
-            "candidate_report_sha256": sha256_file(candidate_report),
-            "current_v5_candidate_sha256": sha256_file(candidate),
-            "h90_campaign_manifest_sha256": str(campaign["manifest_sha256"]),
-            "h90_campaign_status_sha256": str(campaign["status_sha256"]),
-            "h90_scope_status_sha256": sha256_file(h90_status),
-            "original_v1_sha256": sha256_file(original),
-        },
-        "source_paths": {
-            "h90_output_dir": h90_output_dir.as_posix(),
-            "source_bundle": source_bundle.as_posix(),
-        },
-    }
+        persona = row[first_pass.PERSONA_FIELD]
+        if not persona_id or not isinstance(persona, str) or not persona.strip():
+            raise MinimalV2CandidateError("Frame contains blank ID or prose")
+        persona_hash = sha256_text(persona_id)
+        if persona_hash in values:
+            raise MinimalV2CandidateError("Frame contains duplicate persona IDs")
+        values[persona_hash] = persona
+    return values
 
 
 def _private_report(
@@ -550,9 +592,7 @@ def _private_report(
             "rows": summary["total"],
             "existing_v5_changed_prose_rows": len(candidate_changed_hashes),
             "final_changed_prose_rows": len(allowed_hashes),
-            "h90_consistent_preserved": compose_report[
-                "h90_consistent_preserved"
-            ],
+            "h90_consistent_preserved": compose_report["h90_consistent_preserved"],
             "h90_patched_applied": compose_report["h90_patched_applied"],
             "h90_patched_changed_from_candidate": compose_report[
                 "h90_patched_changed_from_candidate"
@@ -607,96 +647,55 @@ def _ordered_ids(*, frame: pl.DataFrame) -> list[str]:
     if first_pass.ID_FIELD not in frame.columns:
         raise MinimalV2CandidateError("Frame is missing persona IDs")
     return [
-        str(value) if value is not None else ""
-        for value in frame[first_pass.ID_FIELD]
+        str(value) if value is not None else "" for value in frame[first_pass.ID_FIELD]
     ]
 
 
-def _persona_by_hash(*, frame: pl.DataFrame) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for row in frame.select([first_pass.ID_FIELD, first_pass.PERSONA_FIELD]).iter_rows(
-        named=True
-    ):
-        persona_id = (
-            str(row[first_pass.ID_FIELD])
-            if row[first_pass.ID_FIELD] is not None
-            else ""
-        )
-        persona = row[first_pass.PERSONA_FIELD]
-        if not persona_id or not isinstance(persona, str) or not persona.strip():
-            raise MinimalV2CandidateError("Frame contains blank ID or prose")
-        persona_hash = sha256_text(persona_id)
-        if persona_hash in values:
-            raise MinimalV2CandidateError("Frame contains duplicate persona IDs")
-        values[persona_hash] = persona
-    return values
-
-
-def _changed_prose_hashes(
-    *, frame: pl.DataFrame, original_persona_by_hash: dict[str, str]
-) -> list[str]:
-    changed: list[str] = []
-    for row in frame.select([first_pass.ID_FIELD, first_pass.PERSONA_FIELD]).iter_rows(
-        named=True
-    ):
-        persona_id = (
-            str(row[first_pass.ID_FIELD])
-            if row[first_pass.ID_FIELD] is not None
-            else ""
-        )
-        persona_hash = sha256_text(persona_id)
-        original_persona = original_persona_by_hash.get(persona_hash)
-        if original_persona is None:
-            raise MinimalV2CandidateError("Candidate contains an unknown persona ID")
-        if row[first_pass.PERSONA_FIELD] != original_persona:
-            changed.append(persona_hash)
-    return sorted(changed)
-
-
-def _assert_only_persona_differs(*, left: pl.DataFrame, right: pl.DataFrame) -> None:
-    if left.schema != right.schema or left.height != right.height:
-        raise MinimalV2CandidateError("Final candidate schema changed")
-    for column in left.columns:
-        if column == first_pass.PERSONA_FIELD:
-            continue
-        if left.get_column(column).to_list() != right.get_column(column).to_list():
-            raise MinimalV2CandidateError("Final candidate changed non-prose fields")
-
-
-def _disposition_counts(*, status: dict[str, object]) -> dict[str, int]:
-    counts = {
-        "consistent": 0,
-        "patched": 0,
-        "privacy_blocked": 0,
-        "unresolved": 0,
-        "validation_failed": 0,
+def _vetted_manifest(
+    *,
+    allowed_hashes: list[str],
+    original: Path,
+    candidate: Path,
+    candidate_report: Path,
+    h90_status: Path,
+    h90_output_dir: Path,
+    source_bundle: Path,
+    candidate_sha256: str,
+    campaign: dict[str, object],
+    compose_report: dict[str, JSONDocument],
+) -> dict[str, JSONDocument]:
+    return {
+        "version": 1,
+        "status": "vetted",
+        "review_basis": (
+            "automated_source_and_exact_patch_checks_no_human_semantic_certification"
+        ),
+        "allowed_persona_id_hashes": allowed_hashes,
+        "counts": {
+            "allowed_changed_prose_rows": len(allowed_hashes),
+            "h90_patched_applied": compose_report["h90_patched_applied"],
+            "h90_unresolved_preserved": compose_report["h90_unresolved_preserved"],
+            "h90_privacy_blocked_preserved": compose_report[
+                "h90_privacy_blocked_preserved"
+            ],
+            "h90_validation_failed_preserved": compose_report[
+                "h90_validation_failed_preserved"
+            ],
+        },
+        "outputs": {"candidate_sha256": candidate_sha256},
+        "source_hashes": {
+            "candidate_report_sha256": sha256_file(candidate_report),
+            "current_v5_candidate_sha256": sha256_file(candidate),
+            "h90_campaign_manifest_sha256": str(campaign["manifest_sha256"]),
+            "h90_campaign_status_sha256": str(campaign["status_sha256"]),
+            "h90_scope_status_sha256": sha256_file(h90_status),
+            "original_v1_sha256": sha256_file(original),
+        },
+        "source_paths": {
+            "h90_output_dir": h90_output_dir.as_posix(),
+            "source_bundle": source_bundle.as_posix(),
+        },
     }
-    for record in h90._processed_records(status=status):
-        counts[record["disposition"]] += 1
-    return counts
-
-
-def _guard_output_paths(*, paths: tuple[Path, ...]) -> None:
-    if len(set(paths)) != len(paths):
-        raise MinimalV2CandidateError("Output paths must be distinct")
-    for path in paths:
-        if path.is_symlink():
-            raise MinimalV2CandidateError("Output path must not be a symlink")
-        if path.exists() and not path.is_file():
-            raise MinimalV2CandidateError("Output path must be a regular file")
-
-
-def _parquet_bytes(*, frame: pl.DataFrame) -> bytes:
-    buffer = io.BytesIO()
-    frame.write_parquet(buffer)
-    return buffer.getvalue()
-
-
-def _write_private_json_checked(
-    *, path: Path, payload: dict[str, JSONDocument]
-) -> None:
-    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-    _write_private_bytes(path=path, content=(content + "\n").encode("utf-8"))
 
 
 def _write_private_bytes(*, path: Path, content: bytes) -> None:
@@ -719,6 +718,13 @@ def _write_private_bytes(*, path: Path, content: bytes) -> None:
         os.chmod(path, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_private_json_checked(
+    *, path: Path, payload: dict[str, JSONDocument]
+) -> None:
+    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    _write_private_bytes(path=path, content=(content + "\n").encode("utf-8"))
 
 
 if __name__ == "__main__":

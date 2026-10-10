@@ -39,6 +39,16 @@ _DEFAULT_PAYLOAD_SHA256 = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep Sol adjudication tests on an isolated user-level ledger."""
+    monkeypatch.setattr(
+        proxy_budget,
+        "USER_SOL_ADJUDICATION_BUDGET_PATH",
+        tmp_path / "sol-adjudication.jsonl",
+    )
+
+
 def test_closing_budget_adapter_keeps_borrowed_transport_usable() -> None:
     """Closing an adapter must not close the caller-owned transport."""
     borrowed = httpx.MockTransport(lambda _: httpx.Response(200))
@@ -53,16 +63,6 @@ def test_closing_budget_adapter_keeps_borrowed_transport_usable() -> None:
     )
 
     assert response.status_code == 200
-
-
-@pytest.fixture(autouse=True)
-def _private_budget_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep Sol adjudication tests on an isolated user-level ledger."""
-    monkeypatch.setattr(
-        proxy_budget,
-        "USER_SOL_ADJUDICATION_BUDGET_PATH",
-        tmp_path / "sol-adjudication.jsonl",
-    )
 
 
 _BANNED_IDENTITY_VARIANTS = (

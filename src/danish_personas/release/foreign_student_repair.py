@@ -220,10 +220,7 @@ def repair_published_v2(  # noqa: C901, PLR0912
                     supported_origin_tuples,
                 )
                 + _origin_literal_conflicts(
-                    rows[i],
-                    target_origin,
-                    origins,
-                    supported_origin_tuples,
+                    rows[i], target_origin, origins, supported_origin_tuples
                 ),
                 rows[i]["labour_market_status"] == target["labour_market_status"],
                 rows[i][_STATUS_CODE] == target[_STATUS_CODE],
@@ -321,6 +318,19 @@ def repair_published_v2(  # noqa: C901, PLR0912
     }
 
 
+def _age_key(value: str | int) -> int:
+    """Parse an exact RAS202 age or its official top-code.
+
+    Returns:
+        Numeric exact age, using 71 for the top-code.
+    """
+    return 71 if value == "71-" else int(value)
+
+
+def _editorial_violation(frame: pl.DataFrame) -> bool:
+    return count_editorial_foreign_student_violations(frame) > 0
+
+
 def count_editorial_foreign_student_violations(frame: pl.DataFrame) -> int:
     """Count release rows violating the editorial no-Denmark-origin student rule.
 
@@ -335,6 +345,100 @@ def count_editorial_foreign_student_violations(frame: pl.DataFrame) -> int:
         (pl.col("detailed_status_code").cast(pl.String) == "160")
         & (pl.col("origin_country_code").cast(pl.String) == _HOME_CODE)
     ).height
+
+
+def _require_columns(frame: pl.DataFrame, columns: Sequence[str]) -> None:
+    missing = set(columns).difference(frame.columns)
+    if missing:
+        raise ValueError("Ambiguous schema: required release/source fields are missing")
+
+
+def _origin_literal_conflicts(
+    row: dict[str, Any],
+    proposed_origin: tuple[Any, ...],
+    origin_fields: list[str],
+    supported_origins: set[tuple[Any, Any, Any]],
+) -> int:
+    """Count supported country labels contradicted by a row's text attributes.
+
+    Returns:
+        Number of conflicting supported labels.
+    """
+    proposed = dict(zip(origin_fields, proposed_origin, strict=True))
+    expected_labels = {
+        proposed.get("origin_country"),
+        proposed.get("origin_country_da"),
+    }
+    text_values = [
+        value.casefold()
+        for field, value in row.items()
+        if isinstance(value, str)
+        and field not in origin_fields
+        and field != _ID
+        and field not in {"sex", "labour_market_status", _STATUS_CODE, _STATUS_LABEL}
+    ]
+    conflicts = 0
+    for _, english, danish in supported_origins:
+        for label in (english, danish):
+            if (
+                isinstance(label, str)
+                and label not in expected_labels
+                and any(label.casefold() in text for text in text_values)
+            ):
+                conflicts += 1
+    return conflicts
+
+
+def _origin_source_tuple(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (row["origin_country_code"], row["origin_country"], row["origin_country_da"])
+
+
+def _origin_tuple(row: dict[str, Any], fields: list[str]) -> tuple[Any, ...]:
+    return tuple(row[field] for field in fields)
+
+
+def _verify_changed_fields(
+    original: pl.DataFrame,
+    repaired: pl.DataFrame,
+    origin_fields: list[str],
+    restored: list[int],
+    pairs: list[tuple[int, int]],
+) -> None:
+    changed_rows = set(restored) | {i for pair in pairs for i in pair}
+    changed_columns = set(origin_fields) | {_STATUS_CODE, _STATUS_LABEL}
+    for column in original.columns:
+        if column not in changed_columns:
+            if not repaired[column].equals(original[column]):
+                raise ValueError("Repair altered an unapproved field")
+        elif column not in origin_fields and column not in {
+            _STATUS_CODE,
+            _STATUS_LABEL,
+        }:
+            raise ValueError("Unsafe schema reconciliation")
+    for i in range(original.height):
+        if i not in changed_rows and any(
+            repaired[column][i] != original[column][i] for column in changed_columns
+        ):
+            raise ValueError("Repair changed an unselected row")
+
+
+def _verify_status_support(
+    *,
+    rows: list[dict[str, Any]],
+    supported: set[tuple[str, Any, Any, str, Any]],
+    indices: set[int],
+) -> None:
+    for index in indices:
+        row = rows[index]
+        key = (
+            str(min(int(row["age"]), 71)),
+            row["sex"],
+            row["labour_market_status"],
+            str(row[_STATUS_CODE]),
+            row[_STATUS_LABEL],
+        )
+        if key not in supported:
+            raise ValueError("Changed detailed-status tuple lacks RAS202 support")
 
 
 def _write_private_parquet(*, path: Path, frame: pl.DataFrame) -> None:
@@ -369,115 +473,3 @@ def _write_private_text(*, path: Path, content: str) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-
-
-def _age_key(value: str | int) -> int:
-    """Parse an exact RAS202 age or its official top-code.
-
-    Returns:
-        Numeric exact age, using 71 for the top-code.
-    """
-    return 71 if value == "71-" else int(value)
-
-
-def _require_columns(frame: pl.DataFrame, columns: Sequence[str]) -> None:
-    missing = set(columns).difference(frame.columns)
-    if missing:
-        raise ValueError("Ambiguous schema: required release/source fields are missing")
-
-
-def _origin_tuple(row: dict[str, Any], fields: list[str]) -> tuple[Any, ...]:
-    return tuple(row[field] for field in fields)
-
-
-def _origin_literal_conflicts(
-    row: dict[str, Any],
-    proposed_origin: tuple[Any, ...],
-    origin_fields: list[str],
-    supported_origins: set[tuple[Any, Any, Any]],
-) -> int:
-    """Count supported country labels contradicted by a row's text attributes.
-
-    Returns:
-        Number of conflicting supported labels.
-    """
-    proposed = dict(zip(origin_fields, proposed_origin, strict=True))
-    expected_labels = {
-        proposed.get("origin_country"),
-        proposed.get("origin_country_da"),
-    }
-    text_values = [
-        value.casefold()
-        for field, value in row.items()
-        if isinstance(value, str)
-        and field not in origin_fields
-        and field != _ID
-        and field not in {
-            "sex",
-            "labour_market_status",
-            _STATUS_CODE,
-            _STATUS_LABEL,
-        }
-    ]
-    conflicts = 0
-    for _, english, danish in supported_origins:
-        for label in (english, danish):
-            if (
-                isinstance(label, str)
-                and label not in expected_labels
-                and any(label.casefold() in text for text in text_values)
-            ):
-                conflicts += 1
-    return conflicts
-
-
-def _origin_source_tuple(row: dict[str, Any]) -> tuple[Any, Any, Any]:
-    return (row["origin_country_code"], row["origin_country"], row["origin_country_da"])
-
-
-def _editorial_violation(frame: pl.DataFrame) -> bool:
-    return count_editorial_foreign_student_violations(frame) > 0
-
-
-def _verify_status_support(
-    *,
-    rows: list[dict[str, Any]],
-    supported: set[tuple[str, Any, Any, str, Any]],
-    indices: set[int],
-) -> None:
-    for index in indices:
-        row = rows[index]
-        key = (
-            str(min(int(row["age"]), 71)),
-            row["sex"],
-            row["labour_market_status"],
-            str(row[_STATUS_CODE]),
-            row[_STATUS_LABEL],
-        )
-        if key not in supported:
-            raise ValueError("Changed detailed-status tuple lacks RAS202 support")
-
-
-def _verify_changed_fields(
-    original: pl.DataFrame,
-    repaired: pl.DataFrame,
-    origin_fields: list[str],
-    restored: list[int],
-    pairs: list[tuple[int, int]],
-) -> None:
-    changed_rows = set(restored) | {i for pair in pairs for i in pair}
-    changed_columns = set(origin_fields) | {_STATUS_CODE, _STATUS_LABEL}
-    for column in original.columns:
-        if column not in changed_columns:
-            if not repaired[column].equals(original[column]):
-                raise ValueError("Repair altered an unapproved field")
-        elif column not in origin_fields and column not in {
-            _STATUS_CODE,
-            _STATUS_LABEL,
-        }:
-            raise ValueError("Unsafe schema reconciliation")
-    for i in range(original.height):
-        if i not in changed_rows and any(
-            repaired[column][i] != original[column][i] for column in changed_columns
-        ):
-            raise ValueError("Repair changed an unselected row")

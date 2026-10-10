@@ -70,10 +70,6 @@ LOCAL_VALIDATION_FAILURE = "Sol response failed bounded local validation retries
 ROW_ATTEMPT_LIFETIME_EXHAUSTED = "Per-row proxy attempt lifetime exhausted"
 
 
-class ReviewError(Exception):
-    """A safe-to-report v3 campaign failure."""
-
-
 @click.command()
 @click.option("--original", type=click.Path(path_type=Path), default=ORIGINAL)
 @click.option("--candidate", type=click.Path(path_type=Path), default=CANDIDATE)
@@ -129,6 +125,17 @@ def main(
     ) as exc:
         raise click.ClickException(_safe_error(exc)) from exc
     click.echo(json.dumps(summary, sort_keys=True))
+
+
+def _safe_error(exc: Exception) -> str:
+    if isinstance(exc, (ProxyBudgetError, SolAdjudicationError)):
+        return (
+            "Private adjudication stopped safely; inspect local configuration "
+            "and private logs."
+        )
+    if isinstance(exc, ReviewError):
+        return str(exc)
+    return "Private adjudication stopped safely due to an input or filesystem error."
 
 
 def run_campaign(  # noqa: C901, PLR0912, PLR0915
@@ -574,6 +581,214 @@ def run_campaign(  # noqa: C901, PLR0912, PLR0915
     }
 
 
+class ReviewError(Exception):
+    """A safe-to-report v3 campaign failure."""
+
+
+def _add_followup_reasons(
+    path: Path, positions: dict[str, int], reasons: dict[int, set[str]]
+) -> None:
+    bindings = _followup_bindings(path, positions)
+    processed = _followup_processed(path)
+    for item in processed:
+        if isinstance(item, dict) and item.get("disposition") == "unresolved":
+            checkpoint = item.get("persona_hash")
+            if checkpoint in bindings:
+                row_index = bindings[checkpoint]
+                reasons.setdefault(row_index, set()).add("followup_unresolved")
+
+
+def _followup_bindings(path: Path, positions: dict[str, int]) -> dict[str, int]:
+    """Validate the follow-up selection manifest and return checkpoint bindings.
+
+    Returns:
+        Mapping from follow-up checkpoint identifiers to release row indexes.
+
+    Raises:
+        ReviewError: If manifest inputs cannot be bound to the release.
+    """
+    manifest = _json_object(path.parent / "manifest.json")
+    selection = manifest.get("selection")
+    if not isinstance(selection, dict):
+        raise ReviewError("Follow-up selection manifest is invalid")
+    ordered = selection.get("ordered_input_hashes")
+    bindings = selection.get("row_bindings")
+    if (
+        not isinstance(ordered, list)
+        or not isinstance(bindings, list)
+        or ordered
+        != [digest for digest, _ in sorted(positions.items(), key=lambda item: item[1])]
+    ):
+        raise ReviewError("Follow-up ordered input hashes do not match the release")
+    result: dict[str, int] = {}
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise ReviewError("Follow-up selection bindings are invalid")
+        checkpoint = binding.get("followup_checkpoint_id")
+        row_index = binding.get("row_index")
+        row_hash = binding.get("row_hash")
+        if (
+            not isinstance(checkpoint, str)
+            or not isinstance(row_index, int)
+            or row_index < 0
+            or row_index >= len(ordered)
+            or checkpoint in result
+            or row_hash != ordered[row_index]
+        ):
+            raise ReviewError("Follow-up selection bindings are invalid")
+        # The manifest hashes the v2 persona identifier at the exact selected row.
+        if (
+            ordered[row_index] not in positions
+            or positions[ordered[row_index]] != row_index
+        ):
+            raise ReviewError("Follow-up selection row does not bind to this release")
+        result[checkpoint] = row_index
+    expected_digest = sha256_text(canonical_json(ordered))
+    expected = selection.get("ordered_id_hashes_sha256")
+    if not isinstance(expected, str) or expected != expected_digest:
+        raise ReviewError("Follow-up ordered-input digest mismatch")
+    return result
+
+
+def _json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        raise ReviewError("Private input JSON is unreadable") from None
+    if not isinstance(value, dict):
+        raise ReviewError("Private input JSON has invalid shape")
+    return value
+
+
+def _followup_processed(path: Path) -> list[dict[str, Any]]:
+    """Load status only after binding it to the exact selection manifest.
+
+    Returns:
+        Validated processed status rows.
+
+    Raises:
+        ReviewError: If the manifest binding or status integrity is invalid.
+    """
+    status = _json_object(path)
+    manifest = _json_object(path.parent / "manifest.json")
+    if status.get("manifest_sha256") != sha256_text(canonical_json(manifest)):
+        raise ReviewError("Follow-up status is not bound to its selection manifest")
+    processed = status.get("processed")
+    if not isinstance(processed, list) or any(
+        not isinstance(item, dict) for item in processed
+    ):
+        raise ReviewError("Prior status shape is invalid")
+    actual_counts = {
+        key: value for key, value in _count_dispositions(processed).items() if value > 0
+    }
+    if status.get("counts") != actual_counts:
+        raise ReviewError("Follow-up status counts do not match processed rows")
+    selection = manifest.get("selection")
+    bindings = selection.get("row_bindings") if isinstance(selection, dict) else None
+    if not isinstance(bindings, list):
+        raise ReviewError("Follow-up manifest bindings are invalid")
+    known = {
+        binding.get("followup_checkpoint_id")
+        for binding in bindings
+        if isinstance(binding, dict)
+    }
+    seen: set[str] = set()
+    for item in processed:
+        digest = item.get("persona_hash")
+        if (
+            not isinstance(digest, str)
+            or digest not in known
+            or digest in seen
+            or item.get("disposition")
+            not in {
+                "consistent",
+                "patched",
+                "unresolved",
+                "privacy_blocked",
+                "validation_failed",
+            }
+        ):
+            raise ReviewError("Follow-up processed rows do not match manifest order")
+        seen.add(digest)
+    return processed
+
+
+def _count_dispositions(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "consistent": 0,
+        "patched": 0,
+        "unresolved": 0,
+        "privacy_blocked": 0,
+        "validation_failed": 0,
+    }
+    for item in items:
+        disposition = item.get("disposition")
+        if isinstance(disposition, str):
+            counts[disposition] = counts.get(disposition, 0) + 1
+    return counts
+
+
+def _add_status_reasons(
+    path: Path,
+    positions: dict[str, int],
+    reasons: dict[int, set[str]],
+    reason: str,
+    dispositions: set[str],
+) -> None:
+    doc = _json_object(path)
+    processed = doc.get("processed")
+    if not isinstance(processed, list):
+        raise ReviewError("Prior status shape is invalid")
+    for item in processed:
+        if isinstance(item, dict) and item.get("disposition") in dispositions:
+            digest = item.get("persona_hash")
+            if isinstance(digest, str) and digest in positions:
+                reasons.setdefault(positions[digest], set()).add(reason)
+
+
+def _followup_unmatched_count(path: Path, positions: dict[str, int]) -> int:
+    bindings = _followup_bindings(path, positions)
+    processed = _followup_processed(path)
+    return sum(
+        1
+        for item in processed
+        if isinstance(item, dict)
+        and item.get("disposition") == "unresolved"
+        and item.get("persona_hash") not in bindings
+    )
+
+
+def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "version": VERSION,
+            "campaign": CAMPAIGN,
+            "input_hashes": hashes,
+            "selected_total": total,
+            "processed": [],
+            "counts": {},
+            "progress": {"completed": 0, "total": total, "pending": total},
+        }
+    status = _json_object(path)
+    if status.get("input_hashes") != hashes or status.get("selected_total") != total:
+        raise ReviewError("Existing status is bound to different inputs")
+    processed = status.get("processed")
+    if not isinstance(processed, list):
+        raise ReviewError("Existing status shape is invalid")
+    counts = _count_dispositions(processed)
+    if status.get("counts") != counts:
+        raise ReviewError("Existing status disposition counts are invalid")
+    progress = status.get("progress")
+    expected_progress = {
+        "completed": len(processed),
+        "total": total,
+        "pending": total - len(processed),
+    }
+    if progress != expected_progress or len(processed) > total:
+        raise ReviewError("Existing status progress is invalid")
+    return status
+
+
 def _submit_rows(  # noqa: PLR0913
     *,
     row_iter: Iterator[int],
@@ -614,6 +829,64 @@ def _submit_rows(  # noqa: PLR0913
                 input_hashes,
             )
         ] = index
+
+
+def _unmatched_status_count(
+    path: Path, positions: dict[str, int], dispositions: set[str]
+) -> int:
+    """Count prior terminal rows that cannot be bound to this ordered release.
+
+    Returns:
+        Number of unmatched terminal rows, without exposing their identifiers.
+
+    Raises:
+        ReviewError: If the prior status document has an invalid shape.
+    """
+    processed = _json_object(path).get("processed")
+    if not isinstance(processed, list):
+        raise ReviewError("Prior status shape is invalid")
+    return sum(
+        1
+        for item in processed
+        if isinstance(item, dict)
+        and item.get("disposition") in dispositions
+        and item.get("persona_hash") not in positions
+    )
+
+
+def _validation_evidence_path(*, output_dir: Path, digest: str) -> Path:
+    return output_dir / "validation-failed" / digest[:2] / f"{digest}.json"
+
+
+def _verify_validation_failure(
+    *, output_dir: Path, digest: str, input_hashes: dict[str, str]
+) -> None:
+    checkpoint = output_dir / "checkpoints" / digest[:2] / f"{digest}.json"
+    if checkpoint.exists():
+        raise ReviewError("Validation-failed row unexpectedly has a checkpoint")
+    evidence = _json_object(
+        _validation_evidence_path(output_dir=output_dir, digest=digest)
+    )
+    if (
+        set(evidence)
+        != {"campaign", "persona_hash", "input_hashes", "failure", "batches"}
+        or evidence.get("campaign") != CAMPAIGN
+        or evidence.get("persona_hash") != digest
+        or evidence.get("input_hashes") != input_hashes
+        or evidence.get("failure")
+        not in {LOCAL_VALIDATION_FAILURE, ROW_ATTEMPT_LIFETIME_EXHAUSTED}
+        or not isinstance(evidence.get("batches"), int)
+        or not 1 <= evidence["batches"] <= MAX_LOCAL_VALIDATION_BATCHES
+    ):
+        raise ReviewError("Validation-failed evidence is not bound to this campaign")
+
+
+def _write_or_verify(path: Path, value: dict[str, Any]) -> None:
+    if path.exists():
+        if _json_object(path) != value:
+            raise ReviewError("Existing campaign manifest does not match inputs")
+    else:
+        _write_private_json(path=path, value=value)
 
 
 def _process_row(
@@ -690,199 +963,6 @@ def _process_row(
     }
 
 
-def _unmatched_status_count(
-    path: Path, positions: dict[str, int], dispositions: set[str]
-) -> int:
-    """Count prior terminal rows that cannot be bound to this ordered release.
-
-    Returns:
-        Number of unmatched terminal rows, without exposing their identifiers.
-
-    Raises:
-        ReviewError: If the prior status document has an invalid shape.
-    """
-    processed = _json_object(path).get("processed")
-    if not isinstance(processed, list):
-        raise ReviewError("Prior status shape is invalid")
-    return sum(
-        1
-        for item in processed
-        if isinstance(item, dict)
-        and item.get("disposition") in dispositions
-        and item.get("persona_hash") not in positions
-    )
-
-
-def _followup_bindings(path: Path, positions: dict[str, int]) -> dict[str, int]:
-    """Validate the follow-up selection manifest and return checkpoint bindings.
-
-    Returns:
-        Mapping from follow-up checkpoint identifiers to release row indexes.
-
-    Raises:
-        ReviewError: If manifest inputs cannot be bound to the release.
-    """
-    manifest = _json_object(path.parent / "manifest.json")
-    selection = manifest.get("selection")
-    if not isinstance(selection, dict):
-        raise ReviewError("Follow-up selection manifest is invalid")
-    ordered = selection.get("ordered_input_hashes")
-    bindings = selection.get("row_bindings")
-    if (
-        not isinstance(ordered, list)
-        or not isinstance(bindings, list)
-        or ordered
-        != [digest for digest, _ in sorted(positions.items(), key=lambda item: item[1])]
-    ):
-        raise ReviewError("Follow-up ordered input hashes do not match the release")
-    result: dict[str, int] = {}
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            raise ReviewError("Follow-up selection bindings are invalid")
-        checkpoint = binding.get("followup_checkpoint_id")
-        row_index = binding.get("row_index")
-        row_hash = binding.get("row_hash")
-        if (
-            not isinstance(checkpoint, str)
-            or not isinstance(row_index, int)
-            or row_index < 0
-            or row_index >= len(ordered)
-            or checkpoint in result
-            or row_hash != ordered[row_index]
-        ):
-            raise ReviewError("Follow-up selection bindings are invalid")
-        # The manifest hashes the v2 persona identifier at the exact selected row.
-        if (
-            ordered[row_index] not in positions
-            or positions[ordered[row_index]] != row_index
-        ):
-            raise ReviewError("Follow-up selection row does not bind to this release")
-        result[checkpoint] = row_index
-    expected_digest = sha256_text(canonical_json(ordered))
-    expected = selection.get("ordered_id_hashes_sha256")
-    if not isinstance(expected, str) or expected != expected_digest:
-        raise ReviewError("Follow-up ordered-input digest mismatch")
-    return result
-
-
-def _followup_unmatched_count(path: Path, positions: dict[str, int]) -> int:
-    bindings = _followup_bindings(path, positions)
-    processed = _followup_processed(path)
-    return sum(
-        1
-        for item in processed
-        if isinstance(item, dict)
-        and item.get("disposition") == "unresolved"
-        and item.get("persona_hash") not in bindings
-    )
-
-
-def _followup_processed(path: Path) -> list[dict[str, Any]]:
-    """Load status only after binding it to the exact selection manifest.
-
-    Returns:
-        Validated processed status rows.
-
-    Raises:
-        ReviewError: If the manifest binding or status integrity is invalid.
-    """
-    status = _json_object(path)
-    manifest = _json_object(path.parent / "manifest.json")
-    if status.get("manifest_sha256") != sha256_text(canonical_json(manifest)):
-        raise ReviewError("Follow-up status is not bound to its selection manifest")
-    processed = status.get("processed")
-    if not isinstance(processed, list) or any(
-        not isinstance(item, dict) for item in processed
-    ):
-        raise ReviewError("Prior status shape is invalid")
-    actual_counts = {
-        key: value for key, value in _count_dispositions(processed).items() if value > 0
-    }
-    if status.get("counts") != actual_counts:
-        raise ReviewError("Follow-up status counts do not match processed rows")
-    selection = manifest.get("selection")
-    bindings = selection.get("row_bindings") if isinstance(selection, dict) else None
-    if not isinstance(bindings, list):
-        raise ReviewError("Follow-up manifest bindings are invalid")
-    known = {
-        binding.get("followup_checkpoint_id")
-        for binding in bindings
-        if isinstance(binding, dict)
-    }
-    seen: set[str] = set()
-    for item in processed:
-        digest = item.get("persona_hash")
-        if (
-            not isinstance(digest, str)
-            or digest not in known
-            or digest in seen
-            or item.get("disposition")
-            not in {
-                "consistent",
-                "patched",
-                "unresolved",
-                "privacy_blocked",
-                "validation_failed",
-            }
-        ):
-            raise ReviewError("Follow-up processed rows do not match manifest order")
-        seen.add(digest)
-    return processed
-
-
-def _add_followup_reasons(
-    path: Path, positions: dict[str, int], reasons: dict[int, set[str]]
-) -> None:
-    bindings = _followup_bindings(path, positions)
-    processed = _followup_processed(path)
-    for item in processed:
-        if isinstance(item, dict) and item.get("disposition") == "unresolved":
-            checkpoint = item.get("persona_hash")
-            if checkpoint in bindings:
-                row_index = bindings[checkpoint]
-                reasons.setdefault(row_index, set()).add("followup_unresolved")
-
-
-def _add_status_reasons(
-    path: Path,
-    positions: dict[str, int],
-    reasons: dict[int, set[str]],
-    reason: str,
-    dispositions: set[str],
-) -> None:
-    doc = _json_object(path)
-    processed = doc.get("processed")
-    if not isinstance(processed, list):
-        raise ReviewError("Prior status shape is invalid")
-    for item in processed:
-        if isinstance(item, dict) and item.get("disposition") in dispositions:
-            digest = item.get("persona_hash")
-            if isinstance(digest, str) and digest in positions:
-                reasons.setdefault(positions[digest], set()).add(reason)
-
-
-def _json_object(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
-        raise ReviewError("Private input JSON is unreadable") from None
-    if not isinstance(value, dict):
-        raise ReviewError("Private input JSON has invalid shape")
-    return value
-
-
-def _write_or_verify(path: Path, value: dict[str, Any]) -> None:
-    if path.exists():
-        if _json_object(path) != value:
-            raise ReviewError("Existing campaign manifest does not match inputs")
-    else:
-        _write_private_json(path=path, value=value)
-
-
-def _validation_evidence_path(*, output_dir: Path, digest: str) -> Path:
-    return output_dir / "validation-failed" / digest[:2] / f"{digest}.json"
-
-
 def _record_validation_failure(
     *,
     output_dir: Path,
@@ -908,86 +988,6 @@ def _record_validation_failure(
         "disposition": "validation_failed",
         "result_sha256": sha256_text(f"{digest}:validation_failed"),
     }
-
-
-def _verify_validation_failure(
-    *, output_dir: Path, digest: str, input_hashes: dict[str, str]
-) -> None:
-    checkpoint = output_dir / "checkpoints" / digest[:2] / f"{digest}.json"
-    if checkpoint.exists():
-        raise ReviewError("Validation-failed row unexpectedly has a checkpoint")
-    evidence = _json_object(
-        _validation_evidence_path(output_dir=output_dir, digest=digest)
-    )
-    if (
-        set(evidence)
-        != {"campaign", "persona_hash", "input_hashes", "failure", "batches"}
-        or evidence.get("campaign") != CAMPAIGN
-        or evidence.get("persona_hash") != digest
-        or evidence.get("input_hashes") != input_hashes
-        or evidence.get("failure")
-        not in {LOCAL_VALIDATION_FAILURE, ROW_ATTEMPT_LIFETIME_EXHAUSTED}
-        or not isinstance(evidence.get("batches"), int)
-        or not 1 <= evidence["batches"] <= MAX_LOCAL_VALIDATION_BATCHES
-    ):
-        raise ReviewError("Validation-failed evidence is not bound to this campaign")
-
-
-def _load_status(path: Path, hashes: dict[str, str], total: int) -> dict[str, Any]:
-    if not path.exists():
-        return {
-            "version": VERSION,
-            "campaign": CAMPAIGN,
-            "input_hashes": hashes,
-            "selected_total": total,
-            "processed": [],
-            "counts": {},
-            "progress": {"completed": 0, "total": total, "pending": total},
-        }
-    status = _json_object(path)
-    if status.get("input_hashes") != hashes or status.get("selected_total") != total:
-        raise ReviewError("Existing status is bound to different inputs")
-    processed = status.get("processed")
-    if not isinstance(processed, list):
-        raise ReviewError("Existing status shape is invalid")
-    counts = _count_dispositions(processed)
-    if status.get("counts") != counts:
-        raise ReviewError("Existing status disposition counts are invalid")
-    progress = status.get("progress")
-    expected_progress = {
-        "completed": len(processed),
-        "total": total,
-        "pending": total - len(processed),
-    }
-    if progress != expected_progress or len(processed) > total:
-        raise ReviewError("Existing status progress is invalid")
-    return status
-
-
-def _count_dispositions(items: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {
-        "consistent": 0,
-        "patched": 0,
-        "unresolved": 0,
-        "privacy_blocked": 0,
-        "validation_failed": 0,
-    }
-    for item in items:
-        disposition = item.get("disposition")
-        if isinstance(disposition, str):
-            counts[disposition] = counts.get(disposition, 0) + 1
-    return counts
-
-
-def _safe_error(exc: Exception) -> str:
-    if isinstance(exc, (ProxyBudgetError, SolAdjudicationError)):
-        return (
-            "Private adjudication stopped safely; inspect local configuration "
-            "and private logs."
-        )
-    if isinstance(exc, ReviewError):
-        return str(exc)
-    return "Private adjudication stopped safely due to an input or filesystem error."
 
 
 if __name__ == "__main__":
