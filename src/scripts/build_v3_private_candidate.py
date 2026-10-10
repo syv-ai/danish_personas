@@ -55,10 +55,6 @@ PREHOTFIX_SHA256 = "02d96101eaa0d4e21485e7ef788489a86d45e06933910d32e205175a40cc
 DEFAULT_EDITORIAL_EVIDENCE = DEFAULT_EDITORIAL_EVIDENCE_DIR / "evidence.json"
 
 
-class ComposeError(RuntimeError):
-    """Raised when campaign evidence or composition is invalid."""
-
-
 @click.command()
 @click.option("--original", type=click.Path(path_type=Path), default=DEFAULT_ORIGINAL)
 @click.option("--candidate", type=click.Path(path_type=Path), default=DEFAULT_CANDIDATE)
@@ -642,22 +638,8 @@ def compose(  # noqa: C901, PLR0912
     return summary
 
 
-def _check_prehotfix_alignment(
-    published: pl.DataFrame, prehotfix: pl.DataFrame
-) -> None:
-    if (
-        published.height != campaign.EXPECTED_ROWS
-        or prehotfix.height != campaign.EXPECTED_ROWS
-    ):
-        raise ComposeError("Pre-hotfix baseline row count mismatch")
-    allowed = {"detailed_status_code", "detailed_status"}
-    published_rows, prehotfix_rows = published.to_dicts(), prehotfix.to_dicts()
-    if any(
-        {key: value for key, value in old.items() if key not in allowed}
-        != {key: value for key, value in new.items() if key not in allowed}
-        for old, new in zip(published_rows, prehotfix_rows, strict=True)
-    ):
-        raise ComposeError("Pre-hotfix baseline differs beyond detailed status fields")
+class ComposeError(RuntimeError):
+    """Raised when campaign evidence or composition is invalid."""
 
 
 def _check_pinned_marginals(
@@ -712,6 +694,24 @@ def _check_pinned_marginals(
             != baseline
         ):
             raise ComposeError("Published origin age-sex marginals drifted")
+
+
+def _check_prehotfix_alignment(
+    published: pl.DataFrame, prehotfix: pl.DataFrame
+) -> None:
+    if (
+        published.height != campaign.EXPECTED_ROWS
+        or prehotfix.height != campaign.EXPECTED_ROWS
+    ):
+        raise ComposeError("Pre-hotfix baseline row count mismatch")
+    allowed = {"detailed_status_code", "detailed_status"}
+    published_rows, prehotfix_rows = published.to_dicts(), prehotfix.to_dicts()
+    if any(
+        {key: value for key, value in old.items() if key not in allowed}
+        != {key: value for key, value in new.items() if key not in allowed}
+        for old, new in zip(published_rows, prehotfix_rows, strict=True)
+    ):
+        raise ComposeError("Pre-hotfix baseline differs beyond detailed status fields")
 
 
 def _json(path: Path) -> dict[str, Any]:

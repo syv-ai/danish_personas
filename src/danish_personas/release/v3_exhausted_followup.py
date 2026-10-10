@@ -48,64 +48,6 @@ ATTEMPTS = 10
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
-class ExhaustedFollowupError(Exception):
-    """Raised when private evidence cannot be safely derived or verified."""
-
-
-def write_evidence(
-    *,
-    base_dir: Path = DEFAULT_BASE,
-    followup_dir: Path = DEFAULT_FOLLOWUP,
-    candidate_path: Path = DEFAULT_CANDIDATE,
-    original_path: Path = DEFAULT_ORIGINAL,
-    bundle_dir: Path = DEFAULT_BUNDLE,
-    prompt_path: Path = DEFAULT_PROMPT,
-    ledger_path: Path = DEFAULT_LEDGER,
-    output_dir: Path = DEFAULT_OUTPUT,
-    run: bool = False,
-) -> dict[str, object]:
-    """Derive hashed best-effort evidence without model or provider interaction.
-
-    Args:
-        base_dir: Completed pinned base campaign directory.
-        followup_dir: Incomplete targeted follow-up campaign directory.
-        candidate_path: Pinned candidate Parquet.
-        original_path: Pinned original Parquet.
-        bundle_dir: Prepared source bundle for hard source gates.
-        prompt_path: Pinned adjudication prompt.
-        ledger_path: Existing durable request ledger, read-only.
-        output_dir: New private evidence directory.
-        run (optional): Whether to write evidence. Defaults to False.
-
-    Returns:
-        Aggregate-only result without identifiers, prose, or provider data.
-
-    Raises:
-        ExhaustedFollowupError: If any source or ledger binding is invalid.
-    """
-    evidence = _derive(
-        base_dir=base_dir,
-        followup_dir=followup_dir,
-        candidate_path=candidate_path,
-        original_path=original_path,
-        bundle_dir=bundle_dir,
-        prompt_path=prompt_path,
-        ledger_path=ledger_path,
-    )
-    if not run:
-        return {"dry_run": True, "pending_rows": evidence["row_count"]}
-    output_dir = output_dir.resolve()
-    if output_dir.exists():
-        prior = output_dir / "evidence.json"
-        if prior.is_file() and prior.read_bytes() == _json_bytes(evidence):
-            return {"dry_run": False, "pending_rows": evidence["row_count"]}
-        raise ExhaustedFollowupError("Evidence output already exists")
-    output_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    output_dir.mkdir(mode=0o700)
-    _write_exclusive(path=output_dir / "evidence.json", content=_json_bytes(evidence))
-    return {"dry_run": False, "pending_rows": evidence["row_count"]}
-
-
 def verify_evidence(
     *,
     evidence_path: Path = DEFAULT_OUTPUT / "evidence.json",
@@ -163,6 +105,10 @@ def verify_evidence(
         "reservations": ATTEMPTS * len(rows),
         "observed_responses": sum(row["observed_responses"] for row in rows),
     }
+
+
+class ExhaustedFollowupError(Exception):
+    """Raised when private evidence cannot be safely derived or verified."""
 
 
 def _derive(
@@ -294,6 +240,17 @@ def _derive(
     }
 
 
+def _bundle_hash(path: Path) -> str:
+    files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else []
+    if not files or not (path / "bundle-manifest.json").is_file():
+        raise ExhaustedFollowupError("Prepared bundle manifest is missing")
+    records = [
+        {"path": p.relative_to(path).as_posix(), "sha256": sha256_file(p)}
+        for p in files
+    ]
+    return sha256_text(canonical_json(records))
+
+
 def _check_campaigns(
     *,
     base_manifest: dict[str, object],
@@ -320,33 +277,28 @@ def _check_campaigns(
         raise ExhaustedFollowupError("Follow-up campaign binding is invalid")
 
 
-def _ordered_hashes(
+def _check_ledger_header(
     *,
-    frame: pl.DataFrame,
-    original: pl.DataFrame,
-    base_manifest: dict[str, object],
-    candidate_path: Path,
-    original_path: Path,
-) -> tuple[list[str], str]:
-    if ID_FIELD not in frame.columns or TEXT_FIELD not in frame.columns:
-        raise ExhaustedFollowupError("Candidate schema is incomplete")
-    if frame[ID_FIELD].to_list() != original[ID_FIELD].to_list():
-        raise ExhaustedFollowupError("Ordered source identity binding differs")
-    ids = [sha256_text(value) for value in frame[ID_FIELD].to_list()]
-    if len(set(ids)) != len(ids):
-        raise ExhaustedFollowupError("Candidate contains duplicate identities")
-    ordered = sha256_text(canonical_json(ids))
-    expected = {
-        "baseline_sha256": sha256_file(original_path),
-        "candidate_sha256": sha256_file(candidate_path),
-        "ordered_id_hashes_sha256": ordered,
-    }
-    base_inputs = base_manifest.get("input_hashes")
-    if not isinstance(base_inputs, dict) or any(
-        base_inputs.get(k) != v for k, v in expected.items()
+    header: dict[str, object],
+    prompt: str,
+    schema_hash: str,
+    model_hash: str,
+    follow_inputs: dict[str, object],
+) -> None:
+    if (
+        header.get("campaign") != CAMPAIGN
+        or header.get("uncapped_purpose") != V3_TARGETED_FOLLOWUP_PURPOSE
+        or header.get("source_hash") != sha256_text(canonical_json(follow_inputs))
+        or header.get("prompt_hash") != sha256_text(prompt)
+        or header.get("schema_hash") != schema_hash
+        or header.get("base_url") != BASE_URL
+        or header.get("max_tokens") != SOL_ADJUDICATION_LEDGER_MAX_TOKENS
+        or header.get("input_usd_per_million") != "0.1"
+        or header.get("output_usd_per_million") != "0.5"
+        or header.get("uncapped") is not True
+        or sha256_text(str(header.get("model", ""))) != model_hash
     ):
-        raise ExhaustedFollowupError("Base campaign source hashes differ")
-    return ids, ordered
+        raise ExhaustedFollowupError("Ledger header pins do not match")
 
 
 def _coverage(
@@ -404,6 +356,66 @@ def _coverage(
     return selected, processed, pending
 
 
+def _ledger(
+    path: Path,
+) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]], str]:
+    raw = path.read_bytes()
+    try:
+        lines = [json.loads(line) for line in raw.splitlines()]
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExhaustedFollowupError("Ledger is malformed") from exc
+    if not lines or not isinstance(lines[0], dict) or lines[0].get("type") != "header":
+        raise ExhaustedFollowupError("Ledger header is missing")
+    records = lines[1:]
+    if any(not isinstance(r, dict) for r in records):
+        raise ExhaustedFollowupError("Ledger records are malformed")
+    return (
+        lines[0],
+        [r for r in records if r.get("type") == "reservation"],
+        [r for r in records if r.get("type") == "usage"],
+        hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _ordered_hashes(
+    *,
+    frame: pl.DataFrame,
+    original: pl.DataFrame,
+    base_manifest: dict[str, object],
+    candidate_path: Path,
+    original_path: Path,
+) -> tuple[list[str], str]:
+    if ID_FIELD not in frame.columns or TEXT_FIELD not in frame.columns:
+        raise ExhaustedFollowupError("Candidate schema is incomplete")
+    if frame[ID_FIELD].to_list() != original[ID_FIELD].to_list():
+        raise ExhaustedFollowupError("Ordered source identity binding differs")
+    ids = [sha256_text(value) for value in frame[ID_FIELD].to_list()]
+    if len(set(ids)) != len(ids):
+        raise ExhaustedFollowupError("Candidate contains duplicate identities")
+    ordered = sha256_text(canonical_json(ids))
+    expected = {
+        "baseline_sha256": sha256_file(original_path),
+        "candidate_sha256": sha256_file(candidate_path),
+        "ordered_id_hashes_sha256": ordered,
+    }
+    base_inputs = base_manifest.get("input_hashes")
+    if not isinstance(base_inputs, dict) or any(
+        base_inputs.get(k) != v for k, v in expected.items()
+    ):
+        raise ExhaustedFollowupError("Base campaign source hashes differ")
+    return ids, ordered
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExhaustedFollowupError("Campaign evidence file is unreadable") from exc
+    if not isinstance(value, dict):
+        raise ExhaustedFollowupError("Campaign evidence document is malformed")
+    return value
+
+
 def _require_gates(
     *, candidate_path: Path, original_path: Path, bundle_dir: Path, row_count: int
 ) -> None:
@@ -418,30 +430,6 @@ def _require_gates(
     )
     if not report.passes_hard_gates:
         raise ExhaustedFollowupError("Candidate mandatory release gates failed")
-
-
-def _check_ledger_header(
-    *,
-    header: dict[str, object],
-    prompt: str,
-    schema_hash: str,
-    model_hash: str,
-    follow_inputs: dict[str, object],
-) -> None:
-    if (
-        header.get("campaign") != CAMPAIGN
-        or header.get("uncapped_purpose") != V3_TARGETED_FOLLOWUP_PURPOSE
-        or header.get("source_hash") != sha256_text(canonical_json(follow_inputs))
-        or header.get("prompt_hash") != sha256_text(prompt)
-        or header.get("schema_hash") != schema_hash
-        or header.get("base_url") != BASE_URL
-        or header.get("max_tokens") != SOL_ADJUDICATION_LEDGER_MAX_TOKENS
-        or header.get("input_usd_per_million") != "0.1"
-        or header.get("output_usd_per_million") != "0.5"
-        or header.get("uncapped") is not True
-        or sha256_text(str(header.get("model", ""))) != model_hash
-    ):
-        raise ExhaustedFollowupError("Ledger header pins do not match")
 
 
 def _rows(
@@ -541,38 +529,6 @@ def _rows(
     return rows
 
 
-def _ledger(
-    path: Path,
-) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]], str]:
-    raw = path.read_bytes()
-    try:
-        lines = [json.loads(line) for line in raw.splitlines()]
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExhaustedFollowupError("Ledger is malformed") from exc
-    if not lines or not isinstance(lines[0], dict) or lines[0].get("type") != "header":
-        raise ExhaustedFollowupError("Ledger header is missing")
-    records = lines[1:]
-    if any(not isinstance(r, dict) for r in records):
-        raise ExhaustedFollowupError("Ledger records are malformed")
-    return (
-        lines[0],
-        [r for r in records if r.get("type") == "reservation"],
-        [r for r in records if r.get("type") == "usage"],
-        hashlib.sha256(raw).hexdigest(),
-    )
-
-
-def _bundle_hash(path: Path) -> str:
-    files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else []
-    if not files or not (path / "bundle-manifest.json").is_file():
-        raise ExhaustedFollowupError("Prepared bundle manifest is missing")
-    records = [
-        {"path": p.relative_to(path).as_posix(), "sha256": sha256_file(p)}
-        for p in files
-    ]
-    return sha256_text(canonical_json(records))
-
-
 def _suffix(value: object, prefix: str) -> int:
     if not isinstance(value, str) or not value.startswith(prefix + "-"):
         return -1
@@ -582,14 +538,58 @@ def _suffix(value: object, prefix: str) -> int:
         return -1
 
 
-def _read_json(path: Path) -> dict[str, object]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExhaustedFollowupError("Campaign evidence file is unreadable") from exc
-    if not isinstance(value, dict):
-        raise ExhaustedFollowupError("Campaign evidence document is malformed")
-    return value
+def write_evidence(
+    *,
+    base_dir: Path = DEFAULT_BASE,
+    followup_dir: Path = DEFAULT_FOLLOWUP,
+    candidate_path: Path = DEFAULT_CANDIDATE,
+    original_path: Path = DEFAULT_ORIGINAL,
+    bundle_dir: Path = DEFAULT_BUNDLE,
+    prompt_path: Path = DEFAULT_PROMPT,
+    ledger_path: Path = DEFAULT_LEDGER,
+    output_dir: Path = DEFAULT_OUTPUT,
+    run: bool = False,
+) -> dict[str, object]:
+    """Derive hashed best-effort evidence without model or provider interaction.
+
+    Args:
+        base_dir: Completed pinned base campaign directory.
+        followup_dir: Incomplete targeted follow-up campaign directory.
+        candidate_path: Pinned candidate Parquet.
+        original_path: Pinned original Parquet.
+        bundle_dir: Prepared source bundle for hard source gates.
+        prompt_path: Pinned adjudication prompt.
+        ledger_path: Existing durable request ledger, read-only.
+        output_dir: New private evidence directory.
+        run (optional): Whether to write evidence. Defaults to False.
+
+    Returns:
+        Aggregate-only result without identifiers, prose, or provider data.
+
+    Raises:
+        ExhaustedFollowupError: If any source or ledger binding is invalid.
+    """
+    evidence = _derive(
+        base_dir=base_dir,
+        followup_dir=followup_dir,
+        candidate_path=candidate_path,
+        original_path=original_path,
+        bundle_dir=bundle_dir,
+        prompt_path=prompt_path,
+        ledger_path=ledger_path,
+    )
+    if not run:
+        return {"dry_run": True, "pending_rows": evidence["row_count"]}
+    output_dir = output_dir.resolve()
+    if output_dir.exists():
+        prior = output_dir / "evidence.json"
+        if prior.is_file() and prior.read_bytes() == _json_bytes(evidence):
+            return {"dry_run": False, "pending_rows": evidence["row_count"]}
+        raise ExhaustedFollowupError("Evidence output already exists")
+    output_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output_dir.mkdir(mode=0o700)
+    _write_exclusive(path=output_dir / "evidence.json", content=_json_bytes(evidence))
+    return {"dry_run": False, "pending_rows": evidence["row_count"]}
 
 
 def _json_bytes(value: dict[str, object]) -> bytes:

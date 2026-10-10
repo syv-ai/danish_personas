@@ -375,19 +375,30 @@ def followup(  # noqa: C901, PLR0912
     }
 
 
+def _append(path: Path, status: dict[str, Any], item: dict[str, Any]) -> None:
+    if any(
+        row.get("persona_hash") == item["persona_hash"] for row in status["processed"]
+    ):
+        return
+    status["processed"].append(item)
+    status["processed"].sort(key=lambda row: row["persona_hash"])
+    counts: dict[str, int] = {}
+    for row in status["processed"]:
+        counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
+    status["counts"] = counts
+    status["progress"] = {
+        "completed": len(status["processed"]),
+        "total": status["selected_total"],
+        "pending": status["selected_total"] - len(status["processed"]),
+    }
+    _write_private_json(path=path, value=status)
+
+
 def _json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise RuntimeError("Campaign document is not an object")
     return value
-
-
-def _write_bound(path: Path, value: dict[str, Any]) -> None:
-    if path.exists():
-        if _json(path) != value:
-            raise RuntimeError("Existing follow-up manifest has different bindings")
-        return
-    _write_private_json(path=path, value=value)
 
 
 def _resume_status(  # noqa: C901, PLR0912
@@ -452,23 +463,12 @@ def _resume_status(  # noqa: C901, PLR0912
     }
 
 
-def _append(path: Path, status: dict[str, Any], item: dict[str, Any]) -> None:
-    if any(
-        row.get("persona_hash") == item["persona_hash"] for row in status["processed"]
-    ):
+def _write_bound(path: Path, value: dict[str, Any]) -> None:
+    if path.exists():
+        if _json(path) != value:
+            raise RuntimeError("Existing follow-up manifest has different bindings")
         return
-    status["processed"].append(item)
-    status["processed"].sort(key=lambda row: row["persona_hash"])
-    counts: dict[str, int] = {}
-    for row in status["processed"]:
-        counts[row["disposition"]] = counts.get(row["disposition"], 0) + 1
-    status["counts"] = counts
-    status["progress"] = {
-        "completed": len(status["processed"]),
-        "total": status["selected_total"],
-        "pending": status["selected_total"] - len(status["processed"]),
-    }
-    _write_private_json(path=path, value=status)
+    _write_private_json(path=path, value=value)
 
 
 if __name__ == "__main__":

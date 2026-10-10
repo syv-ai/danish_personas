@@ -107,6 +107,7 @@ _RESTRICTED_TEXT = re.compile(
     rf"(?<![\w])(?:{'|'.join(_RESTRICTED_IDENTITY_TERMS)})(?![\w])", re.IGNORECASE
 )
 
+FutureResult = t.TypeVar("FutureResult")
 JSONScalar: t.TypeAlias = str | int | float | bool | None
 JSONDocument: t.TypeAlias = (
     JSONScalar | list["JSONDocument"] | dict[str, "JSONDocument"]
@@ -819,6 +820,19 @@ def _process_pending(
         ) from stop_exc
 
 
+def _cancel_not_started(
+    *, future_map: dict[futures.Future[FutureResult], ReleaseRow]
+) -> None:
+    for future in future_map:
+        future.cancel()
+
+
+def _has_completed_future(
+    *, future_map: dict[futures.Future[FutureResult], ReleaseRow]
+) -> bool:
+    return any(future.done() for future in future_map)
+
+
 @dataclass(frozen=True)
 class ReleaseSelection:
     """Deterministic full-campaign Sol selection."""
@@ -1002,19 +1016,6 @@ class RowResult:
     checkpoint: str
     checkpoint_sha256: str
     response_sha256: str
-
-
-def _cancel_not_started(
-    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
-) -> None:
-    for future in future_map:
-        future.cancel()
-
-
-def _has_completed_future(
-    *, future_map: dict[futures.Future[RowResult], ReleaseRow]
-) -> bool:
-    return any(future.done() for future in future_map)
 
 
 def _record_completed_future(
