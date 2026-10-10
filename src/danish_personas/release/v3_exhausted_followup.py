@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -24,6 +25,7 @@ from ..generation.sol_adjudication import (
 )
 from ..io import canonical_json, sha256_file, sha256_text
 from .candidate_validation import validate_release_candidate
+from .generated_checks import check_generated_fields
 
 ROOT = Path("/tmp/danish-personas-audit/v3-private")
 DEFAULT_BASE = ROOT / "campaign-long"
@@ -213,6 +215,11 @@ def _derive(
         bundle_dir=bundle_dir,
         row_count=frame.height,
     )
+    advisory_flags: dict[str, set[str]] = {digest: set() for digest in pending}
+    for finding in check_generated_fields(frame).review_flags:
+        digest = sha256_text(finding.persona_id)
+        if digest in advisory_flags:
+            advisory_flags[digest].add(finding.check)
     prompt = prompt_path.read_text(encoding="utf-8")
     schema_hash = sha256_text(
         canonical_json(SolAdjudicationResponse.provider_json_schema())
@@ -238,6 +245,7 @@ def _derive(
         header=header,
         reservations=reservations,
         usages=usages,
+        advisory_flags=advisory_flags,
     )
     if set(processed) & set(pending) or set(processed) | set(pending) != set(selected):
         raise ExhaustedFollowupError("Follow-up pending coverage is not one-to-one")
@@ -275,6 +283,13 @@ def _derive(
             )
         },
         "row_count": len(rows),
+        "advisory_flag_counts": dict(
+            sorted(
+                Counter(
+                    flag for flags in advisory_flags.values() for flag in flags
+                ).items()
+            )
+        ),
         "rows": rows,
     }
 
@@ -392,17 +407,17 @@ def _coverage(
 def _require_gates(
     *, candidate_path: Path, original_path: Path, bundle_dir: Path, row_count: int
 ) -> None:
+    if row_count != 100_000:
+        raise ExhaustedFollowupError(
+            "Candidate row count is not the pinned release size"
+        )
     report = validate_release_candidate(
         candidate_path=candidate_path,
         original_path=original_path,
         bundle_dir=bundle_dir,
-        expected_row_count=row_count,
     )
-    if (
-        any(report.source_support.unsupported_rows.values())
-        or report.generated_fields.hard_failure_rows
-    ):
-        raise ExhaustedFollowupError("Candidate mandatory source/generated gate failed")
+    if not report.passes_hard_gates:
+        raise ExhaustedFollowupError("Candidate mandatory release gates failed")
 
 
 def _check_ledger_header(
@@ -442,6 +457,7 @@ def _rows(
     header: dict[str, object],
     reservations: list[dict[str, object]],
     usages: list[dict[str, object]],
+    advisory_flags: dict[str, set[str]],
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     current, before = frame.to_dicts(), original.to_dicts()
@@ -518,11 +534,7 @@ def _rows(
                 "reserved_suffixes": suffixes,
                 "observed_responses": len(row_usages),
                 "attempts": attempts,
-                "advisory_checks": [
-                    "unresolved_followup_payload_reconstructed",
-                    "source_gate_pass",
-                    "generated_hard_failures_zero",
-                ],
+                "advisory_flags_not_confirmed_defects": sorted(advisory_flags[digest]),
                 "decision": "best_effort_retained_original",
             }
         )
