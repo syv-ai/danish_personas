@@ -8,6 +8,7 @@ import stat
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from danish_personas.generation.sol_adjudication import (
     SOL_MAX_OUTPUT_TOKENS,
     SolAdjudicationError,
     SolAdjudicationResponse,
+    _BudgetedSolTransport,
     preflight_sol_adjudication_payload,
     run_sol_adjudication,
     validate_sol_adjudication,
@@ -35,6 +37,22 @@ _PERSONA = (
 _DEFAULT_PAYLOAD_SHA256 = (
     "03c325287392fb029644f55324b38feb0527080becdb7741686cffeed8a222f5"
 )
+
+
+def test_closing_budget_adapter_keeps_borrowed_transport_usable() -> None:
+    """Closing an adapter must not close the caller-owned transport."""
+    borrowed = httpx.MockTransport(lambda _: httpx.Response(200))
+    adapter = _BudgetedSolTransport(budget=Mock(), transport=borrowed)
+    adapter.activate_request(request_id="synthetic")
+
+    with httpx.Client(transport=adapter) as client:
+        client.get("https://example.invalid/first")
+
+    response = borrowed.handle_request(
+        httpx.Request("GET", "https://example.invalid/second")
+    )
+
+    assert response.status_code == 200
 
 
 @pytest.fixture(autouse=True)

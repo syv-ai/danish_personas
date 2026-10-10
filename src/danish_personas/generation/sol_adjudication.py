@@ -746,7 +746,7 @@ class _BudgetedSolTransport(httpx.BaseTransport):
         self._request_id = request_id
 
     def close(self) -> None:
-        self.transport.close()
+        """Leave the caller-owned transport open when this adapter is closed."""
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if self._request_id is None:
