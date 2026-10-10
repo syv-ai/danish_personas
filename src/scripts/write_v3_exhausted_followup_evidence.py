@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from danish_personas.environment import load_repository_environment
 from danish_personas.release.v3_exhausted_followup import (
     DEFAULT_BASE,
     DEFAULT_BUNDLE,
@@ -79,4 +80,5 @@ def main(
 
 
 if __name__ == "__main__":
+    load_repository_environment()
     main()
