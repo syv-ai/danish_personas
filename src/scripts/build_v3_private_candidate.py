@@ -30,6 +30,13 @@ from danish_personas.generation.sol_adjudication import (
 )
 from danish_personas.io import canonical_json, sha256_file, sha256_text
 from danish_personas.release.candidate_validation import validate_release_candidate
+from danish_personas.release.v3_exhausted_followup import (
+    DEFAULT_OUTPUT as DEFAULT_EDITORIAL_EVIDENCE_DIR,
+)
+from danish_personas.release.v3_exhausted_followup import (
+    ExhaustedFollowupError,
+    verify_evidence,
+)
 from scripts import adjudicate_persona_v3 as campaign
 
 ROOT = Path("/tmp/danish-personas-audit")
@@ -45,6 +52,7 @@ DEFAULT_PATCHES = ROOT / "v3-private/composed-candidate.vetted.json"
 DEFAULT_REPORT = ROOT / "v3-private/composed-candidate.report.json"
 DEFAULT_PREHOTFIX = ROOT / "hf-v2-final-verify/data/train-00000-of-00001.parquet"
 PREHOTFIX_SHA256 = "02d96101eaa0d4e21485e7ef788489a86d45e06933910d32e205175a40cc675b"
+DEFAULT_EDITORIAL_EVIDENCE = DEFAULT_EDITORIAL_EVIDENCE_DIR / "evidence.json"
 
 
 class ComposeError(RuntimeError):
@@ -69,6 +77,12 @@ class ComposeError(RuntimeError):
 )
 @click.option("--report", type=click.Path(path_type=Path), default=DEFAULT_REPORT)
 @click.option(
+    "--editorial-evidence",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_EDITORIAL_EVIDENCE,
+    show_default=True,
+)
+@click.option(
     "--bundle",
     type=click.Path(path_type=Path, exists=True, file_okay=False),
     required=True,
@@ -88,6 +102,7 @@ def main(
     output: Path,
     patch_manifest: Path,
     report: Path,
+    editorial_evidence: Path,
     bundle: Path,
     prehotfix: Path,
 ) -> None:
@@ -106,10 +121,11 @@ def main(
             output,
             patch_manifest,
             report,
+            editorial_evidence,
             bundle,
             prehotfix,
         )
-    except (ComposeError, OSError, ValueError, KeyError) as exc:
+    except (ComposeError, ExhaustedFollowupError, OSError, ValueError, KeyError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(result, sort_keys=True))
 
@@ -123,6 +139,7 @@ def compose(  # noqa: C901, PLR0912
     output: Path,
     patch_path: Path,
     report_path: Path,
+    editorial_evidence_path: Path,
     bundle_dir: Path,
     prehotfix_path: Path,
 ) -> dict[str, object]:
@@ -210,6 +227,31 @@ def compose(  # noqa: C901, PLR0912
         if item.get("disposition")
         in {"unresolved", "validation_failed", "privacy_blocked"}
     }
+    evidence_summary = verify_evidence(
+        evidence_path=editorial_evidence_path,
+        base_dir=campaign_dir,
+        followup_dir=followup_dir,
+        candidate_path=candidate,
+        original_path=original,
+        bundle_dir=bundle_dir,
+        prompt_path=campaign.PROMPT,
+        ledger_path=Path.home() / ".danish-personas/proxy-v3-targeted-followup.jsonl",
+    )
+    # Read editorial decisions only after the verifier has re-derived all bindings.
+    editorial_doc = _json(editorial_evidence_path)
+    editorial_rows = editorial_doc.get("rows")
+    if not isinstance(editorial_rows, list):
+        raise ComposeError("Verified editorial evidence rows are malformed")
+    editorial_by_hash = {
+        row.get("persona_hash"): row
+        for row in editorial_rows
+        if isinstance(row, dict)
+        and row.get("decision") == "best_effort_retained_original"
+    }
+    if len(editorial_by_hash) != len(editorial_rows) or any(
+        not isinstance(digest, str) for digest in editorial_by_hash
+    ):
+        raise ComposeError("Verified editorial evidence decisions are malformed")
     followup_manifest = _json(followup_dir / "manifest.json")
     followup_status = _json(followup_dir / "status.json")
     followup_items = followup_status.get("processed")
@@ -218,18 +260,29 @@ def compose(  # noqa: C901, PLR0912
         != "persona-sol-adjudication-v3-targeted-followup"
         or followup_status.get("campaign") != followup_manifest.get("campaign")
         or followup_status.get("input_hashes") != followup_manifest.get("input_hashes")
-        or followup_status.get("progress", {}).get("pending") != 0
-        or followup_status.get("progress", {}).get("completed")
-        != followup_manifest.get("selected_total")
+        or not isinstance(followup_status.get("progress"), dict)
         or not isinstance(followup_items, list)
     ):
         raise ComposeError("Targeted follow-up is incomplete or unbound")
     followup_by_hash = {item.get("persona_hash"): item for item in followup_items}
+    followup_counts = Counter(item.get("disposition") for item in followup_items)
+    progress = followup_status["progress"]
     if (
         len(followup_by_hash) != len(followup_items)
-        or set(followup_by_hash) != base_unresolved
+        or set(followup_by_hash) & set(editorial_by_hash)
+        or set(followup_by_hash) | set(editorial_by_hash) != base_unresolved
+        or followup_manifest.get("selected_total") != len(base_unresolved)
+        or followup_status.get("selected_total") != len(base_unresolved)
+        or progress.get("total") != len(base_unresolved)
+        or progress.get("completed") != len(followup_items)
+        or progress.get("pending") != len(editorial_by_hash)
+        or followup_status.get("counts") != dict(followup_counts)
+        or evidence_summary.get("rows") != len(editorial_by_hash)
+        or evidence_summary.get("decision") != "best_effort_retained_original"
     ):
-        raise ComposeError("Follow-up does not cover exactly the unresolved base rows")
+        raise ComposeError(
+            "Follow-up and verified editorial evidence coverage mismatch"
+        )
     follow_inputs = followup_manifest.get("input_hashes")
     if not isinstance(follow_inputs, dict):
         raise ComposeError("Follow-up input bindings are missing")
@@ -325,22 +378,34 @@ def compose(  # noqa: C901, PLR0912
         dispositions[disposition] += 1
         index = by_hash[digest]
         if disposition in {"unresolved", "privacy_blocked", "validation_failed"}:
-            follow = followup_by_hash[digest]
-            follow_disposition = follow.get("disposition")
-            if follow.get("base_result_sha256") != item.get("result_sha256"):
-                raise ComposeError("Follow-up does not bind its base disposition")
-            if disposition == "privacy_blocked":
-                if follow_disposition != "privacy_blocked_local_only":
-                    raise ComposeError("Privacy-blocked row was not retained locally")
-            elif follow_disposition not in {"patched", "consistent", "unresolved"}:
-                # Invalid/no-response evidence never becomes a successful verdict.
-                raise ComposeError("Follow-up has no valid review checkpoint")
+            if digest in editorial_by_hash:
+                editorial = editorial_by_hash[digest]
+                if editorial.get("base_result_sha256") != item.get("result_sha256"):
+                    raise ComposeError(
+                        "Editorial evidence does not bind base disposition"
+                    )
+            else:
+                follow = followup_by_hash[digest]
+                follow_disposition = follow.get("disposition")
+                if follow.get("base_result_sha256") != item.get("result_sha256"):
+                    raise ComposeError("Follow-up does not bind its base disposition")
+                if disposition == "privacy_blocked":
+                    if follow_disposition != "privacy_blocked_local_only":
+                        raise ComposeError(
+                            "Privacy-blocked row was not retained locally"
+                        )
+                elif follow_disposition not in {"patched", "consistent", "unresolved"}:
+                    raise ComposeError("Follow-up has no valid review checkpoint")
         if disposition == "validation_failed":
             campaign._verify_validation_failure(
                 output_dir=campaign_dir, digest=digest, input_hashes=inputs
             )
-            follow = followup_by_hash[digest]
-            if follow.get("disposition") in {"patched", "consistent", "unresolved"}:
+            follow = followup_by_hash.get(digest)
+            if follow is not None and follow.get("disposition") in {
+                "patched",
+                "consistent",
+                "unresolved",
+            }:
                 old, row = original_rows[index], rows[index]
                 follow_cp_name = follow.get("checkpoint")
                 follow_cp = (
@@ -435,8 +500,12 @@ def compose(  # noqa: C901, PLR0912
                 )
             row[campaign.TEXT_FIELD] = verified.proposed_text
         if disposition in {"unresolved", "validation_failed"}:
-            follow = followup_by_hash[digest]
-            if follow.get("disposition") in {"patched", "consistent", "unresolved"}:
+            follow = followup_by_hash.get(digest)
+            if follow is not None and follow.get("disposition") in {
+                "patched",
+                "consistent",
+                "unresolved",
+            }:
                 follow_cp_name = follow.get("checkpoint")
                 follow_cp = (
                     followup_dir / follow_cp_name
@@ -544,12 +613,26 @@ def compose(  # noqa: C901, PLR0912
             original_frame.to_dicts(), written_final.to_dicts(), strict=True
         )
     )
-    followup_counts = Counter(item["disposition"] for item in followup_items)
+    evidence_rows = editorial_doc["rows"]
+    editorial_reservations = sum(
+        len(row.get("reserved_suffixes", [])) for row in evidence_rows
+    )
+    editorial_observed = sum(row.get("observed_responses", 0) for row in evidence_rows)
     summary = {
         "final_outcomes": {"good": final.height - fixed_rows, "fixed": fixed_rows},
         "historical_review_evidence": {
             "initial_dispositions": dict(dispositions),
             "followup_dispositions": dict(followup_counts),
+            "editorial_retained_original_rows": len(evidence_rows),
+            "editorial_reserved_attempts": editorial_reservations,
+            "editorial_observed_raw_responses_not_verdicts": editorial_observed,
+            "editorial_unobserved_reservations": editorial_reservations
+            - editorial_observed,
+            "editorial_response_validity_not_assessed": True,
+            "editorial_advisory_flags_not_confirmed_defects": editorial_doc.get(
+                "advisory_flag_counts", {}
+            ),
+            "editorial_evidence_is_not_full_prose_certification": True,
         },
         "prose_patched_rows": text_changes,
         "candidate_sha256": candidate_hash,
