@@ -116,6 +116,7 @@ def followup(  # noqa: C901, PLR0912
         RuntimeError: If campaign bindings or resumable state are invalid.
         SolAdjudicationError: If local payload or checkpoint verification fails.
         ProxyBudgetError: If budget integrity or authorisation fails.
+        httpx.HTTPStatusError: If the provider rejects a request permanently.
     """
     base_manifest = _json(base_dir / "manifest.json")
     base_status = _json(base_dir / "status.json")
@@ -319,6 +320,13 @@ def followup(  # noqa: C901, PLR0912
             except httpx.TransportError:
                 # Keep transport failures pending so a later run can retry them
                 # against the same verified campaign and durable attempt ledger.
+                continue
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 and not (
+                    500 <= exc.response.status_code <= 599
+                ):
+                    raise
+                # Exhausted bounded HTTP retries are not a valid row verdict.
                 continue
             except SolAdjudicationError as exc:
                 if str(exc) != "Sol response failed bounded local validation retries":
